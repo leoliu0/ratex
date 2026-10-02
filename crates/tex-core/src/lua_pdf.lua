@@ -177,12 +177,46 @@ function pdf.setfontattributes(f, s)
 end
 
 function pdf.includechar(f, c)
-  P.include_chars(lua_int(f), utf8.char(lua_int(c)))
+  f = lua_int(f)
+  if type(c) == "table" then
+    for i = 1, #c do P.include_char(f, lua_int(c[i])) end
+  else
+    P.include_char(f, lua_int(c))
+  end
 end
 
+function pdf.includefont(f)
+  P.include_font(lua_int(f))
+end
+
+-- lpdflib.c luapdfprint: the literal modes of pdf.print
+local print_modes = { origin = 0, page = 1, text = 2, direct = 3, raw = 4 }
 function pdf.print(...)
   local n = select("#", ...)
   local s = select(n, ...)
-  if n == 0 or (type(s) ~= "string" and type(s) ~= "number") then error("string expected", 2) end
-  P.print(tostring(s))
+  if n == 0 or (type(s) ~= "string" and type(s) ~= "number") then error("no string to print", 0) end
+  local mode = 0
+  if n == 2 then
+    local m = ...
+    mode = type(m) == "string" and print_modes[m]
+    if not mode then error("invalid first argument for print literal mode", 0) end
+  elseif n ~= 1 then
+    error("invalid number of arguments", 0)
+  end
+  P.print(mode, tostring(s))
 end
+
+function pdf.registerannot(...)
+  if select("#", ...) ~= 1 then error("pdf.registerannot() needs exactly 1 argument", 0) end
+  if not P.in_late_lua() then error("pdf.registerannot() can only be used in late lua", 0) end
+  local n = tointeger(tonumber((...)))
+  if n == nil then error("bad argument #1 to 'registerannot' (number expected, got " .. type((...)) .. ")", 2) end
+  if n <= 0 then error("pdf.registerannot() can only register positive object numbers", 0) end
+  P.register_annot(n)
+end
+
+-- lpdflib.c: only used while tracing, when no page was flushed
+function pdf.setforcefile(v) P.set_force_file(v == true) end
+
+-- lpdflib.c: the experimental wide Type 1 mode
+function pdf.settypeonewidemode(v) P.set_type1_wide_mode(tointeger(tonumber(v)) or 0) end

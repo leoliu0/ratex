@@ -90,6 +90,8 @@ pub struct PdfPage {
     pub width_sp: i64,
     pub height_sp: i64,
     pub annots: Vec<Annot>,
+    /// Existing annotation objects `pdf.registerannot` added to the page
+    pub annot_refs: Vec<i32>,
     /// (doc font index, resource number `n` of `/F<n>`) — resolved by
     /// `embed_used_fonts`. pdfTeX names a font resource after the internal
     /// number of the font that owns its dictionary.

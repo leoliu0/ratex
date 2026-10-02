@@ -673,6 +673,7 @@ impl Engine {
             width_sp: width_sp as i64,
             height_sp: height_sp as i64,
             annots: std::mem::take(&mut ctx.annots),
+            annot_refs: std::mem::take(&mut ctx.eng.lua_tex.late_annots),
             fonts: std::mem::take(&mut ctx.page_fonts),
             dests: std::mem::take(&mut ctx.dests),
             attr_extra: ctx.eng.pdf_page_attr.as_bytes().to_vec(),
@@ -2892,6 +2893,7 @@ impl<'a> RenderCtx<'a> {
             Special(s) => {
                 self.handle_special(&crate::tex_bytes::text_to_display(s), cur_h, cur_v);
             }
+            LateLua { code, func } => self.run_late_lua(code, *func, cur_h, cur_v),
             SavePos { .. } => {
                 // position is relative to the page edges, in sp
                 self.eng.pdf_last_x = cur_h as i32;
@@ -2992,6 +2994,41 @@ impl<'a> RenderCtx<'a> {
         } else if trimmed == "x:grestore" {
             self.end_text();
             self.content.push_str("Q\n");
+        }
+    }
+}
+
+impl<'a> RenderCtx<'a> {
+    /// `\latelua`: run the code (or Lua function) at the node's position, then
+    /// put what `pdf.print` wrote into the content stream the way lpdflib.c
+    /// `luapdfprint` does: the literal mode first closes the text or string (or
+    /// moves the origin), then the text follows verbatim.
+    fn run_late_lua(&mut self, code: &[u8], func: i32, cur_h: i64, cur_v: i64) {
+        // pdf.getpos: the position in sp from the page's bottom left, as \pdfsavepos
+        self.eng.lua_tex.pdf_pos = (cur_h as i32, (self.page_height_sp - cur_v) as i32);
+        self.eng.lua_tex.pdf_print.clear();
+        self.eng.lua_tex.in_late_lua = true;
+        if func > 0 {
+            self.eng.call_lua_function(func);
+        } else if let Err(err) = self.eng.execute_directlua(code) {
+            self.eng.error(&format!("LuaTeX error: {err}"));
+        }
+        self.eng.lua_tex.in_late_lua = false;
+        for (mode, text) in std::mem::take(&mut self.eng.lua_tex.pdf_print) {
+            match mode {
+                0 => {
+                    self.end_text();
+                    self.set_origin(cur_h, cur_v);
+                }
+                1 => self.end_text(),
+                2 => {
+                    if !self.doing_text {
+                        self.begin_text();
+                    }
+                }
+                _ => self.end_string_nl(),
+            }
+            self.content.push_str(&String::from_utf8_lossy(&text));
         }
     }
 }

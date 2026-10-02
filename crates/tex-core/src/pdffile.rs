@@ -1995,6 +1995,9 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             emit_annot(&mut b, *aobj, a, (doc.mag, doc.decimal_digits));
             annots_res.push_str(&format!("{} 0 R ", aobj));
         }
+        for r in &page.annot_refs {
+            annots_res.push_str(&format!("{r} 0 R "));
+        }
         let annots = if annots_res.is_empty() {
             String::new()
         } else {

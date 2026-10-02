@@ -24,6 +24,9 @@ pub(crate) mod sl {
     pub const B_ORDER: usize = 5;
     pub const B_SIGN: usize = 6;
     pub const B_HEAD: usize = 8;
+    // unset: `shrink` shares the shift slot
+    pub const U_STRETCH: usize = 7;
+    pub const U_HEAD: usize = 9;
     /// engine `lr` and `kind`
     pub const B_LR: usize = 10;
     pub const B_KIND: usize = 11;
@@ -502,7 +505,11 @@ impl Engine {
                 f[sl::R_WIDTH] = rule_to_lua(*width);
                 f[sl::R_HEIGHT] = rule_to_lua(*height);
                 f[sl::R_DEPTH] = rule_to_lua(*depth);
-                f[sl::R_INDEX] = *index;
+                if *subtype == boxes::RULE_OUTLINE {
+                    f[sl::R_TRANSFORM] = *index;
+                } else {
+                    f[sl::R_INDEX] = *index;
+                }
                 n
             }
             Node::Disc(dc) => {
@@ -773,7 +780,7 @@ impl Engine {
                         height: rule_from_lua(h),
                         depth: rule_from_lua(d),
                         subtype: sub as u8,
-                        index: f[sl::R_INDEX],
+                        index: if sub == u16::from(boxes::RULE_OUTLINE) { f[sl::R_TRANSFORM] } else { f[sl::R_INDEX] },
                         attr: crate::boxes::Attr::NONE,
                     }),
                 }
@@ -796,8 +803,10 @@ impl Engine {
                 nd.f[sl::D_REPLACE] = 0;
             }
             HLIST | VLIST | UNSET => {
-                let list = self.export_sub(f[sl::B_HEAD]);
-                self.lua_nodes.node_mut(n).f[sl::B_HEAD] = 0;
+                // an unset node keeps its list one slot further (`node.fields`)
+                let head_slot = if id == UNSET { sl::U_HEAD } else { sl::B_HEAD };
+                let list = self.export_sub(f[head_slot]);
+                self.lua_nodes.node_mut(n).f[head_slot] = 0;
                 let nd = self.lua_nodes.node(n);
                 let kind = if id == VLIST {
                     if f[sl::B_KIND] == i32::from(boxes::VTOP) { boxes::VTOP } else { boxes::VBOX }
@@ -810,7 +819,8 @@ impl Engine {
                     list,
                     h: f[sl::B_HEIGHT],
                     d: f[sl::B_DEPTH],
-                    shift: f[sl::B_SHIFT],
+                    // an unset node keeps its shrink total in the slot
+                    shift: if id == UNSET { 0 } else { f[sl::B_SHIFT] },
                     glue_order: crate::lua_node_pack::engine_order(f[sl::B_ORDER]),
                     glue_sign: f[sl::B_SIGN] as u8,
                     glue_set: nd.fl,

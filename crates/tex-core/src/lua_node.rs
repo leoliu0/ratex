@@ -1228,6 +1228,8 @@ fn is_dim_field(id: u8, name: &str) -> bool {
         | "expansion_factor" | "left" | "right" | "surround" | "box_left_width" | "box_right_width"
         | "italic" => true,
         "fraction" => id == ACCENT,
+        // `rule_transform`, also a user value of a user rule
+        "transform" => id == RULE,
         _ => false,
     }
 }

@@ -136,12 +136,25 @@ impl Engine {
     /// Pack the list at `head` like `hpack`/`vpackage`; returns the new box
     /// and the badness.
     pub(crate) fn lua_pack_list(&mut self, head: u32, size: i32, additional: bool, horizontal: bool) -> (u32, i32) {
+        self.lua_pack_list_md(head, size, additional, horizontal, MAX_DIMEN)
+    }
+
+    /// `lua_pack_list` with the maximum depth of a vertical pack (`vpackage`'s
+    /// `l`).
+    pub(crate) fn lua_pack_list_md(
+        &mut self,
+        head: u32,
+        size: i32,
+        additional: bool,
+        horizontal: bool,
+        max_depth: i32,
+    ) -> (u32, i32) {
         let list = self.lua_clone_to_engine(head);
         let orig_len = list.len();
         let mut res = if horizontal {
             boxes::hpack_add(list, Some(size), additional, boxes::HBOX, &self.eqtb)
         } else {
-            boxes::vpack_add_md(list, Some(size), additional, boxes::VBOX, &self.eqtb, MAX_DIMEN)
+            boxes::vpack_add_md(list, Some(size), additional, boxes::VBOX, &self.eqtb, max_depth)
         };
         self.report_pack_warnings(&mut res);
         let Node::Box { w, h, d, glue_sign, glue_order, glue_set, list, .. } = &res.node else {

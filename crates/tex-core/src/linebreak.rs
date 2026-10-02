@@ -2426,9 +2426,7 @@ impl Engine {
                         if self.eqtb.int_params[IntParam::IgnorePrimitiveError.idx() as usize] & 1
                             != 0
                         {
-                            self.append_log(
-                                "\nignored: Infinite glue shrinkage found in box being split\n",
-                            );
+                            self.lua_ignored_error("Infinite glue shrinkage found in box being split");
                         } else {
                             self.error("Infinite glue shrinkage found in box being split");
                         }

@@ -76,7 +76,7 @@ type Shared = Rc<RefCell<Option<Mts>>>;
 /// LuaTeX's `normal_warning`: `warning  (what): message` on its own line, on
 /// the terminal and in the log.
 fn warning(what: &str, message: &str) {
-    let _ = with_engine(|e| e.lua_texio_print(3, true, format!("warning  ({what}): {message}\n").as_bytes()));
+    let _ = with_engine(|e| e.lua_warning(what, message));
 }
 
 fn warn(message: &str) {

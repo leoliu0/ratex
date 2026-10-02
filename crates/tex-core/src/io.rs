@@ -1200,6 +1200,7 @@ impl Engine {
     ) -> Vec<u8> {
         let saved = std::mem::take(&mut self.pushed);
         let saved_input = std::mem::take(&mut self.input.stack);
+        self.parked_inputs.push((saved_input, saved));
         let saved_diagnostic_state = self.scanner_diagnostic_state();
         let saved_end_occurred = self.end_occurred;
         let errors_before = self.error_count;
@@ -1275,6 +1276,7 @@ impl Engine {
         }
         self.in_expanded_scan = prev;
         self.write_mode_zero = saved_mode_zero;
+        let (saved_input, saved) = self.parked_inputs.pop().unwrap_or_default();
         self.input.stack = saved_input;
         self.restore_scanner_diagnostic_state(saved_diagnostic_state);
         self.end_occurred =

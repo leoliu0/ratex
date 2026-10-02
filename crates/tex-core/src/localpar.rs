@@ -206,8 +206,8 @@ impl Engine {
         self.skip_spaces_relax();
         let t = self.get_x_raw();
         if !self.token_is_left_brace(t) {
-            self.error("Missing { inserted");
             self.push_token(t);
+            self.error("Missing { inserted");
         }
         self.saved_lists.push((
             self.mode,

@@ -293,6 +293,25 @@ impl MacroFrame {
         true
     }
 
+    /// A number that changes whenever a token is delivered.
+    pub(crate) fn signature(&self) -> usize {
+        (self.pos as usize) << 8 ^ (self.next_ref as usize) << 1 ^ usize::from(self.in_arg)
+    }
+
+    /// Where `show_context` finds this call: the replacement text with the
+    /// position of its next token, and, while the tokens of a parameter are
+    /// being delivered, those tokens with their next position (TeX's
+    /// `parameter` level above the macro).
+    pub(crate) fn context_view(&self) -> (&Rc<[Token]>, usize, Option<(&[Token], usize)>) {
+        if !self.in_arg {
+            return (&self.body, self.pos as usize, None);
+        }
+        let index = self.references[self.next_ref as usize - 1].1;
+        let start = self.args.start(index);
+        let arg = &self.args.toks[start..self.end as usize];
+        (&self.body, self.resume as usize, Some((arg, self.pos as usize - start)))
+    }
+
     /// Net brace depth of the tokens delivered so far (alignment scanning
     /// needs the braces that real input sources have already produced).
     pub fn delivered_brace_balance(&self) -> i32 {
@@ -412,6 +431,18 @@ impl InputStack {
             last_finished_file: None,
             top_file: std::cell::Cell::new(usize::MAX),
         }
+    }
+
+    /// The stack depth and reading position of the top source: it differs
+    /// after any token has been read from the stack.
+    pub(crate) fn signature(&self) -> (usize, usize) {
+        let position = match self.stack.last() {
+            Some(Source::File { line_no, line_pos, .. }) => (*line_no as usize).wrapping_mul(1 << 20) ^ *line_pos,
+            Some(Source::TokList { pos, .. }) => *pos,
+            Some(Source::MacroFrame(frame)) => frame.signature(),
+            None => 0,
+        };
+        (self.stack.len(), position)
     }
 
     /// Clear active sources and any EOF location retained for diagnostics.

@@ -1,0 +1,39 @@
+\catcode`\{=1 \catcode`\}=2 \catcode`\#=6 \catcode`\ =10
+\directlua{tex.enableprimitives('',tex.extraprimitives())}
+\outputmode=1 \pagewidth=100pt \pageheight=60pt \pdfvariable compresslevel=0 \pdfvariable objcompresslevel=0
+\baselineskip=0pt \lineskip=0pt \lineskiplimit=0pt
+\directlua{
+ SP = 65536
+ function SHOW(n) return 'id='..n.id..' sub='..n.subtype..' w='..n.width..' h='..n.height..' d='..n.depth..' dir='..tostring(n.dir) end
+ function SHOWND(n) return 'id='..n.id..' sub='..n.subtype..' w='..n.width..' h='..n.height..' d='..n.depth end
+ function RULE(st, w, h, d, tr)
+   local r = node.new('rule', st) r.width = w r.height = h r.depth = d
+   if tr then r.transform = tr end
+   return r
+ end
+ function LEAD(st, sub)
+   local g = node.new('glue', sub) g.width = 20*SP g.stretch = 0 g.shrink = 0
+   g.leader = RULE(st, 3*SP, 4*SP, 1*SP)
+   return g
+ end
+ function ALL(from)
+   for _, st in ipairs{0, 3, 4, 5, 6, 7, 8, 9} do
+     node.write(RULE(st, 10*SP, 3*SP, SP, st == 9 and 2*SP or nil))
+     if from == 'h' then node.write(node.new('kern', 2*SP)) end
+   end
+ end
+ function CB(mode, show)
+   callback.register('process_rule', function(n, w, h)
+     texio.write_nl('term and log', 'PR ' .. (show or SHOW)(n) .. ' size ' .. w .. ' ' .. h .. '@@')
+     local s = '0 0 1 rg 0 0 ' .. (math.floor(w/65.78176)/1000) .. ' ' .. (math.floor(h/65.78176)/1000) .. ' re f'
+     if mode then pdf.print(mode, s) else pdf.print(s) end
+   end)
+ end
+ CB()
+}
+\input plain
+\mathrulesmode=1
+\directlua{CB('direct')}
+\setbox1\hbox{$a\over b$ $\sqrt{x}$ $\overline{y}$ $\underline{z}$ $\left(a\atop b\right)$}
+\shipout\vbox{\box1}
+\end

@@ -1,0 +1,75 @@
+\catcode`\{=1 \catcode`\}=2 \catcode`\#=6 \catcode`\ =10
+\directlua{tex.enableprimitives('',tex.extraprimitives())}
+\outputmode=1 \pagewidth=100pt \pageheight=60pt \pdfvariable compresslevel=0 \pdfvariable objcompresslevel=0
+\baselineskip=0pt \lineskip=0pt \lineskiplimit=0pt
+\directlua{
+ SP = 65536
+ function SHOW(n) return 'id='..n.id..' sub='..n.subtype..' w='..n.width..' h='..n.height..' d='..n.depth..' dir='..tostring(n.dir) end
+ function SHOWND(n) return 'id='..n.id..' sub='..n.subtype..' w='..n.width..' h='..n.height..' d='..n.depth end
+ function RULE(st, w, h, d, tr)
+   local r = node.new('rule', st) r.width = w r.height = h r.depth = d
+   if tr then r.transform = tr end
+   return r
+ end
+ function LEAD(st, sub)
+   local g = node.new('glue', sub) g.width = 20*SP g.stretch = 0 g.shrink = 0
+   g.leader = RULE(st, 3*SP, 4*SP, 1*SP)
+   return g
+ end
+ function ALL(from)
+   for _, st in ipairs{0, 3, 4, 5, 6, 7, 8, 9} do
+     node.write(RULE(st, 10*SP, 3*SP, SP, st == 9 and 2*SP or nil))
+     if from == 'h' then node.write(node.new('kern', 2*SP)) end
+   end
+ end
+ function CB(mode, show)
+   callback.register('process_rule', function(n, w, h)
+     texio.write_nl('term and log', 'PR ' .. (show or SHOW)(n) .. ' size ' .. w .. ' ' .. h .. '@@')
+     local s = '0 0 1 rg 0 0 ' .. (math.floor(w/65.78176)/1000) .. ' ' .. (math.floor(h/65.78176)/1000) .. ' re f'
+     if mode then pdf.print(mode, s) else pdf.print(s) end
+   end)
+ end
+ CB()
+}
+% every subtype in an hlist and in a vlist: user and math rules are drawn by the callback
+\setbox1\hbox{\directlua{ALL('h')}}
+\shipout\box1
+\setbox1\vbox{\directlua{ALL('v')}}
+\shipout\box1
+% running dimensions are resolved from the box before the callback sees the size
+\setbox1\hbox to 30pt{\directlua{node.write(RULE(4, 5*SP, -1073741824, -1073741824)) node.write(RULE(4, 5*SP, -1073741824, 1*SP)) node.write(RULE(4, 5*SP, 1*SP, -1073741824))} \vrule height 3pt depth 1pt}
+\setbox2\vbox{\hrule height 3pt depth 1pt\directlua{node.write(RULE(4, -1073741824, 3*SP, SP)) node.write(RULE(4, 7*SP, 2*SP, 0))}}
+\shipout\vbox{\box1\box2}
+% shifted boxes, \moveleft
+\setbox1\hbox{\raise 3pt\hbox{\directlua{node.write(RULE(4, 5*SP, 2*SP, SP))}}\lower 2pt\hbox{\vrule width 3pt height 2pt}\directlua{node.write(RULE(4, 5*SP, 2*SP, SP))}}
+\shipout\vbox{\moveright 7pt\box1 \hbox{}\moveleft 3pt\hbox{\directlua{node.write(RULE(4, 5*SP, 2*SP, SP))}}\moveright 20pt\vbox{\directlua{node.write(RULE(4, 5*SP, 2*SP, SP))}}}
+% leaders of a user rule: the leader rule is the node, the size is the leader space
+\directlua{CB(nil, SHOWND)}
+\setbox1\hbox to 60pt{\directlua{node.write(LEAD(4, 100)) node.write(node.new('kern', 2*SP)) node.write(LEAD(5, 101)) node.write(node.new('kern', 2*SP)) node.write(LEAD(9, 102)) node.write(node.new('kern', 2*SP)) node.write(LEAD(3, 103))}}
+\setbox2\vbox to 60pt{\directlua{node.write(LEAD(4, 100)) node.write(LEAD(7, 101)) node.write(LEAD(0, 101))}}
+\shipout\vbox{\box1\box2}
+\directlua{CB()}
+% \hoffset, \voffset
+\hoffset=10pt \voffset=5pt
+\shipout\vbox{\hbox{\directlua{node.write(RULE(4, 5*SP, 2*SP, SP)) node.write(RULE(0, 5.3333*SP, 2.7777*SP, SP))}}\hrule height 0.7pt width 12.3333pt\hbox{\directlua{node.write(RULE(9, 6.777*SP, 2.7777*SP, SP,0.123*SP))}}}
+\hoffset=0pt \voffset=0pt
+% several pdf.print calls per rule, pdf.getpos
+\directlua{callback.register('process_rule', function(n,w,h) pdf.print('1 0 0 rg') pdf.print('origin','0 0 '..(w/65781)..' '..(h/65781)..' re') pdf.print('direct', ' f') pdf.print(12) texio.write_nl('term and log','PR pos '..table.concat({pdf.getpos()}, ',')..'@@') end)}
+\shipout\hbox{\directlua{node.write(RULE(4, 5*SP, 2*SP, SP)) node.write(RULE(4, 5*SP, 2*SP, SP))}\vrule width 3pt height 3pt}
+\directlua{CB()}
+% a callback that prints nothing still gets q Q
+\directlua{callback.register('process_rule', function(n,w,h) end)}
+\shipout\hbox{\directlua{node.write(RULE(4, 10*SP, 3*SP, SP))}\vrule width 3pt height 3pt}
+\directlua{CB()}
+% registered as false: the q Q pair remains, no drawing; no callback: user rules vanish, math rules are normal
+\directlua{callback.register('process_rule', false)}
+\setbox1\hbox{\directlua{ALL('h')}}
+\shipout\box1
+\directlua{callback.register('process_rule', nil)}
+\setbox1\hbox{\directlua{ALL('h')}}
+\shipout\box1
+% the callback is looked up when a page starts being shipped
+\directlua{callback.register('process_rule', function(n,w,h) pdf.print('0 1 0 rg 0 0 5 5 re f') callback.register('process_rule', nil) end)}
+\shipout\hbox{\directlua{node.write(RULE(4, 10*SP, 3*SP, SP)) node.write(RULE(4, 10*SP, 3*SP, SP))}\vrule width 3pt height 3pt}
+\shipout\hbox{\directlua{node.write(RULE(4, 10*SP, 3*SP, SP))}\vrule width 3pt height 3pt}
+\end

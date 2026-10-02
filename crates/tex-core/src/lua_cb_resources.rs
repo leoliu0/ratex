@@ -401,7 +401,7 @@ impl Engine {
                 Some(lossy(&data))
             }
             Got::NotOpened(_) => {
-                self.warning_at(&format!("(file {cur}) (map file): cannot open font map file '{cur}'"), None);
+                self.lua_warning_in(Some(&cur), "map file", &format!("cannot open font map file '{cur}'"));
                 None
             }
             Got::Empty(_) | Got::NotFound => None,

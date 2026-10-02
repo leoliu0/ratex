@@ -132,7 +132,7 @@ impl Engine {
                     [crate::prim::ToksParam::EveryEOF.idx() as usize])
                     .clone();
                 if !eof_toks.is_empty() {
-                    self.push_tokens(eof_toks);
+                    self.push_tokens_named(eof_toks, "<everyeof>");
                 }
                 return None;
             }

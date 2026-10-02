@@ -20,6 +20,9 @@ pub struct LangState {
 pub(crate) struct ParLang {
     pub(crate) start: LangState,
     pub(crate) outer_clang: u8,
+    /// the attribute list at the paragraph start, which the paragraph's
+    /// `local_par` node carries
+    pub(crate) attr: crate::boxes::Attr,
 }
 
 /// tex.web `set_cur_lang` for a `\language` or `\setlanguage` value.
@@ -61,6 +64,7 @@ impl Engine {
         self.par_langs.push(ParLang {
             start,
             outer_clang: self.clang,
+            attr: self.eqtb.cur_attr,
         });
         self.clang = start.lang;
     }
@@ -99,7 +103,7 @@ impl Engine {
         let (lhm, rhm) = self.hyphen_minima();
         self.clang = lang;
         self.cur_list
-            .push(Node::Whatsit(WhatIt::Language { lang, lhm, rhm }));
+            .push(Node::Whatsit(WhatIt::Language { lang, lhm, rhm }, self.eqtb.cur_attr));
     }
 
     /// tex.web §1377 <Implement \setlanguage>.

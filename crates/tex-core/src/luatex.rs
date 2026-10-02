@@ -700,7 +700,7 @@ impl Engine {
             _ => (crate::boxes::BOUNDARY_WORD, 0),
         };
         self.flush_native_text();
-        self.cur_list.push(crate::boxes::Node::Whatsit(crate::boxes::WhatIt::Boundary { kind, value }));
+        self.cur_list.push(crate::boxes::Node::Whatsit(crate::boxes::WhatIt::Boundary { kind, value }, self.eqtb.cur_attr));
     }
 
     /// LuaTeX `\letcharcode <number> <token>`: `\let` the active character.

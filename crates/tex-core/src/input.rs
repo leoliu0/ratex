@@ -782,6 +782,7 @@ impl InputStack {
             cat_regime: -1,
             tracked: false,
         });
+        self.top_file.set(self.stack.len() - 1);
     }
 
     /// Push a file whose lines come from an `open_read_file` object.

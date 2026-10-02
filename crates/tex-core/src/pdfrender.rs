@@ -181,9 +181,9 @@ fn get_vpos(nodes: &[Node], cur_v: i64, sign: u8, order: u8, set: f64) -> i64 {
             Node::Whatsit(
                 crate::boxes::WhatIt::PdfRefXImage { h, d, .. }
                 | crate::boxes::WhatIt::PdfRefXForm { h, d, .. },
-            ) => (*h + *d) as i64,
-            Node::Glue(g) | Node::Leaders { glue: g, .. } => glue_state.advance(g, sign, order, set),
-            Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) | Node::ItalicKern(k) => *k as i64,
+            _) => (*h + *d) as i64,
+            Node::Glue(g, _) | Node::Leaders { glue: g, .. } => glue_state.advance(g, sign, order, set),
+            Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) => *k as i64,
             _ => 0,
         };
     }
@@ -1187,7 +1187,7 @@ impl<'a> RenderCtx<'a> {
                     }
                     cur_y += rh + rd;
                 }
-                Node::Glue(g) => {
+                Node::Glue(g, _) => {
                     cur_y += glue_state.advance(g, sign, order, set);
                 }
                 Node::NativeGlyphRun {
@@ -1201,7 +1201,7 @@ impl<'a> RenderCtx<'a> {
                     self.emit_native_glyph_run_sp(run, *start, *end, x, cur_y + *height as i64);
                     cur_y += (*height + *depth) as i64;
                 }
-                Node::Leaders { glue, kind, body } => {
+                Node::Leaders { glue, kind, body, .. } => {
                     let adv = glue_state.advance(glue, sign, order, set);
                     let (lw, lh, ld) = leader_dims(body);
                     match body {
@@ -1239,30 +1239,30 @@ impl<'a> RenderCtx<'a> {
                     let _ = lw;
                     cur_y += adv;
                 }
-                Node::Kern(k)
-                | Node::ExplicitKern(k)
-                | Node::AccentKern(k) | Node::ItalicKern(k)
+                Node::Kern(k, _)
+                | Node::ExplicitKern(k, _)
+                | Node::AccentKern(k, _) | Node::ItalicKern(k, _)
                 | Node::MarginKern { width: k, .. } => {
                     cur_y += *k as i64;
                 }
-                Node::Penalty(_) | Node::Mark { .. } => {}
+                Node::Penalty(_, _) | Node::Mark { .. } => {}
                 Node::Whatsit(
                     w @ (crate::boxes::WhatIt::PdfRefXImage { h, d, .. }
                     | crate::boxes::WhatIt::PdfRefXForm { h, d, .. }),
-                ) => {
+                _) => {
                     cur_y += *h as i64;
                     self.emit_whatsit_sp(w, x, cur_y);
                     cur_y += *d as i64;
                 }
-                Node::Whatsit(crate::boxes::WhatIt::PdfSnapYComp(ratio)) => {
+                Node::Whatsit(crate::boxes::WhatIt::PdfSnapYComp(ratio), _) => {
                     // pdfTeX `do_snapy_comp`: move by `ratio`/1000 of the gap
                     // the next \pdfsnapy will meet; it makes up the rest
                     let next_snap = list[index + 1..].iter().position(|n| {
-                        matches!(n, Node::Whatsit(crate::boxes::WhatIt::PdfSnapY(_)))
+                        matches!(n, Node::Whatsit(crate::boxes::WhatIt::PdfSnapY(_), _))
                     });
                     if let Some(offset) = next_snap {
                         let q = index + 1 + offset;
-                        let Node::Whatsit(crate::boxes::WhatIt::PdfSnapY(glue)) = &list[q] else {
+                        let Node::Whatsit(crate::boxes::WhatIt::PdfSnapY(glue), _) = &list[q] else {
                             unreachable!()
                         };
                         let tmp_v = get_vpos(&list[index..q], cur_y, sign, order, set);
@@ -1274,14 +1274,14 @@ impl<'a> RenderCtx<'a> {
                         final_skips.push((q, rest));
                     }
                 }
-                Node::Whatsit(crate::boxes::WhatIt::PdfSnapY(glue)) => {
+                Node::Whatsit(crate::boxes::WhatIt::PdfSnapY(glue), _) => {
                     // pdfTeX `do_snapy`
                     cur_y += match final_skips.iter().find(|(at, _)| *at == index) {
                         Some((_, skip)) => *skip,
                         None => gap_amount(glue, cur_y, self.eng.pdf_snap_refpos.1),
                     };
                 }
-                Node::Whatsit(w) => {
+                Node::Whatsit(w, _) => {
                     self.emit_whatsit_sp(w, x, cur_y);
                 }
                 Node::Ins { box_node, .. } => {
@@ -1289,7 +1289,7 @@ impl<'a> RenderCtx<'a> {
                         self.ship_vlist(inner, x, cur_y, 0, 0, 0.0);
                     }
                 }
-                Node::VAdjust(items) | Node::PreAdjust(items) => {
+                Node::VAdjust(items, _) | Node::PreAdjust(items, _) => {
                     self.ship_vlist(items, x, cur_y, 0, 0, 0.0);
                 }
                 _ => {}
@@ -1345,7 +1345,7 @@ impl<'a> RenderCtx<'a> {
     ) -> i64 {
         {
             match n {
-                Node::Char { c, font } | Node::Ligature { c, font, .. }
+                Node::Char { c, font, .. } | Node::Ligature { c, font, .. }
                     if self.eng.eqtb.fonts.get(usize::from(*font)).is_some_and(|f| f.lua.is_some()) =>
                 {
                     cur_x += self.emit_lua_glyph(*font, u32::from(*c), cur_x, y, 0, 0, 0);
@@ -1353,7 +1353,7 @@ impl<'a> RenderCtx<'a> {
                 Node::LuaGlyph(g) => {
                     cur_x += self.emit_lua_glyph(g.font, g.c, cur_x, y, g.xoffset, g.yoffset, g.expansion_factor);
                 }
-                Node::Char { c, font } => {
+                Node::Char { c, font, .. } => {
                     let adv = self.font_char_advance_sp(*font, *c);
                     self.emit_char_sp(*font, *c, cur_x, y, 0);
                     cur_x += adv;
@@ -1375,18 +1375,18 @@ impl<'a> RenderCtx<'a> {
                     self.emit_native_glyph_run_sp(run, *start, *end, cur_x, y);
                     cur_x += *width as i64;
                 }
-                Node::Glue(g) => {
+                Node::Glue(g, _) => {
                     let adv = glue_state.advance(g, sign, order, set);
                     cur_x += adv;
                 }
-                Node::Kern(k)
-                | Node::ExplicitKern(k)
-                | Node::AccentKern(k) | Node::ItalicKern(k)
+                Node::Kern(k, _)
+                | Node::ExplicitKern(k, _)
+                | Node::AccentKern(k, _) | Node::ItalicKern(k, _)
                 | Node::MarginKern { width: k, .. }
-                | Node::MathKern(k, 1..) => {
+                | Node::MathKern(k, 1.., _) => {
                     cur_x += *k as i64;
                 }
-                Node::Penalty(_) => {}
+                Node::Penalty(_, _) => {}
                 Node::Rule {
                     width,
                     height,
@@ -1465,12 +1465,12 @@ impl<'a> RenderCtx<'a> {
                 Node::Disc(dc) => {
                     for nn in &dc.no_break {
                         match nn {
-                            Node::Char { c, font }
+                            Node::Char { c, font, .. }
                                 if self.eng.eqtb.fonts.get(usize::from(*font)).is_some_and(|f| f.lua.is_some()) =>
                             {
                                 cur_x += self.emit_lua_glyph(*font, u32::from(*c), cur_x, y, 0, 0, 0);
                             }
-                            Node::Char { c, font } => {
+                            Node::Char { c, font, .. } => {
                                 let adv = self.font_char_advance_sp(*font, *c);
                                 self.emit_char_sp(*font, *c, cur_x, y, 0);
                                 cur_x += adv;
@@ -1495,7 +1495,7 @@ impl<'a> RenderCtx<'a> {
                         }
                     }
                 }
-                Node::Leaders { glue, kind, body } => {
+                Node::Leaders { glue, kind, body, .. } => {
                     let adv = glue_state.advance(glue, sign, order, set);
                     let (lw, lh, ld) = leader_dims(body);
                     match body {
@@ -1541,7 +1541,7 @@ impl<'a> RenderCtx<'a> {
                     let _ = (lh, ld);
                     cur_x += adv;
                 }
-                Node::Whatsit(w) => {
+                Node::Whatsit(w, _) => {
                     self.emit_whatsit_sp(w, cur_x, y);
                     if let crate::boxes::WhatIt::PdfRefXImage { w, .. }
                     | crate::boxes::WhatIt::PdfRefXForm { w, .. } = w
@@ -2928,7 +2928,7 @@ impl<'a> RenderCtx<'a> {
             } => {
                 let toks = tokens.clone();
                 let src = source.clone();
-                self.eng.fire_write(*stream, &toks, src.as_ref());
+                self.eng.fire_write(*stream, &toks, src.as_deref());
             }
             OpenOut {
                 stream,
@@ -2939,11 +2939,11 @@ impl<'a> RenderCtx<'a> {
                 let p = names.0.clone();
                 let src = source.clone();
                 self.eng
-                    .exec_openout(*stream, &p, *create_parent, src.as_ref());
+                    .exec_openout(*stream, &p, *create_parent, src.as_deref());
             }
             CloseOut { stream, source } => {
                 let src = source.clone();
-                self.eng.exec_closeout(*stream, src.as_ref());
+                self.eng.exec_closeout(*stream, src.as_deref());
             }
             CjkText(text) => {
                 self.cjk_text = *text;

@@ -167,6 +167,9 @@ CRC-32/base-62 job tag, and objects are numbered in creation order from 1.
 The Info dictionary lists Producer, user `\pdfinfo` keys, Creator, dates,
 Trapped and `PTEX.Fullbanner` (`PTEX_Fullbanner` with `\pdfptexuseunderscore`,
 absent under `\pdfsuppressptexinfo`), and `\pdftrailerid` fixes the `/ID`.
+Under LuaTeX the Producer is `LuaTeX-1.24.0` and the banner key is always
+`PTEX.FullBanner` (luatex ignores `\pdfsuppressptexinfo` and the underscore
+spelling).
 `-ini` starts with pdfTeX's `\pdfminorversion=4` and `\pdfcompresslevel=9`.
 There is no DVI writer, so `\pdfoutput` starts at 1 where TeX Live's `-ini`
 starts at 0.

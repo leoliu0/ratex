@@ -898,6 +898,18 @@ impl Engine {
                         Some(Node::LuaGlyph(g)) => {
                             Some(self.lua_char(g.font, g.c).map_or(0, |ci| ci.italic))
                         }
+                        // xetex.web §1113: the italic correction of the last
+                        // glyph of a native word, or of a glyph node
+                        Some(Node::NativeGlyphRun { run, start, end, .. }) => {
+                            let nf = self.eqtb.fonts.get(run.font as usize).and_then(|f| f.native.as_ref());
+                            Some(match (nf, run.glyphs.get(end.saturating_sub(1).max(*start))) {
+                                (Some(nf), Some(g)) => {
+                                    crate::native_font::d2fix(nf.glyph_italic_correction(g.glyph_id) as f64)
+                                        + if run.is_glyph_node() { 0 } else { nf.letter_space }
+                                }
+                                _ => 0,
+                            })
+                        }
                         _ => None,
                     };
                     if let Some(correction) = correction {

@@ -463,7 +463,7 @@ impl Engine {
                 self.lua_nodes.node_mut(n).f[0] = *k;
                 n
             }
-            Node::ItalicKern(k, _) => {
+            Node::ItalicKern(k, _) | Node::SpaceAdjKern(k, _) => {
                 let n = self.lua_new_node(KERN, ITALIC_KERN);
                 self.lua_nodes.node_mut(n).f[0] = *k;
                 n

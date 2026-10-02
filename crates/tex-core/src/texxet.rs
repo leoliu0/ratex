@@ -268,7 +268,7 @@ impl Engine {
                         Node::Ligature { lig_width, .. } => (*lig_width as i64, true),
                         Node::Box { w, .. } => (*w as i64, true),
                         Node::Rule { width, .. } => (*width as i64, true),
-                        Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) => {
+                        Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) | Node::SpaceAdjKern(k, _) => {
                             (*k as i64, false)
                         }
                         Node::MarginKern { width, .. } => (*width as i64, false),
@@ -472,7 +472,7 @@ fn just_copied(n: &Node) -> bool {
             | Node::Kern(_, _)
             | Node::ExKern { .. }
             | Node::ExplicitKern(_, _)
-            | Node::AccentKern(_, _) | Node::ItalicKern(_, _)
+            | Node::AccentKern(_, _) | Node::ItalicKern(_, _) | Node::SpaceAdjKern(_, _)
             | Node::MathKern(..)
             | Node::Glue(_, _)
             | Node::Leaders { .. }

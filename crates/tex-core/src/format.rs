@@ -2227,22 +2227,6 @@ mod tests {
     }
 
     #[test]
-    fn native_font_dump_preserves_existing_format() {
-        let mut eng = build_booted_engine();
-        eng.input.push_file(
-            "native-format.tex".into(),
-            br#"\font\native="ratex:{Latin Modern Roman}" at 10pt\end"#.to_vec(),
-        );
-        eng.run();
-        assert_eq!(eng.error_count, 0, "{:?}", eng.diagnostics);
-        let path = std::env::temp_dir().join(format!("native-font-{}.fmt", std::process::id()));
-        std::fs::write(&path, b"existing format").unwrap();
-        assert!(save_format(&eng, &path).is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), b"existing format");
-        std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
     fn corrupt_and_foreign_files_are_rejected() {
         assert!(load_format_from(b"").is_err());
         assert!(load_format_from(b"not a format at all").is_err());

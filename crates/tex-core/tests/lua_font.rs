@@ -165,3 +165,22 @@ fn font_library_has_luatex_members() {
     );
     assert_eq!(e.error_count, 0, "errors: {:?}\n{}", e.diagnostics, e.term);
 }
+
+/// luatex's Info dictionary (`luatex --ini` with `\pdfvariable suppressptexinfo=1`
+/// and `ptexuseunderscore=1`): /Producer `LuaTeX-1.24.0` and a `PTEX.FullBanner`
+/// that neither of the pdfTeX switches touches.
+#[test]
+fn info_dictionary_names_luatex() {
+    let mut e = run_luatex(
+        r"\pdfvariable suppressptexinfo=1 \pdfvariable ptexuseunderscore=1 \outputmode=1 \shipout\hbox{}",
+    );
+    assert_eq!(e.error_count, 0, "errors: {:?}\n{}", e.diagnostics, e.term);
+    let bytes = tex_core::driver::finish_pdf(&mut e, false).expect("PDF output");
+    let pdf = lopdf::Document::load_mem(&bytes).expect("valid PDF");
+    let info = pdf.trailer.get(b"Info").unwrap().as_reference().unwrap();
+    let info = pdf.get_dictionary(info).unwrap();
+    let text = |key: &[u8]| String::from_utf8_lossy(info.get(key).unwrap().as_str().unwrap()).into_owned();
+    assert_eq!(text(b"Producer"), "LuaTeX-1.24.0");
+    assert!(text(b"PTEX.FullBanner").starts_with("This is LuaTeX, Version 1.24.0"));
+    assert!(info.get(b"PTEX_FullBanner").is_err() && info.get(b"PTEX.Fullbanner").is_err());
+}

@@ -51,17 +51,19 @@ fn collect_specials<'n>(list: &'n [Node], out: &mut Vec<&'n str>) {
 }
 
 /// One `scan_special` of dvi.c restricted to the page geometry.
-fn scan_geometry(text: &str, g: &mut PageGeometry, landscape: &mut bool, paper: &mut (f64, f64)) {
+fn scan_geometry(text: &str, g: &mut PageGeometry, landscape: &mut bool, paper: &mut (f64, f64), opt_flags: &mut Option<i64>) {
     use super::dpx::{c_ident, read_length, skip_blank};
     use crate::dpx_obj::Parser;
     let mut p = Parser::new(text.as_bytes());
     skip_blank(&mut p);
     let mut q = c_ident(&mut p);
     let mut ns_pdf = false;
+    let mut ns_dvipdfmx = false;
     if matches!(q.as_deref(), Some("pdf" | "x" | "dvipdfmx")) {
         skip_blank(&mut p);
         if p.peek() == Some(b':') {
             ns_pdf = q.as_deref() == Some("pdf");
+            ns_dvipdfmx = q.as_deref() == Some("dvipdfmx");
             p.pos += 1;
             skip_blank(&mut p);
             q = c_ident(&mut p);
@@ -70,6 +72,29 @@ fn scan_geometry(text: &str, g: &mut PageGeometry, landscape: &mut bool, paper: 
     skip_blank(&mut p);
     match q.as_deref() {
         Some("landscape") => *landscape = true,
+        // read_config_special: `dvipdfmx:config <option> [<value>]` as a
+        // command line option; only `C <flags>` (strtol, base 0) matters
+        Some("config") if ns_dvipdfmx => {
+            let word = |p: &mut Parser| {
+                let start = p.pos;
+                while p.pos < p.s.len() && !p.s[p.pos].is_ascii_whitespace() {
+                    p.pos += 1;
+                }
+                String::from_utf8_lossy(&p.s[start..p.pos]).into_owned()
+            };
+            if word(&mut p) == "C" {
+                skip_blank(&mut p);
+                let v = word(&mut p);
+                let parsed = match v.strip_prefix("0x").or_else(|| v.strip_prefix("0X")) {
+                    Some(h) => i64::from_str_radix(h, 16).ok(),
+                    None if v.len() > 1 && v.starts_with('0') => i64::from_str_radix(&v[1..], 8).ok(),
+                    None => v.parse().ok(),
+                };
+                if let Some(flags) = parsed {
+                    *opt_flags = Some(flags.abs());
+                }
+            }
+        }
         Some("pagesize") if ns_pdf => {
             while let Some(key) = c_ident(&mut p) {
                 skip_blank(&mut p);
@@ -150,11 +175,17 @@ impl Engine {
         if let Node::Box { list, .. } = page_box {
             collect_specials(list, &mut specials);
         }
+        let mut opt_flags = None;
         for s in specials {
             let text = crate::tex_bytes::text_to_display(s);
-            if text.contains("pagesize") || text.contains("papersize") || text.contains("landscape") {
-                scan_geometry(&text, &mut g, &mut landscape, &mut paper);
+            if text.contains("pagesize") || text.contains("papersize") || text.contains("landscape") || text.contains("config") {
+                scan_geometry(&text, &mut g, &mut landscape, &mut paper, &mut opt_flags);
             }
+        }
+        // pdf_open_document reads the options once, after the first page
+        // was scanned: -C 0x10 keeps unused destinations and their names
+        if let (Some(flags), 0) = (opt_flags, self.pdf_doc.pages.len()) {
+            self.dpx.no_dest_remove = flags & 0x10 != 0;
         }
         self.dpx.paper = Some(paper);
         if landscape != self.dpx.landscape {
@@ -179,16 +210,12 @@ impl Engine {
         self.pdf_page_group_val = 0;
         let h_offset = i64::from(self.eqtb.dim_params[DimParam::HOffset.idx() as usize]);
         let v_offset = i64::from(self.eqtb.dim_params[DimParam::VOffset.idx() as usize]);
-        let x0 = i64::from(bp_to_sp(geo.x_offset)) + h_offset;
-        let y0 = i64::from(bp_to_sp(geo.y_offset)) + v_offset;
-        let mut ctx = self.new_ctx(i64::from(height_sp));
-        ctx.dpx_begin_page();
-        if mag != 1000 {
-            super::push_decimal(&mut ctx.content, i64::from(mag), 3);
-            ctx.content.push_str(" 0 0 ");
-            super::push_decimal(&mut ctx.content, i64::from(mag), 3);
-            ctx.content.push_str(" 0 0 cm\n");
-        }
+        let x0 = h_offset;
+        let y0 = v_offset;
+        // positions are DVI coordinates: x to the right, y = -v (the page
+        // origin is installed by the `cm` that starts the content)
+        let mut ctx = self.new_ctx(0);
+        ctx.dpx_begin_page(f64::from(mag) / 1000.0, geo.x_offset, geo.height - geo.y_offset);
         if let Node::Box { w, h, d, lr, .. } = page_box {
             (ctx.box_w_sp, ctx.box_h_sp, ctx.box_d_sp) = (i64::from(*w), i64::from(*h), i64::from(*d));
             ctx.box_lr = *lr;
@@ -208,6 +235,7 @@ impl Engine {
         let group = ctx.eng.pdf_page_group_val;
         ctx.write_pending_images();
         let image_procset = ctx.image_procset();
+        let ximages = std::mem::take(&mut ctx.ximage_list);
         let resources = ctx.dpx_end_page(geo.width, geo.height);
         let mut resources_extra = Vec::new();
         for (cat, value) in resources {
@@ -238,8 +266,13 @@ impl Engine {
             display_list: Some(std::mem::take(&mut ctx.display_list)),
             procset: true,
             image_procset,
-            xforms: std::mem::take(&mut ctx.xform_list),
-            ximages: std::mem::take(&mut ctx.ximage_list),
+            // an included PDF page is a form XObject: Fm<n> in the resources
+            xforms: {
+                let mut forms = std::mem::take(&mut ctx.xform_list);
+                forms.extend(ximages.iter().copied().filter(|o| ctx.eng.pdf_doc.form_names.contains_key(o)));
+                forms
+            },
+            ximages: ximages.into_iter().filter(|o| !ctx.eng.pdf_doc.form_names.contains_key(o)).collect(),
             group,
             media_box: false,
         }

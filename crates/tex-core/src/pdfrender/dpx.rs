@@ -72,16 +72,52 @@ fn mat_apply(m: &Matrix6, x: f64, y: f64) -> (f64, f64) {
     (x * m[0] + y * m[2] + m[4], x * m[1] + y * m[3] + m[5])
 }
 
-/// `pdf_dev_sprint_matrix` at dvipdfmx's default precision 2.
+/// `p_dtoa` of pdfdev.c: `prec` decimals, trailing zeros removed, and no
+/// integer digit for a value below one (`.3985`).
+pub(super) fn p_dtoa(value: f64, prec: usize) -> String {
+    let scale = 10f64.powi(prec as i32);
+    let neg = value < 0.0;
+    let v = value.abs();
+    let mut int_part = v.trunc();
+    let frac = v - int_part;
+    let mut g = (frac * scale + 0.5) as i64;
+    if g == scale as i64 {
+        g = 0;
+        int_part += 1.0;
+    }
+    let mut out = String::new();
+    if int_part != 0.0 {
+        if neg {
+            out.push('-');
+        }
+        out.push_str(&format!("{int_part:.0}"));
+    } else if g == 0 {
+        return "0".to_string();
+    } else if neg {
+        out.push('-');
+    }
+    if g != 0 {
+        let digits = format!("{g:0prec$}");
+        out.push('.');
+        out.push_str(digits.trim_end_matches('0'));
+    }
+    out
+}
+
+/// Device precision of xdvipdfmx (`pdfdecimaldigits`, 3).
+const PRECISION: usize = 3;
+
+/// `pdf_dev_sprint_matrix`: the linear part with two more digits than the
+/// translation.
 fn fmt_matrix(m: &Matrix6) -> String {
     format!(
         "{} {} {} {} {} {}",
-        fmt_prec(m[0], 4),
-        fmt_prec(m[1], 4),
-        fmt_prec(m[2], 4),
-        fmt_prec(m[3], 4),
-        fmt_prec(m[4], 2),
-        fmt_prec(m[5], 2)
+        p_dtoa(m[0], PRECISION + 2),
+        p_dtoa(m[1], PRECISION + 2),
+        p_dtoa(m[2], PRECISION + 2),
+        p_dtoa(m[3], PRECISION + 2),
+        p_dtoa(m[4], PRECISION),
+        p_dtoa(m[5], PRECISION)
     )
 }
 
@@ -440,6 +476,13 @@ pub(crate) struct Dpx {
     pub catalog: Vec<(String, Obj)>,
     /// `pdf:dest`, `pdf:names Dests`: key bytes and destination array
     pub dests: Vec<(Vec<u8>, Obj)>,
+    /// `pdoc.gotos`: destination names used by links and bookmarks, with the
+    /// hexadecimal name xdvipdfmx renames them to (first use order)
+    pub gotos: Vec<(Vec<u8>, Vec<u8>)>,
+    /// `-C 0x10` (`OPT_PDFDOC_NO_DEST_REMOVE`): keep every destination
+    pub no_dest_remove: bool,
+    /// the next `Im<n>`/`Fm<n>` number (`count` of pdfximage.c, from 0)
+    pub xobj_next: i32,
     /// other `pdf:names` categories
     pub name_trees: BTreeMap<String, Vec<(Vec<u8>, Obj)>>,
     pub outlines: super::dpx_doc::Outlines,
@@ -525,7 +568,7 @@ impl<'a> RenderCtx<'a> {
     }
 
     pub(super) fn dpx_env(&self, cur_h: i64, cur_v: i64) -> Env {
-        Env { x: sp_to_bp(cur_h), y: sp_to_bp(self.page_height_sp - cur_v) }
+        Env { x: sp_to_bp(cur_h), y: -sp_to_bp(cur_v) }
     }
 
     pub(super) fn dpx_gs(&self) -> &Gs {
@@ -575,18 +618,12 @@ impl<'a> RenderCtx<'a> {
     /// `pdf_dev_concat`
     pub(crate) fn dpx_concat(&mut self, m: &Matrix6) {
         let det = m[0] * m[3] - m[1] * m[2];
-        if det.abs() < 1.0e-7 {
+        if det.abs() < 2.5e-16 {
             self.dpx_warn("Transformation matrix not invertible.");
             return;
         }
-        // %g-like check of the identity: nothing to emit
-        if (m[0] - 1.0).abs() < 1e-7
-            && m[1].abs() < 1e-7
-            && m[2].abs() < 1e-7
-            && (m[3] - 1.0).abs() < 1e-7
-            && m[4].abs() < 1e-7
-            && m[5].abs() < 1e-7
-        {
+        const EPS: f64 = 2.5e-16;
+        if (m[0] - 1.0).abs() <= EPS && m[1].abs() <= EPS && m[2].abs() <= EPS && (m[3] - 1.0).abs() <= EPS && m[4].abs() <= EPS && m[5].abs() <= EPS {
             return;
         }
         let text = format!("{} cm", fmt_matrix(m));
@@ -1038,10 +1075,17 @@ impl<'a> RenderCtx<'a> {
         self.dpx_reset_color();
     }
 
-    /// `dvi_set_compensation`: glyph and rule positions inside `bcontent`
-    /// are expressed relative to its origin. Positions here stay absolute
-    /// (the translating `cm` is part of the stream), so the compensation
-    /// needs no state of its own.
+    /// `dvi_set_compensation`: glyph, rule and box positions inside
+    /// `bcontent` are expressed relative to its origin (the `cm` of the
+    /// special moved the origin there). Returns the position (h, v down in
+    /// sp) to subtract from a DVI position, rounded to sp like dvi.c.
+    pub(crate) fn dpx_compensate(&self, h_sp: i64, v_sp: i64) -> (i64, i64) {
+        match self.eng.dpx.coords.last() {
+            Some(&(x, y)) => (h_sp - i64::from(super::bp_to_sp(x)), v_sp + i64::from(super::bp_to_sp(y))),
+            None => (h_sp, v_sp),
+        }
+    }
+
     fn dpx_set_compensation(&mut self) {}
 
     /// `pdf:btrans`
@@ -1066,9 +1110,12 @@ impl<'a> RenderCtx<'a> {
 
     /// `pdf_dev_bop` + `pdf_doc_begin_page` for the page being rendered:
     /// the background of the colour stack is installed.
-    pub(super) fn dpx_begin_page(&mut self) {
+    pub(super) fn dpx_begin_page(&mut self, scale: f64, x_origin: f64, y_origin: f64) {
         self.dpx = DpxPage::new();
         self.eng.dpx.page_no = self.eng.pdf_doc.pages.len() + 1;
+        // pdf_dev_bop: the DVI origin becomes the origin of the page content
+        self.dpx_gsave();
+        self.dpx_concat(&[scale, 0.0, 0.0, scale, x_origin, y_origin]);
         self.dpx_reset_color();
         let bop = self.eng.dpx.bop.clone();
         if !bop.is_empty() {
@@ -1084,19 +1131,21 @@ impl<'a> RenderCtx<'a> {
         if !eop.is_empty() {
             self.dpx_emit(&eop);
         }
-        if self.dpx.gs.len() > 1 {
-            let depth = self.dpx.gs.len() - 1;
-            self.dpx_warn(&format!("Unbalenced q/Q nesting...: {}", depth + 1));
+        let depth = self.dpx.gs.len() - 1;
+        if depth != 1 {
+            self.dpx_warn(&format!("Unbalenced q/Q nesting...: {depth}"));
             self.dpx_grestore_to(0);
+        } else {
+            self.dpx_grestore();
         }
         // doc_fill_page_background: the colour at the end of the page
         if let Some(bg) = self.eng.dpx.bgcolor.clone().filter(|c| !c.is_white()) {
             let mut s = String::from("q");
             s.push_str(&bg.ops(true));
             s.push_str(&format!(
-                " 0 0 {} {} re f Q\n",
-                fmt_prec(width_bp, 2),
-                fmt_prec(height_bp, 2)
+                " q n 0 0 {} {} re f Q Q\n",
+                p_dtoa(width_bp, PRECISION),
+                p_dtoa(height_bp, PRECISION)
             ));
             self.content.insert_str(0, &s);
         }
@@ -1149,6 +1198,38 @@ impl<'a> RenderCtx<'a> {
         });
     }
 
+    /// `pdf_dev_set_rule`: a rule `w_sp` by `h_sp` whose lower left corner is
+    /// at `x_sp`, `v_down_sp` below the origin. Thin rules are strokes.
+    pub(crate) fn dpx_rule(&mut self, x_sp: i64, v_down_sp: i64, w_sp: i64, h_sp: i64) {
+        self.end_text();
+        let (x_sp, v_down_sp) = self.dpx_compensate(x_sp, v_down_sp);
+        let ypos = -v_down_sp;
+        let bp = |sp: i64| p_dtoa(sp_to_bp(sp), PRECISION);
+        let thickness = sp_to_bp(w_sp.min(h_sp));
+        let body = if !(0.0..=5.0).contains(&thickness) {
+            format!("{} {} {} {} re f", bp(x_sp), bp(ypos), bp(w_sp), bp(h_sp))
+        } else if w_sp > h_sp {
+            format!(
+                "{} w {} {} m {} {} l S",
+                p_dtoa(sp_to_bp(h_sp), PRECISION + 1),
+                bp(x_sp),
+                bp(ypos + h_sp / 2),
+                bp(x_sp + w_sp),
+                bp(ypos + h_sp / 2)
+            )
+        } else {
+            format!(
+                "{} w {} {} m {} {} l S",
+                p_dtoa(sp_to_bp(w_sp), PRECISION + 1),
+                bp(x_sp + w_sp / 2),
+                bp(ypos),
+                bp(x_sp + w_sp / 2),
+                bp(ypos + h_sp)
+            )
+        };
+        self.dpx_emit(&format!("q {body} Q"));
+    }
+
     /// `pdf_dev_set_rect` + `pdf_doc_expand_box`: a box with its lower left
     /// reference point (`h_sp`, baseline `v_sp` down from the page top)
     /// `width_sp` wide, `height_sp` above and `depth_sp` below the baseline.
@@ -1156,8 +1237,9 @@ impl<'a> RenderCtx<'a> {
         if !self.dpx_tracking() {
             return;
         }
+        let (h_sp, v_sp) = self.dpx_compensate(h_sp, v_sp);
         let x = sp_to_bp(h_sp);
-        let y = sp_to_bp(self.page_height_sp - v_sp);
+        let y = -sp_to_bp(v_sp);
         let (w, h, d) = (sp_to_bp(width_sp), sp_to_bp(height_sp), sp_to_bp(depth_sp));
         let corners = [(x, y - d), (x + w, y - d), (x + w, y + h), (x, y + h)];
         let mut r = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];

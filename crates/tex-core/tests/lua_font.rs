@@ -56,7 +56,7 @@ fn opentype_font_from_table_is_embedded_with_tounicode() {
  if not file then texio.write_nl("NOFONT") return end
  local id = font.define{
   name="lmroman10-regular", psname="LMRoman10-Regular", fullname="LMRoman10-Regular",
-  filename=file, format="opentype", embedding="subset", encodingbytes=2, type="real",
+  filename=file, format="opentype", embedding="subset", encodingbytes=2, type="real", subfont=1,
   size=655360, designsize=655360,
   characters={
    [32]={index=3,width=332871},
@@ -93,6 +93,8 @@ fn opentype_font_from_table_is_embedded_with_tounicode() {
     assert_eq!(e.error_count, 0, "errors: {:?}\n{}", e.diagnostics, e.term);
     // luatex: WD=47.8592ptHT=7.15999ptFN=lmroman10-regular
     assert!(e.term.contains("WD=47.8592ptHT=7.15999ptFN=lmroman10-regular"), "{}", e.term);
+    // the table's `subfont=1` (what luaotfload supplies) names the first face of a plain font file
+    e.embed_used_fonts().expect("the font program of a Lua font is embedded");
     let text: String = e
         .pdf_doc
         .native_bindings

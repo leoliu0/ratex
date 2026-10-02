@@ -1,0 +1,851 @@
+arraytotable#1	0	
+arraytotable#2	0	
+arraytotable#3	0	
+arraytotable#4	0	
+arraytotable#5	0	
+arraytotable#6	1	{1={1=i3,2=i1},10={1=i6,2=string:48656C6C6F,3=boolean:true},11={1=i6,2=string:UTF,3=boolean:false},12={1=i10,2=UD[pdfe.reference],3=i5},13={1=i7,2=UD[pdfe.array],3=i0},14={1=i8,2=UD[pdfe.dictionary],3=i0},2={1=i3,2=i-2},3={1=i4,2=f3.5},4={1=i4,2=f0.25},5={1=i2,2=boolean:true},6={1=i2,2=boolean:false},7={1=i1},8={1=i5,2=string:Na me},9={1=i6,2=string:a\(b\)c\n\101,3=boolean:false}}
+arraytotable#7	0	
+arraytotable#8	0	
+arraytotable#9	0	
+arraytotable#10	0	
+arraytotable#11	0	
+arraytotable#12	0	
+arraytotable#13	0	
+arraytotable#14	0	
+arraytotable#15	0	
+arraytotable#16	0	
+arraytotable#17	1	{1={1=i3,2=i1},10={1=i6,2=string:48656C6C6F,3=boolean:true},11={1=i6,2=string:UTF,3=boolean:false},12={1=i10,2=UD[pdfe.reference],3=i5},13={1=i7,2=UD[pdfe.array],3=i0},14={1=i8,2=UD[pdfe.dictionary],3=i0},2={1=i3,2=i-2},3={1=i4,2=f3.5},4={1=i4,2=f0.25},5={1=i2,2=boolean:true},6={1=i2,2=boolean:false},7={1=i1},8={1=i5,2=string:Na me},9={1=i6,2=string:a\(b\)c\n\101,3=boolean:false}}
+arraytotable#18	1	{1={1=i3,2=i1},10={1=i6,2=string:48656C6C6F,3=boolean:true},11={1=i6,2=string:UTF,3=boolean:false},12={1=i10,2=UD[pdfe.reference],3=i5},13={1=i7,2=UD[pdfe.array],3=i0},14={1=i8,2=UD[pdfe.dictionary],3=i0},2={1=i3,2=i-2},3={1=i4,2=f3.5},4={1=i4,2=f0.25},5={1=i2,2=boolean:true},6={1=i2,2=boolean:false},7={1=i1},8={1=i5,2=string:Na me},9={1=i6,2=string:a\(b\)c\n\101,3=boolean:false}}
+arraytotable#19	1	{1={1=i3,2=i1},10={1=i6,2=string:48656C6C6F,3=boolean:true},11={1=i6,2=string:UTF,3=boolean:false},12={1=i10,2=UD[pdfe.reference],3=i5},13={1=i7,2=UD[pdfe.array],3=i0},14={1=i8,2=UD[pdfe.dictionary],3=i0},2={1=i3,2=i-2},3={1=i4,2=f3.5},4={1=i4,2=f0.25},5={1=i2,2=boolean:true},6={1=i2,2=boolean:false},7={1=i1},8={1=i5,2=string:Na me},9={1=i6,2=string:a\(b\)c\n\101,3=boolean:false}}
+arraytotable#20	1	{1={1=i3,2=i1},10={1=i6,2=string:48656C6C6F,3=boolean:true},11={1=i6,2=string:UTF,3=boolean:false},12={1=i10,2=UD[pdfe.reference],3=i5},13={1=i7,2=UD[pdfe.array],3=i0},14={1=i8,2=UD[pdfe.dictionary],3=i0},2={1=i3,2=i-2},3={1=i4,2=f3.5},4={1=i4,2=f0.25},5={1=i2,2=boolean:true},6={1=i2,2=boolean:false},7={1=i1},8={1=i5,2=string:Na me},9={1=i6,2=string:a\(b\)c\n\101,3=boolean:false}}
+arraytotable#21	0	
+arraytotable#22	0	
+arraytotable#23	0	
+arraytotable#24	0	
+arraytotable#25	1	{1={1=i3,2=i1},10={1=i6,2=string:48656C6C6F,3=boolean:true},11={1=i6,2=string:UTF,3=boolean:false},12={1=i10,2=UD[pdfe.reference],3=i5},13={1=i7,2=UD[pdfe.array],3=i0},14={1=i8,2=UD[pdfe.dictionary],3=i0},2={1=i3,2=i-2},3={1=i4,2=f3.5},4={1=i4,2=f0.25},5={1=i2,2=boolean:true},6={1=i2,2=boolean:false},7={1=i1},8={1=i5,2=string:Na me},9={1=i6,2=string:a\(b\)c\n\101,3=boolean:false}}
+arraytotable#26	1	{1={1=i3,2=i1},10={1=i6,2=string:48656C6C6F,3=boolean:true},11={1=i6,2=string:UTF,3=boolean:false},12={1=i10,2=UD[pdfe.reference],3=i5},13={1=i7,2=UD[pdfe.array],3=i0},14={1=i8,2=UD[pdfe.dictionary],3=i0},2={1=i3,2=i-2},3={1=i4,2=f3.5},4={1=i4,2=f0.25},5={1=i2,2=boolean:true},6={1=i2,2=boolean:false},7={1=i1},8={1=i5,2=string:Na me},9={1=i6,2=string:a\(b\)c\n\101,3=boolean:false}}
+arraytotable#27	1	{1={1=i3,2=i1},10={1=i6,2=string:48656C6C6F,3=boolean:true},11={1=i6,2=string:UTF,3=boolean:false},12={1=i10,2=UD[pdfe.reference],3=i5},13={1=i7,2=UD[pdfe.array],3=i0},14={1=i8,2=UD[pdfe.dictionary],3=i0},2={1=i3,2=i-2},3={1=i4,2=f3.5},4={1=i4,2=f0.25},5={1=i2,2=boolean:true},6={1=i2,2=boolean:false},7={1=i1},8={1=i5,2=string:Na me},9={1=i6,2=string:a\(b\)c\n\101,3=boolean:false}}
+closestream#1	0	
+closestream#2	0	
+closestream#3	0	
+closestream#4	0	
+closestream#5	0	
+closestream#6	0	
+closestream#7	0	
+closestream#8	0	
+closestream#9	0	
+closestream#10	0	
+closestream#11	0	
+closestream#12	0	
+closestream#13	0	
+closestream#14	0	
+closestream#15	0	
+closestream#16	0	
+closestream#17	0	
+closestream#18	0	
+closestream#19	0	
+closestream#20	0	
+closestream#21	0	
+closestream#22	0	
+closestream#23	0	
+closestream#24	0	
+closestream#25	0	
+closestream#26	0	
+closestream#27	0	
+dictionarytotable#1	0	
+dictionarytotable#2	0	
+dictionarytotable#3	0	
+dictionarytotable#4	0	
+dictionarytotable#5	1	{Contents={1=i10,2=UD[pdfe.reference],3=i6},CropBox={1=i7,2=UD[pdfe.array],3=i4},Parent={1=i10,2=UD[pdfe.reference],3=i2},Resources={1=i8,2=UD[pdfe.dictionary],3=i1},Type={1=i5,2=string:Page}}
+dictionarytotable#6	0	
+dictionarytotable#7	0	
+dictionarytotable#8	0	
+dictionarytotable#9	0	
+dictionarytotable#10	0	
+dictionarytotable#11	0	
+dictionarytotable#12	1	{Contents={1=i10,2=UD[pdfe.reference],3=i6},CropBox={1=i7,2=UD[pdfe.array],3=i4},Parent={1=i10,2=UD[pdfe.reference],3=i2},Resources={1=i8,2=UD[pdfe.dictionary],3=i1},Type={1=i5,2=string:Page}}
+dictionarytotable#13	1	{Contents={1=i10,2=UD[pdfe.reference],3=i6},CropBox={1=i7,2=UD[pdfe.array],3=i4},Parent={1=i10,2=UD[pdfe.reference],3=i2},Resources={1=i8,2=UD[pdfe.dictionary],3=i1},Type=string:Page}
+dictionarytotable#14	1	{Contents={1=i10,2=UD[pdfe.reference],3=i6},CropBox={1=i7,2=UD[pdfe.array],3=i4},Parent={1=i10,2=UD[pdfe.reference],3=i2},Resources={1=i8,2=UD[pdfe.dictionary],3=i1},Type={1=i5,2=string:Page}}
+dictionarytotable#15	1	{Contents={1=i10,2=UD[pdfe.reference],3=i6},CropBox={1=i7,2=UD[pdfe.array],3=i4},Parent={1=i10,2=UD[pdfe.reference],3=i2},Resources={1=i8,2=UD[pdfe.dictionary],3=i1},Type={1=i5,2=string:Page}}
+dictionarytotable#16	1	{Contents={1=i10,2=UD[pdfe.reference],3=i6},CropBox={1=i7,2=UD[pdfe.array],3=i4},Parent={1=i10,2=UD[pdfe.reference],3=i2},Resources={1=i8,2=UD[pdfe.dictionary],3=i1},Type={1=i5,2=string:Page}}
+dictionarytotable#17	0	
+dictionarytotable#18	0	
+dictionarytotable#19	0	
+dictionarytotable#20	0	
+dictionarytotable#21	0	
+dictionarytotable#22	0	
+dictionarytotable#23	1	{Contents={1=i10,2=UD[pdfe.reference],3=i6},CropBox={1=i7,2=UD[pdfe.array],3=i4},Parent={1=i10,2=UD[pdfe.reference],3=i2},Resources={1=i8,2=UD[pdfe.dictionary],3=i1},Type={1=i5,2=string:Page}}
+dictionarytotable#24	1	{Contents={1=i10,2=UD[pdfe.reference],3=i6},CropBox={1=i7,2=UD[pdfe.array],3=i4},Parent={1=i10,2=UD[pdfe.reference],3=i2},Resources={1=i8,2=UD[pdfe.dictionary],3=i1},Type={1=i5,2=string:Page}}
+dictionarytotable#25	0	
+dictionarytotable#26	0	
+dictionarytotable#27	0	
+getarray#1	0	
+getarray#2	0	
+getarray#3	0	
+getarray#4	0	
+getarray#5	0	
+getarray#6	0	
+getarray#7	0	
+getarray#8	0	
+getarray#9	0	
+getarray#10	0	
+getarray#11	0	
+getarray#12	0	
+getarray#13	0	
+getarray#14	0	
+getarray#15	0	
+getarray#16	0	
+getarray#17	0	
+getarray#18	0	
+getarray#19	0	
+getarray#20	0	
+getarray#21	0	
+getarray#22	0	
+getarray#23	0	
+getarray#24	0	
+getarray#25	0	
+getarray#26	0	
+getarray#27	0	
+getboolean#1	0	
+getboolean#2	0	
+getboolean#3	0	
+getboolean#4	0	
+getboolean#5	0	
+getboolean#6	0	
+getboolean#7	0	
+getboolean#8	0	
+getboolean#9	0	
+getboolean#10	0	
+getboolean#11	0	
+getboolean#12	0	
+getboolean#13	0	
+getboolean#14	0	
+getboolean#15	0	
+getboolean#16	0	
+getboolean#17	0	
+getboolean#18	0	
+getboolean#19	0	
+getboolean#20	0	
+getboolean#21	0	
+getboolean#22	0	
+getboolean#23	0	
+getboolean#24	0	
+getboolean#25	0	
+getboolean#26	0	
+getboolean#27	0	
+getbox#1	0	
+getbox#2	0	
+getbox#3	0	
+getbox#4	0	
+getbox#5	0	
+getbox#6	0	
+getbox#7	0	
+getbox#8	0	
+getbox#9	0	
+getbox#10	0	
+getbox#11	0	
+getbox#12	0	
+getbox#13	0	
+getbox#14	0	
+getbox#15	0	
+getbox#16	0	
+getbox#17	0	
+getbox#18	0	
+getbox#19	0	
+getbox#20	0	
+getbox#21	0	
+getbox#22	0	
+getbox#23	0	
+getbox#24	0	
+getbox#25	0	
+getbox#26	0	
+getbox#27	0	
+getcatalog#1	0	
+getcatalog#2	0	
+getcatalog#3	0	
+getcatalog#4	1	UD[pdfe.dictionary]
+getcatalog#5	0	
+getcatalog#6	0	
+getcatalog#7	0	
+getcatalog#8	0	
+getcatalog#9	0	
+getcatalog#10	1	UD[pdfe.dictionary]
+getcatalog#11	1	UD[pdfe.dictionary]
+getcatalog#12	0	
+getcatalog#13	0	
+getcatalog#14	0	
+getcatalog#15	0	
+getcatalog#16	0	
+getcatalog#17	0	
+getcatalog#18	0	
+getcatalog#19	0	
+getcatalog#20	0	
+getcatalog#21	0	
+getcatalog#22	0	
+getcatalog#23	0	
+getcatalog#24	0	
+getcatalog#25	0	
+getcatalog#26	0	
+getcatalog#27	0	
+getdictionary#1	0	
+getdictionary#2	0	
+getdictionary#3	0	
+getdictionary#4	0	
+getdictionary#5	0	
+getdictionary#6	0	
+getdictionary#7	0	
+getdictionary#8	0	
+getdictionary#9	0	
+getdictionary#10	0	
+getdictionary#11	0	
+getdictionary#12	0	
+getdictionary#13	0	
+getdictionary#14	0	
+getdictionary#15	0	
+getdictionary#16	0	
+getdictionary#17	0	
+getdictionary#18	0	
+getdictionary#19	0	
+getdictionary#20	0	
+getdictionary#21	1	UD[pdfe.dictionary]
+getdictionary#22	0	
+getdictionary#23	0	
+getdictionary#24	0	
+getdictionary#25	0	
+getdictionary#26	0	
+getdictionary#27	0	
+getfromarray#1	0	
+getfromarray#2	0	
+getfromarray#3	0	
+getfromarray#4	0	
+getfromarray#5	0	
+getfromarray#6	ERR	bad argument #2 to 'pdfe.getfromarray' (number expected, got nil)
+getfromarray#7	0	
+getfromarray#8	0	
+getfromarray#9	0	
+getfromarray#10	0	
+getfromarray#11	0	
+getfromarray#12	0	
+getfromarray#13	0	
+getfromarray#14	0	
+getfromarray#15	0	
+getfromarray#16	0	
+getfromarray#17	ERR	bad argument #2 to 'pdfe.getfromarray' (number expected, got string)
+getfromarray#18	0	
+getfromarray#19	0	
+getfromarray#20	ERR	bad argument #2 to 'pdfe.getfromarray' (number has no integer representation)
+getfromarray#21	0	
+getfromarray#22	0	
+getfromarray#23	0	
+getfromarray#24	0	
+getfromarray#25	2	i5 | string:Na me
+getfromarray#26	2	i5 | string:Na me
+getfromarray#27	2	i5 | string:Na me
+getfromdictionary#1	0	
+getfromdictionary#2	0	
+getfromdictionary#3	0	
+getfromdictionary#4	0	
+getfromdictionary#5	ERR	bad argument #2 to 'pdfe.getfromdictionary' (number expected, got nil)
+getfromdictionary#6	0	
+getfromdictionary#7	0	
+getfromdictionary#8	0	
+getfromdictionary#9	0	
+getfromdictionary#10	0	
+getfromdictionary#11	0	
+getfromdictionary#12	ERR	bad argument #2 to 'pdfe.getfromdictionary' (number expected, got nil)
+getfromdictionary#13	ERR	bad argument #2 to 'pdfe.getfromdictionary' (number expected, got boolean)
+getfromdictionary#14	ERR	bad argument #2 to 'pdfe.getfromdictionary' (number has no integer representation)
+getfromdictionary#15	2	i5 | string:Page
+getfromdictionary#16	ERR	bad argument #2 to 'pdfe.getfromdictionary' (number expected, got table)
+getfromdictionary#17	0	
+getfromdictionary#18	0	
+getfromdictionary#19	0	
+getfromdictionary#20	0	
+getfromdictionary#21	0	
+getfromdictionary#22	0	
+getfromdictionary#23	2	i5 | string:Page
+getfromdictionary#24	2	i5 | string:Page
+getfromdictionary#25	0	
+getfromdictionary#26	0	
+getfromdictionary#27	0	
+getfromreference#1	0	
+getfromreference#2	0	
+getfromreference#3	0	
+getfromreference#4	0	
+getfromreference#5	0	
+getfromreference#6	0	
+getfromreference#7	0	
+getfromreference#8	3	i8 | UD[pdfe.dictionary] | i4
+getfromreference#9	0	
+getfromreference#10	0	
+getfromreference#11	0	
+getfromreference#12	0	
+getfromreference#13	0	
+getfromreference#14	0	
+getfromreference#15	0	
+getfromreference#16	0	
+getfromreference#17	0	
+getfromreference#18	0	
+getfromreference#19	0	
+getfromreference#20	0	
+getfromreference#21	3	i8 | UD[pdfe.dictionary] | i4
+getfromreference#22	3	i8 | UD[pdfe.dictionary] | i4
+getfromreference#23	0	
+getfromreference#24	0	
+getfromreference#25	0	
+getfromreference#26	0	
+getfromreference#27	0	
+getinfo#1	0	
+getinfo#2	0	
+getinfo#3	0	
+getinfo#4	1	UD[pdfe.dictionary]
+getinfo#5	0	
+getinfo#6	0	
+getinfo#7	0	
+getinfo#8	0	
+getinfo#9	0	
+getinfo#10	1	UD[pdfe.dictionary]
+getinfo#11	1	UD[pdfe.dictionary]
+getinfo#12	0	
+getinfo#13	0	
+getinfo#14	0	
+getinfo#15	0	
+getinfo#16	0	
+getinfo#17	0	
+getinfo#18	0	
+getinfo#19	0	
+getinfo#20	0	
+getinfo#21	0	
+getinfo#22	0	
+getinfo#23	0	
+getinfo#24	0	
+getinfo#25	0	
+getinfo#26	0	
+getinfo#27	0	
+getinteger#1	0	
+getinteger#2	0	
+getinteger#3	0	
+getinteger#4	0	
+getinteger#5	0	
+getinteger#6	0	
+getinteger#7	0	
+getinteger#8	0	
+getinteger#9	0	
+getinteger#10	0	
+getinteger#11	0	
+getinteger#12	0	
+getinteger#13	0	
+getinteger#14	0	
+getinteger#15	0	
+getinteger#16	0	
+getinteger#17	0	
+getinteger#18	1	i1
+getinteger#19	0	
+getinteger#20	1	i1
+getinteger#21	0	
+getinteger#22	0	
+getinteger#23	0	
+getinteger#24	0	
+getinteger#25	0	
+getinteger#26	0	
+getinteger#27	0	
+getname#1	0	
+getname#2	0	
+getname#3	0	
+getname#4	0	
+getname#5	0	
+getname#6	0	
+getname#7	0	
+getname#8	0	
+getname#9	0	
+getname#10	0	
+getname#11	0	
+getname#12	0	
+getname#13	0	
+getname#14	0	
+getname#15	1	string:Page
+getname#16	0	
+getname#17	0	
+getname#18	0	
+getname#19	0	
+getname#20	0	
+getname#21	0	
+getname#22	0	
+getname#23	1	string:Page
+getname#24	1	string:Page
+getname#25	0	
+getname#26	0	
+getname#27	0	
+getnofobjects#1	0	
+getnofobjects#2	0	
+getnofobjects#3	0	
+getnofobjects#4	1	i8
+getnofobjects#5	0	
+getnofobjects#6	0	
+getnofobjects#7	0	
+getnofobjects#8	0	
+getnofobjects#9	0	
+getnofobjects#10	1	i8
+getnofobjects#11	1	i8
+getnofobjects#12	0	
+getnofobjects#13	0	
+getnofobjects#14	0	
+getnofobjects#15	0	
+getnofobjects#16	0	
+getnofobjects#17	0	
+getnofobjects#18	0	
+getnofobjects#19	0	
+getnofobjects#20	0	
+getnofobjects#21	0	
+getnofobjects#22	0	
+getnofobjects#23	0	
+getnofobjects#24	0	
+getnofobjects#25	0	
+getnofobjects#26	0	
+getnofobjects#27	0	
+getnofpages#1	0	
+getnofpages#2	0	
+getnofpages#3	0	
+getnofpages#4	1	i2
+getnofpages#5	0	
+getnofpages#6	0	
+getnofpages#7	0	
+getnofpages#8	0	
+getnofpages#9	0	
+getnofpages#10	1	i2
+getnofpages#11	1	i2
+getnofpages#12	0	
+getnofpages#13	0	
+getnofpages#14	0	
+getnofpages#15	0	
+getnofpages#16	0	
+getnofpages#17	0	
+getnofpages#18	0	
+getnofpages#19	0	
+getnofpages#20	0	
+getnofpages#21	0	
+getnofpages#22	0	
+getnofpages#23	0	
+getnofpages#24	0	
+getnofpages#25	0	
+getnofpages#26	0	
+getnofpages#27	0	
+getnumber#1	0	
+getnumber#2	0	
+getnumber#3	0	
+getnumber#4	0	
+getnumber#5	0	
+getnumber#6	0	
+getnumber#7	0	
+getnumber#8	0	
+getnumber#9	0	
+getnumber#10	0	
+getnumber#11	0	
+getnumber#12	0	
+getnumber#13	0	
+getnumber#14	0	
+getnumber#15	0	
+getnumber#16	0	
+getnumber#17	0	
+getnumber#18	1	f1
+getnumber#19	0	
+getnumber#20	1	f1
+getnumber#21	0	
+getnumber#22	0	
+getnumber#23	0	
+getnumber#24	0	
+getnumber#25	0	
+getnumber#26	0	
+getnumber#27	0	
+getpage#1	0	
+getpage#2	0	
+getpage#3	0	
+getpage#4	ERR	bad argument #2 to 'pdfe.getpage' (number expected, got nil)
+getpage#5	0	
+getpage#6	0	
+getpage#7	0	
+getpage#8	0	
+getpage#9	0	
+getpage#10	1	UD[pdfe.dictionary]
+getpage#11	ERR	bad argument #2 to 'pdfe.getpage' (number expected, got string)
+getpage#12	0	
+getpage#13	0	
+getpage#14	0	
+getpage#15	0	
+getpage#16	0	
+getpage#17	0	
+getpage#18	0	
+getpage#19	0	
+getpage#20	0	
+getpage#21	0	
+getpage#22	0	
+getpage#23	0	
+getpage#24	0	
+getpage#25	0	
+getpage#26	0	
+getpage#27	0	
+getpages#1	0	
+getpages#2	0	
+getpages#3	0	
+getpages#4	1	{1=UD[pdfe.dictionary],2=UD[pdfe.dictionary]}
+getpages#5	0	
+getpages#6	0	
+getpages#7	0	
+getpages#8	0	
+getpages#9	0	
+getpages#10	1	{1=UD[pdfe.dictionary],2=UD[pdfe.dictionary]}
+getpages#11	1	{1=UD[pdfe.dictionary],2=UD[pdfe.dictionary]}
+getpages#12	0	
+getpages#13	0	
+getpages#14	0	
+getpages#15	0	
+getpages#16	0	
+getpages#17	0	
+getpages#18	0	
+getpages#19	0	
+getpages#20	0	
+getpages#21	0	
+getpages#22	0	
+getpages#23	0	
+getpages#24	0	
+getpages#25	0	
+getpages#26	0	
+getpages#27	0	
+getsize#1	0	
+getsize#2	0	
+getsize#3	0	
+getsize#4	1	i1178
+getsize#5	0	
+getsize#6	0	
+getsize#7	0	
+getsize#8	0	
+getsize#9	0	
+getsize#10	1	i1178
+getsize#11	1	i1178
+getsize#12	0	
+getsize#13	0	
+getsize#14	0	
+getsize#15	0	
+getsize#16	0	
+getsize#17	0	
+getsize#18	0	
+getsize#19	0	
+getsize#20	0	
+getsize#21	0	
+getsize#22	0	
+getsize#23	0	
+getsize#24	0	
+getsize#25	0	
+getsize#26	0	
+getsize#27	0	
+getstatus#1	0	
+getstatus#2	0	
+getstatus#3	0	
+getstatus#4	1	i0
+getstatus#5	0	
+getstatus#6	0	
+getstatus#7	0	
+getstatus#8	0	
+getstatus#9	0	
+getstatus#10	1	i0
+getstatus#11	1	i0
+getstatus#12	0	
+getstatus#13	0	
+getstatus#14	0	
+getstatus#15	0	
+getstatus#16	0	
+getstatus#17	0	
+getstatus#18	0	
+getstatus#19	0	
+getstatus#20	0	
+getstatus#21	0	
+getstatus#22	0	
+getstatus#23	0	
+getstatus#24	0	
+getstatus#25	0	
+getstatus#26	0	
+getstatus#27	0	
+getstream#1	0	
+getstream#2	0	
+getstream#3	0	
+getstream#4	0	
+getstream#5	0	
+getstream#6	0	
+getstream#7	0	
+getstream#8	0	
+getstream#9	0	
+getstream#10	0	
+getstream#11	0	
+getstream#12	0	
+getstream#13	0	
+getstream#14	0	
+getstream#15	0	
+getstream#16	0	
+getstream#17	0	
+getstream#18	0	
+getstream#19	0	
+getstream#20	0	
+getstream#21	0	
+getstream#22	0	
+getstream#23	0	
+getstream#24	0	
+getstream#25	0	
+getstream#26	0	
+getstream#27	0	
+getstring#1	0	
+getstring#2	0	
+getstring#3	0	
+getstring#4	0	
+getstring#5	0	
+getstring#6	0	
+getstring#7	0	
+getstring#8	0	
+getstring#9	0	
+getstring#10	0	
+getstring#11	0	
+getstring#12	0	
+getstring#13	0	
+getstring#14	0	
+getstring#15	0	
+getstring#16	0	
+getstring#17	0	
+getstring#18	0	
+getstring#19	0	
+getstring#20	0	
+getstring#21	0	
+getstring#22	0	
+getstring#23	0	
+getstring#24	0	
+getstring#25	1	string:a(b)c
+A
+getstring#26	2	string:a\(b\)c\n\101 | boolean:false
+getstring#27	1	string:a\(b\)c\n\101
+gettrailer#1	0	
+gettrailer#2	0	
+gettrailer#3	0	
+gettrailer#4	1	UD[pdfe.dictionary]
+gettrailer#5	0	
+gettrailer#6	0	
+gettrailer#7	0	
+gettrailer#8	0	
+gettrailer#9	0	
+gettrailer#10	1	UD[pdfe.dictionary]
+gettrailer#11	1	UD[pdfe.dictionary]
+gettrailer#12	0	
+gettrailer#13	0	
+gettrailer#14	0	
+gettrailer#15	0	
+gettrailer#16	0	
+gettrailer#17	0	
+gettrailer#18	0	
+gettrailer#19	0	
+gettrailer#20	0	
+gettrailer#21	0	
+gettrailer#22	0	
+gettrailer#23	0	
+gettrailer#24	0	
+gettrailer#25	0	
+gettrailer#26	0	
+gettrailer#27	0	
+getversion#1	0	
+getversion#2	0	
+getversion#3	0	
+getversion#4	2	i1 | i5
+getversion#5	0	
+getversion#6	0	
+getversion#7	0	
+getversion#8	0	
+getversion#9	0	
+getversion#10	2	i1 | i5
+getversion#11	2	i1 | i5
+getversion#12	0	
+getversion#13	0	
+getversion#14	0	
+getversion#15	0	
+getversion#16	0	
+getversion#17	0	
+getversion#18	0	
+getversion#19	0	
+getversion#20	0	
+getversion#21	0	
+getversion#22	0	
+getversion#23	0	
+getversion#24	0	
+getversion#25	0	
+getversion#26	0	
+getversion#27	0	
+openstream#1	0	
+openstream#2	0	
+openstream#3	0	
+openstream#4	0	
+openstream#5	0	
+openstream#6	0	
+openstream#7	0	
+openstream#8	0	
+openstream#9	0	
+openstream#10	0	
+openstream#11	0	
+openstream#12	0	
+openstream#13	0	
+openstream#14	0	
+openstream#15	0	
+openstream#16	0	
+openstream#17	0	
+openstream#18	0	
+openstream#19	0	
+openstream#20	0	
+openstream#21	0	
+openstream#22	0	
+openstream#23	0	
+openstream#24	0	
+openstream#25	0	
+openstream#26	0	
+openstream#27	0	
+pagestotable#1	0	
+pagestotable#2	0	
+pagestotable#3	0	
+pagestotable#4	1	{1={1=UD[pdfe.dictionary],2=i5,3=i3},2={1=UD[pdfe.dictionary],2=i11,3=i4}}
+pagestotable#5	0	
+pagestotable#6	0	
+pagestotable#7	0	
+pagestotable#8	0	
+pagestotable#9	0	
+pagestotable#10	1	{1={1=UD[pdfe.dictionary],2=i5,3=i3},2={1=UD[pdfe.dictionary],2=i11,3=i4}}
+pagestotable#11	1	{1={1=UD[pdfe.dictionary],2=i5,3=i3},2={1=UD[pdfe.dictionary],2=i11,3=i4}}
+pagestotable#12	0	
+pagestotable#13	0	
+pagestotable#14	0	
+pagestotable#15	0	
+pagestotable#16	0	
+pagestotable#17	0	
+pagestotable#18	0	
+pagestotable#19	0	
+pagestotable#20	0	
+pagestotable#21	0	
+pagestotable#22	0	
+pagestotable#23	0	
+pagestotable#24	0	
+pagestotable#25	0	
+pagestotable#26	0	
+pagestotable#27	0	
+readfromstream#1	0	
+readfromstream#2	0	
+readfromstream#3	0	
+readfromstream#4	0	
+readfromstream#5	0	
+readfromstream#6	0	
+readfromstream#7	0	
+readfromstream#8	0	
+readfromstream#9	0	
+readfromstream#10	0	
+readfromstream#11	0	
+readfromstream#12	0	
+readfromstream#13	0	
+readfromstream#14	0	
+readfromstream#15	0	
+readfromstream#16	0	
+readfromstream#17	0	
+readfromstream#18	0	
+readfromstream#19	0	
+readfromstream#20	0	
+readfromstream#21	0	
+readfromstream#22	0	
+readfromstream#23	0	
+readfromstream#24	0	
+readfromstream#25	0	
+readfromstream#26	0	
+readfromstream#27	0	
+readwholestream#1	0	
+readwholestream#2	0	
+readwholestream#3	0	
+readwholestream#4	0	
+readwholestream#5	0	
+readwholestream#6	0	
+readwholestream#7	0	
+readwholestream#8	0	
+readwholestream#9	0	
+readwholestream#10	0	
+readwholestream#11	0	
+readwholestream#12	0	
+readwholestream#13	0	
+readwholestream#14	0	
+readwholestream#15	0	
+readwholestream#16	0	
+readwholestream#17	0	
+readwholestream#18	0	
+readwholestream#19	0	
+readwholestream#20	0	
+readwholestream#21	0	
+readwholestream#22	0	
+readwholestream#23	0	
+readwholestream#24	0	
+readwholestream#25	0	
+readwholestream#26	0	
+readwholestream#27	0	
+type#1	0	
+type#2	0	
+type#3	0	
+type#4	1	string:pdfe
+type#5	1	string:pdfe.dictionary
+type#6	1	string:pdfe.array
+type#7	0	
+type#8	1	string:pdfe.reference
+type#9	0	
+type#10	1	string:pdfe
+type#11	1	string:pdfe
+type#12	1	string:pdfe.dictionary
+type#13	1	string:pdfe.dictionary
+type#14	1	string:pdfe.dictionary
+type#15	1	string:pdfe.dictionary
+type#16	1	string:pdfe.dictionary
+type#17	1	string:pdfe.array
+type#18	1	string:pdfe.array
+type#19	1	string:pdfe.array
+type#20	1	string:pdfe.array
+type#21	1	string:pdfe.reference
+type#22	1	string:pdfe.reference
+type#23	1	string:pdfe.dictionary
+type#24	1	string:pdfe.dictionary
+type#25	1	string:pdfe.array
+type#26	1	string:pdfe.array
+type#27	1	string:pdfe.array
+open#1	ERR	bad argument #1 to 'open' (string expected, got no value)
+open#2	1	nil:nil
+open#3	1	i1178
+open#4	1	nil:nil
+open#5	1	nil:nil
+open#6	1	i1178
+new#1	ERR	bad <pdfe> argument: string or lightuserdata expected
+new#2	ERR	bad argument #2 to 'new' (number expected, got nil)
+new#3	ERR	bad argument #3 to 'new' (string expected, got nil)
+new#4	ERR	bad argument #3 to 'new' (string expected, got nil)
+new#5	ERR	bad argument #3 to 'new' (string expected, got nil)
+new#6	ERR	bad argument #3 to 'new' (string expected, got nil)
+new#7	ERR	bad argument #2 to 'new' (number expected, got string)
+new#8	ERR	bad argument #2 to 'new' (number has no integer representation)
+new#9	1	string:data:application/pdf,id19066af1c6362dc19
+new#10	1	string:data:application/pdf,id19066af1c6362dc19
+new#11	1	string:data:application/pdf,9066af1c6362dc19
+new#12	ERR	bad <pdfe> argument: string or lightuserdata expected
+new#13	ERR	bad <pdfe> argument: string or lightuserdata expected
+getfromstream#1	0	
+getfromstream#2	0	
+getfromstream#3	0	
+getfromstream#4	0	
+getfromstream#5	0	
+getfromstream#6	0	
+getfromstream#7	0	
+getfromstream#8	0	
+mem	2	string:integer | string:integer
+ts	5	string:<pdfe PTR> | string:<pdfe.dictionary PTR> | string:<pdfe.array PTR> | string:nil | string:<pdfe.reference 1>
+type()	5	string:userdata | string:userdata | string:userdata | string:nil | string:userdata
+len	ERR	attempt to get length of a nil value (upvalue 's')
+index	ERR	attempt to index a nil value (upvalue 's')
+call	ERR	attempt to call a nil value (upvalue 's')
+newindex	ERR	attempt to index a luatex.pdfe.dictionary value (upvalue 'page')
+newindex2	ERR	attempt to index a luatex.pdfe.array value (upvalue 'extra')
+close	0	
+close again	0	
+close bad	0	
+unencrypt bad	1	i-1
+unencrypt none	1	i-1

@@ -3282,17 +3282,17 @@ impl LuaState {
                 }
             }
 
-            // Get the C function pointer
-            let cfunc = if let Some(c_func) = func.as_cfunction() {
-                c_func
+            // Call the C function; a Rust closure has no raw function pointer
+            let result = if let Some(c_func) = func.as_cfunction() {
+                c_func(self)
             } else if let Some(closure) = func.as_cclosure() {
-                closure.func()
+                (closure.func())(self)
             } else {
-                unreachable!()
+                match func.as_rclosure() {
+                    Some(closure) => closure.call(self),
+                    None => unreachable!("is_c_callable covers cfunction, cclosure and rclosure"),
+                }
             };
-
-            // Call C function
-            let result = cfunc(self);
 
             // CloseThread bypasses all pcalls — don't pop this frame,
             // handle_resume_result will pop everything.

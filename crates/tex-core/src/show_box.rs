@@ -722,6 +722,11 @@ impl<'a> BoxDisplay<'a> {
                 self.print_esc("special");
                 self.print_text_mark(s);
             }
+            WhatIt::LateLua { code, func } => {
+                self.print_esc("latelua");
+                self.print_int(i64::from(*func));
+                self.print_text_mark(&String::from_utf8_lossy(code));
+            }
             WhatIt::PdfLiteral { origin, data } => {
                 self.print_esc("pdfliteral");
                 match origin {

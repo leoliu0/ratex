@@ -54,8 +54,12 @@ function token.scan_dimen(inf, mu) return B.scan_dimen(mu and true or false) end
 function token.scan_float() return B.scan_float(true) end
 function token.scan_real() return B.scan_float(false) end
 function token.scan_toks(macro_def, expand)
-  if macro_def then error("token.scan_toks: macro parameter text is not supported") end
-  local list = B.scan_toks(expand and true or false)
+  local list
+  if macro_def == true then
+    list = { B.scan_toks_def(expand == true) }
+  else
+    list = { B.scan_toks(expand and true or false) }
+  end
   for i = 1, #list do list[i] = wrap(list[i]) end
   return list
 end

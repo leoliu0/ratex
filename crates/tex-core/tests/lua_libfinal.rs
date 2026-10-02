@@ -82,3 +82,49 @@ fn os_commands_follow_the_restricted_policy() {
 fn parser_errors_use_lua53_texts() {
     check("parser_errors");
 }
+
+fn ship(source: &str) -> Engine {
+    let mut e = boot_lua();
+    e.input.push_file("t.tex".to_string(), source.as_bytes().to_vec());
+    e.run();
+    assert_eq!(e.error_count, 0, "errors: {:?}, term: {}", e.diagnostics, e.term);
+    e
+}
+
+// luatex --ini: the same source printed LL1 655360 11796480 / LL2 true / LL3 983040 11796480
+// and wrote `q Q DBT\nTRET\n1 0 0 1 14.944 179.328 cm\nOZ` into the page
+#[test]
+fn latelua_runs_at_shipout_with_position_and_literals() {
+    let e = ship(concat!(
+        "\\directlua{tex.enableprimitives('', tex.extraprimitives()) tex.set('pagewidth', 200*65536) tex.set('pageheight', 200*65536) pdf.setorigin(0)}\n",
+        "\\setbox0\\hbox to 100pt{\\kern 10pt\\latelua{texio.write_nl('LL1 '..table.concat({pdf.getpos()}, ' ')) pdf.print('page','q Q ') ",
+        "texio.write_nl('LL2 '..tostring(pcall(pdf.print,'direct','D')))}\\kern 5pt",
+        "\\latelua{texio.write_nl('LL3 '..pdf.gethpos()..' '..pdf.getvpos()) pdf.print('text','T') pdf.print('raw','R') ",
+        "pdf.print('origin','O') pdf.print('Z')}}\n",
+        "\\setbox1\\vbox{\\kern 20pt\\box0}\n\\shipout\\box1\n\\end\n"
+    ));
+    let term = e.term.replace('\n', "");
+    assert!(term.contains("LL1 655360 11796480"), "{term}");
+    assert!(term.contains("LL2 true"), "{term}");
+    assert!(term.contains("LL3 983040 11796480"), "{term}");
+    let content = String::from_utf8_lossy(&e.pdf_doc.pages[0].content).into_owned();
+    assert_eq!(content, "q Q DBT\nTRET\n1 0 0 1 14.944 179.328 cm\nOZ");
+}
+
+/// Runs `tests/lua_libfinal/NAME.tex` and compares its `@@` log lines with the
+/// ones luatex wrote for the same file.
+fn check_tex(name: &str) {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/lua_libfinal");
+    let source = std::fs::read_to_string(dir.join(format!("{name}.tex"))).unwrap();
+    let expected = std::fs::read_to_string(dir.join(format!("{name}.expected"))).unwrap();
+    let e = ship(&source);
+    let got: Vec<String> = e.log.lines().filter_map(|l| l.strip_prefix("@@")).map(str::to_string).collect();
+    let want: Vec<String> = expected.lines().map(str::to_string).collect();
+    assert_eq!(got, want, "{name}");
+}
+
+// luatex: macro-definition scanning keeps match, end-match and out_param tokens
+#[test]
+fn scan_toks_reads_a_macro_definition() {
+    check_tex("scan_toks");
+}

@@ -65,6 +65,8 @@ pub(crate) struct TexState {
     pub force_file: bool,
     /// `pdf.settypeonewidemode` (an experimental flag of luatex's Type 1 writer).
     pub type1_wide_mode: i32,
+    /// Image objects by `img` index: index `i` (from 1) is `image_objs[i - 1]`.
+    pub image_objs: Vec<i32>,
     /// Fonts `pdf.includefont` initialised.
     pub included_fonts: Vec<i64>,
     /// Current output position (sp) while a late Lua call runs during

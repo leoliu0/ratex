@@ -20,6 +20,25 @@ fn text_tokens(s: &str) -> Vec<Token> {
 }
 
 impl Engine {
+    /// The `img` index of the image object `obj` (limglib.c `idict_array`
+    /// position, from 1); the first use assigns the next one.
+    pub(crate) fn lua_image_index(&mut self, obj: i32) -> i32 {
+        let objs = &mut self.lua_tex.image_objs;
+        match objs.iter().position(|o| *o == obj) {
+            Some(i) => i as i32 + 1,
+            None => {
+                objs.push(obj);
+                objs.len() as i32
+            }
+        }
+    }
+
+    /// The image object of `img` index `index`; `index` itself when it names
+    /// no image.
+    pub(crate) fn lua_image_obj(&self, index: i32) -> i32 {
+        usize::try_from(index - 1).ok().and_then(|i| self.lua_tex.image_objs.get(i)).copied().unwrap_or(index)
+    }
+
     /// Read the image `spec` names with `\pdfximage`; the object number of
     /// the image, `None` when the image could not be read.
     fn lua_img_scan(&mut self, spec: &LuaTable) -> Result<Option<i64>, String> {
@@ -110,6 +129,11 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
                 _ => (None, 0, 0, 0, 0),
             }
         })
+    });
+    reg!(lua, t, "write_now", |obj: i64| -> Result<(), String> { with_engine(|e| e.write_ximage(obj as i32)) });
+    reg!(lua, t, "index_of", |obj: i64| -> Result<i64, String> { with_engine(|e| i64::from(e.lua_image_index(obj as i32))) });
+    reg!(lua, t, "obj_of", |index: i64| -> Result<Option<i64>, String> {
+        with_engine(|e| usize::try_from(index - 1).ok().and_then(|i| e.lua_tex.image_objs.get(i)).map(|o| i64::from(*o)))
     });
     reg!(lua, t, "ref", |obj: i64| -> Result<(), String> {
         // \pdfrefximage <obj>: the image box joins the current list

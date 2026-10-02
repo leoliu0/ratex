@@ -142,6 +142,7 @@ local function object_parts(immediate, ...)
 end
 
 function pdf.immediateobj(...)
+  if P.in_late_lua() then error("pdf.immediateobj() can not be used with \\latelua", 0) end
   P.run(object_parts(true, ...))
   return P.last("obj")
 end
@@ -149,13 +150,18 @@ function pdf.obj(...)
   P.run(object_parts(false, ...))
   return P.last("obj")
 end
-function pdf.reserveobj(kind)
-  if kind == "annot" then
-    P.run { backend("pdfannot"), "reserveobjnum " }
-    return P.last("annot")
+function pdf.reserveobj(...)
+  local n = select("#", ...)
+  if n == 0 then
+    P.run { backend("pdfobj"), "reserveobjnum " }
+    return P.last("obj")
+  elseif n == 1 then
+    local kind = ...
+    if type(kind) ~= "string" then error("pdf.reserveobj() optional argument must be string", 0) end
+    if kind ~= "annot" then error('pdf.reserveobj() optional string must be "annot"', 0) end
+    return P.reserve_annot()
   end
-  P.run { backend("pdfobj"), "reserveobjnum " }
-  return P.last("obj")
+  error("pdf.reserveobj() allows max. 1 argument", 0)
 end
 function pdf.refobj(n)
   P.run { backend("pdfrefobj"), tostring(lua_int(n)) .. " " }
@@ -193,7 +199,8 @@ end
 local print_modes = { origin = 0, page = 1, text = 2, direct = 3, raw = 4 }
 function pdf.print(...)
   local n = select("#", ...)
-  local s = select(n, ...)
+  local s
+  if n > 0 then s = select(n, ...) end
   if n == 0 or (type(s) ~= "string" and type(s) ~= "number") then error("no string to print", 0) end
   local mode = 0
   if n == 2 then

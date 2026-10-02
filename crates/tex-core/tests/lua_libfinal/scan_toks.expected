@@ -1,0 +1,46 @@
+R 7
+1 13 par_end nil 35 27263011
+2 13 par_end nil 35 27263011
+3 14 stop nil 0 29360128
+4 11 letter nil 97 23068769
+5 5 car_ret nil 1 10485761
+6 10 spacer nil 32 20971552
+7 11 letter nil 98 23068770
+R 9
+1 13 par_end nil 35 27263011
+2 12 other_char nil 46 25165870
+3 13 par_end nil 35 27263011
+4 14 stop nil 0 29360128
+5 11 letter nil 97 23068769
+6 5 car_ret nil 1 10485761
+7 10 spacer nil 32 20971552
+8 11 letter nil 98 23068770
+9 6 mac_param nil 35 12582947
+R 3
+1 14 stop nil 0 29360128
+2 11 letter nil 97 23068769
+3 11 letter nil 98 23068770
+R 9
+1 11 letter nil 120 23068792
+2 13 par_end nil 35 27263011
+3 1 left_brace nil 123 2097275
+4 14 stop nil 0 29360128
+5 11 letter nil 97 23068769
+6 5 car_ret nil 1 10485761
+7 10 spacer nil 32 20971552
+8 11 letter nil 98 23068770
+9 1 left_brace nil 123 2097275
+R 9
+1 11 letter nil 120 23068792
+2 13 par_end nil 35 27263011
+3 1 left_brace nil 123 2097275
+4 14 stop nil 0 29360128
+5 11 letter nil 97 23068769
+6 5 car_ret nil 1 10485761
+7 10 spacer nil 32 20971552
+8 11 letter nil 98 23068770
+9 1 left_brace nil 123 2097275
+R 3
+1 11 letter nil 97 23068769
+2 11 letter nil 98 23068770
+3 6 mac_param nil 35 12582947

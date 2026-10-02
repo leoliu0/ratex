@@ -336,6 +336,13 @@ impl Engine {
                 self.keep_opaque(n, &Node::Whatsit(w.clone(), crate::boxes::Attr::NONE));
                 n
             }
+            WhatIt::LateLua { code, func } => {
+                let n = whatsit(self, ws::LATE_LUA);
+                let node = self.lua_nodes.node_mut(n);
+                node.f[0] = *func;
+                node.ext.get_or_insert_with(Default::default).strs = vec![code.clone(), Vec::new(), Vec::new()];
+                n
+            }
             other => self.import_opaque(&Node::Whatsit(other.clone(), crate::boxes::Attr::NONE)),
         }
     }
@@ -563,12 +570,13 @@ impl Engine {
                 match w {
                     WhatIt::PdfRefXImage { obj, w: bw, h: bh, d: bd } | WhatIt::PdfRefXForm { obj, w: bw, h: bh, d: bd } => {
                         let image = matches!(w, WhatIt::PdfRefXImage { .. });
+                        let index = if image { self.lua_image_index(*obj) } else { *obj };
                         let n = self.lua_new_node(RULE, if image { 2 } else { 1 });
                         let f = &mut self.lua_nodes.node_mut(n).f;
                         f[sl::R_WIDTH] = *bw;
                         f[sl::R_HEIGHT] = *bh;
                         f[sl::R_DEPTH] = *bd;
-                        f[sl::R_INDEX] = *obj;
+                        f[sl::R_INDEX] = index;
                         n
                     }
                     _ => self.import_whatsit(w),
@@ -712,7 +720,7 @@ impl Engine {
                 let (w, h, d) = (f[sl::R_WIDTH], f[sl::R_HEIGHT], f[sl::R_DEPTH]);
                 match sub {
                     1 | 2 => {
-                        let wh = WhatIt::PdfRefXImage { obj: f[sl::R_INDEX], w, h, d };
+                        let wh = WhatIt::PdfRefXImage { obj: self.lua_image_obj(f[sl::R_INDEX]), w, h, d };
                         out.push(Node::Whatsit(if sub == 2 {
                             wh
                         } else {
@@ -955,6 +963,10 @@ impl Engine {
             ws::PDF_RESTORE => out.push(Node::Whatsit(WhatIt::PdfRestore { source: None }, crate::boxes::Attr::NONE)),
             ws::PDF_SETMATRIX => out.push(Node::Whatsit(WhatIt::PdfSetMatrix { matrix: s(self, 0), source: None }, crate::boxes::Attr::NONE)),
             ws::SPECIAL | ws::LATE_SPECIAL => out.push(Node::Whatsit(WhatIt::Special(s(self, 0)), crate::boxes::Attr::NONE)),
+            ws::LATE_LUA => {
+                let code = self.lua_nodes.node(n).ext.as_ref().and_then(|e| e.strs.first().cloned()).unwrap_or_default();
+                out.push(Node::Whatsit(WhatIt::LateLua { code, func: f[0].max(0) }, crate::boxes::Attr::NONE));
+            }
             ws::SAVE_POS => out.push(Node::Whatsit(WhatIt::SavePos { obj: f[10] }, crate::boxes::Attr::NONE)),
             ws::WRITE | ws::CLOSE | ws::OPEN => {
                 if let Some(Node::Whatsit(mut w, _)) = opaque {

@@ -349,6 +349,13 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
     });
     reg!(lua, p, "set_force_file", |on: bool| -> Result<(), String> { with_engine(|e| e.lua_tex.force_file = on) });
     reg!(lua, p, "set_type1_wide_mode", |v: i64| -> Result<(), String> { with_engine(|e| e.lua_tex.type1_wide_mode = v as i32) });
+    reg!(lua, p, "reserve_annot", || -> Result<i64, String> {
+        with_engine(|e| {
+            let obj = e.alloc_pdf_obj();
+            e.pdf_last_annot = obj;
+            i64::from(obj)
+        })
+    });
     reg!(lua, p, "in_late_lua", || -> Result<bool, String> { with_engine(|e| e.lua_tex.in_late_lua) });
     reg!(lua, p, "register_annot", |n: i64| -> Result<(), String> {
         with_engine(|e| {

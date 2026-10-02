@@ -91,9 +91,6 @@ local function num(obj, field)
   return n
 end
 
-local next_index = 0
-local indices = {}
-
 local function scan_into(d)
   local obj = I.scan(d)
   if not obj then
@@ -101,6 +98,8 @@ local function scan_into(d)
   end
   d.objnum = nil
   d.filepath = I.info(obj, "path")
+  -- kpathsea reports a file of the current directory as "./name"
+  if d.filepath and not d.filepath:find("/", 1, true) then d.filepath = "./" .. d.filepath end
   d.imagetype = I.info(obj, "type")
   d.width, d.height, d.depth = num(obj, "width"), num(obj, "height"), num(obj, "depth")
   d.xsize, d.ysize = num(obj, "xsize"), num(obj, "ysize")
@@ -144,13 +143,72 @@ local function object_of(i)
   return d
 end
 
+-- limglib.c: an image gets its index when it is first written or turned into a node
+local function index_image(d)
+  d.index = I.index_of(d.__obj)
+  d.objnum = d.__obj
+  d.keepopen = true
+end
+
+local function image_of(spec, fname)
+  local d = data[spec]
+  if d then
+    if not d.__obj then scan_into(d) end
+    return d, spec
+  end
+  if type(spec) ~= "table" then
+    local got = type(spec)
+    error("bad argument #1 to 'img." .. fname .. "' (image.meta expected, got " .. got .. ")", 0)
+  end
+  d = defaults()
+  for k, v in pairs(spec) do
+    if not valid[k] then error("img." .. fname .. ": invalid field " .. tostring(k), 2) end
+    d[k] = v
+  end
+  scan_into(d)
+  return d, wrap(d)
+end
+
 function img.write(i)
   local d = object_of(i)
-  if not indices[d.__obj] then
-    next_index = next_index + 1
-    indices[d.__obj] = next_index
-  end
-  d.index = indices[d.__obj]
+  index_image(d)
   I.ref(d.__obj)
   return i
+end
+
+-- the rule node of subtype "image" that stands for the image (limglib.c `img.node`)
+function img.node(...)
+  if select("#", ...) ~= 1 then error("img.node() expects an argument", 0) end
+  local d = image_of((...), "node")
+  index_image(d)
+  local n = node.new("rule", 2)
+  n.width, n.height, n.depth = d.width, d.height, d.depth
+  n.index = d.index
+  return n
+end
+
+function img.immediatewrite(...)
+  if select("#", ...) ~= 1 then error("img.immediatewrite() expects an argument", 0) end
+  local d, i = image_of((...), "immediatewrite")
+  index_image(d)
+  I.write_now(d.__obj)
+  return i
+end
+
+function img.immediatewriteobject(...)
+  if select("#", ...) ~= 2 then error("img.immediatewrite() expects two argument", 0) end
+  local d = image_of((...), "immediatewriteobject")
+  index_image(d)
+  I.write_now(d.__obj)
+  return d.__obj
+end
+
+-- pdf.includeimage(index): writes the image and reports its properties
+function pdf.includeimage(index)
+  local obj = I.obj_of(math.tointeger(tonumber(index)) or 0)
+  if not obj then error("bad argument #1 to 'includeimage' (invalid image index)", 2) end
+  I.write_now(obj)
+  local kind = I.info(obj, "type")
+  local kinds = { none = 0, pdf = 1, png = 2, jpg = 3, jp2 = 4, jbig2 = 5, stream = 6, memstream = 7 }
+  return kinds[kind] or 0, 0, 0, num(obj, "xsize"), num(obj, "ysize"), num(obj, "rotation"), obj, nil
 end

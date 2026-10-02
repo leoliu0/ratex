@@ -267,6 +267,9 @@ impl Engine {
                 return self.load_reader_line(si, reader, end_line_char, unicode);
             }
         }
+        if self.engine_kind == EngineKind::XeTeX {
+            return self.file_load_line_xetex(si, buf, end_line_char);
+        }
         let Source::File {
             data,
             pos,

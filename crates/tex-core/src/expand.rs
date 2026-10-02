@@ -1171,6 +1171,7 @@ impl Engine {
                 | LeftMarginKern
                 | RightMarginKern
                 | UcharCat
+                | XeTeXUchar
                 | RatexUnicodeVersion
                 | RatexNativeTextMode
                 | RatexUtfEight
@@ -2119,6 +2120,33 @@ impl Engine {
                     self.error("Invalid UTF-8 sequence in native text");
                     None
                 }
+            }
+            XeTeXUchar => {
+                let c = self.scan_usv_num();
+                let token = if c == 32 { Token::space() } else { Token::unicode_char(12, c) };
+                self.push_token(token);
+                None
+            }
+            UcharCat if self.engine_kind == crate::engine::EngineKind::XeTeX => {
+                let c = self.scan_usv_num();
+                let value = self.scan_int();
+                // xetex.web `illegal_Ucharcat_catcode`
+                let cat = if (1..=13).contains(&value) && value != 5 && value != 9 {
+                    value as u8
+                } else {
+                    self.error(&format!(
+                        "Invalid code ({value}), should be in the ranges 1..4, 6..8, 10..13"
+                    ));
+                    12
+                };
+                let token = if cat == 13 {
+                    let id = self.cs.intern(&Engine::active_cs_name(c));
+                    Token::from_cs(id)
+                } else {
+                    Token::unicode_char(cat, c)
+                };
+                self.push_token(token);
+                None
             }
             UcharCat => {
                 let c = self.scan_unicode_character_code("\\Ucharcat");
@@ -3984,6 +4012,10 @@ impl Engine {
     /// spacer tokens (tex.web str_toks), everything else cat-12
     /// (chronologically on top: newer than any earlier pushback)
     pub fn exp_string(&mut self, bytes: &[u8]) {
+        if self.engine_kind == crate::engine::EngineKind::XeTeX && !bytes.is_ascii() {
+            self.exp_string_scalars(bytes);
+            return;
+        }
         let toks: Vec<Token> = bytes
             .iter()
             .map(|&b| {
@@ -3994,6 +4026,35 @@ impl Engine {
                 }
             })
             .collect();
+        self.push_tokens_named(toks, "<inserted>");
+    }
+
+    /// xetex.web `str_toks`: UTF-8 text becomes one token per scalar value
+    /// (a byte outside any UTF-8 sequence stands for the character of that
+    /// code).
+    #[inline(never)]
+    fn exp_string_scalars(&mut self, bytes: &[u8]) {
+        let mut toks: Vec<Token> = Vec::with_capacity(bytes.len());
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            let (good, tail) = match std::str::from_utf8(rest) {
+                Ok(s) => (s, &rest[rest.len()..]),
+                Err(e) => {
+                    let (good, tail) = rest.split_at(e.valid_up_to());
+                    (std::str::from_utf8(good).unwrap_or(""), tail)
+                }
+            };
+            for c in good.chars() {
+                toks.push(match c {
+                    ' ' => Token::space(),
+                    c if (c as u32) < 128 => Token::other(c as u8),
+                    c => Token::unicode_char(12, c as u32),
+                });
+            }
+            let Some((&stray, tail)) = tail.split_first() else { break };
+            toks.push(Token::unicode_char(12, u32::from(stray)));
+            rest = tail;
+        }
         self.push_tokens_named(toks, "<inserted>");
     }
 

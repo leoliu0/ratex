@@ -459,10 +459,12 @@ impl Engine {
             self.append_lua_glyph(scalar);
             return;
         }
-        if !self.mode.is_m() && self.xetex_interchartokenstate > 0 {
-            let cur_class = self.xetex_char_classes.get(&scalar).copied().unwrap_or(0);
+        if !self.mode.is_m()
+            && self.eqtb.int_params[crate::prim::IntParam::XeTeXInterCharTokenState.idx() as usize] > 0
+        {
+            let cur_class = self.eqtb.char_class(scalar);
             if let Some(prev_class) = self.xetex_last_char_class {
-                if let Some(toks) = self.xetex_interchar_toks.get(&(prev_class, cur_class)).cloned() {
+                if let Some(toks) = self.eqtb.inter_char_toks(prev_class, cur_class).map(|t| t.as_ref().clone()) {
                     if !toks.is_empty() {
                         self.xetex_last_char_class = Some(cur_class);
                         self.push_token(Token::unicode_char(if is_letter { 11 } else { 12 }, scalar));
@@ -783,6 +785,12 @@ impl Engine {
                 // tex.web §1224: the target is made \relax before the value is scanned
                 self.eqtb.assign(t, Equiv::Prim(Prim::Relax), g);
                 self.scan_optional_equals();
+                if self.engine_kind == crate::engine::EngineKind::XeTeX {
+                    let v = self.scan_usv_num();
+                    self.eqtb.assign(t, Equiv::CharDef(v), g);
+                    self.clear_prefixes();
+                    return true;
+                }
                 let (v, value_source) = self.scan_int_with_source();
                 if u32::try_from(v).ok().and_then(char::from_u32).is_none() {
                     self.error_at(
@@ -1040,6 +1048,14 @@ impl Engine {
                 let g = self.take_global();
                 self.eqtb.assign_toks_param(tp, toks, g);
                 self.clear_prefixes();
+                true
+            }
+            XeTeXCharClass => {
+                self.do_xetex_charclass_assign();
+                true
+            }
+            XeTeXInterCharToks => {
+                self.do_xetex_interchartoks_assign(id);
                 true
             }
             p @ (EfCode | LpCode | RpCode | TagCode | KnBsCode | StBsCode | ShBsCode | KnBcCode
@@ -1968,6 +1984,9 @@ impl Engine {
                 Some(Equiv::ToksReg(i)) => return (*self.eqtb.toks[i as usize]).clone(),
                 Some(Equiv::Prim(Prim::ToksP(p))) => {
                     return (*self.eqtb.tok_params[p.idx() as usize]).clone()
+                }
+                Some(Equiv::Prim(Prim::XeTeXInterCharToks)) => {
+                    return self.scan_xetex_interchartoks_the();
                 }
                 Some(Equiv::Prim(Prim::Toks)) => {
                     let i = self.scan_reg_num();

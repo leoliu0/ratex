@@ -110,7 +110,7 @@ fn is_char_node(n: &Node) -> bool {
 }
 
 fn italic_kern(k: i32) -> Node {
-    Node::ItalicKern(k)
+    Node::ItalicKern(k, crate::boxes::Attr::NONE)
 }
 
 impl Engine {
@@ -122,7 +122,7 @@ impl Engine {
         while i < list.len() {
             let n = &list[i];
             match n {
-                Node::Style(s) => out.push(Slot::new(Item::Style(crate::math::gstyle_of(*s)))),
+                Node::Style(s, _) => out.push(Slot::new(Item::Style(crate::math::gstyle_of(*s)))),
                 Node::NonScript => out.push(Slot::new(Item::NonScript)),
                 Node::DelimBox { small, large, size, .. } => {
                     let d = Some((small.0, u32::from(small.1), large.0, u32::from(large.1)));
@@ -179,15 +179,15 @@ impl Engine {
                     }
                 }
                 Node::MathChar { fam: 255, .. } => {}
-                Node::MathChar { fam, c, class, origin } => {
+                Node::MathChar { fam, c, class, origin, .. } => {
                     let mut noad = Noad::new(*class, Nuc::Char { fam: *fam, c: *c, origin: origin.clone() });
                     noad.opsub = OP_NORMAL;
                     out.push(Slot::new(Item::Noad(noad)));
                 }
-                Node::Scripts { nucleus, sup, sub } => {
+                Node::Scripts { nucleus, sup, sub, .. } => {
                     out.push(Slot::new(self.lm_decode_scripts(nucleus, sup, sub, false)));
                 }
-                Node::OpLimits { op, above, below } => {
+                Node::OpLimits { op, above, below, .. } => {
                     out.push(Slot::new(self.lm_decode_oplimits(op, above, below)));
                 }
                 Node::Frac { .. } => out.push(Slot::new(Item::Raw { node: n.clone(), frac: true })),
@@ -223,7 +223,7 @@ impl Engine {
             _ => op,
         };
         let nuc = match payload {
-            [Node::MathChar { fam, c, class: CL_OP, origin }] if *fam != 255 => {
+            [Node::MathChar { fam, c, class: CL_OP, origin, .. }] if *fam != 255 => {
                 Nuc::Char { fam: *fam, c: *c, origin: origin.clone() }
             }
             [Node::DelimBox { small, size: 2, .. }] => Nuc::Char {
@@ -253,7 +253,7 @@ impl Engine {
             if let [Node::Accent { body, .. }] = nucleus {
                 if matches!(body.as_slice(), [Node::MathChar { fam, .. }] if *fam != 255) {
                     return Item::Raw {
-                        node: Node::Scripts { nucleus: nucleus.to_vec(), sup: sup.clone(), sub: sub.clone() },
+                        node: Node::Scripts { nucleus: nucleus.to_vec(), sup: sup.clone(), sub: sub.clone(), attr: crate::boxes::Attr::NONE },
                         frac: false,
                     };
                 }
@@ -268,7 +268,7 @@ impl Engine {
                 }
                 n
             }
-            [Node::MathChar { fam, c, class, origin }] => {
+            [Node::MathChar { fam, c, class, origin, .. }] => {
                 let mut n = Noad::new(*class, Nuc::Char { fam: *fam, c: *c, origin: origin.clone() });
                 if *class == CL_OP {
                     n.opsub = OP_NOLIMITS;
@@ -343,11 +343,11 @@ impl Engine {
                 }
                 Item::NonScript => {
                     if size_of_style(cur_style) != 0 {
-                        if let Some(Slot { item: Item::Other(Node::Glue(_) | Node::Kern(_) | Node::ExplicitKern(_)), .. }) =
+                        if let Some(Slot { item: Item::Other(Node::Glue(_, _) | Node::Kern(_, _) | Node::ExplicitKern(_, _)), .. }) =
                             slots.get(i + 1)
                         {
                             slots.remove(i + 1);
-                        } else if let Some(Slot { item: Item::Other(Node::MuGlue(_) | Node::MathKern(_, 0)), .. }) =
+                        } else if let Some(Slot { item: Item::Other(Node::MuGlue(_, _) | Node::MathKern(_, 0, _)), .. }) =
                             slots.get(i + 1)
                         {
                             slots.remove(i + 1);
@@ -360,11 +360,11 @@ impl Engine {
                             max_hl = max_hl.max(*height);
                             max_d = max_d.max(*depth);
                         }
-                        Node::MuGlue(g) => {
+                        Node::MuGlue(g, _) => {
                             let ng = self.lm_math_glue(g, cur_mu);
-                            slots[i].item = Item::Other(Node::Glue(ng));
+                            slots[i].item = Item::Other(Node::Glue(ng, crate::boxes::Attr::NONE));
                         }
-                        Node::MathKern(k, 0) => {
+                        Node::MathKern(k, 0, _) => {
                             let k2 = mu_mult_kern(*k, cur_mu);
                             slots[i].item = Item::Other(italic_kern(k2));
                         }
@@ -562,8 +562,8 @@ impl Engine {
     pub(crate) fn lm_clean_list(&mut self, list: &[Node], s: GStyle) -> Node {
         let tmp;
         let list = match list {
-            [Node::MathChar { fam, c, origin, class }] if *fam != 255 && *class != CL_ORD => {
-                tmp = [Node::MathChar { fam: *fam, c: *c, class: CL_ORD, origin: origin.clone() }];
+            [Node::MathChar { fam, c, origin, class, .. }] if *fam != 255 && *class != CL_ORD => {
+                tmp = [Node::MathChar { fam: *fam, c: *c, class: CL_ORD, origin: origin.clone(), attr: crate::boxes::Attr::NONE }];
                 &tmp[..]
             }
             _ => list,
@@ -579,7 +579,7 @@ impl Engine {
             hpack_nat(self, nodes)
         };
         if let Node::Box { list, .. } = &mut x {
-            if list.len() == 2 && is_char_node(&list[0]) && matches!(list[1], Node::Kern(_) | Node::ItalicKern(_)) {
+            if list.len() == 2 && is_char_node(&list[0]) && matches!(list[1], Node::Kern(_, _) | Node::ItalicKern(_, _)) {
                 list.pop();
             }
         }
@@ -589,7 +589,7 @@ impl Engine {
     fn lm_clean_nuc(&mut self, nuc: &Nuc, s: GStyle) -> Node {
         match nuc {
             Nuc::Char { fam, c, origin } => {
-                let l = [Node::MathChar { fam: *fam, c: *c, class: CL_ORD, origin: origin.clone() }];
+                let l = [Node::MathChar { fam: *fam, c: *c, class: CL_ORD, origin: origin.clone(), attr: crate::boxes::Attr::NONE }];
                 let nodes = self.lm_convert(&l, s, false, false);
                 self.lm_finish_clean(nodes)
             }
@@ -627,11 +627,11 @@ impl Engine {
                 let (f, c) = glyph_fc(&list[0]);
                 let v = self.mc_metrics(f, c).width;
                 if v != bw {
-                    list.push(Node::Kern(bw - v));
+                    list.push(Node::Kern(bw - v, crate::boxes::Attr::NONE));
                 }
             }
             let ss = || {
-                Node::Glue(Glue::spec(0, 65536, crate::boxes::GLUE_FIL, 65536, crate::boxes::GLUE_FIL))
+                Node::Glue(Glue::spec(0, 65536, crate::boxes::GLUE_FIL, 65536, crate::boxes::GLUE_FIL), crate::boxes::Attr::NONE)
             };
             let mut l2 = vec![ss()];
             l2.extend(list);
@@ -649,7 +649,7 @@ impl Engine {
     // ================= over / under / vcenter =================
 
     fn lm_rule(t: i32) -> Node {
-        Node::Rule { width: crate::build::RULE_FILL, height: t, depth: 0 }
+        Node::Rule { width: crate::build::RULE_FILL, height: t, depth: 0, attr: crate::boxes::Attr::NONE }
     }
 
     fn lm_nuc_of(&self, slots: &[Slot], i: usize) -> Nuc {
@@ -672,7 +672,7 @@ impl Engine {
         let vgap = self.mparam_err(MATH_PARAM_OVERBAR_VGAP, cur_style);
         let kern = self.mparam_err(MATH_PARAM_OVERBAR_KERN, cur_style);
         // overbar(b, k = vgap, t, ht = kern)
-        let v = vpack_nat(self, vec![Node::Kern(kern), Self::lm_rule(thickness), Node::Kern(vgap), b]);
+        let v = vpack_nat(self, vec![Node::Kern(kern, crate::boxes::Attr::NONE), Self::lm_rule(thickness), Node::Kern(vgap, crate::boxes::Attr::NONE), b]);
         Self::lm_set_nuc_box(slots, i, v);
     }
 
@@ -682,7 +682,7 @@ impl Engine {
         let x = self.lm_clean_nuc(&nuc, cur_style);
         let vgap = self.mparam_err(MATH_PARAM_UNDERBAR_VGAP, cur_style);
         let (_, xh, _) = box_whd(&x);
-        let mut y = vpack_nat(self, vec![x, Node::Kern(vgap), Self::lm_rule(thickness)]);
+        let mut y = vpack_nat(self, vec![x, Node::Kern(vgap, crate::boxes::Attr::NONE), Self::lm_rule(thickness)]);
         let kern = self.mparam_err(MATH_PARAM_UNDERBAR_KERN, cur_style);
         let (_, yh, yd) = box_whd(&y);
         let delta = yh + yd + kern;
@@ -782,7 +782,7 @@ impl Engine {
             if no_kerns == 0 {
                 if let Some(k) = kl.kern {
                     if k != 0 {
-                        slots.insert(i + 1, Slot::new(Item::Other(Node::Kern(k))));
+                        slots.insert(i + 1, Slot::new(Item::Other(Node::Kern(k, crate::boxes::Attr::NONE))));
                         return;
                     }
                 }
@@ -912,9 +912,9 @@ impl Engine {
                 if shift_up < vgap {
                     shift_up = vgap;
                 }
-                list.push(Node::Kern(kern));
+                list.push(Node::Kern(kern, crate::boxes::Attr::NONE));
                 list.push(x);
-                list.push(Node::Kern(shift_up));
+                list.push(Node::Kern(shift_up, crate::boxes::Attr::NONE));
                 list.push(y);
                 vh = vh + kern + xh + xd + shift_up;
             }
@@ -927,9 +927,9 @@ impl Engine {
                 if shift_down < vgap {
                     shift_down = vgap;
                 }
-                list.push(Node::Kern(shift_down));
+                list.push(Node::Kern(shift_down, crate::boxes::Attr::NONE));
                 list.push(z);
-                list.push(Node::Kern(kern));
+                list.push(Node::Kern(kern, crate::boxes::Attr::NONE));
                 vd = vd + kern + zh + zd + shift_down;
             }
             let mut v = vpack_nat(self, list);
@@ -1031,7 +1031,7 @@ impl Engine {
                 }
             }
             if d2 != 0 {
-                kern_after.push(Node::Kern(d2));
+                kern_after.push(Node::Kern(d2, crate::boxes::Attr::NONE));
             }
             x = xb;
         } else {
@@ -1066,7 +1066,7 @@ impl Engine {
                     }
                 }
                 if clr != 0 {
-                    kern_after.push(Node::Kern(clr));
+                    kern_after.push(Node::Kern(clr, crate::boxes::Attr::NONE));
                 }
                 x = xb;
             } else {
@@ -1115,7 +1115,7 @@ impl Engine {
                     }
                 }
                 if d2 != 0 {
-                    kern_after.push(Node::Kern(d2));
+                    kern_after.push(Node::Kern(d2, crate::boxes::Attr::NONE));
                 }
                 let _ = &mut have_d2;
                 let mut clr = None;
@@ -1131,7 +1131,7 @@ impl Engine {
                 let (_, yh, _) = box_whd(&yb);
                 let (_, _, xd) = box_whd(&xb);
                 let gap = (shift_up - xd) - (yh - shift_down);
-                let mut v = vpack_nat(self, vec![xb, Node::Kern(gap), yb]);
+                let mut v = vpack_nat(self, vec![xb, Node::Kern(gap, crate::boxes::Attr::NONE), yb]);
                 set_shift(&mut v, shift_down);
                 x = v;
             }
@@ -1160,7 +1160,7 @@ impl Engine {
             _ if box_mode > 0 => {
                 for n in su {
                     match n {
-                        Node::Kern(_) | Node::ExplicitKern(_) | Node::Glue(_) | Node::MuGlue(_) | Node::MathKern(..) => {}
+                        Node::Kern(_, _) | Node::ExplicitKern(_, _) | Node::Glue(_, _) | Node::MuGlue(_, _) | Node::MathKern(..) => {}
                         Node::MathChar { fam, c, .. } if *fam != 255 => {
                             let (f, c) = self.lm_fetch(*fam, *c, size);
                             return self.mc_exists(f, c).then_some((f, c));
@@ -1193,7 +1193,7 @@ impl Engine {
                 let g = Glue::spec(v[1], v[2], v[4] as u8, v[3], v[5] as u8);
                 let mut ng = self.lm_math_glue(&g, mmu);
                 ng.subtype = 0;
-                Some(Node::Glue(ng))
+                Some(Node::Glue(ng, crate::boxes::Attr::NONE))
             }
             k => {
                 let (param, subtype) = match k {
@@ -1204,7 +1204,7 @@ impl Engine {
                 let src = self.eqtb.glue_params[param.idx() as usize];
                 let mut ng = self.lm_math_glue(&src, mmu);
                 ng.subtype = subtype;
-                Some(Node::Glue(ng))
+                Some(Node::Glue(ng, crate::boxes::Attr::NONE))
             }
         }
     }
@@ -1235,7 +1235,7 @@ impl Engine {
                 Item::NonScript => {
                     let mut g = Glue::zero();
                     g.subtype = crate::boxes::glue_subtype::NONSCRIPT;
-                    out.push(Node::Glue(g));
+                    out.push(Node::Glue(g, crate::boxes::Attr::NONE));
                     continue;
                 }
                 Item::Other(node) => {
@@ -1280,19 +1280,19 @@ impl Engine {
                 if let Some(z) = self.lm_spacing_glue(rt, tt, cur_style, cur_mu) {
                     out.push(z);
                 }
-                if penalties && prepen < 10000 && !matches!(out.last(), Some(Node::Penalty(_))) {
-                    out.push(Node::Penalty(prepen));
+                if penalties && prepen < 10000 && !matches!(out.last(), Some(Node::Penalty(_, _))) {
+                    out.push(Node::Penalty(prepen, crate::boxes::Attr::NONE));
                 }
             }
             out.extend(new_hlist);
             if penalties && idx + 1 < n && pen < 10000 {
                 let next_is_pen_or_rel = match &slots[idx + 1].item {
-                    Item::Other(Node::Penalty(_)) => true,
+                    Item::Other(Node::Penalty(_, _)) => true,
                     Item::Noad(nq) => nq.class == CL_REL && nq.special == Special::None,
                     _ => false,
                 };
                 if !next_is_pen_or_rel {
-                    out.push(Node::Penalty(pen));
+                    out.push(Node::Penalty(pen, crate::boxes::Attr::NONE));
                 }
             }
             if fence_right {
@@ -1342,7 +1342,7 @@ impl Engine {
 
 fn glyph_fc(n: &Node) -> (FontId, u32) {
     match n {
-        Node::Char { c, font } => (*font, u32::from(*c)),
+        Node::Char { c, font, .. } => (*font, u32::from(*c)),
         Node::LuaGlyph(g) => (g.font, g.c),
         _ => (0, 0),
     }
@@ -1385,11 +1385,11 @@ fn xn_over_d_signed(x: i32, n: i32, d: i32) -> i32 {
 fn close_marker(n: &Node) -> Option<(&Node, Option<NodeList>, Option<NodeList>)> {
     match n {
         Node::DelimBox { size: 1, .. } => Some((n, None, None)),
-        Node::Scripts { nucleus, sup, sub } => match nucleus.as_slice() {
+        Node::Scripts { nucleus, sup, sub, .. } => match nucleus.as_slice() {
             [m @ Node::DelimBox { size: 1, .. }] => Some((m, sup.clone(), sub.clone())),
             _ => None,
         },
-        Node::OpLimits { op, above, below } => match op.as_slice() {
+        Node::OpLimits { op, above, below, .. } => match op.as_slice() {
             [m @ Node::DelimBox { size: 1, .. }] => Some((m, above.clone(), below.clone())),
             _ => None,
         },

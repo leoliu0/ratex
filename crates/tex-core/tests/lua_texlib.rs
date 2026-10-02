@@ -13,7 +13,7 @@ fn run_script(pre: &str, script: &str) -> String {
     let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
     let path = dir.join(format!("lua_texlib-{}-{:x}.lua", std::process::id(), script.len()));
     std::fs::write(&path, script).unwrap();
-    e.input.push_file("t.tex".into(), format!("{pre}\\directlua{{dofile(\"{}\")}}\n\\end\n", path.display()).into_bytes());
+    e.input.push_file("t.tex".into(), format!("{pre}\\directlua{{dofile(\"{}\")}}\n\\end\n", path.display().to_string().replace('\\', "/")).into_bytes());
     e.run();
     assert_eq!(e.error_count, 0, "{:?}", e.diagnostics);
     e.term.replace('\n', "")

@@ -1,7 +1,7 @@
 nil | File exists | 17
 nil | No such file or directory | 2
 true | true | false | false
-file | 5 | rw-rw-rw- | 1 | number
+file | 5 | rw- | 9 | 1 | number
 5 | file
 nil | cannot obtain information from file 'nofile': No such file or directory | 2
 false

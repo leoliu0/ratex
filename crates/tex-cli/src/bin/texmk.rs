@@ -691,6 +691,9 @@ fn write_manifest(path: &Path, manifest: &Manifest) -> std::io::Result<()> {
 /// Exclusive advisory lock (`flock`/`LockFileEx`) on a lock file. The OS
 /// releases it when every holder exits, so a crashed or killed build never
 /// leaves a stale lock behind and no process-ID heuristics are needed.
+// Off Unix `path` is unused (nothing unlinks the lock file) and `file` only
+// holds the lock until dropped.
+#[cfg_attr(not(unix), allow(dead_code))]
 struct CacheLock {
     path: PathBuf,
     file: std::fs::File,

@@ -27,13 +27,14 @@ fn run_fixture(name: &str) -> String {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/lua_sys");
     let base = std::env::temp_dir().join(format!("ratex-lua-sys-{}", std::process::id()));
     std::fs::create_dir_all(&base).unwrap();
+    std::env::set_var("TEX_RS_HERMETIC", "1");
     let work = base.join(name);
     let _ = std::fs::remove_dir_all(&work);
     std::env::set_var("TEXMFOUTPUT", &base);
     let fixture = std::fs::read_to_string(root.join(format!("{name}.lua"))).unwrap();
     let script = format!(
         "lfs.chdir('{}')\nlocal out = {{}}\nfunction P(...) local t = table.pack(...) for i = 1, t.n do t[i] = tostring(t[i]) end out[#out+1] = table.concat(t, ' | ') end\n{fixture}\nlocal f = io.open('probe.out', 'wb') f:write(table.concat(out, '\\n')) f:close()\n",
-        base.display()
+        base.display().to_string().replace('\\', "/")
     );
     let file = base.join(format!("{name}.script.lua"));
     std::fs::write(&file, script).unwrap();
@@ -41,7 +42,7 @@ fn run_fixture(name: &str) -> String {
     let mut e = boot_lua();
     e.input.push_file(
         "t.tex".to_string(),
-        format!("\\directlua{{dofile('{}')}}\\end\n", file.display()).into_bytes(),
+        format!("\\directlua{{dofile('{}')}}\\end\n", file.display().to_string().replace('\\', "/")).into_bytes(),
     );
     e.run();
     std::env::set_current_dir(cwd).unwrap();
@@ -66,6 +67,9 @@ fn library_members_match_luatex() {
     check("members");
 }
 
+/// POSIX only: hard and symbolic links, `utime`, `fcntl` locks and errno
+/// texts, which the Windows build of `lfs` reports differently or not at all.
+#[cfg(unix)]
 #[test]
 fn lfs_matches_luatex() {
     check("lfs");

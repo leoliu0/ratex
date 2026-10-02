@@ -10,6 +10,10 @@ use tex_lua::{Lua, LuaApi, LuaBytes, LuaFile, LuaString, Value};
 
 use crate::lua_sys::{bytes_of, errno_of, os_bytes, path_bytes, path_of, strerror, strerror_no, sys_reg};
 
+/// Errno values shared by Linux, macOS and the Windows CRT (`libc` lacks them on wasm32).
+const ENOENT: i32 = 2;
+const EROFS: i32 = 30;
+
 pub(crate) const PRELUDE: &str = include_str!("lua_sys_lfs.lua");
 
 thread_local! {
@@ -181,8 +185,8 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
                 None => {
                     let mut message = b"cannot obtain information from file '".to_vec();
                     message.extend_from_slice(&bytes);
-                    message.extend_from_slice(format!("': {}", strerror_no(libc::ENOENT)).as_bytes());
-                    (None, LuaBytes(message), vec![i64::from(libc::ENOENT)])
+                    message.extend_from_slice(format!("': {}", strerror_no(ENOENT)).as_bytes());
+                    (None, LuaBytes(message), vec![i64::from(ENOENT)])
                 }
             };
         }
@@ -210,7 +214,7 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
     sys_reg!(lua, s, "lfs_mkdir", |path: LuaString| -> Tri<bool> {
         let bytes = bytes_of(&path);
         if embedded_path(&bytes).is_some() {
-            return failure(&io::Error::from_raw_os_error(libc::EROFS), None);
+            return failure(&io::Error::from_raw_os_error(EROFS), None);
         }
         let p = path_of(&bytes);
         #[cfg(unix)]
@@ -290,7 +294,7 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
                     d.push(Some(DirState { dots: 0, entries: Box::new(entries) }));
                     d.len() as i64 - 1
                 })),
-                None => Err(format!("cannot open {}: {}", text, strerror_no(libc::ENOENT))),
+                None => Err(format!("cannot open {}: {}", text, strerror_no(ENOENT))),
             };
         }
         match fs::read_dir(path_of(&bytes)) {

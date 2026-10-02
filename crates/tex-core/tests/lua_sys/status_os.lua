@@ -7,18 +7,19 @@ P(type(texconfig), next(texconfig))
 P(type(lua.bytecode), lua.getstacktop and lua.getstacktop())
 P(os.setenv("FOO","bar"), os.getenv("FOO"))
 P(type(os.gettimeofday()), math.type(os.gettimeofday()))
-P(os.uname().sysname)
+P(type(os.uname().sysname), type(os.uname().machine))
 P(os.date("!%Y-%m-%d %H:%M:%S",86400*365))
-P(os.time{year=2020,month=1,day=1,hour=12})
+P(os.date("%Y-%m-%d %H:%M:%S", os.time{year=2020,month=1,day=1,hour=12}))
 P(type(os.clock()), type(os.times().utime))
 
 
 for _,n in ipairs{"safer_option","ini_version","luatex_version","luatex_revision","kpse_used","format_name","input_ptr","lasterrorstring","lastluaerrorstring","lastwarningtag","lastwarningstring","lasterrorcontext","luadebug_option","development_id","hash_size","output_active","bogus"} do
   P(n, type(status[n]), (type(status[n])~="number" or n:find("safer") or n:find("version") or n:find("id")) and tostring(status[n]) or "")
 end
-P(os.type, os.name, type(os.selfdir), type(os.tmpdir), type(os.tmpname()))
+P(type(os.type), type(os.name), type(os.selfdir), type(os.tmpdir), type(os.tmpname()))
 P(io.open("/etc/passwd","w"))
 P(io.open("f1","wb") ~= nil)
 P(io.open("../x","wb"))
 P(io.open(".hid","w"))
-P(io.open("/etc/hostname","r") ~= nil)
+io.open("readable.txt","wb"):close()
+P(io.open(lfs.currentdir() .. "/readable.txt","r") ~= nil)

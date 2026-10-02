@@ -5,9 +5,9 @@ table | nil
 table | 0
 nil | nil
 number | float
-Linux
+string | string
 1971-01-01 00:00:00
-1577840400
+2020-01-01 12:00:00
 number | number
 safer_option | number | 0
 ini_version | boolean | true
@@ -26,7 +26,7 @@ development_id | number | 7724
 hash_size | number | 
 output_active | boolean | false
 bogus | nil | nil
-unix | linux | string | function | string
+string | string | string | function | string
 nil
 true
 nil

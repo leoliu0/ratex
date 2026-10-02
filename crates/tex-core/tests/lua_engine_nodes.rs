@@ -52,8 +52,8 @@ fn run(tex_body: &str, report: &str) -> Vec<String> {
     }
     let src = format!(
         "\\directlua{{dofile(\"{}\")}}\\font\\f=tst at 10pt \\f \\hsize 100pt \\parindent 0pt \\tolerance 10000 {tex_body}\\directlua{{dofile(\"{}\")}}\\end\n",
-        lua.display(),
-        rep.display()
+        lua.display().to_string().replace('\\', "/"),
+        rep.display().to_string().replace('\\', "/")
     );
     e.input.push_file("t.tex".to_string(), src.into_bytes());
     e.run();

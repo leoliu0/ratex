@@ -35,7 +35,7 @@ end"#,
     }
     let src = format!(
         "\\directlua{{tex.enableprimitives('',tex.extraprimitives())}}\\directlua{{dofile(\"{}\")}}\\font\\f=cmr10 \\f {body}\\end\n",
-        lua.display()
+        lua.display().to_string().replace('\\', "/")
     );
     e.input.push_file("t.tex".to_string(), src.into_bytes());
     e.run();

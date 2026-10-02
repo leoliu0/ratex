@@ -27,7 +27,7 @@ fn run(script: &str) -> String {
         &file,
         format!(
             "local out = {{}}\nfunction P(...) local t = table.pack(...) for i = 1, t.n do t[i] = tostring(t[i]) end out[#out+1] = table.concat(t, ' | ') end\n{script}\nlocal f = io.open('{}', 'wb') f:write(table.concat(out, '\\n')) f:close()\n",
-            out.display()
+            out.display().to_string().replace('\\', "/")
         ),
     )
     .unwrap();
@@ -38,7 +38,7 @@ fn run(script: &str) -> String {
     }
     e.input.push_file(
         "t.tex".to_string(),
-        format!("\\directlua{{dofile('{}')}}\\end\n", file.display()).into_bytes(),
+        format!("\\directlua{{dofile('{}')}}\\end\n", file.display().to_string().replace('\\', "/")).into_bytes(),
     );
     e.run();
     assert_eq!(e.error_count, 0, "errors: {:?}, term: {}", e.diagnostics, e.term);

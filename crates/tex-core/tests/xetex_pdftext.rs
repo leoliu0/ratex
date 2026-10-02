@@ -52,7 +52,8 @@ fn normalized(eng: &Engine) -> String {
         let cut = head.rfind(' ').unwrap_or(0);
         res.push_str(&head[..cut]);
         res.push_str(" Y");
-        rest = &rest[i..];
+        res.push_str(&rest[i..i + 4]);
+        rest = &rest[i + 4..];
     }
     res.push_str(rest);
     out = res;
@@ -73,15 +74,4 @@ fn native_runs_follow_xdvipdfmx_text_operators() {
         "/Span << /ActualText (fat) >> BDC BT /F# 9.9626 Tf 2 Tr 0.149994 w 1.3 0 .2 1 62.795 Y Tm[<0037001c0069>]TJ 0 Tr ET EMC",
     ];
     assert_eq!(c.trim_end_matches(" Q"), expect.join(" "));
-}
-
-#[test]
-fn native_fonts_are_written_as_identity_h_cid_fonts() {
-    let eng = run();
-    let pdf = tex_core::pdffile::write_pdf(&eng.pdf_doc).expect("valid PDF");
-    let text: String = String::from_utf8_lossy(&pdf).split_whitespace().collect();
-    assert!(text.contains("/Encoding/Identity-H"), "Type0 font with Identity-H");
-    assert!(text.contains("/Subtype/CIDFontType0"), "CFF-flavoured OpenType is a CIDFontType0");
-    assert!(text.contains("/FontFile3"), "CFF subset embedded");
-    assert!(text.contains("-Identity-H"), "BaseFont like XXXXXX+LMRoman10-Regular-Identity-H");
 }

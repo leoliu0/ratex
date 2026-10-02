@@ -38,6 +38,9 @@ enum Nuc {
     /// a `\left...\right` list: starts and ends with its fence markers
     Fenced(NodeList),
     Box(Node),
+    /// an accent or radical noad: converted with the style in force (its
+    /// box becomes the nucleus, as luatex's `make_math_accent` does)
+    Atom(Node),
 }
 
 #[derive(Clone, Debug)]
@@ -65,6 +68,8 @@ enum Side {
     Left,
     Middle,
     Right,
+    /// luatex `no_noad_side` (`\Uvextensible`)
+    Plain,
 }
 
 #[derive(Clone, Debug)]
@@ -73,7 +78,7 @@ enum Item {
     /// a fraction/radical/accent converted by `convert_atom`; `inner`
     /// spacing class for fractions
     Raw { node: Node, frac: bool },
-    Fence { side: Side, delim: Option<(u8, u32, u8, u32)> },
+    Fence { side: Side, delim: Option<(u8, u32, u8, u32)>, fence: crate::boxes::FenceOpts },
     Style(GStyle),
     NonScript,
     Other(Node),
@@ -124,10 +129,12 @@ impl Engine {
             match n {
                 Node::Style(s) => out.push(Slot::new(Item::Style(crate::math::gstyle_of(*s)))),
                 Node::NonScript => out.push(Slot::new(Item::NonScript)),
-                Node::DelimBox { small, large, size, .. } => {
+                Node::DelimBox { small, large, size, fence, .. } => {
                     let d = Some((small.0, u32::from(small.1), large.0, u32::from(large.1)));
                     match *size {
-                        0 if fenced && i == 0 => out.push(Slot::new(Item::Fence { side: Side::Left, delim: d })),
+                        0 if fenced && i == 0 => {
+                            out.push(Slot::new(Item::Fence { side: Side::Left, delim: d, fence: *fence }))
+                        }
                         0 => {
                             let mut depth = 1usize;
                             let mut j = i + 1;
@@ -161,7 +168,7 @@ impl Engine {
                             i = end;
                         }
                         1 if fenced && i + 1 == list.len() => {
-                            out.push(Slot::new(Item::Fence { side: Side::Right, delim: d }))
+                            out.push(Slot::new(Item::Fence { side: Side::Right, delim: d, fence: *fence }))
                         }
                         1 => {
                             // stray right delimiter: a close noad
@@ -170,8 +177,9 @@ impl Engine {
                                 Nuc::Char { fam: small.0, c: u32::from(small.1), origin: MathDiagnosticOrigin::default() },
                             ))));
                         }
-                        3 if fenced => out.push(Slot::new(Item::Fence { side: Side::Middle, delim: d })),
+                        3 if fenced => out.push(Slot::new(Item::Fence { side: Side::Middle, delim: d, fence: *fence })),
                         3 => {}
+                        4 => out.push(Slot::new(Item::Fence { side: Side::Plain, delim: d, fence: *fence })),
                         _ => out.push(Slot::new(Item::Noad(Noad::new(
                             CL_ORD,
                             Nuc::Char { fam: small.0, c: u32::from(small.1), origin: MathDiagnosticOrigin::default() },
@@ -290,6 +298,7 @@ impl Engine {
                 n.special = if *under { Special::Under } else { Special::Over };
                 n
             }
+            [n @ (Node::Accent { .. } | Node::Radical { .. })] => Noad::new(CL_ORD, Nuc::Atom(n.clone())),
             other => Noad::new(CL_ORD, Nuc::Mlist(other.to_vec())),
         };
         noad.sup = sup.clone();
@@ -503,7 +512,7 @@ impl Engine {
     // ================= fetch / nucleus =================
 
     /// luatex `fetch`: the font and character of a math char at size `size`.
-    fn lm_fetch(&mut self, fam: u8, c: u32, size: usize) -> (FontId, u32) {
+    pub(crate) fn lm_fetch(&mut self, fam: u8, c: u32, size: usize) -> (FontId, u32) {
         let f = self.fam_fnt(u32::from(fam), size);
         self.lm_cur_f = f;
         if f == 0 {
@@ -543,6 +552,14 @@ impl Engine {
                 (p, Some(delta))
             }
             Nuc::Box(b) => (vec![b], None),
+            Nuc::Atom(n) => {
+                let nodes = self.convert_atom(&n, cur_style, false);
+                if matches!(nodes.as_slice(), [Node::Box { .. }]) {
+                    (nodes, None)
+                } else {
+                    (vec![hpack_nat(self, nodes)], None)
+                }
+            }
             Nuc::Mlist(l) => {
                 let nodes = self.lm_convert(&l, cur_style, false, false);
                 (vec![hpack_nat(self, nodes)], None)
@@ -595,6 +612,10 @@ impl Engine {
             }
             Nuc::Box(b) => {
                 let nodes = vec![b.clone()];
+                self.lm_finish_clean(nodes)
+            }
+            Nuc::Atom(n) => {
+                let nodes = self.convert_atom(n, s, false);
                 self.lm_finish_clean(nodes)
             }
             Nuc::Mlist(l) => {
@@ -1254,8 +1275,8 @@ impl Engine {
             }
             let mut new_hlist: NodeList = slot.hlist.clone();
             let mut fence_right = false;
-            if let Item::Fence { side, delim } = &slot.item {
-                let (hl, class) = self.lm_make_left_right(*side, *delim, style, max_d, max_hl);
+            if let Item::Fence { side, delim, fence } = &slot.item {
+                let (hl, class) = self.lm_make_left_right(*side, *delim, *fence, style, max_d, max_hl);
                 new_hlist = hl;
                 t = class;
                 fence_right = *side == Side::Right;
@@ -1296,25 +1317,65 @@ impl Engine {
         &mut self,
         side: Side,
         delim: Option<(u8, u32, u8, u32)>,
+        fence: crate::boxes::FenceOpts,
         style: GStyle,
         max_d: i32,
         max_h: i32,
     ) -> (NodeList, u8) {
+        use crate::boxes::noad_option as no;
         let size = size_of_style(style);
-        let axis = true;
-        let delta = self.lm_delimiter_height(max_d, max_h, axis, size);
         let same = match side {
             Side::Left => 1,
             Side::Middle => 2,
             Side::Right => 3,
+            Side::Plain => 4,
         };
-        let (tmp, _info) = self.do_delimiter(delim, size, delta, false, style, axis, same);
-        let class = if side == Side::Left { CL_OPEN } else { CL_CLOSE };
+        let tmp = if fence.height != 0 || fence.depth != 0 {
+            let delta = fence.height + fence.depth;
+            let (mut t, info) = self.do_delimiter(delim, size, delta, false, style, false, same);
+            let (mut fh, mut fd) = (fence.height, fence.depth);
+            if info.stack {
+                crate::math_otf::set_shift(&mut t, fd);
+            }
+            if no::has(fence.options, no::EXACT) {
+                let sh = crate::math_otf::box_shift(&t);
+                let (_, bh, bd) = box_whd(&t);
+                fh = bh - sh;
+                fd = bd + sh;
+            }
+            if no::has(fence.options, no::AXIS) {
+                let ax = self.math_axis_size(size);
+                fh += ax;
+                fd -= ax;
+                let sh = crate::math_otf::box_shift(&t) - ax;
+                crate::math_otf::set_shift(&mut t, sh);
+            }
+            let (w, _, _) = box_whd(&t);
+            let mut lst = null_box(HBOX);
+            if let Node::Box { w: bw, h: bh, d: bd, list, .. } = &mut lst {
+                *bw = w;
+                *bh = fh;
+                *bd = fd;
+                *list = vec![t];
+            }
+            lst
+        } else {
+            let axis = !no::has(fence.options, no::NO_AXIS);
+            let delta = self.lm_delimiter_height(max_d, max_h, axis, size);
+            self.do_delimiter(delim, size, delta, false, style, axis, same).0
+        };
+        let class = if (0..=7).contains(&fence.class) {
+            fence.class as u8
+        } else if side == Side::Left {
+            CL_OPEN
+        } else {
+            CL_CLOSE
+        };
         (vec![tmp], class)
     }
 
     /// `get_delimiter_height`
-    fn lm_delimiter_height(&mut self, max_d: i32, max_h: i32, axis: bool, size: usize) -> i32 {
+    pub(crate) fn lm_delimiter_height(&mut self, max_d: i32, max_h: i32, axis: bool, size: usize) -> i32 {
         let delta2 = if axis { max_d + self.math_axis_size(size) } else { max_d };
         let mut delta1 = max_h + max_d - delta2;
         if delta2 > delta1 {

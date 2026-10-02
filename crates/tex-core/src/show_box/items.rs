@@ -140,6 +140,33 @@ pub(super) fn empty_noad_kind<'a>(kind: NoadKind) -> Item<'a> {
     noad(kind, Field::Empty, Field::Empty, Field::Empty)
 }
 
+/// The noad field luatex is scanning into: it hands `scan_math` a fresh
+/// `math_char_node` (family 0, character 0), which `\showlists` prints as
+/// `\fam0 ` while the field is in progress.
+#[derive(Clone, Copy)]
+pub(super) enum PendingField {
+    Nucleus,
+    Sup,
+    Sub,
+    Degree,
+}
+
+pub(super) fn set_pending_field(item: &mut Item<'_>, which: PendingField) {
+    set_field(item, which, Field::Char(0, 0));
+}
+
+pub(super) fn set_field<'a>(item: &mut Item<'a>, which: PendingField, field: Field<'a>) {
+    if let Item::Noad(n) = item {
+        let slot = match which {
+            PendingField::Nucleus => &mut n.nucleus,
+            PendingField::Sup => &mut n.sup,
+            PendingField::Sub => &mut n.sub,
+            PendingField::Degree => &mut n.degree,
+        };
+        *slot = field;
+    }
+}
+
 /// tex.web `scripts_allowed`: the tail is a noad that can take scripts.
 pub(super) fn scripts_allowed(tail: Option<&Item<'_>>) -> bool {
     match tail {

@@ -66,11 +66,16 @@ impl Engine {
     /// `\localinterlinepenalty`/`\localbrokenpenalty` was assigned in
     /// horizontal mode: the new values reach `line_break` through a
     /// `local_par` node, and the group knows it appended one.
+    #[inline(always)]
     pub(crate) fn local_penalty_assigned(&mut self, ip: IntParam) {
-        if self.engine_kind == EngineKind::LuaTeX
-            && self.mode.is_h()
-            && matches!(ip, IntParam::LocalInterLinePenalty | IntParam::LocalBrokenPenalty)
-        {
+        if matches!(ip, IntParam::LocalInterLinePenalty | IntParam::LocalBrokenPenalty) {
+            self.local_penalty_assigned_lua();
+        }
+    }
+
+    #[cold]
+    fn local_penalty_assigned_lua(&mut self) {
+        if self.engine_kind == EngineKind::LuaTeX && self.mode.is_h() {
             self.append_local_par(LocalParMode::Penalty);
             self.count_local_whatsit();
         }
@@ -83,6 +88,7 @@ impl Engine {
 
     /// `run_left_brace`/`run_begin_group`: the new group has appended
     /// neither node yet.
+    #[inline(always)]
     pub(crate) fn reset_local_counters(&mut self) {
         if self.engine_kind == EngineKind::LuaTeX {
             self.eqtb.assign_int_param(IntParam::NoLocalWhatsits, 0, false);
@@ -90,10 +96,37 @@ impl Engine {
         }
     }
 
-    /// packaging.c: a new box group starts counting its own dir changes.
-    pub(crate) fn reset_local_dirs(&mut self) {
+    /// packaging.c `scan_full_spec`: a new box group starts counting its own
+    /// dir changes, and its `text_dir_ptr` is a fresh list holding the
+    /// direction of the enclosing mode (restored by [`Self::end_box_dirs`]).
+    #[inline(always)]
+    pub(crate) fn begin_box_dirs(&mut self) {
         if self.engine_kind == EngineKind::LuaTeX {
-            self.eqtb.assign_int_param(IntParam::NoLocalDirs, 0, false);
+            self.begin_box_dirs_lua();
+        }
+    }
+
+    fn begin_box_dirs_lua(&mut self) {
+        self.eqtb.assign_int_param(IntParam::NoLocalDirs, 0, false);
+        let param = match self.mode {
+            Mode::Vertical | Mode::InternalVertical => IntParam::BodyDirection,
+            Mode::Horizontal | Mode::RestrictedHorizontal => IntParam::TextDirection,
+            _ => IntParam::MathDirection,
+        };
+        let dir = (self.int_param(param) & 3) as u8;
+        // created before the box group opens: one level below the group
+        let level = self.eqtb.cur_level - 1;
+        let outer = std::mem::replace(&mut self.text_dirs, vec![(level, dir)]);
+        self.text_dir_saves.push(outer);
+    }
+
+    /// packaging.c `package`: "adjust back |text_dir_ptr| for |scan_spec|"
+    #[inline(always)]
+    pub(crate) fn end_box_dirs(&mut self) {
+        if self.engine_kind == EngineKind::LuaTeX {
+            if let Some(outer) = self.text_dir_saves.pop() {
+                self.text_dirs = outer;
+            }
         }
     }
 
@@ -124,10 +157,30 @@ impl Engine {
     /// maincontrol.c `fixup_directions`: close a simple or semi-simple
     /// group. In horizontal mode the dir change of the group is cancelled
     /// and a `local_par` node restores the paragraph-local state.
+    #[inline(always)]
     pub(crate) fn pop_group_fixup(&mut self) -> LevelType {
         if self.engine_kind != EngineKind::LuaTeX {
             return self.pop_group();
         }
+        self.pop_group_fixup_lua()
+    }
+
+    /// luatex removes the `\textdir` entry of the group about to end from
+    /// `text_dir_ptr` in `fixup_directions`, `fixup_directions_only` and
+    /// when an output routine ends - not in `unsave`, so a box group leaves
+    /// its entry behind unless `\fixupboxesmode` is on.
+    pub(crate) fn pop_text_dir(&mut self) {
+        let level = self.eqtb.cur_level;
+        if self.engine_kind == EngineKind::LuaTeX
+            && self.text_dirs.len() > 1
+            && self.text_dirs.last().is_some_and(|&(l, _)| l == level)
+        {
+            self.text_dirs.pop();
+        }
+    }
+
+    fn pop_group_fixup_lua(&mut self) -> LevelType {
+        self.pop_text_dir();
         let whatsits = self.int_param(IntParam::NoLocalWhatsits);
         let dirs = self.int_param(IntParam::NoLocalDirs);
         let inner_dir = self.int_param(IntParam::TextDirection) as u8;
@@ -191,11 +244,15 @@ impl Engine {
 
     /// `fixupboxesmode`: a box that changed the text direction ends it
     /// before it is packaged (maincontrol.c `fixup_directions_only`).
+    #[inline(always)]
     pub(crate) fn fixup_box_directions(&mut self) {
-        if self.int_param(IntParam::FixupBoxesMode) != 0 && self.int_param(IntParam::NoLocalDirs) != 0 {
-            let dir = self.int_param(IntParam::TextDirection) as u8;
-            let attr = self.eqtb.cur_attr;
-            self.cur_list.push(Node::Whatsit(WhatIt::Dir { dir, cancel: true, level: 0 }, attr));
+        if self.int_param(IntParam::FixupBoxesMode) != 0 {
+            self.pop_text_dir();
+            if self.int_param(IntParam::NoLocalDirs) != 0 {
+                let dir = self.int_param(IntParam::TextDirection) as u8;
+                let attr = self.eqtb.cur_attr;
+                self.cur_list.push(Node::Whatsit(WhatIt::Dir { dir, cancel: true, level: 0 }, attr));
+            }
         }
     }
 

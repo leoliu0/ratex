@@ -39,6 +39,7 @@ struct ActiveNode {
     start_sh: [i64; 4],
     start_fst: i64,
     start_fsh: i64,
+    /// left margin protrusion less the width of the left local box
     left_prot: i32,
     prev: Option<Rc<ActiveNode>>,
     pub ratio: i32,
@@ -48,8 +49,12 @@ struct ActiveNode {
     /// luatex: index in the list of the last `local_par` node before this
     /// breakpoint (the state `line_break` keeps in `internal_*`); the
     /// initial node holds the one the paragraph starts with
-    lp: Option<usize>,
+    /// ([`NO_LOCAL_PAR`] when there is none)
+    lp: u32,
 }
+
+/// `ActiveNode::lp` of a breakpoint no `local_par` node precedes
+const NO_LOCAL_PAR: u32 = u32::MAX;
 
 /// e-TeX \lastlinefit setup (etex.ch <Check for special treatment of last
 /// line of paragraph>): the infinite stretch of \parfillskip by order.
@@ -1210,26 +1215,26 @@ impl Engine {
         // (`internal_left_box_width` etc. when `try_break` is called)
         let lua_lp = self.engine_kind == crate::engine::EngineKind::LuaTeX
             && list.iter().any(|n| matches!(n, Node::Whatsit(WhatIt::LocalPar(_), _)));
-        let mut last_lp: Vec<Option<usize>> = Vec::new();
+        let mut last_lp: Vec<u32> = Vec::new();
         if lua_lp {
             last_lp.reserve(n + 1);
-            let mut cur = None;
+            let mut cur = NO_LOCAL_PAR;
             for (i, nd) in list.iter().enumerate() {
                 last_lp.push(cur);
                 if matches!(nd, Node::Whatsit(WhatIt::LocalPar(_), _)) {
-                    cur = Some(i);
+                    cur = i as u32;
                 }
             }
             last_lp.push(cur);
         }
         let init_lp = if lua_lp && matches!(list.first(), Some(Node::Whatsit(WhatIt::LocalPar(_), _))) {
-            Some(0)
+            0
         } else {
-            None
+            NO_LOCAL_PAR
         };
         // (left box width, right box width) of a local_par state
-        let lp_widths = |lp: Option<usize>| -> (i64, i64) {
-            match lp.and_then(|i| list.get(i)) {
+        let lp_widths = |lp: u32| -> (i64, i64) {
+            match list.get(lp as usize) {
                 Some(Node::Whatsit(WhatIt::LocalPar(p), _)) => (i64::from(p.left_width), i64::from(p.right_width)),
                 _ => (0, 0),
             }
@@ -1249,7 +1254,8 @@ impl Engine {
             start_sh: [0; 4],
             start_fst: 0,
             start_fsh: 0,
-            left_prot: start_left_prot,
+            // (net of the left local box, which eats into the line too)
+            left_prot: start_left_prot - if lua_lp { lp_widths(init_lp).0 as i32 } else { 0 },
             prev: None,
             ratio: 0,
             short: 0,
@@ -1277,14 +1283,17 @@ impl Engine {
                 let btype: BreakType = $btype;
                 let penalty: i32 = $penalty;
                 let endw: i64 = $endw;
-                let cand_lp = if lua_lp { last_lp[cand] } else { None };
+                let cand_lp = if lua_lp { last_lp[cand] } else { NO_LOCAL_PAR };
+                // luatex: the right local box eats into every line ending here
+                let (cand_left_w, cand_right_w) = if lua_lp { lp_widths(cand_lp) } else { (0, 0) };
+                let bg_w_cand = bg_w + cand_right_w;
                 let mut champions: HashMap<(i32, usize), (i64, Rc<ActiveNode>, i32, i64, i64)> =
                     HashMap::new();
                 let mut idx = 0usize;
                 while idx < actives.len() {
                     let a = actives[idx].clone();
                     let is_only = actives.len() == 1;
-                    let width = endw - a.start_w + bg_w;
+                    let width = endw - a.start_w + bg_w_cand;
                     let mut dst = [0i64; 4];
                     let mut dsh = [0i64; 4];
                     for k in 0..4 {
@@ -1344,10 +1353,6 @@ impl Engine {
                         0
                     };
                     let mut shortfall = target - width + (a.left_prot + right_prot) as i64;
-                    if lua_lp {
-                        // luatex: the local boxes eat into the line
-                        shortfall -= lp_widths(a.lp).0 + lp_widths(cand_lp).1;
-                    }
                     // pdftex.web: retain half an expansion step when the
                     // available font adjustment exceeds the shortfall.
                     let cur_ratio = if pdf_adjust >= 2 && shortfall > 0 && font_st > 0 {
@@ -1598,7 +1603,7 @@ impl Engine {
                             start_sh,
                             start_fst,
                             start_fsh,
-                            left_prot,
+                            left_prot: left_prot - cand_left_w as i32,
                             prev: Some(prev.clone()),
                             ratio: *ratio,
                             short: *short,
@@ -1802,17 +1807,17 @@ impl Engine {
         chain.reverse();
         // luatex `local_par` states the breaks refer to (a line's left box
         // and nothing else comes from the break before it)
-        let mut local_pars: HashMap<usize, crate::boxes::LocalPar> = HashMap::new();
+        let mut local_pars: Vec<(u32, crate::boxes::LocalPar)> = Vec::new();
         if self.engine_kind == crate::engine::EngineKind::LuaTeX {
             for b in &chain {
-                if let Some(i) = b.lp {
-                    if let Some(Node::Whatsit(WhatIt::LocalPar(p), _)) = list.get(i) {
-                        local_pars.entry(i).or_insert_with(|| (**p).clone());
+                if let Some(Node::Whatsit(WhatIt::LocalPar(p), _)) = list.get(b.lp as usize) {
+                    if !local_pars.iter().any(|(i, _)| *i == b.lp) {
+                        local_pars.push((b.lp, (**p).clone()));
                     }
                 }
             }
         }
-        let local_par_of = |b: &ActiveNode| b.lp.and_then(|i| local_pars.get(&i));
+        let local_par_of = |b: &ActiveNode| local_pars.iter().find(|(i, _)| *i == b.lp).map(|(_, p)| p);
 
         // etex.ch post_line_break: `LR_ptr:=LR_save` ... `LR_save:=LR_ptr`;
         // with TeXXeT every line reopens (closes) the text-direction and
@@ -1988,8 +1993,14 @@ impl Engine {
             let (indent, target) = line_metrics(params, bp.line);
             // luatex: the left box of the break before and the right box of
             // the break after the line (copies, as the line is packed)
-            let left_box = local_par_of(&chain[li]).filter(|p| !p.left.is_empty()).map(|p| p.left.clone());
-            let right_box = local_par_of(bp).filter(|p| !p.right.is_empty()).map(|p| p.right.clone());
+            let (left_box, right_box) = if lua_dirs {
+                (
+                    local_par_of(&chain[li]).filter(|p| !p.left.is_empty()).map(|p| p.left.clone()),
+                    local_par_of(bp).filter(|p| !p.right.is_empty()).map(|p| p.right.clone()),
+                )
+            } else {
+                (None, None)
+            };
             if let Some(lb) = left_box {
                 // after the empty \parindent box of the first line
                 let at = if li == 0 && matches!(seg.get(1), Some(Node::Box { list, .. }) if list.is_empty()) {
@@ -2054,8 +2065,8 @@ impl Engine {
                 }
             }
             seg.extend(break_math);
-            let mut line_end: NodeList = Vec::new();
             if lua_dirs {
+                let mut line_end: NodeList = Vec::new();
                 let attr = seg.last().map_or(self.eqtb.cur_attr, Node::attr);
                 line_end.extend(
                     dir_stack
@@ -2063,12 +2074,12 @@ impl Engine {
                         .rev()
                         .map(|&d| Node::Whatsit(WhatIt::Dir { dir: d, cancel: true, level: 0 }, attr)),
                 );
-            }
-            line_end.extend(right_box.into_iter().flatten());
-            if !line_end.is_empty() {
-                // before the break glue (\parfillskip on the last line)
-                let at = if last && matches!(seg.last(), Some(Node::Glue(..))) { seg.len() - 1 } else { seg.len() };
-                seg.splice(at..at, line_end);
+                line_end.extend(right_box.into_iter().flatten());
+                if !line_end.is_empty() {
+                    // before the break glue (\parfillskip on the last line)
+                    let at = if last && matches!(seg.last(), Some(Node::Glue(..))) { seg.len() - 1 } else { seg.len() };
+                    seg.splice(at..at, line_end);
+                }
             }
             // "Insert LR nodes at the end of the current line"
             if texxet && !lr.is_empty() {
@@ -2150,7 +2161,7 @@ impl Engine {
                 let line_no = params.prev_graf.max(0) as usize + li + 1;
                 // luatex: \localinterlinepenalty, when set, replaces
                 // \interlinepenalty
-                let local = local_par_of(bp);
+                let local = if lua_dirs { local_par_of(bp) } else { None };
                 let inter = match local {
                     Some(p) if p.pen_inter != 0 => p.pen_inter,
                     _ => params.inter_line_penalty,

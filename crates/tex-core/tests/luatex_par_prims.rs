@@ -18,6 +18,8 @@ const PRE: &str = r#"\catcode`\{=1 \catcode`\}=2 \catcode`\#=6 \catcode`\$=3 \ca
 
 /// ini defaults luatex has and `Engine::new_with_kind` leaves to the format.
 fn run(body: &str) -> Vec<String> {
+    // TeX Live may or may not be installed: look fonts up in the embedded archive only
+    std::env::set_var("TEX_RS_HERMETIC", "1");
     let mut e = Engine::new_with_kind(EngineKind::LuaTeX, true);
     e.init_primitives();
     for p in [GlueParam::ParFillSkip, GlueParam::BaselineSkip, GlueParam::LineSkip, GlueParam::ThinMuSkip, GlueParam::MedMuSkip, GlueParam::ThickMuSkip] {
@@ -1458,6 +1460,80 @@ GD mode=3 y=-100000 h=447828 d=0 w=491521
 GD mode=3 y=0 h=447828 d=0 w=491521
 GD mode=3 y=150000 h=447828 d=0 w=491521
 [HT=6.83331ptDP=0.0pt]
+"#,
+    );
+}
+
+/// A box starts with a text direction list of its own, a group's `\textdir` ends with the group and
+/// paragraphs reopen the directions in force.
+#[test]
+fn text_direction_is_per_box_and_group() {
+    check(
+        r#"\hsize 100pt \parindent 0pt
+\setbox2\hbox{\textdir TRT A}
+\setbox1\vbox{\noindent B\par}
+\showbox1
+\setbox2\hbox{\fixupboxesmode1 \textdir TRT A}
+\showbox2
+\begingroup\textdir TRT \setbox1\vbox{\noindent C\par}\endgroup
+\showbox1
+{\textdir TRT \setbox1\hbox{\textdir TLT x}\setbox3\vbox{\noindent D\par}\showbox3}
+\setbox1\vbox{\noindent E\par}
+\showbox1
+"#,
+        r#"> \box1=
+\vbox(6.83331+0.0)x100.0, direction TLT
+.\hbox(6.83331+0.0)x100.0, glue set 92.91664fil, direction TLT
+..\localpar
+...\localinterlinepenalty=0
+...\localbrokenpenalty=0
+...\localleftbox=null
+...\localrightbox=null
+..\f B
+..\penalty 10000
+..\glue(\parfillskip) 0.0 plus 1.0fil
+..\glue(\rightskip) 0.0
+> \box2=
+\hbox(6.83331+0.0)x7.50002, direction TLT
+.\begindir TRT
+.\f A
+.\enddir TRT
+> \box1=
+\vbox(6.83331+0.0)x100.0, direction TLT
+.\hbox(6.83331+0.0)x100.0, glue set 92.91664fil, direction TLT
+..\localpar
+...\localinterlinepenalty=0
+...\localbrokenpenalty=0
+...\localleftbox=null
+...\localrightbox=null
+..\f B
+..\penalty 10000
+..\glue(\parfillskip) 0.0 plus 1.0fil
+..\glue(\rightskip) 0.0
+> \box3=
+\vbox(6.83331+0.0)x100.0, direction TLT
+.\hbox(6.83331+0.0)x100.0, glue set 92.3611fil, direction TLT
+..\localpar
+...\localinterlinepenalty=0
+...\localbrokenpenalty=0
+...\localleftbox=null
+...\localrightbox=null
+..\f D
+..\penalty 10000
+..\glue(\parfillskip) 0.0 plus 1.0fil
+..\glue(\rightskip) 0.0
+> \box1=
+\vbox(6.83331+0.0)x100.0, direction TLT
+.\hbox(6.83331+0.0)x100.0, glue set 93.19443fil, direction TLT
+..\localpar
+...\localinterlinepenalty=0
+...\localbrokenpenalty=0
+...\localleftbox=null
+...\localrightbox=null
+..\f E
+..\penalty 10000
+..\glue(\parfillskip) 0.0 plus 1.0fil
+..\glue(\rightskip) 0.0
 "#,
     );
 }

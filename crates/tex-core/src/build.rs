@@ -1372,7 +1372,7 @@ impl Engine {
         };
         self.push_group_level_coded(LevelType::Box, meta);
         if kind <= 2 {
-            self.reset_local_dirs();
+            self.begin_box_dirs();
         }
 
         self.box_targets.push(target);
@@ -1458,6 +1458,9 @@ impl Engine {
             && self.eqtb.cur_group_code() == crate::eqtb::group_code::HBOX
         {
             self.fixup_box_directions();
+        }
+        if kind <= 2 {
+            self.end_box_dirs();
         }
         let inner = std::mem::replace(&mut self.cur_list, Vec::new());
         let (outer_mode, outer_list, pd, sf, pg, _) = self.saved_lists.pop().unwrap_or((

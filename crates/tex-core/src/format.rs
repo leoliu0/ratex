@@ -315,7 +315,7 @@ impl<'a> R<'a> {
 
 /// Reasons a `\dump` would be refused (tex.web: \dump at top level only).
 pub fn check_dumpable(eng: &Engine) -> Result<(), String> {
-    if !eng.font_loader.native_fonts.is_empty() {
+    if eng.eqtb.fonts.iter().any(|f| f.native.is_some()) {
         return Err("cannot dump: native font programs are not serialized; select native fonts after loading the format".to_string());
     }
     if !eng.eqtb.save_stack.is_empty() {
@@ -1154,10 +1154,6 @@ fn load_format_uncompressed(data: &[u8]) -> Result<Engine, String> {
             _ => {}
         }
     }
-    for (id, font) in eng.eqtb.fonts.iter().enumerate() {
-        eng.font_loader
-            .restore_native_font(id as crate::tfm::FontId, font)?;
-    }
     if eng.engine_kind == crate::engine::EngineKind::XeTeX {
         eng.init_xetex_primitives();
     } else if lua {
@@ -1190,12 +1186,6 @@ pub fn load_format_into(path: &Path, eng: &mut Engine) -> Result<(), String> {
 
 pub fn load_format_bytes_into(data: &[u8], eng: &mut Engine) -> Result<(), String> {
     let scratch = load_format_from(data)?;
-    // Resolve native declarations using the caller's project resolver before
-    // committing any format state. Font files may be supplied by MemoryFs.
-    for (id, font) in scratch.eqtb.fonts.iter().enumerate() {
-        eng.font_loader
-            .restore_native_font(id as crate::tfm::FontId, font)?;
-    }
     // Full success only now: transplant the boot state while keeping the
     // caller's process-wide setup (font_loader, ids, out_dir, pdf_doc).
     eng.cs = scratch.cs;
@@ -1672,6 +1662,7 @@ fn read_font(r: &mut R) -> io::Result<Font> {
         map_fontname,
         encoding,
         lua: None,
+        native: None,
     })
 }
 
@@ -1859,6 +1850,7 @@ mod tests {
             map_fontname: None,
             encoding: Some(vec!["grave".to_string(), "".to_string()].into()),
             lua: None,
+            native: None,
         };
         eng.eqtb.fonts.push(Rc::new(font));
         eng.eqtb.font_params.push(vec![1, 2, 3]);

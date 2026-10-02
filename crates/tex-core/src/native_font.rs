@@ -1,876 +1,639 @@
-//! Native font model for Unicode OpenType/TrueType shaping, layout, and NFSS fontspec/xeCJK integration.
+//! XeTeX native (installed/OpenType) fonts: the font-name syntax and the
+//! font option list of `XeTeX_ext.c` (`splitFontName`, `loadOTfont`,
+//! `readCommonFeatures`), and the loaded-font record used by the layout code.
 
 use std::rc::Rc;
-use std::str::FromStr;
 
+/// `reqEngine` of XeTeX_ext.c: `/AAT`, `/OT` (`/ICU`), `/GR` request a renderer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ReqEngine {
+    #[default]
+    Default,
+    Aat,
+    Ot,
+    Graphite,
+}
+
+impl ReqEngine {
+    /// The letter XeTeX keeps in `sReqEngine` (`A`, `O`, `G` or 0).
+    pub fn letter(self) -> u8 {
+        match self {
+            ReqEngine::Default => 0,
+            ReqEngine::Aat => b'A',
+            ReqEngine::Ot => b'O',
+            ReqEngine::Graphite => b'G',
+        }
+    }
+}
+
+/// A loaded native font (`XeTeXLayoutEngine` + the `loaded_font_*` globals).
 #[derive(Clone, Debug)]
 pub struct NativeFont {
     pub program: Rc<crate::font_program::FontProgram>,
-    pub script: Option<rustybuzz::Script>,
-    pub language: Option<rustybuzz::Language>,
+    /// Canonical name (`name_of_file` after `findnativefont`): `font_name[f]`.
+    pub full_name: String,
+    pub req_engine: ReqEngine,
+    /// OpenType script tag (`script=`), 0 when none.
+    pub script: u32,
+    /// OpenType language tag (`language=`) as four bytes, `None` when absent.
+    pub language: Option<[u8; 4]>,
     pub features: Vec<rustybuzz::Feature>,
-    pub tex_ligatures: bool,
+    pub shapers: Vec<String>,
     pub vertical: bool,
+    pub colored: bool,
+    /// `0xRRGGBBAA`.
+    pub rgba: u32,
+    pub extend: f32,
+    pub slant: f32,
+    /// Already scaled: `embolden * pointsize / 100` (points).
+    pub embolden: f32,
+    /// `loaded_font_letter_space`, sp.
+    pub letter_space: i32,
+    pub mapping: Option<Rc<crate::teckit::TextMapping>>,
+    /// `loaded_font_design_size`, sp.
+    pub design_size: i32,
+    /// The point size XeTeXFontInst was created with (`Fix2D(scaled_size)` as f32).
+    pub point_size: f32,
+    /// Filesystem-style description of where the font came from (tracing).
+    pub origin: String,
+    /// `height_base` / `depth_base`: ascent and descent (`ot_get_font_metrics`), sp.
+    pub height_base: i32,
+    pub depth_base: i32,
+    /// `\fontdimen1`, `5`, `8`: slant, x-height, cap height (sp).
+    pub slant_param: i32,
+    pub x_height: i32,
+    pub cap_height: i32,
+    /// Glyph bounding boxes (`sGlyphBoxes`).
+    pub bbox_cache: Rc<std::cell::RefCell<crate::FxHashMap<u16, crate::native_layout::GlyphBBox>>>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct NativeFontOptions {
-    pub path: Option<String>,
-    pub extension: Option<String>,
-    pub font_index: u32,
-    pub style: Option<String>,
-    pub weight: Option<u16>,
-    pub italic: Option<bool>,
-    pub upright_font: Option<String>,
-    pub bold_font: Option<String>,
-    pub italic_font: Option<String>,
-    pub bold_italic_font: Option<String>,
-    pub slanted_font: Option<String>,
-    pub bold_slanted_font: Option<String>,
-    pub small_caps_font: Option<String>,
-    pub upright_features: Vec<rustybuzz::Feature>,
-    pub bold_features: Vec<rustybuzz::Feature>,
-    pub italic_features: Vec<rustybuzz::Feature>,
-    pub bold_italic_features: Vec<rustybuzz::Feature>,
-    pub slanted_features: Vec<rustybuzz::Feature>,
-    pub small_caps_features: Vec<rustybuzz::Feature>,
-    pub scale: f64,
-    pub script: Option<rustybuzz::Script>,
-    pub language: Option<rustybuzz::Language>,
-    pub features: Vec<rustybuzz::Feature>,
-    pub tex_ligatures: bool,
-    pub variations: Vec<(ttf_parser::Tag, f32)>,
-    pub vertical: bool,
+impl NativeFont {
+    pub fn units_per_em(&self) -> f32 {
+        self.program.units_per_em.max(1) as f32
+    }
+
+    /// `XeTeXFontInst::unitsToPoints`, in f32 exactly as the C code.
+    #[inline]
+    pub fn units_to_points(&self, units: f32) -> f32 {
+        (units * self.point_size) / self.units_per_em()
+    }
 }
 
-impl Default for NativeFontOptions {
+/// XeTeX's `Fix2D`/`D2Fix`.
+#[inline]
+pub fn d2fix(d: f64) -> i32 {
+    (d * 65536.0 + 0.5) as i32
+}
+
+#[inline]
+pub fn fix2d(f: i32) -> f64 {
+    f as f64 / 65536.0
+}
+
+/// Result of `splitFontName` as slices of the name.
+#[derive(Debug, PartialEq, Eq)]
+pub struct SplitName<'a> {
+    /// Name before the variant (for `[path]` names this includes the `[`).
+    pub name: &'a str,
+    /// Variant string after `/` (without the slash), `None` if absent.
+    pub var: Option<&'a str>,
+    /// Feature string after `:` (without the colon), `None` if absent.
+    pub feat: Option<&'a str>,
+    /// Face index from `[path:index]`.
+    pub index: u32,
+}
+
+/// `splitFontName` + the slicing of `findnativefont`.
+pub fn split_font_name(name: &str) -> SplitName<'_> {
+    let b = name.as_bytes();
+    let mut var: Option<usize> = None;
+    let mut feat: Option<usize> = None;
+    let mut index: u32 = 0;
+    let end;
+    if b.first() == Some(&b'[') {
+        let mut within = true;
+        let mut i = 1;
+        while i < b.len() {
+            if within && b[i] == b']' {
+                within = false;
+                if var.is_none() {
+                    var = Some(i);
+                }
+            } else if b[i] == b':' {
+                if within && var.is_none() {
+                    var = Some(i);
+                    i += 1;
+                    let mut idx: u32 = 0;
+                    while i < b.len() && b[i].is_ascii_digit() {
+                        idx = idx.wrapping_mul(10).wrapping_add((b[i] - b'0') as u32);
+                        i += 1;
+                    }
+                    index = idx;
+                    i -= 1;
+                } else if !within && feat.is_none() {
+                    feat = Some(i);
+                }
+            }
+            i += 1;
+        }
+        end = b.len();
+    } else {
+        let mut i = 0;
+        while i < b.len() {
+            if b[i] == b'/' && var.is_none() && feat.is_none() {
+                var = Some(i);
+            } else if b[i] == b':' && feat.is_none() {
+                feat = Some(i);
+            }
+            i += 1;
+        }
+        end = b.len();
+    }
+    let feat_pos = feat.unwrap_or(end);
+    let var_pos = var.unwrap_or(feat_pos);
+    let slice = |from: usize, to: usize| name.get(from..to).unwrap_or("");
+    SplitName {
+        name: slice(0, var_pos),
+        var: (feat_pos > var_pos).then(|| slice(var_pos + 1, feat_pos)),
+        feat: (end > feat_pos).then(|| slice(feat_pos + 1, end)),
+        index,
+    }
+}
+
+/// `hb_tag_from_string(s, len)`: up to four bytes, padded with spaces.
+pub fn hb_tag_from_string(s: &[u8]) -> u32 {
+    if s.is_empty() {
+        return 0;
+    }
+    let mut t = [b' '; 4];
+    for (i, c) in s.iter().take(4).enumerate() {
+        t[i] = *c;
+    }
+    u32::from_be_bytes(t)
+}
+
+pub fn tag_bytes(tag: u32) -> [u8; 4] {
+    tag.to_be_bytes()
+}
+
+/// An option of the feature string that needs a diagnostic or a side effect,
+/// in source order.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FontOptionEvent {
+    /// `fontfeaturewarning`: unknown/invalid option text.
+    BadOption(String),
+    /// `mapping=name` (loaded by the caller).
+    Mapping(String),
+}
+
+/// The settings `loadOTfont` collects from the feature string.
+#[derive(Debug, Clone)]
+pub struct ParsedOptions {
+    pub script: u32,
+    pub language: Option<[u8; 4]>,
+    pub features: Vec<rustybuzz::Feature>,
+    pub shapers: Vec<String>,
+    pub extend: f32,
+    pub slant: f32,
+    /// percent, unscaled
+    pub embolden: f32,
+    /// percent, unscaled
+    pub letterspace: f32,
+    pub colored: bool,
+    pub rgba: u32,
+    pub vertical: bool,
+    pub events: Vec<FontOptionEvent>,
+}
+
+impl Default for ParsedOptions {
     fn default() -> Self {
-        NativeFontOptions {
-            path: None,
-            extension: None,
-            font_index: 0,
-            style: None,
-            weight: None,
-            italic: None,
-            upright_font: None,
-            bold_font: None,
-            italic_font: None,
-            bold_italic_font: None,
-            slanted_font: None,
-            bold_slanted_font: None,
-            small_caps_font: None,
-            upright_features: Vec::new(),
-            bold_features: Vec::new(),
-            italic_features: Vec::new(),
-            bold_italic_features: Vec::new(),
-            slanted_features: Vec::new(),
-            small_caps_features: Vec::new(),
-            scale: 1.0,
-            script: None,
+        ParsedOptions {
+            script: 0,
             language: None,
             features: Vec::new(),
-            tex_ligatures: false,
-            variations: Vec::new(),
+            shapers: Vec::new(),
+            extend: 1.0,
+            slant: 0.0,
+            embolden: 0.0,
+            letterspace: 0.0,
+            colored: false,
+            rgba: 0x0000_00FF,
             vertical: false,
-        }
-    }
-}
-impl NativeFontOptions {
-    /// Return effective options with per-shape features (bold, italic, etc.) merged into `features`.
-    pub fn effective_options(&self) -> Self {
-        let mut opts = self.clone();
-        if opts.italic == Some(true) && opts.weight.unwrap_or(400) >= 700 {
-            if !opts.bold_italic_features.is_empty() {
-                opts.features.extend(opts.bold_italic_features.clone());
-            } else {
-                opts.features.extend(opts.bold_features.clone());
-                opts.features.extend(opts.italic_features.clone());
-            }
-        } else if opts.weight.unwrap_or(400) >= 700 {
-            opts.features.extend(opts.bold_features.clone());
-        } else if opts.italic == Some(true) {
-            opts.features.extend(opts.italic_features.clone());
-        } else {
-            opts.features.extend(opts.upright_features.clone());
-        }
-        if opts.style.as_deref().is_some_and(|s| {
-            s.eq_ignore_ascii_case("slanted") || s.eq_ignore_ascii_case("boldslanted")
-        }) {
-            opts.features.extend(opts.slanted_features.clone());
-        }
-        if opts
-            .features
-            .iter()
-            .any(|f| f.tag == ttf_parser::Tag::from_bytes(b"smcp"))
-        {
-            opts.features.extend(opts.small_caps_features.clone());
-        }
-        opts
-    }
-}
-
-/// Slope axis of an NFSS shape requested from a native font family.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FaceSlope {
-    Upright,
-    Italic,
-    Slanted,
-}
-
-/// NFSS series/shape pair requested from a native font family.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FaceShape {
-    pub weight: u16,
-    pub slope: FaceSlope,
-}
-
-impl FaceShape {
-    pub const REGULAR: FaceShape = FaceShape {
-        weight: 400,
-        slope: FaceSlope::Upright,
-    };
-
-    /// Shape named by the resolved `Style`/`Weight`/`Italic` options.
-    pub fn requested(options: &NativeFontOptions) -> Self {
-        let slanted = options.style.as_deref().is_some_and(|s| {
-            s.eq_ignore_ascii_case("slanted") || s.eq_ignore_ascii_case("boldslanted")
-        });
-        let slope = if slanted {
-            FaceSlope::Slanted
-        } else if options.italic == Some(true) {
-            FaceSlope::Italic
-        } else {
-            FaceSlope::Upright
-        };
-        FaceShape {
-            weight: options.weight.unwrap_or(400),
-            slope,
-        }
-    }
-
-    /// The shape NFSS tries next when this one is undeclared: `sl` falls back
-    /// to `it`, `it` to the upright shape, and a non-medium series to medium.
-    pub fn nfss_fallback(self) -> Self {
-        match self.slope {
-            FaceSlope::Slanted => FaceShape {
-                slope: FaceSlope::Italic,
-                ..self
-            },
-            FaceSlope::Italic => FaceShape {
-                slope: FaceSlope::Upright,
-                ..self
-            },
-            FaceSlope::Upright => FaceShape::REGULAR,
+            events: Vec::new(),
         }
     }
 }
 
-impl std::fmt::Display for FaceShape {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let weight = match self.weight {
-            400 => "",
-            100 => "Thin",
-            200 => "ExtraLight",
-            300 => "Light",
-            500 => "Medium",
-            600 => "SemiBold",
-            700 => "Bold",
-            800 => "ExtraBold",
-            900 => "Black",
-            other => return write!(f, "Weight{other}{}", slope_name(self.slope)),
-        };
-        match (weight, self.slope) {
-            ("", FaceSlope::Upright) => f.write_str("Regular"),
-            (weight, slope) => write!(f, "{weight}{}", slope_name(slope)),
+/// `read_double`
+fn read_double(s: &[u8], pos: &mut usize) -> f64 {
+    let mut neg = false;
+    let mut val = 0.0f64;
+    while *pos < s.len() && (s[*pos] == b' ' || s[*pos] == b'\t') {
+        *pos += 1;
+    }
+    if *pos < s.len() && s[*pos] == b'-' {
+        neg = true;
+        *pos += 1;
+    } else if *pos < s.len() && s[*pos] == b'+' {
+        *pos += 1;
+    }
+    while *pos < s.len() && s[*pos].is_ascii_digit() {
+        val = val * 10.0 + (s[*pos] - b'0') as f64;
+        *pos += 1;
+    }
+    if *pos < s.len() && s[*pos] == b'.' {
+        let mut dec = 10.0;
+        *pos += 1;
+        while *pos < s.len() && s[*pos].is_ascii_digit() {
+            val += (s[*pos] - b'0') as f64 / dec;
+            *pos += 1;
+            dec *= 10.0;
         }
     }
-}
-
-fn slope_name(slope: FaceSlope) -> &'static str {
-    match slope {
-        FaceSlope::Upright => "",
-        FaceSlope::Italic => "Italic",
-        FaceSlope::Slanted => "Slanted",
-    }
-}
-
-/// Check if a TeX font name represents a native font specification rather than a classic TFM.
-pub fn is_native_font_spec(name: &str) -> bool {
-    let trimmed = name.trim().trim_matches('"').trim_matches('\'').trim();
-    if trimmed.starts_with("ratex:") || trimmed.starts_with('[') {
-        return true;
-    }
-    // Check if filename ends with native font extension or contains directory separators
-    let clean = trimmed.split(':').next().unwrap_or(trimmed);
-    let lower = clean.to_ascii_lowercase();
-    lower.ends_with(".otf")
-        || lower.ends_with(".ttf")
-        || lower.ends_with(".ttc")
-        || lower.ends_with(".otc")
-        || lower.ends_with(".dfont")
-        || clean.contains('/')
-        || clean.contains('\\')
-}
-
-/// Parse a native font string into (selector, options).
-///
-/// Supported formats:
-/// 1. Quoted/unquoted ratex spec: `ratex:{selector}:{options}`
-/// 2. Bracketed file spec: `[file.otf]:options` or `[file.otf]`
-/// 3. Plain file spec: `file.otf:options` or `file.otf`
-pub fn parse_native_font_spec(name: &str) -> Result<(String, NativeFontOptions), String> {
-    let s = name.trim().trim_matches('"').trim_matches('\'').trim();
-
-    if s.starts_with("ratex:") {
-        let rest = &s[6..];
-        let (mut selector, options_str) = parse_ratex_braced_parts(rest)?;
-        if selector.starts_with('[') && selector.ends_with(']') {
-            selector = selector[1..selector.len() - 1].trim().to_string();
-        }
-        let options = parse_fontspec_options(&options_str)?;
-        return Ok((selector, options));
-    }
-
-    if s.starts_with('[') {
-        let close = s
-            .find(']')
-            .ok_or_else(|| "Unclosed `[` in font specification".to_string())?;
-        let selector = s[1..close].trim().to_string();
-        let rest = s[close + 1..].trim();
-        let options_str = if rest.starts_with(':') {
-            rest[1..].trim()
-        } else {
-            ""
-        };
-        let options = parse_fontspec_options(options_str)?;
-        return Ok((selector, options));
-    }
-
-    if let Some((sel, opts)) = s.split_once(':') {
-        let mut selector = sel.trim().to_string();
-        if selector.starts_with('[') && selector.ends_with(']') {
-            selector = selector[1..selector.len() - 1].trim().to_string();
-        }
-        let options = parse_fontspec_options(opts.trim())?;
-        return Ok((selector, options));
-    }
-
-    // Bare filename or family
-    let mut selector = s.to_string();
-    if selector.starts_with('[') && selector.ends_with(']') {
-        selector = selector[1..selector.len() - 1].trim().to_string();
-    }
-    Ok((selector, NativeFontOptions::default()))
-}
-
-/// Parse `ratex:{selector}:{options}` with balanced brace matching.
-fn parse_ratex_braced_parts(input: &str) -> Result<(String, String), String> {
-    let trimmed = input.trim();
-    if trimmed.starts_with('{') {
-        let (selector, after_sel) = extract_balanced_braced(trimmed)?;
-        let after_colon = after_sel.trim();
-        if !after_colon.starts_with(':') {
-            return Ok((selector, String::new()));
-        }
-        let opts_part = after_colon[1..].trim();
-        if opts_part.starts_with('{') {
-            let (options, _) = extract_balanced_braced(opts_part)?;
-            Ok((selector, options))
-        } else {
-            Ok((selector, opts_part.to_string()))
-        }
+    if neg {
+        -val
     } else {
-        // Unbraced ratex:selector:options fallback
-        let parts: Vec<&str> = trimmed.splitn(2, ':').collect();
-        let selector = parts[0].trim().to_string();
-        let options = if parts.len() > 1 {
-            parts[1].trim().to_string()
-        } else {
-            String::new()
-        };
-        Ok((selector, options))
+        val
     }
 }
 
-fn extract_balanced_braced(input: &str) -> Result<(String, &str), String> {
-    let mut chars = input.char_indices();
-    let (_, first) = chars.next().unwrap();
-    if first != '{' {
-        return Err("Expected `{`".to_string());
+/// `read_rgb_a`: returns `(rgba, chars consumed)`.
+fn read_rgb_a(s: &[u8]) -> (u32, usize) {
+    let hex = |c: u8| (c as char).to_digit(16);
+    let mut rgb: u32 = 0;
+    let mut p = 0;
+    for _ in 0..6 {
+        match s.get(p).and_then(|c| hex(*c)) {
+            Some(d) => rgb = (rgb << 4) + d,
+            None => return (0x0000_00FF, p),
+        }
+        p += 1;
     }
-    let mut depth = 1usize;
-    let mut close_idx = None;
-    for (i, c) in chars {
-        if c == '{' {
-            depth += 1;
-        } else if c == '}' {
-            depth -= 1;
-            if depth == 0 {
-                close_idx = Some(i);
-                break;
-            }
+    rgb <<= 8;
+    let mut alpha = 0;
+    let mut i = 0;
+    while i < 2 {
+        match s.get(p).and_then(|c| hex(*c)) {
+            Some(d) => alpha = (alpha << 4) + d,
+            None => break,
         }
+        p += 1;
+        i += 1;
     }
-    let close = close_idx.ok_or_else(|| "Unmatched `{` in font specification".to_string())?;
-    let content = input[1..close].to_string();
-    let remainder = &input[close + 1..];
-    Ok((content, remainder))
-}
-
-/// Parse comma-separated fontspec options, respecting balanced braces `{...}`.
-pub fn parse_fontspec_options(input: &str) -> Result<NativeFontOptions, String> {
-    let mut options = NativeFontOptions::default();
-    if input.trim().is_empty() {
-        return Ok(options);
-    }
-
-    let items = split_balanced_commas(input);
-    for raw_item in items {
-        let item = raw_item.trim();
-        if item.is_empty() {
-            continue;
-        }
-
-        // Direct OpenType feature flag: e.g. +liga, -calt, +dlig, +smcp
-        if item.starts_with('+') || item.starts_with('-') {
-            match rustybuzz::Feature::from_str(item) {
-                Ok(feat) => {
-                    options.features.push(feat);
-                    continue;
-                }
-                Err(_) => {
-                    return Err(format!("Invalid OpenType feature flag `{item}`"));
-                }
-            }
-        }
-
-        if let Some((raw_k, raw_v)) = item.split_once('=') {
-            let key = raw_k.trim().to_ascii_lowercase();
-            let val = raw_v.trim().trim_matches('"').trim_matches('\'').trim();
-            let val = val
-                .strip_prefix('{')
-                .and_then(|s| s.strip_suffix('}'))
-                .unwrap_or(val)
-                .trim();
-
-            match key.as_str() {
-                "path" => {
-                    options.path = Some(val.to_string());
-                }
-                "extension" | "ext" => {
-                    let ext = if val.starts_with('.') {
-                        val.to_string()
-                    } else {
-                        format!(".{}", val)
-                    };
-                    options.extension = Some(ext);
-                }
-                "fontindex" | "index" => {
-                    let idx = val
-                        .parse::<u32>()
-                        .map_err(|_| format!("Invalid FontIndex value: `{val}`"))?;
-                    options.font_index = idx;
-                }
-                "style" => {
-                    apply_style_string(&mut options, val)?;
-                    options.style = Some(val.to_owned());
-                }
-                "weight" => apply_weight_string(&mut options, val)?,
-                "uprightfont" | "regularfont" => options.upright_font = Some(val.to_owned()),
-                "boldfont" => options.bold_font = Some(val.to_owned()),
-                "italicfont" => options.italic_font = Some(val.to_owned()),
-                "bolditalicfont" => options.bold_italic_font = Some(val.to_owned()),
-                "slantedfont" => options.slanted_font = Some(val.to_owned()),
-                "boldslantedfont" => options.bold_slanted_font = Some(val.to_owned()),
-                "italic" => match val.to_ascii_lowercase().as_str() {
-                    "true" | "yes" | "on" => options.italic = Some(true),
-                    "false" | "no" | "off" => options.italic = Some(false),
-                    other => {
-                        return Err(format!("Invalid boolean for Italic: `{other}`"));
-                    }
-                },
-                "smallcapsfont" => {
-                    options.small_caps_font = Some(val.to_string());
-                }
-                "uprightfeatures" | "regularfeatures" => {
-                    options.upright_features = parse_feature_list(val)?;
-                }
-                "boldfeatures" => {
-                    options.bold_features = parse_feature_list(val)?;
-                }
-                "italicfeatures" => {
-                    options.italic_features = parse_feature_list(val)?;
-                }
-                "bolditalicfeatures" => {
-                    options.bold_italic_features = parse_feature_list(val)?;
-                }
-                "slantedfeatures" => {
-                    options.slanted_features = parse_feature_list(val)?;
-                }
-                "smallcapsfeatures" => {
-                    options.small_caps_features = parse_feature_list(val)?;
-                }
-                "kerning" => {
-                    let sub_items = split_balanced_commas(val);
-                    for sub in sub_items {
-                        match sub.trim().to_ascii_lowercase().as_str() {
-                            "on" | "yes" | "true" => push_feature(&mut options, b"kern", 1),
-                            "off" | "no" | "false" => push_feature(&mut options, b"kern", 0),
-                            other => {
-                                return Err(format!("Unsupported Kerning option `{other}`"));
-                            }
-                        }
-                    }
-                }
-                "contextuals" => {
-                    let sub_items = split_balanced_commas(val);
-                    for sub in sub_items {
-                        match sub.trim().to_ascii_lowercase().as_str() {
-                            "on" | "yes" | "true" => push_feature(&mut options, b"calt", 1),
-                            "off" | "no" | "false" => push_feature(&mut options, b"calt", 0),
-                            other => {
-                                return Err(format!("Unsupported Contextuals option `{other}`"));
-                            }
-                        }
-                    }
-                }
-                "vertical" | "vert" => {
-                    let on = match val.to_ascii_lowercase().as_str() {
-                        "true" | "yes" | "on" | "" => true,
-                        "false" | "no" | "off" => false,
-                        _ => true,
-                    };
-                    options.vertical = on;
-                    if on {
-                        push_feature(&mut options, b"vert", 1);
-                        push_feature(&mut options, b"vkrn", 1);
-                    }
-                }
-                "scale" => {
-                    let scale = val.parse::<f64>().map_err(|_| {
-                        format!("Invalid Scale value: `{val}`; use a positive numeric factor")
-                    })?;
-                    if !scale.is_finite() || scale <= 0.0 {
-                        return Err(format!("Scale must be finite and positive, got {scale}"));
-                    }
-                    options.scale = scale;
-                }
-                "script" => {
-                    let sc = parse_script_tag(val)?;
-                    options.script = sc;
-                }
-                "language" | "lang" => {
-                    let lang = parse_language_tag(val)?;
-                    options.language = lang;
-                }
-                "rawfeature" | "feature" | "features" => {
-                    let sub_items = split_balanced_commas(val);
-                    for sub in sub_items {
-                        let f_str = sub.trim();
-                        if !f_str.is_empty() {
-                            let feat = rustybuzz::Feature::from_str(f_str)
-                                .map_err(|_| format!("Invalid RawFeature `{f_str}`"))?;
-                            options.features.push(feat);
-                        }
-                    }
-                }
-                "ligatures" => {
-                    let sub_items = split_balanced_commas(val);
-                    for sub in sub_items {
-                        match sub.trim().to_ascii_lowercase().as_str() {
-                            "tex" => options.tex_ligatures = true,
-                            "common" => {
-                                push_feature(&mut options, b"liga", 1);
-                            }
-                            "nocommon" => {
-                                push_feature(&mut options, b"liga", 0);
-                            }
-                            "discretionary" | "rare" => {
-                                push_feature(&mut options, b"dlig", 1);
-                            }
-                            "nodiscretionary" | "norare" => {
-                                push_feature(&mut options, b"dlig", 0);
-                            }
-                            "historic" | "historical" => {
-                                push_feature(&mut options, b"hlig", 1);
-                            }
-                            "nohistoric" | "nohistorical" => {
-                                push_feature(&mut options, b"hlig", 0);
-                            }
-                            "required" => {
-                                push_feature(&mut options, b"rlig", 1);
-                            }
-                            "norequired" => {
-                                push_feature(&mut options, b"rlig", 0);
-                            }
-                            "contextual" => {
-                                push_feature(&mut options, b"clig", 1);
-                            }
-                            "nocontextual" => {
-                                push_feature(&mut options, b"clig", 0);
-                            }
-                            "reset" | "off" => {
-                                push_feature(&mut options, b"liga", 0);
-                                push_feature(&mut options, b"clig", 0);
-                                push_feature(&mut options, b"dlig", 0);
-                                push_feature(&mut options, b"hlig", 0);
-                                push_feature(&mut options, b"rlig", 0);
-                                options.tex_ligatures = false;
-                            }
-                            other => {
-                                return Err(format!("Unsupported Ligatures option `{other}`"));
-                            }
-                        }
-                    }
-                }
-                "numbers" => {
-                    let sub_items = split_balanced_commas(val);
-                    for sub in sub_items {
-                        match sub.trim().to_ascii_lowercase().as_str() {
-                            "oldstyle" | "lowercase" => push_feature(&mut options, b"onum", 1),
-                            "lining" | "uppercase" => push_feature(&mut options, b"lnum", 1),
-                            "proportional" => push_feature(&mut options, b"pnum", 1),
-                            "monospaced" | "tabular" => push_feature(&mut options, b"tnum", 1),
-                            "slashedzero" => push_feature(&mut options, b"zero", 1),
-                            "fraction" | "fractions" => push_feature(&mut options, b"frac", 1),
-                            "reset" => {
-                                push_feature(&mut options, b"onum", 0);
-                                push_feature(&mut options, b"lnum", 0);
-                                push_feature(&mut options, b"pnum", 0);
-                                push_feature(&mut options, b"tnum", 0);
-                                push_feature(&mut options, b"zero", 0);
-                                push_feature(&mut options, b"frac", 0);
-                            }
-                            other => {
-                                return Err(format!("Unsupported Numbers option `{other}`"));
-                            }
-                        }
-                    }
-                }
-                "variation" | "variations" => {
-                    let sub_items = split_balanced_commas(val);
-                    for sub in sub_items {
-                        if let Some((axis_k, axis_v)) = sub.split_once('=') {
-                            let tag = ttf_parser::Tag::from_bytes_lossy(axis_k.trim().as_bytes());
-                            let val = axis_v
-                                .trim()
-                                .parse::<f32>()
-                                .map_err(|_| format!("Invalid variation value in `{sub}`"))?;
-                            options.variations.push((tag, val));
-                        } else {
-                            return Err(format!("Invalid variation spec `{sub}`"));
-                        }
-                    }
-                }
-                "mapping" if val.trim_end_matches(';') == "tex-text" => {
-                    options.tex_ligatures = true;
-                }
-                other => {
-                    // Try parsing as feature=val
-                    if let Ok(val_num) = val.parse::<u32>() {
-                        if other.len() <= 4 {
-                            let tag = ttf_parser::Tag::from_bytes_lossy(other.as_bytes());
-                            options
-                                .features
-                                .push(rustybuzz::Feature::new(tag, val_num, ..));
-                            continue;
-                        }
-                    }
-                    return Err(format!("Unsupported or unrecognized font option `{key}`"));
-                }
-            }
-        } else {
-            // Unrecognized option with no `=` or `+/-`
-            return Err(format!("Unsupported or unrecognized font option `{item}`"));
-        }
-    }
-
-    Ok(options)
-}
-
-fn split_balanced_commas(input: &str) -> Vec<&str> {
-    let mut result = Vec::new();
-    let mut depth = 0usize;
-    let mut start = 0usize;
-
-    for (i, c) in input.char_indices() {
-        match c {
-            '{' => depth += 1,
-            '}' => {
-                if depth > 0 {
-                    depth -= 1;
-                }
-            }
-            ',' if depth == 0 => {
-                result.push(&input[start..i]);
-                start = i + 1;
-            }
-            _ => {}
-        }
-    }
-    if start < input.len() {
-        result.push(&input[start..]);
-    }
-    result
-}
-
-fn apply_style_string(options: &mut NativeFontOptions, style: &str) -> Result<(), String> {
-    let s = style.to_ascii_lowercase();
-    match s.as_str() {
-        "regular" | "upright" | "roman" | "normal" => {
-            options.weight = Some(400);
-            options.italic = Some(false);
-            Ok(())
-        }
-        "bold" => {
-            options.weight = Some(700);
-            options.italic = Some(false);
-            Ok(())
-        }
-        "italic" | "oblique" | "slanted" => {
-            options.weight = Some(400);
-            options.italic = Some(true);
-            Ok(())
-        }
-        "bolditalic" | "bold italic" | "boldoblique" | "bold oblique" | "boldslanted"
-        | "bold slanted" => {
-            options.weight = Some(700);
-            options.italic = Some(true);
-            Ok(())
-        }
-        "light" => {
-            options.weight = Some(300);
-            options.italic = Some(false);
-            Ok(())
-        }
-        "lightitalic" | "light italic" => {
-            options.weight = Some(300);
-            options.italic = Some(true);
-            Ok(())
-        }
-        "medium" => {
-            options.weight = Some(500);
-            options.italic = Some(false);
-            Ok(())
-        }
-        "mediumitalic" | "medium italic" => {
-            options.weight = Some(500);
-            options.italic = Some(true);
-            Ok(())
-        }
-        "semibold" | "demibold" => {
-            options.weight = Some(600);
-            options.italic = Some(false);
-            Ok(())
-        }
-        "semibolditalic" | "semibold italic" | "demibolditalic" | "demibold italic" => {
-            options.weight = Some(600);
-            options.italic = Some(true);
-            Ok(())
-        }
-        "black" | "heavy" | "extrabold" => {
-            options.weight = Some(800);
-            options.italic = Some(false);
-            Ok(())
-        }
-        "blackitalic" | "black italic" | "heavyitalic" | "heavy italic" => {
-            options.weight = Some(800);
-            options.italic = Some(true);
-            Ok(())
-        }
-        _ => Err(format!("Unsupported or unrecognized Style `{style}`")),
-    }
-}
-
-fn apply_weight_string(options: &mut NativeFontOptions, weight: &str) -> Result<(), String> {
-    let w = weight.to_ascii_lowercase();
-    match w.as_str() {
-        "thin" | "hairline" => {
-            options.weight = Some(100);
-            Ok(())
-        }
-        "extralight" | "ultralight" => {
-            options.weight = Some(200);
-            Ok(())
-        }
-        "light" => {
-            options.weight = Some(300);
-            Ok(())
-        }
-        "regular" | "normal" => {
-            options.weight = Some(400);
-            Ok(())
-        }
-        "medium" => {
-            options.weight = Some(500);
-            Ok(())
-        }
-        "semibold" | "demibold" => {
-            options.weight = Some(600);
-            Ok(())
-        }
-        "bold" => {
-            options.weight = Some(700);
-            Ok(())
-        }
-        "extrabold" | "ultrabold" => {
-            options.weight = Some(800);
-            Ok(())
-        }
-        "black" | "heavy" => {
-            options.weight = Some(900);
-            Ok(())
-        }
-        _ => Err(format!("Unsupported or unrecognized Weight `{weight}`")),
-    }
-}
-
-/// Expand fontspec `*` wildcard in explicit font filenames to the base font selector.
-pub fn expand_font_wildcard(name: &str, base: &str) -> String {
-    let clean_base = base
-        .trim()
-        .strip_prefix('[')
-        .and_then(|s| s.strip_suffix(']'))
-        .unwrap_or(base.trim());
-    let clean_base = clean_base
-        .strip_suffix(".otf")
-        .or_else(|| clean_base.strip_suffix(".ttf"))
-        .or_else(|| clean_base.strip_suffix(".OTF"))
-        .or_else(|| clean_base.strip_suffix(".TTF"))
-        .unwrap_or(clean_base);
-    if name.contains('*') {
-        name.replace('*', clean_base)
+    if i == 2 {
+        rgb += alpha;
     } else {
-        name.to_string()
+        rgb += 0xFF;
     }
+    (rgb, p)
 }
 
-fn parse_feature_list(input: &str) -> Result<Vec<rustybuzz::Feature>, String> {
-    let mut features = Vec::new();
-    let items = split_balanced_commas(input);
-    for item in items {
-        let f_str = item.trim().trim_matches('"').trim_matches('\'').trim();
-        let f_str = f_str
-            .strip_prefix('{')
-            .and_then(|s| s.strip_suffix('}'))
-            .unwrap_or(f_str)
-            .trim();
-        if f_str.is_empty() {
-            continue;
-        }
-        let feat = rustybuzz::Feature::from_str(f_str)
-            .map_err(|_| format!("Invalid feature spec `{f_str}`"))?;
-        features.push(feat);
+/// `read_tag_with_param` for `+tag=param`
+fn read_tag_with_param(s: &[u8]) -> (u32, i32) {
+    let mut end = 0;
+    while end < s.len() && !matches!(s[end], b':' | b';' | b',' | b'=') {
+        end += 1;
     }
-    Ok(features)
+    let tag = hb_tag_from_string(&s[..end]);
+    let mut param: i32 = 0;
+    if s.get(end) == Some(&b'=') {
+        let mut p = end + 1;
+        let mut neg = false;
+        if s.get(p) == Some(&b'-') {
+            neg = true;
+            p += 1;
+        }
+        while p < s.len() && s[p].is_ascii_digit() {
+            param = param.wrapping_mul(10).wrapping_add((s[p] - b'0') as i32);
+            p += 1;
+        }
+        if neg {
+            param = -param;
+        }
+    }
+    (tag, param)
 }
 
-fn parse_script_tag(val: &str) -> Result<Option<rustybuzz::Script>, String> {
-    let s = val.trim().to_ascii_lowercase();
-    if s.is_empty() || s == "default" {
-        return Ok(None);
+fn feature(tag: u32, value: u32) -> rustybuzz::Feature {
+    rustybuzz::Feature::new(ttf_parser::Tag(tag), value, ..)
+}
+
+/// `readFeatureNumber` (Graphite `id=setting`)
+fn read_feature_number(s: &[u8]) -> Option<(u32, u32)> {
+    let mut i = 0;
+    if !s.first()?.is_ascii_digit() {
+        return None;
     }
-    let script = match s.as_str() {
-        "latin" | "latn" => rustybuzz::script::LATIN,
-        "cjk" | "han" | "hani" | "hans" | "hant" | "chinese" => rustybuzz::script::HAN,
-        "kana" | "japanese" | "hira" | "kata" => rustybuzz::script::HIRAGANA,
-        "hangul" | "korean" | "hang" => rustybuzz::script::HANGUL,
-        "cyrillic" | "cyrl" | "russian" => rustybuzz::script::CYRILLIC,
-        "greek" | "grek" => rustybuzz::script::GREEK,
-        "arabic" | "arab" => rustybuzz::script::ARABIC,
-        "hebrew" | "hebr" => rustybuzz::script::HEBREW,
-        "devanagari" | "deva" => rustybuzz::script::DEVANAGARI,
-        _ => {
-            let tag = ttf_parser::Tag::from_bytes_lossy(val.as_bytes());
-            rustybuzz::Script::from_iso15924_tag(tag)
-                .ok_or_else(|| format!("Invalid or unrecognized Script tag `{val}`"))?
+    let mut f: u32 = 0;
+    while i < s.len() && s[i].is_ascii_digit() {
+        f = f.wrapping_mul(10).wrapping_add((s[i] - b'0') as u32);
+        i += 1;
+    }
+    while i < s.len() && (s[i] == b' ' || s[i] == b'\t') {
+        i += 1;
+    }
+    if s.get(i) != Some(&b'=') {
+        return None;
+    }
+    i += 1;
+    if !s.get(i)?.is_ascii_digit() {
+        return None;
+    }
+    let mut v: u32 = 0;
+    while i < s.len() && s[i].is_ascii_digit() {
+        v = v.wrapping_mul(10).wrapping_add((s[i] - b'0') as u32);
+        i += 1;
+    }
+    while i < s.len() && (s[i] == b' ' || s[i] == b'\t') {
+        i += 1;
+    }
+    (i == s.len()).then_some((f, v))
+}
+
+/// Parse the feature string like `loadOTfont` (the part before the engine is
+/// created). `req` is the requested renderer.
+pub fn parse_font_options(feat: &str, req: ReqEngine) -> ParsedOptions {
+    let mut o = ParsedOptions::default();
+    let b = feat.as_bytes();
+    let mut p = 0;
+    if req == ReqEngine::Ot {
+        o.shapers.push("ot".into());
+    } else if req == ReqEngine::Graphite {
+        o.shapers.push("graphite2".into());
+    }
+    while p < b.len() {
+        if matches!(b[p], b':' | b';' | b',') {
+            p += 1;
         }
+        while p < b.len() && (b[p] == b' ' || b[p] == b'\t') {
+            p += 1;
+        }
+        if p >= b.len() {
+            break;
+        }
+        let cp1 = p;
+        let mut cp2 = p;
+        while cp2 < b.len() && !matches!(b[cp2], b':' | b';' | b',') {
+            cp2 += 1;
+        }
+        let opt = &b[cp1..cp2];
+        let text = |s: &[u8]| String::from_utf8_lossy(s).into_owned();
+        let starts = |kw: &str| opt.starts_with(kw.as_bytes());
+        // return Err(()) for bad_option
+        let r: Result<(), ()> = (|| {
+            if starts("script") {
+                if opt.get(6) != Some(&b'=') {
+                    return Err(());
+                }
+                o.script = hb_tag_from_string(&opt[7..]);
+                return Ok(());
+            }
+            if starts("language") {
+                if opt.get(8) != Some(&b'=') {
+                    return Err(());
+                }
+                let t = &opt[9..];
+                o.language = Some(tag_bytes(hb_tag_from_string(t)));
+                return Ok(());
+            }
+            if starts("shaper") {
+                if opt.get(6) != Some(&b'=') {
+                    return Err(());
+                }
+                o.shapers.push(text(&opt[7..]));
+                return Ok(());
+            }
+            // readCommonFeatures
+            if starts("mapping") {
+                if opt.get(7) != Some(&b'=') {
+                    return Err(());
+                }
+                o.events.push(FontOptionEvent::Mapping(text(&opt[8..])));
+                return Ok(());
+            }
+            for (kw, which) in [("extend", 0), ("slant", 1), ("embolden", 2), ("letterspace", 3)] {
+                if starts(kw) {
+                    if opt.get(kw.len()) != Some(&b'=') {
+                        return Err(());
+                    }
+                    let mut q = kw.len() + 1;
+                    let v = read_double(opt, &mut q);
+                    match which {
+                        0 => o.extend = v as f32,
+                        1 => o.slant = v as f32,
+                        2 => o.embolden = v as f32,
+                        _ => o.letterspace = v as f32,
+                    }
+                    return Ok(());
+                }
+            }
+            if starts("color") {
+                if opt.get(5) != Some(&b'=') {
+                    return Err(());
+                }
+                let (rgba, used) = read_rgb_a(&opt[6..]);
+                if used == 6 || used == 8 {
+                    o.colored = true;
+                    o.rgba = rgba;
+                    return Ok(());
+                }
+                return Err(());
+            }
+            if req == ReqEngine::Graphite {
+                if let Some((t, v)) = read_feature_number(opt) {
+                    o.features.push(feature(t, v));
+                    return Ok(());
+                }
+            }
+            if opt.first() == Some(&b'+') {
+                let (tag, mut param) = read_tag_with_param(&opt[1..]);
+                // pre-0.9999 compatibility: feature indices started from 0
+                if param >= 0 {
+                    param += 1;
+                }
+                o.features.push(feature(tag, param as u32));
+                return Ok(());
+            }
+            if opt.first() == Some(&b'-') {
+                let tag = hb_tag_from_string(&opt[1..]);
+                o.features.push(feature(tag, 0));
+                return Ok(());
+            }
+            if starts("vertical") {
+                // exactly "vertical" modulo trailing blanks
+                let rest = &opt[8..];
+                if rest.iter().all(|c| *c == b' ' || *c == b'\t') {
+                    o.vertical = true;
+                    return Ok(());
+                }
+            }
+            Err(())
+        })();
+        if r.is_err() {
+            o.events.push(FontOptionEvent::BadOption(text(opt)));
+        }
+        p = cp2;
+    }
+    o
+}
+
+/// Parse `/B /I /BI /S=size /AAT /OT /ICU /GR` variant strings the way
+/// `XeTeXFontMgr::findFont` does. Returns `(bold, italic, size override,
+/// engine, retained variant string)`.
+pub fn parse_variant(variant: &str) -> (bool, bool, Option<f64>, ReqEngine, String) {
+    let b = variant.as_bytes();
+    let mut cp = 0;
+    let mut var = String::new();
+    let mut req = ReqEngine::Default;
+    let (mut bold, mut ital) = (false, false);
+    let mut size = None;
+    let push = |var: &mut String, s: &str| {
+        if !var.is_empty() && !var.ends_with('/') {
+            var.push('/');
+        }
+        var.push_str(s);
     };
-    Ok(Some(script))
-}
-
-fn parse_language_tag(val: &str) -> Result<Option<rustybuzz::Language>, String> {
-    let v = val.trim();
-    if v.eq_ignore_ascii_case("default") || v.is_empty() {
-        return Ok(None);
-    }
-    let l = match v.to_ascii_lowercase().as_str() {
-        "japanese" | "ja" | "jan" => rustybuzz::Language::from_str("JAN").unwrap(),
-        "chinese" | "zh" | "zhs" => rustybuzz::Language::from_str("ZHS").unwrap(),
-        "traditional chinese" | "zht" => rustybuzz::Language::from_str("ZHT").unwrap(),
-        "korean" | "ko" | "kor" => rustybuzz::Language::from_str("KOR").unwrap(),
-        "english" | "en" | "eng" => rustybuzz::Language::from_str("ENG").unwrap(),
-        "german" | "de" | "deu" => rustybuzz::Language::from_str("DEU").unwrap(),
-        "french" | "fr" | "fra" => rustybuzz::Language::from_str("FRA").unwrap(),
-        "spanish" | "es" | "esp" => rustybuzz::Language::from_str("ESP").unwrap(),
-        "italian" | "it" | "ita" => rustybuzz::Language::from_str("ITA").unwrap(),
-        "dutch" | "nl" | "nld" => rustybuzz::Language::from_str("NLD").unwrap(),
-        "polish" | "pl" | "pol" => rustybuzz::Language::from_str("PLK").unwrap(),
-        "portuguese" | "pt" | "por" => rustybuzz::Language::from_str("PTG").unwrap(),
-        "russian" | "ru" | "rus" => rustybuzz::Language::from_str("RUS").unwrap(),
-        "greek" | "el" | "ell" => rustybuzz::Language::from_str("ELL").unwrap(),
-        "swedish" | "sv" | "sve" => rustybuzz::Language::from_str("SVE").unwrap(),
-        "turkish" | "tr" | "tur" => rustybuzz::Language::from_str("TRK").unwrap(),
-        other => rustybuzz::Language::from_str(other)
-            .map_err(|_| format!("Invalid Language tag `{val}`"))?,
-    };
-    Ok(Some(l))
-}
-
-fn push_feature(options: &mut NativeFontOptions, tag_bytes: &[u8; 4], value: u32) {
-    let tag = ttf_parser::Tag::from_bytes(tag_bytes);
-    options
-        .features
-        .push(rustybuzz::Feature::new(tag, value, ..));
-}
-
-/// Check if an OpenType face supports a specific 4-byte feature tag in GSUB, GPOS, or KERN.
-pub fn face_supports_feature(face: &ttf_parser::Face<'_>, tag: ttf_parser::Tag) -> bool {
-    // TeX ligatures are handled by the engine layout pipeline
-    if tag == ttf_parser::Tag::from_bytes(b"tlig") {
-        return true;
-    }
-    // Kerning can be in GPOS or legacy kern table
-    if tag == ttf_parser::Tag::from_bytes(b"kern") {
-        if face.tables().kern.is_some() {
-            return true;
-        }
-        if let Some(gpos) = face.tables().gpos {
-            if gpos.features.find(tag).is_some() {
-                return true;
+    while cp < b.len() {
+        let rest = &b[cp..];
+        let mut skip = true;
+        if rest.starts_with(b"AAT") {
+            req = ReqEngine::Aat;
+            cp += 3;
+            push(&mut var, "AAT");
+        } else if rest.starts_with(b"ICU") {
+            req = ReqEngine::Ot;
+            cp += 3;
+            push(&mut var, "OT");
+        } else if rest.starts_with(b"OT") {
+            req = ReqEngine::Ot;
+            cp += 2;
+            push(&mut var, "OT");
+        } else if rest.starts_with(b"GR") {
+            req = ReqEngine::Graphite;
+            cp += 2;
+            push(&mut var, "GR");
+        } else if rest[0] == b'S' {
+            cp += 1;
+            if b.get(cp) == Some(&b'=') {
+                cp += 1;
+            }
+            let mut v = 0.0;
+            while cp < b.len() && b[cp].is_ascii_digit() {
+                v = v * 10.0 + (b[cp] - b'0') as f64;
+                cp += 1;
+            }
+            if b.get(cp) == Some(&b'.') {
+                let mut dec = 1.0;
+                cp += 1;
+                while cp < b.len() && b[cp].is_ascii_digit() {
+                    dec *= 10.0;
+                    v += (b[cp] - b'0') as f64 / dec;
+                    cp += 1;
+                }
+            }
+            size = Some(v);
+        } else {
+            skip = false;
+            loop {
+                match b.get(cp) {
+                    Some(b'B') => {
+                        bold = true;
+                        cp += 1;
+                    }
+                    Some(b'I') => {
+                        ital = true;
+                        cp += 1;
+                    }
+                    _ => break,
+                }
             }
         }
-        return false;
-    }
-    // GSUB table lookup
-    if let Some(gsub) = face.tables().gsub {
-        if gsub.features.find(tag).is_some() {
-            return true;
+        let _ = skip;
+        while cp < b.len() && b[cp] != b'/' {
+            cp += 1;
+        }
+        if cp < b.len() && b[cp] == b'/' {
+            cp += 1;
         }
     }
-    // GPOS table lookup
-    if let Some(gpos) = face.tables().gpos {
-        if gpos.features.find(tag).is_some() {
-            return true;
-        }
-    }
-    false
+    (bold, ital, size, req, var)
 }
 
-/// Validate that requested active OpenType features are supported by the face.
-/// Face styles are chosen during resolution, where fontspec substitutes missing shapes.
-pub fn validate_face_features(
-    face: &ttf_parser::Face<'_>,
-    selector: &str,
-    options: &NativeFontOptions,
-) -> Result<(), String> {
-    for feat in &options.features {
-        if feat.value > 0 && !face_supports_feature(face, feat.tag) {
-            return Err(format!(
-                "Requested OpenType feature `{}` is not available in font `{}`",
-                feat.tag, selector
-            ));
+/// `hb_ot_tag_to_script`-like conversion of an OpenType script tag.
+pub fn ot_tag_to_script(tag: u32) -> Option<rustybuzz::Script> {
+    if tag == 0 {
+        return None;
+    }
+    let mut t = tag_bytes(tag);
+    // new-style Indic tags ('dev2' -> 'deva')
+    match &t {
+        b"bng2" => t = *b"beng",
+        b"dev2" => t = *b"deva",
+        b"gjr2" => t = *b"gujr",
+        b"gur2" => t = *b"guru",
+        b"knd2" => t = *b"knda",
+        b"mlm2" => t = *b"mlym",
+        b"ory2" => t = *b"orya",
+        b"tml2" => t = *b"taml",
+        b"tel2" => t = *b"telu",
+        b"mym2" => t = *b"mymr",
+        b"DFLT" => return None,
+        _ => {}
+    }
+    // spaces at the end are replaced by repeating the last letter ('nko ' -> 'Nkoo')
+    let mut last = t[0];
+    for c in t.iter_mut() {
+        if *c == b' ' || *c == 0 {
+            *c = last;
+        } else {
+            last = *c;
         }
     }
-    Ok(())
+    rustybuzz::Script::from_iso15924_tag(ttf_parser::Tag::from_bytes(&t))
+}
+
+/// `hb_ot_tag_to_language` for tags without a BCP-47 table entry: the
+/// `x-hbot` private-use form, which selects exactly that OT language system.
+pub fn ot_tag_to_language(tag: [u8; 4]) -> Option<rustybuzz::Language> {
+    use std::str::FromStr;
+    if tag == [0; 4] {
+        return None;
+    }
+    let s: String = tag.iter().map(|c| (*c as char).to_ascii_lowercase()).collect();
+    rustybuzz::Language::from_str(&format!("x-hbot{s}")).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_plain_name() {
+        let s = split_font_name("Latin Modern Roman/I:+liga;-kern");
+        assert_eq!(s.name, "Latin Modern Roman");
+        assert_eq!(s.var, Some("I"));
+        assert_eq!(s.feat, Some("+liga;-kern"));
+        assert_eq!(split_font_name("Foo").feat, None);
+    }
+
+    #[test]
+    fn split_bracket_name() {
+        let s = split_font_name("[fonts/a.ttc:2]:color=FF0000;slant=0.2");
+        assert_eq!(s.name, "[fonts/a.ttc");
+        assert_eq!(s.index, 2);
+        assert_eq!(s.feat, Some("color=FF0000;slant=0.2"));
+        let s = split_font_name("[a.otf]");
+        assert_eq!(s.name, "[a.otf");
+        assert_eq!(s.var, None);
+    }
+
+    #[test]
+    fn options() {
+        let o = parse_font_options("+liga;-kern;smcp;script=latn;color=ff000080;extend=1.5;vertical", ReqEngine::Default);
+        assert_eq!(o.features.len(), 2);
+        assert_eq!(o.features[0].value, 1);
+        assert!(o.vertical && o.colored);
+        assert_eq!(o.rgba, 0xff000080);
+        assert_eq!(o.events, vec![FontOptionEvent::BadOption("smcp".into())]);
+    }
 }

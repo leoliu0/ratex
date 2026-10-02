@@ -820,6 +820,23 @@ impl Attr {
     pub const NONE: Attr = Attr(0);
 }
 
+impl Node {
+    /// The font, text and ActualText flag of a XeTeX native word node
+    /// (`None` for other nodes and for `glyph_node`s).
+    pub fn native_word(&self) -> Option<(FontId, &str, bool)> {
+        match self {
+            Node::NativeGlyphRun { run, .. } if !run.text.is_empty() => {
+                Some((run.font, &run.text, run.actual_text))
+            }
+            _ => None,
+        }
+    }
+
+    pub fn is_native_word(&self) -> bool {
+        self.native_word().is_some()
+    }
+}
+
 /// `repr(u8)` keeps the discriminant a plain leading byte. Without it rustc
 /// folds the tag into the capacity niche of the widest variant's `Vec`, and
 /// every `match` on a node decodes that tag with extra arithmetic (about 5%
@@ -1526,12 +1543,15 @@ fn finish_glue(
 
 /// \hbox packing; `additional` selects tex.web's m=additional (\hbox spread).
 pub fn hpack_add(
-    list: NodeList,
+    mut list: NodeList,
     w: Option<i32>,
     additional: bool,
     kind: u8,
     eqtb: &crate::eqtb::Eqtb,
 ) -> PackResult {
+    if eqtb.has_native_fonts {
+        crate::xetex_text::merge_native_fragments(&mut list, eqtb);
+    }
     let (nat_w, h, d) = hlist_dims(&list, eqtb);
     let nat = nat_w as i64;
     let (stretch, shrink) = glue_sums(&list);

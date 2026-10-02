@@ -1171,9 +1171,6 @@ impl Engine {
                 | LeftMarginKern
                 | RightMarginKern
                 | UcharCat
-                | RatexUnicodeVersion
-                | RatexNativeTextMode
-                | RatexUtfEight
                 | FileSize
                 | PdfMatch
                 | PdfLastMatch
@@ -1291,7 +1288,7 @@ impl Engine {
                 }
                 Prim::IfFontChar => {
                     let f = self.scan_font_id();
-                    let c = if self.font_loader.native_fonts.contains_key(&f) {
+                    let c = if self.is_native_font(f) {
                         self.scan_unicode_character_code("\\iffontchar")
                     } else {
                         self.scan_character_code("\\iffontchar") as u32
@@ -2073,52 +2070,6 @@ impl Engine {
                 // LuaTeX implements e-TeX 2.2; pdfTeX 1.40 e-TeX 2.6.
                 self.exp_string(if self.engine_kind == crate::engine::EngineKind::LuaTeX { b".2" } else { b".6" });
                 None
-            }
-            RatexUnicodeVersion => {
-                self.exp_string(b"1");
-                None
-            }
-            RatexNativeTextMode => {
-                self.exp_string(if self.native_text_active() && !self.mode.is_m() {
-                    b"1"
-                } else {
-                    b"0"
-                });
-                None
-            }
-            RatexUtfEight => {
-                let tokens = self.scan_general_text();
-                let mut bytes = [0u8; 4];
-                let mut valid = (2..=4).contains(&tokens.len());
-                for (token, byte) in tokens.iter().zip(bytes.iter_mut()) {
-                    let value = if token.is_cs() {
-                        let name = self.cs.name(token.cs_id());
-                        (name.len() == 1).then(|| name[0] as u32)
-                    } else {
-                        Some(token.chr())
-                    };
-                    match value.and_then(|value| u8::try_from(value).ok()) {
-                        Some(value) => *byte = value,
-                        None => valid = false,
-                    }
-                }
-                let scalar = if valid {
-                    std::str::from_utf8(&bytes[..tokens.len()])
-                        .ok()
-                        .and_then(|text| {
-                            let mut chars = text.chars();
-                            let scalar = chars.next()?;
-                            chars.next().is_none().then_some(scalar)
-                        })
-                } else {
-                    None
-                };
-                if let Some(scalar) = scalar {
-                    Some(Token::unicode_char(12, scalar as u32))
-                } else {
-                    self.error("Invalid UTF-8 sequence in native text");
-                    None
-                }
             }
             UcharCat => {
                 let c = self.scan_unicode_character_code("\\Ucharcat");

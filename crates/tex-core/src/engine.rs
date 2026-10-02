@@ -341,8 +341,8 @@ pub struct Engine {
     /// State of the file/resource callbacks (`lua_cb_resources.rs`).
     pub(crate) lua_res: crate::lua_cb_resources::LuaResources,
     pub native_text: crate::native_layout::NativeTextState,
-    pub(crate) native_utf8_bytes: [u8; 4],
-    pub(crate) native_utf8_len: usize,
+    /// `\\XeTeXlinebreaklocale` (None when unset)
+    pub xetex_linebreak_locale: Option<String>,
 
     pub job_running: bool,
     pub end_occurred: bool,
@@ -1149,8 +1149,7 @@ impl Engine {
             lua_fonts: Default::default(),
             lua_res: Default::default(),
             native_text: crate::native_layout::NativeTextState::default(),
-            native_utf8_bytes: [0; 4],
-            native_utf8_len: 0,
+            xetex_linebreak_locale: None,
             job_running: true,
             end_occurred: false,
             explicit_end_seen: false,
@@ -1248,7 +1247,7 @@ impl Engine {
             xetex_interchar_toks: crate::FxHashMap::default(),
             xetex_last_char_class: None,
             xetex_interchartokenstate: 0,
-            xetex_use_glyph_metrics: 1,
+            xetex_use_glyph_metrics: 0,
             xetex_generate_actual_text: 0,
             xetex_input_normalization: 0,
             xetex_dash_break_state: 0,
@@ -1735,10 +1734,6 @@ impl Engine {
         d!(eng, b"fontchardp", FontCharDp);
         d!(eng, b"fontcharic", FontCharIc);
         d!(eng, b"noboundary", NoBoundary);
-        d!(eng, b"RatexUnicodeVersion", RatexUnicodeVersion);
-        d!(eng, b"RatexNativeTextMode", RatexNativeTextMode);
-        d!(eng, b"RatexUTFviii", RatexUtfEight);
-        d!(eng, b"RatexLiteralChar", RatexLiteralChar);
         d!(eng, b"ratexcjktext", RatexCjkText);
         d!(eng, b"hskip", HSkip);
         d!(eng, b"vskip", VSkip);

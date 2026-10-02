@@ -723,18 +723,9 @@ impl Engine {
                 self.emit_box_diagnostic(display);
                 self.report_logged_inspection("\\showifs", source);
             }
-            Char | RatexLiteralChar => {
-                if p == RatexLiteralChar && self.mode.is_v() {
-                    self.push_token(Token::from_cs(id));
-                    self.start_paragraph(true);
-                    return;
-                }
+            Char => {
                 let (value, source) = self.scan_int_with_source();
-                let maximum = if self.native_text_active() || self.engine_kind == crate::engine::EngineKind::LuaTeX {
-                    0x10ffff
-                } else {
-                    255
-                };
+                let maximum = if self.engine_kind == crate::engine::EngineKind::PdfTeX { 255 } else { 0x10ffff };
                 let character = if (0..=maximum).contains(&value)
                     && char::from_u32(value as u32).is_some()
                 {
@@ -747,12 +738,7 @@ impl Engine {
                     0
                 };
                 let previous = std::mem::replace(&mut self.diagnostic_source_override, source);
-                if p != RatexLiteralChar
-                    || self.mode.is_m()
-                    || !self.append_native_literal_char(character)
-                {
-                    self.unicode_char_token(character, false);
-                }
+                self.unicode_char_token(character, false);
                 self.diagnostic_source_override = previous;
             }
             RatexCjkText => {
@@ -1376,6 +1362,7 @@ impl Engine {
             XeTeXUseGlyphMetrics => {
                 self.scan_optional_equals();
                 self.xetex_use_glyph_metrics = self.scan_int();
+                self.eqtb.xe_use_glyph_metrics = self.xetex_use_glyph_metrics != 0;
             }
             XeTeXInterCharTokenState => {
                 self.scan_optional_equals();

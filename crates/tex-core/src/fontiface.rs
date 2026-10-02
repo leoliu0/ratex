@@ -189,6 +189,7 @@ pub fn shaped_glyphs_to_nodes_scaled(
         font: font_id,
         text: std::rc::Rc::from(text),
         glyphs: native_glyphs,
+        actual_text: false,
     });
     vec![crate::boxes::Node::NativeGlyphRun {
         run,
@@ -239,6 +240,7 @@ pub fn shaped_glyphs_to_native_display_item(
         font: font_id,
         text: std::rc::Rc::from(text),
         glyphs: native_glyphs,
+        actual_text: false,
     });
     crate::boxes::DisplayItem::NativeGlyphRun {
         run,
@@ -301,6 +303,7 @@ pub fn shape_opentype_to_nodes_full(
         font: font_id,
         text: std::rc::Rc::from(text),
         glyphs: native_glyphs,
+        actual_text: false,
     });
     Ok(vec![crate::boxes::Node::NativeGlyphRun {
         run,
@@ -418,13 +421,10 @@ impl Engine {
         font_id: FontId,
         text: &str,
     ) -> Result<Vec<crate::boxes::Node>, String> {
-        let native_font = self
-            .font_loader
-            .native_fonts
-            .get(&font_id)
-            .cloned()
-            .ok_or_else(|| format!("Font {font_id} is not a registered native font"))?;
-        self.shape_native_run_nodes(font_id, &native_font, text)
+        if !self.is_native_font(font_id) {
+            return Err(format!("Font {font_id} is not a registered native font"));
+        }
+        Ok(vec![self.xetex_native_word(font_id, text)])
     }
 
     /// Shape text using explicitly provided font bytes, lowering into layout nodes.
@@ -452,10 +452,10 @@ impl Engine {
         y_bp: f64,
     ) -> Result<crate::boxes::DisplayItem, String> {
         let native_font = self
-            .font_loader
-            .native_fonts
-            .get(&font_id)
-            .cloned()
+            .eqtb
+            .fonts
+            .get(font_id as usize)
+            .and_then(|f| f.native.clone())
             .ok_or_else(|| format!("Font {font_id} is not a registered native font"))?;
         let at_size = self
             .eqtb

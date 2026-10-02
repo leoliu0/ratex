@@ -109,7 +109,7 @@ impl Engine {
         let slot = self.scan_int();
         let font_id = self.eqtb.cur_font_val;
 
-        if let Some(native_font) = self.font_loader.native_fonts.get(&font_id) {
+        if let Some(native_font) = self.eqtb.fonts.get(font_id as usize).and_then(|f| f.native.clone()) {
             if let Ok(face) = native_font.program.face() {
                 let glyph_id = slot.max(0) as u16;
                 let at_size = self.eqtb.fonts.get(font_id as usize).map_or(655360, |f| f.at_size);
@@ -173,7 +173,7 @@ impl Engine {
             Prim::XeTeXDashBreakState => self.xetex_dash_break_state,
             Prim::XeTeXFontType => {
                 let font_id = self.scan_font_id();
-                if let Some(native_font) = self.font_loader.native_fonts.get(&font_id) {
+                if let Some(native_font) = self.eqtb.fonts.get(font_id as usize).and_then(|f| f.native.clone()) {
                     if native_font.program.has_graphite {
                         3 // Graphite
                     } else if native_font.program.has_opentype {
@@ -189,7 +189,7 @@ impl Engine {
             }
             Prim::XeTeXCountGlyphs => {
                 let font_id = self.scan_font_id();
-                if let Some(native_font) = self.font_loader.native_fonts.get(&font_id) {
+                if let Some(native_font) = self.eqtb.fonts.get(font_id as usize).and_then(|f| f.native.clone()) {
                     if let Ok(face) = native_font.program.face() {
                         return face.number_of_glyphs() as i32;
                     }
@@ -199,7 +199,7 @@ impl Engine {
             Prim::XeTeXGlyphIndex => {
                 let font_id = self.scan_font_id();
                 let name = self.scan_general_text_to_string();
-                if let Some(native_font) = self.font_loader.native_fonts.get(&font_id) {
+                if let Some(native_font) = self.eqtb.fonts.get(font_id as usize).and_then(|f| f.native.clone()) {
                     if let Ok(face) = native_font.program.face() {
                         if let Some(gid) = face.glyph_index_by_name(&name) {
                             return gid.0 as i32;
@@ -211,7 +211,7 @@ impl Engine {
             Prim::XeTeXCharGlyph => {
                 let font_id = self.scan_font_id();
                 let ch = self.scan_profile_character_code("\\XeTeXcharglyph");
-                if let Some(native_font) = self.font_loader.native_fonts.get(&font_id) {
+                if let Some(native_font) = self.eqtb.fonts.get(font_id as usize).and_then(|f| f.native.clone()) {
                     if let Ok(face) = native_font.program.face() {
                         if let Some(c) = char::from_u32(ch) {
                             if let Some(gid) = face.glyph_index(c) {
@@ -227,7 +227,7 @@ impl Engine {
                 let font_id = self.scan_font_id();
                 let slot = self.scan_int() as u16;
 
-                if let Some(native_font) = self.font_loader.native_fonts.get(&font_id) {
+                if let Some(native_font) = self.eqtb.fonts.get(font_id as usize).and_then(|f| f.native.clone()) {
                     if let Ok(face) = native_font.program.face() {
                         if let Some(bbox) = face.glyph_bounding_box(ttf_parser::GlyphId(slot)) {
                             let at_size = self.eqtb.fonts.get(font_id as usize).map_or(655360, |f| f.at_size);
@@ -256,7 +256,7 @@ impl Engine {
             }
             Prim::XeTeXCountVariations => {
                 let font_id = self.scan_font_id();
-                if let Some(native_font) = self.font_loader.native_fonts.get(&font_id) {
+                if let Some(native_font) = self.eqtb.fonts.get(font_id as usize).and_then(|f| f.native.clone()) {
                     if let Ok(face) = native_font.program.face() {
                         return face.variation_axes().len() as i32;
                     }
@@ -285,7 +285,7 @@ impl Engine {
                 let font_id = self.scan_font_id();
                 let slot = self.scan_int() as u16;
                 let mut name_str = String::new();
-                if let Some(native_font) = self.font_loader.native_fonts.get(&font_id) {
+                if let Some(native_font) = self.eqtb.fonts.get(font_id as usize).and_then(|f| f.native.clone()) {
                     if let Ok(face) = native_font.program.face() {
                         if let Some(name) = face.glyph_name(ttf_parser::GlyphId(slot)) {
                             name_str.push_str(name);

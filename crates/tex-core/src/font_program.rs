@@ -26,6 +26,58 @@ pub struct FontProgram {
     pub has_opentype: bool,
     pub has_aat: bool,
     pub has_graphite: bool,
+    /// Parsed shaping face, created on first use (see [`ShapeFace`]).
+    shape: std::cell::OnceCell<Rc<ShapeFace>>,
+}
+
+/// A rustybuzz face over a program's bytes, parsed once. It dereferences to
+/// the `ttf_parser::Face` of the same font.
+pub struct ShapeFace {
+    // Declared first so it drops before the bytes it borrows.
+    face: rustybuzz::Face<'static>,
+    _data: Rc<Vec<u8>>,
+}
+
+impl std::fmt::Debug for ShapeFace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ShapeFace")
+    }
+}
+
+impl std::ops::Deref for ShapeFace {
+    type Target = rustybuzz::Face<'static>;
+    fn deref(&self) -> &Self::Target {
+        &self.face
+    }
+}
+
+impl FontProgram {
+    /// The shaping face (None for Type 1 programs or unparsable data).
+    pub fn shape_face(&self) -> Option<Rc<ShapeFace>> {
+        if self.kind == FontProgramKind::Type1 {
+            return None;
+        }
+        if let Some(f) = self.shape.get() {
+            return Some(f.clone());
+        }
+        let data = self.data.clone();
+        // SAFETY: the slice points into the Vec owned by `data`, which the
+        // ShapeFace keeps alive and never mutates.
+        let bytes: &'static [u8] =
+            unsafe { std::slice::from_raw_parts(data.as_ptr(), data.len()) };
+        let mut face = rustybuzz::Face::from_slice(bytes, self.face_index)?;
+        if !self.variations.is_empty() {
+            let v: Vec<rustybuzz::Variation> = self
+                .variations
+                .iter()
+                .map(|&(tag, value)| rustybuzz::Variation { tag, value })
+                .collect();
+            face.set_variations(&v);
+        }
+        let sf = Rc::new(ShapeFace { face, _data: data });
+        let _ = self.shape.set(sf.clone());
+        Some(sf)
+    }
 }
 
 impl FontProgram {
@@ -69,6 +121,7 @@ impl FontProgram {
                 has_opentype: false,
                 has_aat: false,
                 has_graphite: false,
+                shape: Default::default(),
             });
         }
 
@@ -196,6 +249,7 @@ impl FontProgram {
             has_opentype,
             has_aat,
             has_graphite,
+            shape: Default::default(),
         })
     }
     /// Obtain a ttf_parser::Face configured with this program's face_index and variation coordinates.

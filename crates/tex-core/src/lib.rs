@@ -17,6 +17,8 @@ pub mod engine_xetex;
 mod xetex_names;
 mod xetex_input;
 pub mod xemath_prims;
+pub(crate) mod xetex_pic;
+mod dpx_obj;
 pub mod eqtb;
 pub mod expand;
 pub mod font_program;

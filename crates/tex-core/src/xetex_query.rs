@@ -278,6 +278,7 @@ impl Engine {
     pub fn scan_xetex_int_query(&mut self, p: Prim) -> i32 {
         match p {
             Prim::XeTeXVersion => 0,
+            Prim::XeTeXPdfPageCount => self.xetex_pdf_page_count(),
             Prim::XeTeXFontType => {
                 let n = self.scan_font_id();
                 match self.xe_kind(n) {

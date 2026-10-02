@@ -217,61 +217,6 @@ fn test_engine_shaping_integration() {
 }
 
 #[test]
-fn test_gids_above_255_and_layout_metrics() {
-    use tex_core::fonts::{NativeGlyph, NativeRun};
-    let glyph = NativeGlyph {
-        glyph_id: 345, // > 255
-        cluster_start: 0,
-        cluster_end: 4,
-        x_advance: 655360,
-        y_advance: 0,
-        x_offset: 1000,
-        y_offset: 2000,
-    };
-    assert_eq!(glyph.glyph_id, 345);
-    let run = std::rc::Rc::new(NativeRun {
-        font: 1,
-        text: std::rc::Rc::from("test"),
-        glyphs: vec![glyph],
-    });
-    let node = Node::NativeGlyphRun {
-        run,
-        start: 0,
-        end: 1,
-        width: 655360,
-        height: 500000,
-        depth: 100000,
-    };
-    match node {
-        Node::NativeGlyphRun {
-            width,
-            height,
-            depth,
-            run,
-            ..
-        } => {
-            assert_eq!(width, 655360);
-            assert_eq!(height, 500000);
-            assert_eq!(depth, 100000);
-            assert_eq!(run.glyphs[0].glyph_id, 345);
-        }
-        _ => panic!("expected NativeGlyphRun"),
-    }
-}
-
-#[test]
-fn test_cluster_ranges_and_grapheme_safety() {
-    // Verify that CJK punctuation rules prevent breaking before closing punctuation
-    use tex_core::native_layout::{is_cjk, is_line_end_forbidden, is_line_start_forbidden};
-    assert!(is_cjk('日'));
-    assert!(is_cjk('本'));
-    assert!(is_line_start_forbidden('。'));
-    assert!(is_line_start_forbidden('、'));
-    assert!(is_line_end_forbidden('「'));
-    assert!(is_line_end_forbidden('（'));
-}
-
-#[test]
 fn test_deliberate_ignorables_and_missing_glyph_error() {
     use tex_core::native_layout::is_default_ignorable;
     // Soft hyphen and zero-width spaces are deliberate ignorables

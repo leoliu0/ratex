@@ -1336,6 +1336,8 @@ pub enum Prim {
     /// `\Uradical`, ... and their `\XeTeXmath*` aliases), see
     /// [`crate::xemath_prims`]. Wire codes `0x5A00 | index`.
     XeMath(crate::xemath_prims::XeMath),
+    /// XeTeX `\XeTeXpdfpagecount <file name>`.
+    XeTeXPdfPageCount,
 }
 
 /// Stable wire codes for the format dump (`crate::format`). Unit variants
@@ -1822,6 +1824,7 @@ impl Prim {
             Prim::UMath(id) => 0x5800 | id as u16,
             Prim::XeTeXQuery(q) => 0x5900 | q.idx(),
             Prim::XeMath(x) => 0x5A00 | x.idx(),
+            Prim::XeTeXPdfPageCount => 655,
             Prim::ScriptScriptStyle => 284,
             Prim::Patterns => 287,
             Prim::Hyphenation => 288,
@@ -2290,6 +2293,7 @@ impl Prim {
             1101 => Some(Prim::XeTeXDefaultEncoding),
             1102 => Some(Prim::XeTeXUchar),
             1103 => Some(Prim::XeTeXLinebreakLocale),
+            655 => Some(Prim::XeTeXPdfPageCount),
             0x5000..=0x57ff => Some(Prim::U(crate::uprim::UPrim::from_idx(c & 0x07ff)?)),
             0x5800..=0x58ff if (c & 0xff) < crate::uprim::UMATH_NAMES.len() as u16 => {
                 Some(Prim::UMath((c & 0xff) as u8))

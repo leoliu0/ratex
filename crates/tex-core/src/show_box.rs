@@ -872,6 +872,13 @@ impl<'a> BoxDisplay<'a> {
                 self.print_esc("pdfrefximage");
                 self.rule_spec(*w, *h, *d);
             }
+            WhatIt::XePic { pdf, path, .. } => {
+                // xetex.web: print_esc("XeTeXpicfile"/"XeTeXpdffile"), the path in quotes
+                self.print_esc(if *pdf { "XeTeXpdffile" } else { "XeTeXpicfile" });
+                self.print(" \"");
+                self.out.extend_from_slice(&crate::tex_bytes::text_to_bytes(path));
+                self.out.push(b'"');
+            }
             WhatIt::PdfRefXForm { w, h, d, .. } => {
                 self.print_esc("pdfrefxform");
                 self.rule_spec(*w, *h, *d);

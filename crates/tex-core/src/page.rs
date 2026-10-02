@@ -185,6 +185,18 @@ fn page_vert_break(list: &[Node], w: i64, d: i64) -> (Option<usize>, i64) {
                     i += 1;
                     continue;
                 }
+                // xetex.web vert_break: a picture whatsit adds its size
+                Node::Whatsit(crate::boxes::WhatIt::XePic { h, d: pd, .. }, _) => {
+                    cur += prev_dp + *h as i64;
+                    prev_dp = *pd as i64;
+                    if prev_dp > d {
+                        cur += prev_dp - d;
+                        prev_dp = d;
+                    }
+                    prev_breakable = true;
+                    i += 1;
+                    continue;
+                }
                 _ => {
                     if prev_dp > d {
                         cur += prev_dp - d;
@@ -685,6 +697,12 @@ impl Engine {
                     st.ins_ord += 1;
                     self.contribute_ins(&mut st, ord, &node);
                     self.page_list.insert(idx, node);
+                }
+                // xetex.web build_page: page_total += page_depth + height;
+                // page_depth := depth (no box_seen, no \maxdepth cap)
+                Node::Whatsit(crate::boxes::WhatIt::XePic { h, d, .. }, _) => {
+                    st.total += st.depth + *h as i64;
+                    st.depth = *d as i64;
                 }
                 Node::Mark { .. } => {
                     // tex.web: mark nodes contribute without affecting page dimensions;
@@ -1643,6 +1661,10 @@ impl Engine {
     /// version or draft mode is a fatal setup error.
     pub(crate) fn fix_pdf_output_params(&mut self) {
         let int = |e: &Self, p: IntParam| e.eqtb.int_params[p.idx() as usize];
+        if self.engine_kind == crate::engine::EngineKind::XeTeX && self.pdf_fixed.is_some() {
+            // the pdfTeX output parameters have no meaning under xdvipdfmx
+            return;
+        }
         if let Some(fixed) = self.pdf_fixed {
             if int(self, IntParam::PdfDraftMode) != fixed.draftmode {
                 self.fatal_error(
@@ -1657,7 +1679,10 @@ impl Engine {
             }
             return;
         }
-        let mut major_version = int(self, IntParam::PdfMajorVersion);
+        let xetex = self.engine_kind == crate::engine::EngineKind::XeTeX;
+        // xdvipdfmx writes PDF 1.7 (dvipdfmx.cfg `V 7`); the pdfTeX version
+        // parameters do not exist in XeTeX
+        let mut major_version = if xetex { 1 } else { int(self, IntParam::PdfMajorVersion) };
         if major_version < 1 {
             self.error(&format!(
                 "pdfTeX error (invalid pdfmajorversion) ({major_version})"
@@ -1665,7 +1690,7 @@ impl Engine {
             major_version = 1;
             self.eqtb.int_params[IntParam::PdfMajorVersion.idx() as usize] = 1;
         }
-        let mut minor_version = int(self, IntParam::PdfMinorVersion);
+        let mut minor_version = if xetex { 7 } else { int(self, IntParam::PdfMinorVersion) };
         if !(0..=9).contains(&minor_version) {
             self.error(&format!(
                 "pdfTeX error (invalid pdfminorversion) ({minor_version})"
@@ -1692,7 +1717,7 @@ impl Engine {
         self.pdf_fixed = Some(fixed);
         self.pdf_doc.major_version = major_version;
         self.pdf_doc.minor_version = Some(minor_version);
-        self.pdf_doc.decimal_digits = fixed.decimal_digits;
+        self.pdf_doc.decimal_digits = if xetex { 3 } else { fixed.decimal_digits };
     }
 
     /// pdfTeX `print("snap node being discarded")` (build_page and

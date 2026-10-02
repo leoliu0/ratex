@@ -693,7 +693,7 @@ impl Engine {
                 if self.xe_is_new_mathfont(fid) {
                     return usize::MAX;
                 }
-                if self.font_loader.native_fonts.contains_key(&fid) {
+                if self.is_native_font(fid) {
                     return 8;
                 }
             }

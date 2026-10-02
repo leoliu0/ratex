@@ -1115,6 +1115,7 @@ impl Engine {
                     Node::Box { w, .. } => (*w as i64, [0; 4], [0; 4], 0, 0),
                     Node::Rule { width: w, .. } => (*w as i64, [0; 4], [0; 4], 0, 0),
                     Node::NativeGlyphRun { width, .. } => (*width as i64, [0; 4], [0; 4], 0, 0),
+                    Node::Whatsit(WhatIt::XePic { w, .. }, _) => (*w as i64, [0; 4], [0; 4], 0, 0),
                     // math-on/off nodes carry \mathsurround
                     Node::MathKern(k, 1.., _) => (*k as i64, [0; 4], [0; 4], 0, 0),
                     _ => (0, [0; 4], [0; 4], 0, 0),
@@ -2767,6 +2768,7 @@ fn push_dims(eqtb: &crate::eqtb::Eqtb, n: Node, seg: &mut NodeList, w: &mut i64)
         Node::Box { w: bw, .. } => *bw,
         Node::Rule { width, .. } => *width,
         Node::NativeGlyphRun { width, .. } => *width,
+        Node::Whatsit(WhatIt::XePic { w, .. }, _) => *w,
         Node::MathKern(k, 1.., _) => *k,
         _ => 0,
     };
@@ -2784,6 +2786,7 @@ fn disc_list_width(eqtb: &crate::eqtb::Eqtb, l: &[Node]) -> i64 {
             Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) => *k as i64,
             Node::Box { w, .. } | Node::Rule { width: w, .. } => *w as i64,
             Node::NativeGlyphRun { width, .. } => *width as i64,
+            Node::Whatsit(WhatIt::XePic { w, .. }, _) => *w as i64,
             _ => 0,
         })
         .sum()

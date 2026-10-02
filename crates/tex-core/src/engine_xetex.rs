@@ -128,6 +128,7 @@ impl Engine {
     fn register_xetex_driver_primitives(&mut self) {
         self.xetex_define(b"XeTeXpicfile", Prim::XeTeXPicFile);
         self.xetex_define(b"XeTeXpdffile", Prim::XeTeXPdfFile);
+        self.xetex_define(b"XeTeXpdfpagecount", Prim::XeTeXPdfPageCount);
     }
 
     /// Give the shared utility primitives their XeTeX names.

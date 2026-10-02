@@ -277,6 +277,8 @@ impl Engine {
                         | Node::Whatsit(crate::boxes::WhatIt::PdfRefXForm { w, .. }, _) => {
                             (*w as i64, false)
                         }
+                        // xetex.web: pic_node/pdf_node are visible whatsits
+                        Node::Whatsit(crate::boxes::WhatIt::XePic { w, .. }, _) => (*w as i64, true),
                         Node::Glue(g, _) => {
                             if active(g) {
                                 v = MAX_DIMEN;

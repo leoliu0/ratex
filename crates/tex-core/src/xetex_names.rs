@@ -106,20 +106,6 @@ mod tests {
     use crate::engine::{Engine, EngineKind};
     use crate::eqtb::Equiv;
 
-    /// TeX Live names that belong to another slice and are registered on
-    /// its branch (`register_xetex_{text,math,driver}_primitives`); empty
-    /// once every slice has landed.
-    const NOT_YET_REGISTERED: &[&str] = &[
-        "XeTeXOTcountfeatures", "XeTeXOTcountlanguages", "XeTeXOTcountscripts", "XeTeXOTfeaturetag",
-        "XeTeXOTlanguagetag", "XeTeXOTscripttag", "XeTeXcountselectors", "XeTeXdelcode",
-        "XeTeXdelcodenum", "XeTeXdelimiter", "XeTeXfindfeaturebyname", "XeTeXfindselectorbyname",
-        "XeTeXfindvariationbyname", "XeTeXfirstfontchar", "XeTeXisdefaultselector",
-        "XeTeXisexclusivefeature", "XeTeXlastfontchar", "XeTeXmathaccent", "XeTeXmathchar",
-        "XeTeXmathchardef", "XeTeXmathcharnum", "XeTeXmathcharnumdef", "XeTeXmathcode",
-        "XeTeXmathcodenum", "XeTeXpdfpagecount", "XeTeXradical", "XeTeXselectorcode",
-        "XeTeXselectorname", "XeTeXvariationdefault", "XeTeXvariationmax", "XeTeXvariationmin",
-    ];
-
     /// The primitives the XeTeX engine defines are exactly the ones
     /// `xetex -ini -etex` defines (probed with `\ifdefined` over every
     /// string of the binary).
@@ -144,7 +130,7 @@ mod tests {
         assert!(extra.is_empty(), "defined but not in TeX Live's XeTeX: {extra:?}");
         let mut missing: Vec<_> = expected.difference(&defined).map(name).collect();
         // `\nullfont` is a font identifier, defined together with the null font
-        missing.retain(|n| n != "nullfont" && !NOT_YET_REGISTERED.contains(&n.as_str()));
+        missing.retain(|n| n != "nullfont");
         assert!(missing.is_empty(), "TeX Live's XeTeX defines, this one does not: {missing:?}");
     }
 }

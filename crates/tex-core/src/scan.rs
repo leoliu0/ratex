@@ -759,7 +759,8 @@ impl Engine {
                         | Prim::XeTeXCountFeatures
                         | Prim::XeTeXFeatureCode
                         | Prim::XeTeXCountVariations
-                        | Prim::XeTeXVariation),
+                        | Prim::XeTeXVariation
+                        | Prim::XeTeXPdfPageCount),
                     ) => {
                         v = self.scan_xetex_int_query(p) as i64;
                         break 'scan_loop;
@@ -2487,7 +2488,8 @@ impl Engine {
                 | Prim::XeTeXCountFeatures
                 | Prim::XeTeXFeatureCode
                 | Prim::XeTeXCountVariations
-                | Prim::XeTeXVariation),
+                | Prim::XeTeXVariation
+                | Prim::XeTeXPdfPageCount),
             ) => {
                 let v = self.scan_xetex_int_query(p);
                 emit_the!(v.to_string().as_bytes());

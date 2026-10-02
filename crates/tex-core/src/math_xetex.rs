@@ -490,7 +490,7 @@ impl Engine {
 
     /// The native font `fid` as an OpenType font (`None` for TFM fonts).
     pub(crate) fn xe_ot(&self, fid: FontId) -> Option<Rc<OtFont>> {
-        let program = self.font_loader.native_fonts.get(&fid)?.program.clone();
+        let program = self.eqtb.fonts.get(fid as usize)?.native.as_ref()?.program.clone();
         if let Some(o) = self.xe_math.fonts.borrow().get(&fid) {
             if Rc::ptr_eq(&o.program, &program) {
                 return Some(o.clone());
@@ -601,6 +601,7 @@ impl Engine {
                 x_offset: 0,
                 y_offset: 0,
             }],
+            actual_text: false,
         });
         Node::NativeGlyphRun { run, start: 0, end: 1, width: w, height: h, depth: d }
     }

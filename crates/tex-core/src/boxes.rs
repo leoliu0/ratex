@@ -584,6 +584,9 @@ pub const RULE_MATH_OVER: u8 = 5;
 pub const RULE_MATH_UNDER: u8 = 6;
 pub const RULE_MATH_FRACTION: u8 = 7;
 pub const RULE_MATH_RADICAL: u8 = 8;
+/// an outline rule: stroked instead of filled. Its `index` field carries
+/// luatex's `rule_transform`, the stroke width in sp (0 keeps the line width).
+pub const RULE_OUTLINE: u8 = 9;
 
 /// the repeated object of a leader node: a rule or a packed box
 #[derive(Clone, Debug)]
@@ -1333,8 +1336,9 @@ pub fn vlist_dims(list: &[Node], eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
                 x += d + *k as i64;
                 d = 0;
             }
-            Node::Leaders { body, .. } => {
-                x += d;
+            Node::Leaders { glue, body, .. } => {
+                // tex.web §669: leaders are glue first, then the leader box competes for the width
+                x += d + glue.width as i64;
                 d = 0;
                 let (lw, _, _) = leader_dims(body);
                 w = w.max(lw as i64);

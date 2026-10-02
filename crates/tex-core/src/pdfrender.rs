@@ -361,6 +361,12 @@ pub struct RenderCtx<'a> {
     delta_h: i64,
     origin_h: i64,
     origin_v: i64,
+    /// luatex `pdf.h.m`/`pdf.v.m`: where the current `cm` origin is, in units
+    /// of the last output digit from the page's bottom left
+    lua_cm: (i64, i64),
+    /// `callback_defined(process_rule)` when the shipout started: 0 none,
+    /// positive a function, -1 registered as `false`
+    process_rule_cb: i8,
     page_height_sp: i64,
     scaled_out: i64,
     // pdfTeX `matrix_stack` + `pos_stack` (utils.c §1276-1303): CTMs
@@ -490,8 +496,15 @@ impl Engine {
     /// cur_page_height`, set in `pdf_ship_out`).
     fn new_ctx(&mut self, page_height_sp: i64) -> RenderCtx<'_> {
         let decimal_digits = self.pdf_doc.decimal_digits;
+        // luatex ship_out reads `callback_defined(process_rule)` once per shipout
+        let process_rule_cb = if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            self.cb_state(crate::lua_callbacks::Cb::ProcessRule)
+        } else {
+            0
+        };
         RenderCtx {
             eng: self,
+            process_rule_cb,
             content: String::new(),
             used_fonts: Vec::new(),
             page_height_bp: sp_to_bp(page_height_sp),
@@ -527,6 +540,7 @@ impl Engine {
             delta_h: 0,
             origin_h: 0,
             origin_v: page_height_sp,
+            lua_cm: (0, 0),
             page_height_sp,
             scaled_out: 0,
             page_mode: true,
@@ -1174,6 +1188,7 @@ impl<'a> RenderCtx<'a> {
                     height,
                     depth,
                     subtype,
+                    index,
                     ..
                 } => {
                     // hrule in a vlist: null width fills the containing box
@@ -1184,9 +1199,7 @@ impl<'a> RenderCtx<'a> {
                     };
                     let (rh, rd) = (*height as i64, *depth as i64);
                     let y1 = cur_y + rh; // top of rule
-                    if *subtype != crate::boxes::RULE_EMPTY {
-                        self.emit_rect_sp(if rtl { x - w_sp } else { x }, y1 + rd, w_sp, rh + rd);
-                    }
+                    self.place_rule((*width, *height, *depth, *subtype, *index), if rtl { x - w_sp } else { x }, y1 + rd, w_sp, rh + rd);
                     cur_y += rh + rd;
                 }
                 Node::Glue(g, _) => {
@@ -1209,15 +1222,15 @@ impl<'a> RenderCtx<'a> {
                     match body {
                         // rule body: one rect spanning the whole advance;
                         // null width fills the containing box
-                        LeaderBody::Rule { width, subtype, .. } => {
+                        LeaderBody::Rule { width, height, depth, subtype } => {
                             let w_sp = if *width == RULE_FILL {
                                 self.box_w_sp
                             } else {
                                 *width as i64
                             };
-                            if w_sp > 0 && adv > 0 && *subtype != crate::boxes::RULE_EMPTY {
+                            if w_sp > 0 && adv > 0 {
                                 let rx = if rtl { x - w_sp } else { x };
-                                self.emit_rect_sp(rx, cur_y + adv, w_sp, adv);
+                                self.place_rule((*width, *height, *depth, *subtype, 0), rx, cur_y + adv, w_sp, adv);
                             }
                         }
                         LeaderBody::Box(b) => {
@@ -1397,6 +1410,7 @@ impl<'a> RenderCtx<'a> {
                     height,
                     depth,
                     subtype,
+                    index,
                     ..
                 } => {
                     // vrule in an hlist: null height/depth fill the containing box
@@ -1411,9 +1425,7 @@ impl<'a> RenderCtx<'a> {
                         *depth as i64
                     };
                     let (rw, rh, rd) = (*width as i64, h_sp, d_sp);
-                    if *subtype != crate::boxes::RULE_EMPTY {
-                        self.emit_rect_sp(cur_x, y + rd, rw, rh + rd);
-                    }
+                    self.place_rule((*width, *height, *depth, *subtype, *index), cur_x, y + rd, rw, rh + rd);
                     cur_x += rw;
                 }
                 Node::Box {
@@ -1506,7 +1518,7 @@ impl<'a> RenderCtx<'a> {
                     match body {
                         // rule body: one rect over the whole advance; null
                         // height/depth fill the containing box
-                        LeaderBody::Rule { height, depth, subtype, .. } => {
+                        LeaderBody::Rule { width, height, depth, subtype } => {
                             let h_sp = if *height == RULE_FILL {
                                 self.box_h_sp
                             } else {
@@ -1518,8 +1530,8 @@ impl<'a> RenderCtx<'a> {
                                 *depth as i64
                             };
                             let (rh, rd) = (h_sp, d_sp);
-                            if adv > 0 && rh + rd > 0 && *subtype != crate::boxes::RULE_EMPTY {
-                                self.emit_rect_sp(cur_x, y + rd, adv, rh + rd);
+                            if adv > 0 && rh + rd > 0 {
+                                self.place_rule((*width, *height, *depth, *subtype, 0), cur_x, y + rd, adv, rh + rd);
                             }
                         }
                         LeaderBody::Box(b) => {
@@ -1705,7 +1717,16 @@ impl<'a> RenderCtx<'a> {
     /// TeX-space point (h, v_down), emitting `cm` when the move is visible.
     /// `scaled_out`-snapped so the recorded origin matches the printed raster.
     fn set_origin(&mut self, h_sp: i64, v_down_sp: i64) {
-        if (h_sp - self.origin_h).abs() >= self.min_bp_val
+        if self.eng.engine_kind == crate::engine::EngineKind::LuaTeX {
+            // luatex pdf_set_pos: the origin is the absolute position rounded
+            // to the output raster, `cm` the difference of two such positions
+            if let Some((dh, dv)) = self.lua_cm_move(h_sp, v_down_sp) {
+                self.print_lua_cm(dh, dv);
+                self.lua_cm = (self.lua_cm.0 + dh, self.lua_cm.1 + dv);
+            }
+            self.origin_h = h_sp;
+            self.origin_v = v_down_sp;
+        } else if (h_sp - self.origin_h).abs() >= self.min_bp_val
             || (v_down_sp - self.origin_v).abs() >= self.min_bp_val
         {
             self.content.push_str("1 0 0 1 ");
@@ -1724,7 +1745,11 @@ impl<'a> RenderCtx<'a> {
     /// pdfTeX `pdf_set_origin_temp`: emit the re-centering `cm` without
     /// updating the tracked origin (used inside a `q..Q` scope).
     fn set_origin_temp(&mut self, h_sp: i64, v_down_sp: i64) {
-        if (h_sp - self.origin_h).abs() >= self.min_bp_val
+        if self.eng.engine_kind == crate::engine::EngineKind::LuaTeX {
+            if let Some((dh, dv)) = self.lua_cm_move(h_sp, v_down_sp) {
+                self.print_lua_cm(dh, dv);
+            }
+        } else if (h_sp - self.origin_h).abs() >= self.min_bp_val
             || (v_down_sp - self.origin_v).abs() >= self.min_bp_val
         {
             self.content.push_str("1 0 0 1 ");
@@ -1733,6 +1758,25 @@ impl<'a> RenderCtx<'a> {
             self.push_bp(self.origin_v - v_down_sp);
             self.content.push_str(" cm\n");
         }
+    }
+
+    /// luatex `calc_pdfpos` in page mode: the move from the tracked origin to
+    /// the absolute position `(h_sp, v_down_sp)`, in units of the last output
+    /// digit; `None` when the origin already is there.
+    fn lua_cm_move(&self, h_sp: i64, v_down_sp: i64) -> Option<(i64, i64)> {
+        // k1 = 10^digits / one_bp, rounded away from zero at one half (`i64round`)
+        let k1 = 10f64.powi(self.decimal_digits as i32) / SP_PER_BP;
+        let round = |r: f64| (if r > 0.0 { r + 0.5 } else { r - 0.5 }) as i64;
+        let (h, v) = (round(h_sp as f64 * k1), round((self.page_height_sp - v_down_sp) as f64 * k1));
+        (h != self.lua_cm.0 || v != self.lua_cm.1).then(|| (h - self.lua_cm.0, v - self.lua_cm.1))
+    }
+
+    fn print_lua_cm(&mut self, dh: i64, dv: i64) {
+        self.content.push_str("1 0 0 1 ");
+        push_decimal(&mut self.content, dh, self.decimal_digits);
+        self.content.push(' ');
+        push_decimal(&mut self.content, dv, self.decimal_digits);
+        self.content.push_str(" cm\n");
     }
 
     /// pdfTeX `pdf_begin_text`.
@@ -2505,10 +2549,17 @@ impl<'a> RenderCtx<'a> {
     /// pdfTeX `pdf_set_rule`: close the text object, then draw inside a
     /// `q..Q` scope with a temporary origin shift (hairlines stroke).
     fn emit_rect_sp(&mut self, x_sp: i64, v_down_sp: i64, w_sp: i64, h_sp: i64) {
+        self.emit_rule_sp(x_sp, v_down_sp, w_sp, h_sp, None);
+    }
+
+    /// `emit_rect_sp`, and luatex's outline rule (`Some(stroke width in sp)`,
+    /// 0 keeps the current line width) which strokes the rectangle.
+    fn emit_rule_sp(&mut self, x_sp: i64, v_down_sp: i64, w_sp: i64, h_sp: i64, outline: Option<i64>) {
         // §624/§633: a rule is drawn only when rule_ht>0 and rule_wd>0
         if w_sp <= 0 || h_sp <= 0 {
             return;
         }
+        let lua = self.eng.engine_kind == crate::engine::EngineKind::LuaTeX;
         let x = sp_to_bp(x_sp);
         let y_down = sp_to_bp(v_down_sp);
         let y = self.y_pdf(y_down);
@@ -2525,33 +2576,90 @@ impl<'a> RenderCtx<'a> {
         // pdftex.web `pdf_set_rule`: `(h + 1)/2` is Pascal real division and
         // the real argument reaches the scaled parameter truncated toward
         // zero, so an even 0.4pt hairline is centered 13108sp (not 13107sp)
-        // above its bottom edge.
+        // above its bottom edge. luatex pdfrule.c rounds `0.5 * size` instead
+        // (13107sp) and writes `[] 0 d 0 J `.
         const ONE_BP: i64 = 65782;
+        let dash = if lua { "[] 0 d 0 J " } else { "[]0 d 0 J " };
         if h_sp <= ONE_BP {
-            let y = (v_down_sp as f64 - (h_sp + 1) as f64 / 2.0) as i64;
+            let y = if lua { v_down_sp - (h_sp + 1) / 2 } else { (v_down_sp as f64 - (h_sp + 1) as f64 / 2.0) as i64 };
             self.set_origin_temp(x_sp, y);
-            self.content.push_str("[]0 d 0 J ");
+            self.content.push_str(dash);
             self.push_bp(h_sp);
             self.content.push_str(" w 0 0 m ");
             self.push_bp(w_sp);
             self.content.push_str(" 0 l S\n");
         } else if w_sp <= ONE_BP {
-            let x = (x_sp as f64 + (w_sp + 1) as f64 / 2.0) as i64;
+            let x = if lua { x_sp + (w_sp + 1) / 2 } else { (x_sp as f64 + (w_sp + 1) as f64 / 2.0) as i64 };
             self.set_origin_temp(x, v_down_sp);
-            self.content.push_str("[]0 d 0 J ");
+            self.content.push_str(dash);
             self.push_bp(w_sp);
             self.content.push_str(" w 0 0 m 0 ");
             self.push_bp(h_sp);
             self.content.push_str(" l S\n");
         } else {
             self.set_origin_temp(x_sp, v_down_sp);
+            if let Some(stroke) = outline {
+                self.content.push_str(dash);
+                if stroke > 0 {
+                    self.push_bp(stroke);
+                    self.content.push_str(" w ");
+                }
+            }
             self.content.push_str("0 0 ");
             self.push_bp(w_sp);
             self.content.push(' ');
             self.push_bp(h_sp);
-            self.content.push_str(" re f\n");
+            self.content.push_str(if outline.is_some() { " re S\n" } else { " re f\n" });
         }
         self.content.push_str("Q\n");
+    }
+
+    /// luatex `pdf_place_rule`: the rule `(width, height, depth, subtype,
+    /// index)` of size `w_sp` by `h_sp` (in the orientation of the list)
+    /// with its lower left corner at `(x_sp, v_down_sp)`. A user rule is
+    /// drawn by the `process_rule` callback, which gets the node and the size;
+    /// the math rules become user rules when the callback is registered.
+    fn place_rule(&mut self, node: (i32, i32, i32, u8, i32), x_sp: i64, v_down_sp: i64, w_sp: i64, h_sp: i64) {
+        use crate::boxes::{RULE_EMPTY, RULE_MATH_OVER, RULE_MATH_RADICAL, RULE_OUTLINE, RULE_USER};
+        let (width, height, depth, subtype, index) = node;
+        let lua = self.eng.engine_kind == crate::engine::EngineKind::LuaTeX;
+        let callback = self.process_rule_cb != 0;
+        let mut s = subtype;
+        if lua && (RULE_MATH_OVER..=RULE_MATH_RADICAL).contains(&s) {
+            s = if callback { RULE_USER } else { crate::boxes::RULE_NORMAL };
+        }
+        if s == RULE_EMPTY {
+            // only takes space
+        } else if lua && s == RULE_USER {
+            if callback && w_sp > 0 && h_sp > 0 {
+                self.run_process_rule((width, height, depth, subtype, index), x_sp, v_down_sp, w_sp, h_sp);
+            }
+        } else {
+            self.emit_rule_sp(x_sp, v_down_sp, w_sp, h_sp, (lua && s == RULE_OUTLINE).then_some(i64::from(index)));
+        }
+    }
+
+    /// `q`, move to the rule's lower left corner, run `process_rule` with the
+    /// rule node and its size, `Q`; what the callback `pdf.print`s lands in
+    /// the page content.
+    fn run_process_rule(&mut self, node: (i32, i32, i32, u8, i32), x_sp: i64, v_down_sp: i64, w_sp: i64, h_sp: i64) {
+        use crate::lua_callbacks::{Cb, CbArg};
+        let (width, height, depth, subtype, index) = node;
+        self.end_text();
+        self.content.push_str("q\n");
+        self.set_origin_temp(x_sp, v_down_sp);
+        if self.process_rule_cb > 0 {
+            let rule = Node::Rule { width, height, depth, subtype, index, attr: crate::boxes::Attr::NONE };
+            let handle = self.eng.lua_nodes_from_engine(vec![rule]) as u32;
+            // vlist_out/hlist_out give a rule without a direction the box's (TLT)
+            self.eng.lua_nodes.node_mut(handle).f[crate::lua_node_conv::sl::R_DIR] = 0;
+            self.eng.lua_tex.pdf_pos = (x_sp as i32, (self.page_height_sp - v_down_sp) as i32);
+            self.eng.lua_tex.pdf_print.clear();
+            let _ = self.eng.lua_cb_call(Cb::ProcessRule, "process_rule", vec![CbArg::Node(handle), CbArg::Int(w_sp), CbArg::Int(h_sp)]);
+            self.eng.lua_nodes.flush_list(handle);
+            self.flush_lua_pdf_print(x_sp, v_down_sp);
+        }
+        self.content.push_str("\nQ\n");
     }
     /// pdfTeX `out_image`: paint image `obj` (`width` by `height`, total
     /// height plus depth) with its lower left corner at (`cur_h`, `cur_v`).
@@ -3123,6 +3231,13 @@ impl<'a> RenderCtx<'a> {
             self.eng.error(&format!("LuaTeX error: {err}"));
         }
         self.eng.lua_tex.in_late_lua = false;
+        self.flush_lua_pdf_print(cur_h, cur_v);
+    }
+
+    /// Put what `pdf.print` queued into the content stream, as lpdflib.c
+    /// `luapdfprint` does; `(cur_h, cur_v)` is the position the default
+    /// (origin) mode moves to.
+    fn flush_lua_pdf_print(&mut self, cur_h: i64, cur_v: i64) {
         for (mode, text) in std::mem::take(&mut self.eng.lua_tex.pdf_print) {
             match mode {
                 0 => {

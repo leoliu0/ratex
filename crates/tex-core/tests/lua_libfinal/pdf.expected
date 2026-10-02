@@ -1,0 +1,7 @@
+includefont true 
+typeonewide true 
+forcefile true 
+annot-outside false pdf.registerannot() can only be used in late lua
+annot-noarg false pdf.registerannot() needs exactly 1 argument
+includeimage true 2 0 0 16 8 0 0
+annot-late true 

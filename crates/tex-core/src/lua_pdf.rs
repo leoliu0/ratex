@@ -331,9 +331,12 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
                 e.fatal_error(&format!("error:  (pdf backend): font {f} gets initialized twice"));
                 return Ok(());
             }
+            // font 0 (also what a missing argument means) is the null font: nothing to set up
+            if f != 0 {
+                let ff = e.lua_pdf_font(f)?;
+                e.pdf_init_font(ff);
+            }
             e.lua_tex.included_fonts.push(f);
-            let ff = e.lua_pdf_font(f)?;
-            e.pdf_init_font(ff);
             Ok::<(), String>(())
         })?
     });

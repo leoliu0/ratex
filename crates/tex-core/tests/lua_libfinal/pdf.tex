@@ -1,0 +1,25 @@
+\catcode`\{=1 \catcode`\}=2 \catcode`\#=6
+\font\f=cmr10 \f
+\directlua{
+tex.enableprimitives('', tex.extraprimitives())
+tex.set('outputmode', 1)
+pdf.setcompresslevel(0) pdf.setobjcompresslevel(0)
+tex.set('pagewidth', 200*65536) tex.set('pageheight', 200*65536) pdf.setorigin(0)
+function W(tag, ok, ...)
+  local t = table.pack(...)
+  for i = 1, t.n do t[i] = tostring(t[i]) end
+  texio.write_nl('@@' .. tag .. ' ' .. tostring(ok) .. ' ' .. table.concat(t, ' ') .. ' ;')
+end
+ANN = pdf.immediateobj("<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] /Border [0 0 0] >>")
+W('includefont', pcall(pdf.includefont, font.id('f')))
+W('typeonewide', pcall(pdf.settypeonewidemode, true))
+W('forcefile', pcall(pdf.setforcefile, true))
+W('annot-outside', pcall(pdf.registerannot, ANN))
+W('annot-noarg', pcall(pdf.registerannot))
+local n = img.node(img.scan{filename = 'a.png'})
+local t = table.pack(pdf.includeimage(n.index))
+W('includeimage', true, t[1], t[2], t[3], t[4], t[5], t[6], t[8])
+}
+\setbox0\hbox{\latelua{W('annot-late', pcall(pdf.registerannot, ANN))}}
+\shipout\box0
+\end

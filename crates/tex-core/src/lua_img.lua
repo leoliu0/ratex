@@ -299,5 +299,5 @@ function pdf.includeimage(index)
   I.write_now(obj)
   local kind = I.info(obj, "type")
   local kinds = { none = 0, pdf = 1, png = 2, jpg = 3, jp2 = 4, jbig2 = 5, stream = 6, memstream = 7 }
-  return kinds[kind] or 0, 0, 0, num(obj, "xsize"), num(obj, "ysize"), num(obj, "rotation"), obj, nil
+  return kinds[kind] or 0, 0, 0, num(obj, "xsize"), num(obj, "ysize"), num(obj, "rotation"), obj, 0
 end

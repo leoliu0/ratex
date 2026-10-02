@@ -17,9 +17,10 @@ fn boot_lua() -> Engine {
     e
 }
 
+/// Serializes the tests that change the process working directory.
+static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn run_fixture(name: &str) -> String {
-    use std::sync::Mutex;
-    static LOCK: Mutex<()> = Mutex::new(());
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/lua_libfinal");
     let base = std::env::temp_dir().join(format!("ratex-lua-libfinal-{}", std::process::id()));
@@ -112,14 +113,27 @@ fn latelua_runs_at_shipout_with_position_and_literals() {
     assert_eq!(content, "q Q DBT\nTRET\n1 0 0 1 14.944 179.328 cm\nOZ");
 }
 
-/// Runs `tests/lua_libfinal/NAME.tex` and compares its `@@` log lines with the
-/// ones luatex wrote for the same file.
-fn check_tex(name: &str) {
+/// Runs `tests/lua_libfinal/NAME.tex` from its directory; `after` sees the engine
+/// after the run (for the PDF it produced).
+fn run_tex(name: &str, after: impl FnOnce(&mut Engine)) -> Vec<String> {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/lua_libfinal");
     let source = std::fs::read_to_string(dir.join(format!("{name}.tex"))).unwrap();
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(&dir).unwrap();
+    let mut e = ship(&source);
+    after(&mut e);
+    std::env::set_current_dir(cwd).unwrap();
+    // luatex appends log noise (file names, page marks) to a line: ` ;` ends the text
+    e.log.lines().filter_map(|l| l.strip_prefix("@@")).map(|l| l.split(" ;").next().unwrap().to_string()).collect()
+}
+
+/// Compares the `@@` log lines of `tests/lua_libfinal/NAME.tex` with the ones
+/// luatex wrote for the same file.
+fn check_tex(name: &str) {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/lua_libfinal");
     let expected = std::fs::read_to_string(dir.join(format!("{name}.expected"))).unwrap();
-    let e = ship(&source);
-    let got: Vec<String> = e.log.lines().filter_map(|l| l.strip_prefix("@@")).map(str::to_string).collect();
+    let got = run_tex(name, |_| {});
     let want: Vec<String> = expected.lines().map(str::to_string).collect();
     assert_eq!(got, want, "{name}");
 }
@@ -140,4 +154,30 @@ fn tex_finish_aborts_the_chunk() {
 #[test]
 fn img_library_matches_luatex() {
     check("img");
+}
+
+// luatex: the pdf library functions around fonts, images, annotations and the output file
+// (the page dictionary lists the registered annotation object)
+#[test]
+fn pdf_library_functions_match_luatex() {
+    let mut pdf = Vec::new();
+    let got = run_tex("pdf", |e| pdf = tex_core::driver::finish_pdf(e, false).expect("PDF output"));
+    let expected = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/lua_libfinal/pdf.expected")).unwrap();
+    assert_eq!(got, expected.lines().collect::<Vec<_>>());
+    let text = String::from_utf8_lossy(&pdf).into_owned();
+    let annots = text.split("/Annots ").nth(1).expect("page /Annots").split_whitespace().take(4).collect::<Vec<_>>().join(" ");
+    // luatex: `/Annots N 0 R` pointing at `[ A 0 R ]`, or an inline array; either names the Link object
+    let rest = annots.trim_start_matches('[').trim_start().to_string();
+    let num: u32 = rest.split_whitespace().next().unwrap().parse().unwrap();
+    let marker = format!("\n{num} 0 obj\n");
+    let obj = &text[text.find(&marker).expect("annotation object") + marker.len()..];
+    let obj = if obj.trim_start().starts_with('[') {
+        // an indirect array: follow its first reference
+        let inner: u32 = obj.trim_start()[1..].split_whitespace().next().unwrap().parse().unwrap();
+        let m = format!("\n{inner} 0 obj\n");
+        &text[text.find(&m).unwrap() + m.len()..]
+    } else {
+        obj
+    };
+    assert!(obj.starts_with("<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] /Border [0 0 0] >>"), "{obj:.200}");
 }

@@ -46,11 +46,6 @@ struct ActiveNode {
     /// e-TeX `active_short` / `active_glue` (\lastlinefit data)
     short: i64,
     glue: i64,
-    /// luatex: index in the list of the last `local_par` node before this
-    /// breakpoint (the state `line_break` keeps in `internal_*`); the
-    /// initial node holds the one the paragraph starts with
-    /// ([`NO_LOCAL_PAR`] when there is none)
-    lp: u32,
 }
 
 /// `ActiveNode::lp` of a breakpoint no `local_par` node precedes
@@ -344,8 +339,16 @@ impl Engine {
             adj_demerits: e.int_params[IntParam::AdjDemerits.idx() as usize],
             looseness: e.int_params[IntParam::Looseness.idx() as usize],
             emergency_stretch: e.dim_params[DimParam::EmergencyStretch.idx() as usize],
-            par_shape: self.par_shape.iter().map(|&(i, w)| (self.swap_parshape_indent(i, w), w)).collect(),
-            hang_indent: self.swap_hang_indent(e.dim_params[DimParam::HangIndent.idx() as usize]),
+            par_shape: if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                self.par_shape.iter().map(|&(i, w)| (self.swap_parshape_indent(i, w), w)).collect()
+            } else {
+                self.par_shape.clone()
+            },
+            hang_indent: if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                self.swap_hang_indent(e.dim_params[DimParam::HangIndent.idx() as usize])
+            } else {
+                e.dim_params[DimParam::HangIndent.idx() as usize]
+            },
             hang_after: e.int_params[IntParam::HangAfter.idx() as usize],
             line_skip_limit: e.dim_params[DimParam::LineSkipLimit.idx() as usize],
             line_skip: e.glue_params[GlueParam::LineSkip.idx() as usize].clone(),
@@ -449,22 +452,19 @@ impl Engine {
         let mut extra_stretch = 0i32;
         let mut best: Option<Rc<ActiveNode>> = None;
         let mut final_ran = false;
+        let lua = self.engine_kind == crate::engine::EngineKind::LuaTeX;
         loop {
             if threshold > INF_BAD {
                 threshold = INF_BAD;
             }
-            match self.try_break(
-                &list,
-                &params,
-                threshold,
-                final_pass,
-                second_pass,
-                extra_stretch,
-                bg_w,
-                bg_st,
-                bg_sh,
-                last_line_fit,
-            ) {
+            // the LuaTeX code is a separate instantiation: pdfTeX's pass is
+            // the plain Knuth-Plass loop
+            let pass = if lua {
+                self.try_break::<true>(&list, &params, threshold, final_pass, second_pass, extra_stretch, bg_w, bg_st, bg_sh, last_line_fit)
+            } else {
+                self.try_break::<false>(&list, &params, threshold, final_pass, second_pass, extra_stretch, bg_w, bg_st, bg_sh, last_line_fit)
+            };
+            match pass {
                 Some(end) => {
                     best = Some(end);
                     break;
@@ -546,13 +546,11 @@ impl Engine {
             pass: pass_num,
             emergency_stretch: extra_stretch,
         };
-        let node = self.build_lines(
-            list,
-            &params,
-            end,
-            final_widow_penalty,
-            display_widow,
-        );
+        let node = if lua {
+            self.build_lines::<true>(list, &params, end, final_widow_penalty, display_widow)
+        } else {
+            self.build_lines::<false>(list, &params, end, final_widow_penalty, display_widow)
+        };
         self.last_paragraph_layout = Some(record.clone());
         (node, record)
     }
@@ -1017,7 +1015,7 @@ impl Engine {
 
     /// one Knuth-Plass pass; returns the final breakpoint chain on success
     #[allow(clippy::too_many_arguments)]
-    fn try_break(
+    fn try_break<const LUA: bool>(
         &self,
         list: &[Node],
         params: &ParaParams,
@@ -1202,7 +1200,7 @@ impl Engine {
         // (tex's post_line_break prune: glue, penalty, explicit kern, math)
         let after_prune = |j: usize| -> usize {
             let mut f = j + 1;
-            while f < n && is_prunable(&list[f]) {
+            while f < n && is_prunable::<LUA>(&list[f]) {
                 f += 1;
             }
             f.min(n)
@@ -1213,7 +1211,7 @@ impl Engine {
         let start_left_prot = find_protchar_left(list, &self.eqtb, protrude_chars);
         // luatex `local_par` nodes: the state in force at each candidate
         // (`internal_left_box_width` etc. when `try_break` is called)
-        let lua_lp = self.engine_kind == crate::engine::EngineKind::LuaTeX
+        let lua_lp = LUA
             && list.iter().any(|n| matches!(n, Node::Whatsit(WhatIt::LocalPar(_), _)));
         let mut last_lp: Vec<u32> = Vec::new();
         if lua_lp {
@@ -1260,7 +1258,6 @@ impl Engine {
             ratio: 0,
             short: 0,
             glue: 0,
-            lp: init_lp,
         });
         let mut actives: Vec<Rc<ActiveNode>> = vec![start];
         // tex.web §25121–25133: easy_line is last_special_line (looseness
@@ -1570,7 +1567,7 @@ impl Engine {
                     Vec::with_capacity(keys.len());
                 for key in keys {
                     let (d, prev, ratio, short, glue) = &champions[&key];
-                    let (start_w, start_st, start_sh, start_fst, start_fsh) = start_state(
+                    let (start_w, start_st, start_sh, start_fst, start_fsh) = start_state::<LUA>(
                         list,
                         &after_prune,
                         &self.eqtb,
@@ -1608,7 +1605,6 @@ impl Engine {
                             ratio: *ratio,
                             short: *short,
                             glue: *glue,
-                            lp: cand_lp,
                         }),
                     ));
                 }
@@ -1702,7 +1698,7 @@ impl Engine {
         // tex.web §16964: auto_breaking is false between math-on/math-off
         // (glue inside a formula is never a breakpoint); outside math, glue
         // breaks only when not preceded by glue/penalty/explicit-kern/math
-        let break_after_dir = self.eqtb.int_params[IntParam::BreakAfterDirMode.idx() as usize] == 1;
+        let break_after_dir = LUA && self.eqtb.int_params[IntParam::BreakAfterDirMode.idx() as usize] == 1;
         let mut i = 0usize;
         let mut auto_breaking = true;
         while i < n {
@@ -1741,11 +1737,12 @@ impl Engine {
                         // luatex precedes_break: local_par and dir nodes
                         // are no break context (a dir node is with
                         // \breakafterdirmode=1)
-                        && match &list[i - 1] {
-                            Node::Whatsit(WhatIt::LocalPar(_), _) => false,
-                            Node::Whatsit(WhatIt::Dir { .. }, _) => break_after_dir,
-                            _ => true,
-                        };
+                        && (!LUA
+                            || match &list[i - 1] {
+                                Node::Whatsit(WhatIt::LocalPar(_), _) => false,
+                                Node::Whatsit(WhatIt::Dir { .. }, _) => break_after_dir,
+                                _ => true,
+                            });
                     if legal {
                         consider!(i, false, 0, BreakType::Unhyphenated, false, cum_w[i]);
                     }
@@ -1790,7 +1787,7 @@ impl Engine {
     }
 
     /// materialize the line boxes along the chosen breakpoint chain
-    fn build_lines(
+    fn build_lines<const LUA: bool>(
         &mut self,
         mut list: NodeList,
         params: &ParaParams,
@@ -1805,19 +1802,29 @@ impl Engine {
             cur = b.prev.clone();
         }
         chain.reverse();
-        // luatex `local_par` states the breaks refer to (a line's left box
-        // and nothing else comes from the break before it)
-        let mut local_pars: Vec<(u32, crate::boxes::LocalPar)> = Vec::new();
-        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
-            for b in &chain {
-                if let Some(Node::Whatsit(WhatIt::LocalPar(p), _)) = list.get(b.lp as usize) {
-                    if !local_pars.iter().any(|(i, _)| *i == b.lp) {
-                        local_pars.push((b.lp, (**p).clone()));
-                    }
-                }
+        // luatex `local_par` state of every break of the chain: the last
+        // local_par node before it (the paragraph's first node for the
+        // initial break) - what `line_break` keeps in `internal_*`
+        let mut chain_lp: Vec<Option<crate::boxes::LocalPar>> = Vec::new();
+        if LUA {
+            let lps: Vec<usize> = list
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| matches!(n, Node::Whatsit(WhatIt::LocalPar(_), _)))
+                .map(|(i, _)| i)
+                .collect();
+            for (k, b) in chain.iter().enumerate() {
+                let at = if k == 0 {
+                    lps.first().copied().filter(|&i| i == 0)
+                } else {
+                    lps.iter().rev().copied().find(|&i| i < b.pos)
+                };
+                chain_lp.push(match at.map(|i| &list[i]) {
+                    Some(Node::Whatsit(WhatIt::LocalPar(p), _)) => Some((**p).clone()),
+                    _ => None,
+                });
             }
         }
-        let local_par_of = |b: &ActiveNode| local_pars.iter().find(|(i, _)| *i == b.lp).map(|(_, p)| p);
 
         // etex.ch post_line_break: `LR_ptr:=LR_save` ... `LR_save:=LR_ptr`;
         // with TeXXeT every line reopens (closes) the text-direction and
@@ -1828,7 +1835,7 @@ impl Engine {
         let mut lines: NodeList = Vec::new();
         // luatex post_line_break `dir_ptr`: the text directions still open
         // at the end of a line are closed there and reopened on the next
-        let lua_dirs = self.engine_kind == crate::engine::EngineKind::LuaTeX;
+        let lua_dirs = LUA;
         let mut dir_stack: Vec<u8> = Vec::new();
         let mut i = 0usize;
         let mut pending_post: Option<crate::boxes::DiscNode> = None;
@@ -1938,7 +1945,7 @@ impl Engine {
                         if dc.post_break.is_empty() {
                             // post_line_break prunes the next line start
                             i = j + 1 + dc.replace_count;
-                            while i < list.len() && is_prunable(&list[i]) {
+                            while i < list.len() && is_prunable::<LUA>(&list[i]) {
                                 if let Node::MathKern(_, kind @ 1.., _) = list[i] {
                                     pruned_lr.push(kind);
                                 }
@@ -1977,7 +1984,7 @@ impl Engine {
                             _ => {}
                         }
                         i = j + 1;
-                        while i < list.len() && is_prunable(&list[i]) {
+                        while i < list.len() && is_prunable::<LUA>(&list[i]) {
                             if let Node::MathKern(_, kind @ 1.., _) = list[i] {
                                 pruned_lr.push(kind);
                             }
@@ -1995,8 +2002,8 @@ impl Engine {
             // the break after the line (copies, as the line is packed)
             let (left_box, right_box) = if lua_dirs {
                 (
-                    local_par_of(&chain[li]).filter(|p| !p.left.is_empty()).map(|p| p.left.clone()),
-                    local_par_of(bp).filter(|p| !p.right.is_empty()).map(|p| p.right.clone()),
+                    chain_lp[li].as_ref().filter(|p| !p.left.is_empty()).map(|p| p.left.clone()),
+                    chain_lp[li + 1].as_ref().filter(|p| !p.right.is_empty()).map(|p| p.right.clone()),
                 )
             } else {
                 (None, None)
@@ -2161,7 +2168,7 @@ impl Engine {
                 let line_no = params.prev_graf.max(0) as usize + li + 1;
                 // luatex: \localinterlinepenalty, when set, replaces
                 // \interlinepenalty
-                let local = if lua_dirs { local_par_of(bp) } else { None };
+                let local = if lua_dirs { chain_lp[li + 1].as_ref() } else { None };
                 let inter = match local {
                     Some(p) if p.pen_inter != 0 => p.pen_inter,
                     _ => params.inter_line_penalty,
@@ -2731,16 +2738,11 @@ impl Reconstitute<'_> {
     }
 }
 /// nodes tex removes at the start of the next line after a non-disc break
-fn is_prunable(n: &Node) -> bool {
+fn is_prunable<const LUA: bool>(n: &Node) -> bool {
     matches!(
         n,
-        Node::Glue(_, _)
-            | Node::Penalty(_, _)
-            | Node::ExplicitKern(_, _)
-            | Node::MathKern(..)
-            // luatex post_line_break: "weird, in the middle somewhere"
-            | Node::Whatsit(WhatIt::LocalPar(_), _)
-    )
+        Node::Glue(_, _) | Node::Penalty(_, _) | Node::ExplicitKern(_, _) | Node::MathKern(..)
+    ) || (LUA && matches!(n, Node::Whatsit(WhatIt::LocalPar(_), _))) // luatex post_line_break: "weird, in the middle somewhere"
 }
 
 fn push_dims(eqtb: &crate::eqtb::Eqtb, n: Node, seg: &mut NodeList, w: &mut i64) {
@@ -2874,7 +2876,7 @@ fn fitness_demerits(
 
 /// stored ("startsum") width state for a new active node at breakpoint `cand`
 #[allow(clippy::too_many_arguments)]
-fn start_state(
+fn start_state<const LUA: bool>(
     list: &[Node],
     after_prune: &dyn Fn(usize) -> usize,
     eqtb: &crate::eqtb::Eqtb,
@@ -2894,7 +2896,7 @@ fn start_state(
                 // next line also prunes discardables after the break
                 // dead zone may extend past the list end
                 let mut f = (cand + 1 + dc.replace_count).min(n);
-                while f < n && is_prunable(&list[f]) {
+                while f < n && is_prunable::<LUA>(&list[f]) {
                     f += 1;
                 }
                 (cum_w[f], cum_st[f], cum_sh[f], cum_fst[f], cum_fsh[f])

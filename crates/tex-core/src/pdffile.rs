@@ -2377,15 +2377,18 @@ fn info_dictionary(doc: &PdfDoc) -> String {
     }
     if !doc.info_omit_date && !doc.start_time.is_empty() {
         for key in ["CreationDate", "ModDate"] {
+            if doc.xdvipdfmx && key == "ModDate" {
+                continue;
+            }
             if !given(&format!("/{key}")) {
                 dict.push_str(&format!("/{key} ({})\n", doc.start_time));
             }
         }
     }
-    if !given("/Trapped") {
+    if !doc.xdvipdfmx && !given("/Trapped") {
         dict.push_str("/Trapped /False\n");
     }
-    if let Some(key) = doc.ptex_banner_key {
+    if let Some(key) = doc.ptex_banner_key.filter(|_| !doc.xdvipdfmx) {
         dict.push_str(&format!("/{key} ({})\n", escape_string(doc.banner)));
     }
     dict.push_str(">>");

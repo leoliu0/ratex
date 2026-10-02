@@ -15,6 +15,7 @@ pub mod engine_mode;
 pub mod engine_lua;
 pub mod engine_xetex;
 pub(crate) mod xetex_pic;
+mod dpx_obj;
 pub mod eqtb;
 pub mod expand;
 pub mod font_program;

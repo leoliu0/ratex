@@ -8,6 +8,9 @@ use crate::engine::Engine;
 use crate::pdfout::{Annot, PdfPage};
 use crate::prim::{DimParam, IntParam};
 
+pub(crate) mod dpx;
+mod dpx_doc;
+mod dpx_page;
 mod lr;
 mod lua_glyph;
 pub(crate) use lua_glyph::with_vf_packet;
@@ -386,6 +389,8 @@ pub struct RenderCtx<'a> {
     pub ximage_list: Vec<i32>,
     /// pdfTeX `pdf_xform_list`: forms painted here, in first-use order.
     pub xform_list: Vec<i32>,
+    /// XeTeX: page-local state of the xdvipdfmx special interpreter.
+    dpx: dpx::DpxPage,
 }
 
 /// A shipped \pdfxform box: its content stream and resources.
@@ -552,6 +557,7 @@ impl Engine {
             vf_fonts: crate::FxHashMap::default(),
             ximage_list: Vec::new(),
             xform_list: Vec::new(),
+            dpx: dpx::DpxPage::new(),
         }
     }
 
@@ -581,6 +587,9 @@ impl Engine {
     /// \pdfsavepos results (\pdflastxpos/\pdflastypos) from the last
     /// SavePos node on the page.
     pub fn render_page(&mut self, page_box: &Node) -> PdfPage {
+        if self.engine_kind == crate::engine::EngineKind::XeTeX {
+            return self.render_page_xetex(page_box);
+        }
         // pdf_ship_out initializes the PDF output on the first page or form.
         self.init_pdf_output();
         // pdfTeX "Calculate page dimensions and margins": a zero
@@ -1120,7 +1129,13 @@ impl<'a> RenderCtx<'a> {
     /// ship a vbox's vertical list with its top edge at y (`vlist_out`)
     pub fn ship_vlist(&mut self, list: &NodeList, x: i64, y: i64, sign: u8, order: u8, set: f64) {
         self.cur_s += 1;
+        if self.cur_s > 0 && self.eng.engine_kind == crate::engine::EngineKind::XeTeX {
+            self.dpx_mark_depth(self.cur_s);
+        }
         self.vlist_nodes(list, x, y, sign, order, set);
+        if self.cur_s > 0 && self.eng.engine_kind == crate::engine::EngineKind::XeTeX {
+            self.dpx_mark_depth(self.cur_s - 1);
+        }
         self.cur_s -= 1;
     }
 
@@ -1319,6 +1334,9 @@ impl<'a> RenderCtx<'a> {
     /// over this box (pdfTeX "Create link annotations for the current hbox").
     pub fn ship_hlist(&mut self, list: &NodeList, x: i64, y: i64, sign: u8, order: u8, set: f64) {
         self.cur_s += 1;
+        if self.cur_s > 0 && self.eng.engine_kind == crate::engine::EngineKind::XeTeX {
+            self.dpx_mark_depth(self.cur_s);
+        }
         let saved = (self.left_edge_sp, self.base_line_sp);
         (self.left_edge_sp, self.base_line_sp) = (x, y);
         if self.page_mode && self.eng.pdf_doc.gen_running_link {
@@ -1332,6 +1350,9 @@ impl<'a> RenderCtx<'a> {
         }
         self.hlist_nodes(list, x, y, sign, order, set);
         (self.left_edge_sp, self.base_line_sp) = saved;
+        if self.cur_s > 0 && self.eng.engine_kind == crate::engine::EngineKind::XeTeX {
+            self.dpx_mark_depth(self.cur_s - 1);
+        }
         self.cur_s -= 1;
     }
 
@@ -2172,6 +2193,16 @@ impl<'a> RenderCtx<'a> {
         if at_size_sp <= 0 {
             return; // nullfont: nothing to draw
         }
+        if self.eng.engine_kind == crate::engine::EngineKind::XeTeX && self.dpx_tracking() {
+            let adv = self.font_char_advance_sp(f, c);
+            let (h, d) = self
+                .eng
+                .eqtb
+                .fonts
+                .get(f as usize)
+                .map_or((0, 0), |ff| (i64::from(ff.char_height(c)), i64::from(ff.char_depth(c))));
+            self.dpx_track_box(x_sp, v_sp, adv, h, d);
+        }
         let self_ratio = self.font_ratio(f);
         let ratio = if self_ratio != 0 {
             self_ratio
@@ -2626,6 +2657,9 @@ impl<'a> RenderCtx<'a> {
         use crate::boxes::{RULE_EMPTY, RULE_MATH_OVER, RULE_MATH_RADICAL, RULE_OUTLINE, RULE_USER};
         let (width, height, depth, subtype, index) = node;
         let lua = self.eng.engine_kind == crate::engine::EngineKind::LuaTeX;
+        if self.eng.engine_kind == crate::engine::EngineKind::XeTeX {
+            self.dpx_track_box(x_sp, v_down_sp, w_sp, h_sp, 0);
+        }
         let callback = self.process_rule_cb != 0;
         let mut s = subtype;
         if lua && (RULE_MATH_OVER..=RULE_MATH_RADICAL).contains(&s) {
@@ -3158,7 +3192,14 @@ impl<'a> RenderCtx<'a> {
             _ => {}
         }
     }
-    fn handle_special(&mut self, text: &str, _cur_h: i64, _cur_v: i64) {
+    fn handle_special(&mut self, text: &str, cur_h: i64, cur_v: i64) {
+        if self.eng.engine_kind == crate::engine::EngineKind::XeTeX {
+            return self.dpx_special(text, cur_h, cur_v);
+        }
+        self.handle_special_legacy(text, cur_h, cur_v);
+    }
+
+    fn handle_special_legacy(&mut self, text: &str, _cur_h: i64, _cur_v: i64) {
         use std::fmt::Write;
         let trimmed = text.trim();
         if let Some(content) = trimmed

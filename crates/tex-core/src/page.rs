@@ -1675,7 +1675,10 @@ impl Engine {
             }
             return;
         }
-        let mut major_version = int(self, IntParam::PdfMajorVersion);
+        let xetex = self.engine_kind == crate::engine::EngineKind::XeTeX;
+        // xdvipdfmx writes PDF 1.7 (dvipdfmx.cfg `V 7`); the pdfTeX version
+        // parameters do not exist in XeTeX
+        let mut major_version = if xetex { 1 } else { int(self, IntParam::PdfMajorVersion) };
         if major_version < 1 {
             self.error(&format!(
                 "pdfTeX error (invalid pdfmajorversion) ({major_version})"
@@ -1683,7 +1686,7 @@ impl Engine {
             major_version = 1;
             self.eqtb.int_params[IntParam::PdfMajorVersion.idx() as usize] = 1;
         }
-        let mut minor_version = int(self, IntParam::PdfMinorVersion);
+        let mut minor_version = if xetex { 7 } else { int(self, IntParam::PdfMinorVersion) };
         if !(0..=9).contains(&minor_version) {
             self.error(&format!(
                 "pdfTeX error (invalid pdfminorversion) ({minor_version})"
@@ -1710,7 +1713,7 @@ impl Engine {
         self.pdf_fixed = Some(fixed);
         self.pdf_doc.major_version = major_version;
         self.pdf_doc.minor_version = Some(minor_version);
-        self.pdf_doc.decimal_digits = fixed.decimal_digits;
+        self.pdf_doc.decimal_digits = if xetex { 3 } else { fixed.decimal_digits };
     }
 
     /// pdfTeX `print("snap node being discarded")` (build_page and

@@ -257,6 +257,7 @@ pub fn insert_everyjob(eng: &mut Engine) {
 }
 
 pub fn finish_pdf(eng: &mut Engine, optimize_pdf_size: bool) -> Result<Vec<u8>, String> {
+    eng.dpx_finish();
     eng.embed_used_fonts()?;
     // embed image XObjects
     struct ImageJob<'a> {

@@ -439,6 +439,8 @@ pub struct Engine {
     pub pdf_images: crate::FxHashMap<i32, PdfImageInfo>,
     /// XeTeX `dpx_load_image` results by (name, page, box).
     pub(crate) xe_images: crate::FxHashMap<(String, i32, u8), crate::xetex_pic::DpxImage>,
+    /// XeTeX: state of the xdvipdfmx special interpreter.
+    pub(crate) dpx: crate::pdfrender::dpx::Dpx,
     /// pdfTeX `pdf_page_group_val`: the /Group object of the page (or form)
     /// being shipped; left over between shipouts like pdfTeX's global.
     pub pdf_page_group_val: i32,
@@ -1088,6 +1090,7 @@ impl Engine {
             space_factor: 1000,
             pdf_images: crate::FxHashMap::default(),
             xe_images: crate::FxHashMap::default(),
+            dpx: crate::pdfrender::dpx::Dpx::new(),
             pdf_page_group_val: 0,
             transparent_page_group: 0,
             transparent_page_group_written: false,

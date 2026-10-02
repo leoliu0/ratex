@@ -168,6 +168,9 @@ pub struct PdfDoc {
     pub(crate) link_stack: Vec<OpenLink>,
     /// pdfTeX `gen_running_link` (\pdfrunninglinkoff/on), persistent across pages.
     pub(crate) gen_running_link: bool,
+    /// XeTeX: the document is written like xdvipdfmx writes it (information
+    /// dictionary without pdfTeX's /Trapped, /ModDate and /PTEX banner).
+    pub(crate) xdvipdfmx: bool,
     /// pdfTeX resource names: form XObject number → `n` of `/Fm<n>`
     /// (`pdf_xform_count` when the form was created).
     pub(crate) form_names: std::collections::BTreeMap<i32, i32>,
@@ -471,6 +474,7 @@ impl PdfDoc {
             pdf_sources: std::collections::HashMap::new(),
             imported_programs: std::collections::HashMap::new(),
             gen_running_link: true,
+            xdvipdfmx: false,
         }
     }
 

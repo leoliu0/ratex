@@ -6,7 +6,7 @@
 //! cell's last column.
 
 use crate::align::{Cell, RowCtl};
-use crate::boxes::{Node, NodeList};
+use crate::boxes::{Attr, Node, NodeList};
 use crate::engine::{Engine, EngineKind};
 use crate::lua_callbacks::{Cb, CbArg, CbRet};
 use crate::lua_node::{HLIST, UNSET};
@@ -30,11 +30,11 @@ impl Engine {
             return RowCtl::default();
         }
         let mut image: NodeList = Vec::with_capacity(2 * row.len() + 1);
-        image.push(Node::Glue(self.align_col_tabskip_start()));
+        image.push(Node::Glue(self.align_col_tabskip_start(), Attr::NONE));
         for (c, cell) in row.iter().enumerate() {
             let Some(packed) = &cell.packed else { continue };
             image.push(packed.clone());
-            image.push(Node::Glue(self.align_col_tabskip(c + usize::from(cell.span))));
+            image.push(Node::Glue(self.align_col_tabskip(c + usize::from(cell.span)), Attr::NONE));
         }
         let (head, tail) = self.lua_list_with_head(image);
         let mut p = self.lua_nodes.next(head);

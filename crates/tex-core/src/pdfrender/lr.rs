@@ -29,7 +29,7 @@ impl Item<'_> {
     /// width and kind of a math node
     fn math(&self) -> Option<(i64, u8)> {
         match self.node() {
-            Some(&Node::MathKern(w, k)) if k != 0 => Some((w as i64, k)),
+            Some(&Node::MathKern(w, k, _)) if k != 0 => Some((w as i64, k)),
             _ => None,
         }
     }
@@ -94,7 +94,7 @@ impl<'a> RenderCtx<'a> {
             cur_h = 0;
             let rev = self.lr_reverse(items, None, &mut cur_h, &mut gs, &mut stack, sign, order, set);
             items = Vec::with_capacity(rev.len() + 1);
-            items.push(Item::Own(Node::Kern(-cur_h as i32)));
+            items.push(Item::Own(Node::Kern(-cur_h as i32, crate::boxes::Attr::NONE)));
             items.extend(rev);
             cur_h = save_h;
         }
@@ -192,7 +192,7 @@ impl<'a> RenderCtx<'a> {
                 let class = match p.node() {
                     None => Class::Other,
                     Some(node) => match node {
-                        Node::Char { c, font } => Class::Char(self.font_char_advance_sp(*font, *c)),
+                        Node::Char { c, font, .. } => Class::Char(self.font_char_advance_sp(*font, *c)),
                         Node::LuaGlyph(g) => Class::Char(i64::from(crate::boxes::lua_glyph_dims(&self.eng.eqtb, g).0)),
                         Node::Ligature {
                             font, lig_width, ..
@@ -200,12 +200,12 @@ impl<'a> RenderCtx<'a> {
                         Node::NativeGlyphRun { width, .. } => Class::Char(*width as i64),
                         Node::Box { w, .. } => Class::Width(*w as i64),
                         Node::Rule { width, .. } => Class::Width(*width as i64),
-                        Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) | Node::ItalicKern(k) => {
+                        Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) => {
                             Class::Kern(*k as i64)
                         }
-                        Node::Glue(g) => Class::Glue(*g),
+                        Node::Glue(g, _) => Class::Glue(*g),
                         Node::Leaders { glue, .. } => Class::Leaders(*glue),
-                        &Node::MathKern(w, k) if k != 0 => Class::Math(w as i64, k),
+                        &Node::MathKern(w, k, _) if k != 0 => Class::Math(w as i64, k),
                         _ => Class::Other,
                     },
                 };
@@ -220,7 +220,7 @@ impl<'a> RenderCtx<'a> {
                     Class::Glue(g) => {
                         let w = gs.advance(&g, sign, order, set);
                         if active_glue(&g, sign, order) {
-                            (Item::Own(Node::Kern(w as i32)), w, true)
+                            (Item::Own(Node::Kern(w as i32, crate::boxes::Attr::NONE)), w, true)
                         } else {
                             (p, w, false)
                         }
@@ -233,7 +233,7 @@ impl<'a> RenderCtx<'a> {
                                 Item::Own(Node::Leaders {
                                     glue: Glue::spec(w as i32, 0, 4, 0, 4),
                                     kind: *kind,
-                                    body: body.clone(),
+                                    body: body.clone(), attr: crate::boxes::Attr::NONE,
                                 })
                             }
                             _ => p,
@@ -246,15 +246,15 @@ impl<'a> RenderCtx<'a> {
                         if math_end_lr(kind) {
                             if stack.last() != Some(&math_end_lr_type(kind)) {
                                 self.lr_problems += 1;
-                                (Item::Own(Node::Kern(w as i32)), w, true)
+                                (Item::Own(Node::Kern(w as i32, crate::boxes::Attr::NONE)), w, true)
                             } else {
                                 stack.pop();
                                 if n > 0 {
                                     n -= 1;
-                                    (Item::Own(Node::MathKern(w as i32, kind - 1)), w, false)
+                                    (Item::Own(Node::MathKern(w as i32, kind - 1, crate::boxes::Attr::NONE)), w, false)
                                 } else if m > 0 {
                                     m -= 1;
-                                    (Item::Own(Node::Kern(w as i32)), w, true)
+                                    (Item::Own(Node::Kern(w as i32, crate::boxes::Attr::NONE)), w, true)
                                 } else {
                                     // "Finish the reversed hlist segment"
                                     if let Some(Item::Edge(_, tw, td)) = t.as_mut() {
@@ -269,10 +269,10 @@ impl<'a> RenderCtx<'a> {
                             stack.push(math_end_lr_type(kind));
                             if n > 0 || math_lr_dir(kind) != self.cur_dir {
                                 n += 1;
-                                (Item::Own(Node::MathKern(w as i32, kind + 1)), w, false)
+                                (Item::Own(Node::MathKern(w as i32, kind + 1, crate::boxes::Attr::NONE)), w, false)
                             } else {
                                 m += 1;
-                                (Item::Own(Node::Kern(w as i32)), w, true)
+                                (Item::Own(Node::Kern(w as i32, crate::boxes::Attr::NONE)), w, true)
                             }
                         }
                     }
@@ -293,7 +293,7 @@ impl<'a> RenderCtx<'a> {
                 break;
             };
             self.lr_problems += 10000;
-            pending = vec![Item::Own(Node::MathKern(0, top))].into_iter();
+            pending = vec![Item::Own(Node::MathKern(0, top, crate::boxes::Attr::NONE))].into_iter();
         }
         l.reverse();
         l.extend(t);

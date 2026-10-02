@@ -405,7 +405,7 @@ pub enum WhatIt {
     Write {
         stream: u16,
         tokens: Vec<crate::token::Token>,
-        source: Option<crate::input::SourceContext>,
+        source: Option<Box<crate::input::SourceContext>>,
     },
     /// tex.web §1393 `open_node`: a non-immediate `\openout` is queued as a
     /// whatsit and takes effect in list order at shipout (`out_what` @1414)
@@ -419,7 +419,7 @@ pub enum WhatIt {
         /// Managed auxiliary directories mirror nested `\\include` paths.
         /// Traditional and absolute `\\openout` paths do not create parents.
         create_parent: bool,
-        source: Option<crate::input::SourceContext>,
+        source: Option<Box<crate::input::SourceContext>>,
     },
     /// tex.web §1393 `close_node`: a non-immediate `\closeout` is queued as
     /// a whatsit on the current list and only takes effect when the list is
@@ -427,7 +427,7 @@ pub enum WhatIt {
     /// land in the file
     CloseOut {
         stream: u16,
-        source: Option<crate::input::SourceContext>,
+        source: Option<Box<crate::input::SourceContext>>,
     },
     /// Source position captured while building the list, before page shipout.
     SyncPoint {
@@ -508,8 +508,7 @@ pub fn leader_dims(body: &LeaderBody) -> (i32, i32, i32) {
             Node::Rule {
                 width,
                 height,
-                depth,
-            } => (*width, *height, *depth),
+                depth, .. } => (*width, *height, *depth),
             _ => (0, 0, 0),
         },
     }
@@ -527,14 +526,20 @@ pub struct DiscNode {
     /// LuaTeX `penalty` field; [`DISC_PENALTY_TEX`] applies tex.web's rule
     /// (`\hyphenpenalty` with a pre-break text, `\exhyphenpenalty` without)
     pub penalty: i32,
+    pub attr: Attr,
 }
 
 /// [`DiscNode::penalty`] of a discretionary that follows tex.web's rule.
 pub const DISC_PENALTY_TEX: i32 = i32::MIN;
 
 impl DiscNode {
+    pub fn with_attr(mut self, attr: Attr) -> Self {
+        self.attr = attr;
+        self
+    }
+
     pub fn new(pre_break: NodeList, post_break: NodeList, no_break: NodeList, replace_count: usize) -> Self {
-        DiscNode { pre_break, post_break, no_break, replace_count, subtype: 0, penalty: DISC_PENALTY_TEX }
+        DiscNode { pre_break, post_break, no_break, replace_count, subtype: 0, penalty: DISC_PENALTY_TEX, attr: Attr::NONE }
     }
 }
 
@@ -691,6 +696,17 @@ pub struct LuaGlyph {
     pub subtype: u8,
     /// the components of a ligature
     pub components: NodeList,
+    pub attr: Attr,
+}
+
+/// Handle of an interned LuaTeX attribute list (`Eqtb::attr_lists`); 0 is
+/// no list. Every node a LuaTeX document can hang `node.set_attribute` on
+/// carries one (luatex `node_attr`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Attr(pub u32);
+
+impl Attr {
+    pub const NONE: Attr = Attr(0);
 }
 
 #[derive(Clone, Debug)]
@@ -698,6 +714,7 @@ pub enum Node {
     Char {
         c: u8,
         font: FontId,
+        attr: Attr,
     },
     /// a glyph of a Lua font (see [`LuaGlyph`])
     LuaGlyph(Box<LuaGlyph>),
@@ -722,18 +739,19 @@ pub enum Node {
         letters: [u8; 3],
         n_letters: u8,
         subtype: u8,
+        attr: Attr,
     },
-    Glue(Glue),
-    Kern(i32),
-    ExplicitKern(i32),
+    Glue(Glue, Attr),
+    Kern(i32, Attr),
+    ExplicitKern(i32, Attr),
     /// tex.web `acc_kern` (subtype 2): the two kerns `\accent` puts around
     /// the accent. Unlike a normal kern it ends a hyphenation word and is
     /// never stretched by font expansion; unlike an explicit kern it is not
     /// a legal breakpoint and is not discarded at a line break.
-    AccentKern(i32),
+    AccentKern(i32, Attr),
     /// LuaTeX `italic_kern` (kern subtype 3): italic correction kerns
     /// that math conversion inserts
-    ItalicKern(i32),
+    ItalicKern(i32, Attr),
     /// pdfTeX `margin_kern_node`: a kern of width `-w` placed at the very
     /// start (or just before the trailing `\rightskip`) of a line box to let
     /// the marginal character `c` protrude `w` into the margin when
@@ -743,17 +761,20 @@ pub enum Node {
         width: i32,
         c: u8,
         font: FontId,
+        attr: Attr,
     },
-    Penalty(i32),
+    Penalty(i32, Attr),
     Rule {
         width: i32,
         height: i32,
         depth: i32,
+        attr: Attr,
     },
     Leaders {
         glue: Glue,
         kind: u8,
         body: LeaderBody,
+        attr: Attr,
     },
     Disc(DiscNode),
     Box {
@@ -771,10 +792,12 @@ pub enum Node {
         lr: u8,
         /// LuaTeX `box_dir` (`\boxdir`): 0 TLT, 1 TRT, 2 LTL, 3 RTT.
         dir: u8,
+        attr: Attr,
     },
     Mark {
         class: i32,
         tokens: Vec<crate::token::Token>,
+        attr: Attr,
     },
     Ins {
         num: u16,
@@ -790,22 +813,25 @@ pub enum Node {
         /// @21194 `d:=split_max_depth` / @21201 `depth(tail):=d`)
         split_max_depth: i32,
         box_node: Box<Node>,
+        attr: Attr,
     },
-    Adj(i32),
-    Whatsit(WhatIt),
+    Adj(i32, Attr),
+    Whatsit(WhatIt, Attr),
     // math nodes (converted to boxes before shipping):
-    Style(MathStyle),
+    Style(MathStyle, Attr),
     NonScript,
-    MuGlue(Glue),
+    MuGlue(Glue, Attr),
     Choice,
     ChoiceAlt {
         body: NodeList,
+        attr: Attr,
     },
     MathChar {
         fam: u8,
         c: u32,
         class: u8,
         origin: MathDiagnosticOrigin,
+        attr: Attr,
     },
     Frac {
         num: NodeList,
@@ -819,6 +845,7 @@ pub enum Node {
         /// luatex `fractionoptions` (`noad_option_*`, see [`noad_option`])
         options: u16,
         origin: MathDiagnosticOrigin,
+        attr: Attr,
     },
     /// luatex `radical_noad`: `\radical` (`subtype` 0), `\Uradical` (1),
     /// `\Uroot` (2), `\Uunderdelimiter` (3), `\Uoverdelimiter` (4),
@@ -834,6 +861,7 @@ pub enum Node {
         /// the root degree of `\Uroot`
         degree: Option<NodeList>,
         origin: MathDiagnosticOrigin,
+        attr: Attr,
     },
     Scripts {
         nucleus: NodeList,
@@ -842,6 +870,7 @@ pub enum Node {
         /// luatex `noadoptions` of the noad (`noad_option::NO_SUB_SCRIPT`,
         /// `NO_SUPER_SCRIPT`: `\Unosubscript`, `\Unosuperscript`)
         options: u16,
+        attr: Attr,
     },
     /// A delimiter marker of a flat mlist: `size` 0 is a `\left` (open
     /// boundary), 1 a `\right`, 2 a plain delimiter atom, 3 a `\middle`
@@ -853,20 +882,23 @@ pub enum Node {
         /// `\Uleft`/`\Umiddle`/`\Uright`/`\Uvextensible` options
         fence: FenceOpts,
         origin: MathDiagnosticOrigin,
+        attr: Attr,
     },
     OpLimits {
         op: NodeList,
         above: Option<NodeList>,
         below: Option<NodeList>,
+        attr: Attr,
     },
     /// `\mkern` (kind 0, mlists only) or a math node (kind = e-TeX math
     /// subtype + 1, see [`MATH_ON`]..[`END_R`]); the i32 is the width.
-    MathKern(i32, u8),
+    MathKern(i32, u8, Attr),
     /// luatex `accent_noad`: `\mathaccent` and `\Umathaccent`.
     Accent {
         spec: AccentSpec,
         body: NodeList,
         origin: MathDiagnosticOrigin,
+        attr: Attr,
     },
     Overline {
         body: NodeList,
@@ -874,16 +906,98 @@ pub enum Node {
         /// the already-packed bar-and-body box the conversion yields; `body`
         /// is the original field, kept for `\showlists` (tex.web §692)
         packed: Box<Node>,
+        attr: Attr,
     },
     VCenter {
         box_node: Box<Node>,
     },
     InsDisc,
     Empty,
-    VAdjust(NodeList),
+    VAdjust(NodeList, Attr),
     /// pdfTeX `\vadjust pre{...}`: material that migrates to the vertical
     /// list in front of the line (row, display) containing it
-    PreAdjust(NodeList),
+    PreAdjust(NodeList, Attr),
+}
+
+impl Node {
+    /// The node's attribute list ([`Attr::NONE`] for the variants LuaTeX
+    /// gives none).
+    pub fn attr(&self) -> Attr {
+        match self {
+            Node::Char { attr, .. }
+            | Node::Ligature { attr, .. }
+            | Node::MarginKern { attr, .. }
+            | Node::Rule { attr, .. }
+            | Node::Leaders { attr, .. }
+            | Node::Box { attr, .. }
+            | Node::Mark { attr, .. }
+            | Node::Ins { attr, .. }
+            | Node::ChoiceAlt { attr, .. }
+            | Node::MathChar { attr, .. }
+            | Node::Frac { attr, .. }
+            | Node::Radical { attr, .. }
+            | Node::Scripts { attr, .. }
+            | Node::DelimBox { attr, .. }
+            | Node::OpLimits { attr, .. }
+            | Node::Accent { attr, .. }
+            | Node::Overline { attr, .. } => *attr,
+            Node::Glue(_, a)
+            | Node::Kern(_, a)
+            | Node::ExplicitKern(_, a)
+            | Node::AccentKern(_, a)
+            | Node::ItalicKern(_, a)
+            | Node::Penalty(_, a)
+            | Node::Adj(_, a)
+            | Node::Whatsit(_, a)
+            | Node::Style(_, a)
+            | Node::MuGlue(_, a)
+            | Node::VAdjust(_, a)
+            | Node::PreAdjust(_, a)
+            | Node::MathKern(_, _, a) => *a,
+            Node::LuaGlyph(g) => g.attr,
+            Node::Disc(d) => d.attr,
+            _ => Attr::NONE,
+        }
+    }
+
+    /// Give the node attribute list `a` (a no-op for the variants without).
+    pub fn set_attr(&mut self, a: Attr) {
+        match self {
+            Node::Char { attr, .. }
+            | Node::Ligature { attr, .. }
+            | Node::MarginKern { attr, .. }
+            | Node::Rule { attr, .. }
+            | Node::Leaders { attr, .. }
+            | Node::Box { attr, .. }
+            | Node::Mark { attr, .. }
+            | Node::Ins { attr, .. }
+            | Node::ChoiceAlt { attr, .. }
+            | Node::MathChar { attr, .. }
+            | Node::Frac { attr, .. }
+            | Node::Radical { attr, .. }
+            | Node::Scripts { attr, .. }
+            | Node::DelimBox { attr, .. }
+            | Node::OpLimits { attr, .. }
+            | Node::Accent { attr, .. }
+            | Node::Overline { attr, .. } => *attr = a,
+            Node::Glue(_, x)
+            | Node::Kern(_, x)
+            | Node::ExplicitKern(_, x)
+            | Node::AccentKern(_, x)
+            | Node::ItalicKern(_, x)
+            | Node::Penalty(_, x)
+            | Node::Adj(_, x)
+            | Node::Whatsit(_, x)
+            | Node::Style(_, x)
+            | Node::MuGlue(_, x)
+            | Node::VAdjust(_, x)
+            | Node::PreAdjust(_, x)
+            | Node::MathKern(_, _, x) => *x = a,
+            Node::LuaGlyph(g) => g.attr = a,
+            Node::Disc(d) => d.attr = a,
+            _ => {}
+        }
+    }
 }
 
 pub type NodeList = Vec<Node>;
@@ -919,7 +1033,7 @@ pub fn lua_glyph_dims(eqtb: &crate::eqtb::Eqtb, g: &LuaGlyph) -> (i32, i32, i32)
 /// dimensions of a single node in a horizontal list
 fn single_dims(n: &Node, eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
     match n {
-        Node::Char { c, font } => (
+        Node::Char { c, font, .. } => (
             eqtb_fonts(eqtb).char_width(*font, *c),
             eqtb_fonts(eqtb).char_height(*font, *c),
             eqtb_fonts(eqtb).char_depth(*font, *c),
@@ -931,22 +1045,21 @@ fn single_dims(n: &Node, eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
             lig_depth,
             ..
         } => (*lig_width, *lig_height, *lig_depth),
-        Node::Glue(g) => (g.width, 0, 0),
-        Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) | Node::ItalicKern(k) => (*k, 0, 0),
+        Node::Glue(g, _) => (g.width, 0, 0),
+        Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) => (*k, 0, 0),
         // tex.web math_node: width = \mathsurround (math-on 1 / math-off 2);
         // an unconverted \mkern (kind 0) has no width yet
-        Node::MathKern(k, MATH_ON..) => (*k, 0, 0),
+        Node::MathKern(k, MATH_ON.., _) => (*k, 0, 0),
         Node::MarginKern { width, .. } => (*width, 0, 0),
-        Node::Penalty(_) => (0, 0, 0),
+        Node::Penalty(_, _) => (0, 0, 0),
         Node::Rule {
             width,
             height,
-            depth,
-        } => (*width, *height, *depth),
+            depth, .. } => (*width, *height, *depth),
         Node::Box { w, h, d, shift, .. } => (*w, (*h - *shift).max(0), (*d + *shift).max(0)),
         Node::Mark { .. }
-        | Node::Style(_)
-        | Node::Adj(_)
+        | Node::Style(_, _)
+        | Node::Adj(_, _)
         | Node::Choice
         | Node::ChoiceAlt { .. } => (0, 0, 0),
         Node::Scripts { nucleus, .. } => hlist_dims(nucleus, eqtb),
@@ -959,21 +1072,21 @@ fn single_dims(n: &Node, eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
         Node::Overline { packed, .. } => single_dims(packed, eqtb),
         Node::OpLimits { op, .. } => hlist_dims(op, eqtb),
         Node::VCenter { box_node } => single_dims(box_node, eqtb),
-        Node::Whatsit(WhatIt::PdfRefXImage { w, h, d, .. })
-        | Node::Whatsit(WhatIt::PdfRefXForm { w, h, d, .. }) => (*w, *h, *d),
+        Node::Whatsit(WhatIt::PdfRefXImage { w, h, d, .. }, _)
+        | Node::Whatsit(WhatIt::PdfRefXForm { w, h, d, .. }, _) => (*w, *h, *d),
         Node::DelimBox { .. }
         | Node::Accent { .. }
-        | Node::Whatsit(_)
+        | Node::Whatsit(_, _)
         | Node::Ins { .. }
         | Node::Disc(_)
         | Node::MathChar { .. } => (0, 0, 0),
-        Node::VAdjust(_)
-        | Node::PreAdjust(_)
+        Node::VAdjust(_, _)
+        | Node::PreAdjust(_, _)
         | Node::InsDisc
         | Node::Empty
-        | Node::MathKern(_, _)
+        | Node::MathKern(_, _, _)
         | Node::NonScript
-        | Node::MuGlue(_) => (0, 0, 0),
+        | Node::MuGlue(_, _) => (0, 0, 0),
         Node::Leaders { glue, body, .. } => {
             let (_, bh, bd) = leader_dims(body);
             (glue.width, bh, bd)
@@ -1040,13 +1153,12 @@ pub fn vlist_dims(list: &[Node], eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
             Node::Rule {
                 height,
                 depth,
-                width,
-            } => {
+                width, .. } => {
                 x += d + *height as i64;
                 d = *depth as i64;
                 w = w.max(*width as i64);
             }
-            Node::Glue(g) => {
+            Node::Glue(g, _) => {
                 x += d + g.width as i64;
                 d = 0;
             }
@@ -1054,7 +1166,7 @@ pub fn vlist_dims(list: &[Node], eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
                 x += d + *width as i64;
                 d = 0;
             }
-            Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) | Node::ItalicKern(k) => {
+            Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) => {
                 x += d + *k as i64;
                 d = 0;
             }
@@ -1069,13 +1181,13 @@ pub fn vlist_dims(list: &[Node], eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
                 h: ih,
                 d: id,
                 ..
-            })
+            }, _)
             | Node::Whatsit(WhatIt::PdfRefXForm {
                 w: iw,
                 h: ih,
                 d: id,
                 ..
-            }) => {
+            }, _) => {
                 x += d + *ih as i64;
                 d = *id as i64;
                 w = w.max(*iw as i64);
@@ -1184,7 +1296,7 @@ pub(crate) fn glue_sums(list: &[Node]) -> ([i64; 4], [i64; 4]) {
     let mut shrink = [0i64; 4];
     for n in list {
         let g = match n {
-            Node::Glue(g) => g,
+            Node::Glue(g, _) => g,
             Node::Leaders { glue: g, .. } => g,
             _ => continue,
         };
@@ -1231,7 +1343,7 @@ fn finish_glue(
                         list.push(Node::Rule {
                             width: rule_w as i32,
                             height: crate::build::RULE_FILL,
-                            depth: crate::build::RULE_FILL,
+                            depth: crate::build::RULE_FILL, attr: eqtb.cur_attr,
                         });
                     }
                 }
@@ -1280,7 +1392,7 @@ pub fn hpack_add(
             glue_order: order,
             glue_set: set,
             lr: 0,
-            dir: 0,
+            dir: 0, attr: eqtb.cur_attr,
         },
         badness: bad,
         delta,
@@ -1321,8 +1433,8 @@ pub fn hpack_migrate(
             Node::Ins { .. } | Node::Mark { .. } => migrated.push(n),
             // §13008-13012: an adjust_node's own vlist joins the adjustment
             // list and the node is freed — it never stays in the hlist
-            Node::VAdjust(inner) => migrated.extend(inner),
-            Node::PreAdjust(inner) => pre.extend(inner),
+            Node::VAdjust(inner, _) => migrated.extend(inner),
+            Node::PreAdjust(inner, _) => pre.extend(inner),
             other => kept.push(other),
         }
     }
@@ -1371,7 +1483,7 @@ pub fn vpack_add_md(
             glue_order: order,
             glue_set: set,
             lr: 0,
-            dir: 0,
+            dir: 0, attr: eqtb.cur_attr,
         },
         badness: bad,
         delta,
@@ -1676,7 +1788,7 @@ fn do_subst_font(eng: &mut crate::engine::Engine, f: &mut FontId, c: u8, ex_rati
 }
 fn subst_node_font(eng: &mut crate::engine::Engine, node: &mut Node, ratio: i32) {
     match node {
-        Node::Char { c, font } => do_subst_font(eng, font, *c, ratio),
+        Node::Char { c, font, .. } => do_subst_font(eng, font, *c, ratio),
         Node::Ligature {
             c,
             font,
@@ -1770,7 +1882,7 @@ pub fn hpack_expand(
         subst_node_font(eng, node, ratio);
     }
     for i in 1..list.len().saturating_sub(1) {
-        if !matches!(list[i], Node::Kern(_)) {
+        if !matches!(list[i], Node::Kern(_, _)) {
             continue;
         }
         let Some((f, lc)) = char_or_lig(&list[i - 1]) else {
@@ -1790,9 +1902,9 @@ pub fn hpack_expand(
         if expanded == 0 {
             continue;
         }
-        let cur = match &list[i] {
-            Node::Kern(k) => *k,
-            _ => 0,
+        let (cur, attr) = match &list[i] {
+            Node::Kern(k, a) => (*k, *a),
+            _ => (0, Attr::NONE),
         };
         let nonzero = if ratio > 0 {
             kern_stretch(&eng.eqtb, f, lc, rc, cur) != 0
@@ -1800,7 +1912,7 @@ pub fn hpack_expand(
             kern_shrink(&eng.eqtb, f, lc, rc, cur) != 0
         };
         if nonzero {
-            list[i] = Node::Kern(get_kern(&eng.eqtb, expanded, lc, rc));
+            list[i] = Node::Kern(get_kern(&eng.eqtb, expanded, lc, rc), attr);
         }
     }
     hpack(list, Some(w), kind, &eng.eqtb)
@@ -1810,7 +1922,7 @@ pub fn hpack_expand(
 /// pair pdftex reads for `kern_stretch`'s neighbours.
 fn char_or_lig(n: &Node) -> Option<(FontId, u8)> {
     match n {
-        Node::Char { c, font } => Some((*font, *c)),
+        Node::Char { c, font, .. } => Some((*font, *c)),
         Node::Ligature { c, font, .. } => Some((*font, *c)),
         _ => None,
     }
@@ -1827,23 +1939,23 @@ fn collect_char_stretch(
     let eqtb = &eng.eqtb;
     for i in 0..list.len() {
         match &list[i] {
-            Node::Char { c, font } | Node::Ligature { c, font, .. } => {
+            Node::Char { c, font, .. } | Node::Ligature { c, font, .. } => {
                 *total += if stretch {
                     char_stretch(eqtb, *font, *c) as i64
                 } else {
                     char_shrink(eqtb, *font, *c) as i64
                 };
             }
-            Node::Kern(d) => {
+            Node::Kern(d, _) => {
                 // `kern_stretch(p)`: only when the kern sits directly
                 // between two char/ligature nodes of the same expandable
                 // font (pdftex's prev_char_p/link(p) guard)
                 let prev = match i.checked_sub(1).map(|j| &list[j]) {
-                    Some(Node::Char { c, font } | Node::Ligature { c, font, .. }) => (*font, *c),
+                    Some(Node::Char { c, font, .. } | Node::Ligature { c, font, .. }) => (*font, *c),
                     _ => continue,
                 };
                 let next = match list.get(i + 1) {
-                    Some(Node::Char { c, font } | Node::Ligature { c, font, .. }) => (*font, *c),
+                    Some(Node::Char { c, font, .. } | Node::Ligature { c, font, .. }) => (*font, *c),
                     _ => continue,
                 };
                 if prev.0 != next.0 {
@@ -1895,7 +2007,7 @@ pub fn split_vlist(list: &[Node], target: i64) -> (NodeList, NodeList) {
                 depth = *d as i64;
                 seen_box = true;
             }
-            Node::Glue(g) => {
+            Node::Glue(g, _) => {
                 let w = g.width as i64;
                 if seen_box && height + depth + w > target {
                     split_at = Some(i);
@@ -1904,7 +2016,7 @@ pub fn split_vlist(list: &[Node], target: i64) -> (NodeList, NodeList) {
                 height += depth + w;
                 depth = 0;
             }
-            Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) | Node::ItalicKern(k) => {
+            Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) => {
                 let w = *k as i64;
                 if seen_box && height + depth + w > target {
                     split_at = Some(i);
@@ -1913,7 +2025,7 @@ pub fn split_vlist(list: &[Node], target: i64) -> (NodeList, NodeList) {
                 height += depth + w;
                 depth = 0;
             }
-            Node::Penalty(p) if *p <= crate::scaled::EJECT_PENALTY && seen_box => {
+            Node::Penalty(p, _) if *p <= crate::scaled::EJECT_PENALTY && seen_box => {
                 split_at = Some(i);
                 break;
             }
@@ -1923,7 +2035,7 @@ pub fn split_vlist(list: &[Node], target: i64) -> (NodeList, NodeList) {
     match split_at {
         None => (list.to_vec(), Vec::new()),
         Some(i) => {
-            let at_glue = matches!(list[i], Node::Glue(_));
+            let at_glue = matches!(list[i], Node::Glue(_, _));
             let mut rest = list[i..].to_vec();
             if at_glue && !rest.is_empty() {
                 rest.remove(0);

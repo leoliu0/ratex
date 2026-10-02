@@ -296,6 +296,34 @@ fn input_rereads_a_file_rewritten_by_tex() {
     std::fs::remove_file(path).unwrap();
 }
 
+/// pdftex -ini (TeX Live 2026): \inputlineno (and the line numbers of
+/// paragraphs and errors) follow the innermost open file; the outer file's
+/// count resumes after the \input.
+#[test]
+fn input_line_numbers_follow_the_innermost_file() {
+    let name = format!("tex-lines-{}.tex", std::process::id());
+    let path = std::env::temp_dir().join(&name);
+    std::fs::write(&path, b"\\message{[P1:\\the\\inputlineno]}\n\n\n\n\\message{[P2:\\the\\inputlineno]}\n").unwrap();
+    let path_text = path.to_string_lossy().replace('\\', "/");
+    let mut e = Engine::new(true);
+    e.init_primitives();
+    e.add_nullfont();
+    let source = format!(
+        r"\catcode`\{{=1 \catcode`\}}=2 \catcode`\#=6
+\message{{[A:\the\inputlineno]}}
+\input {path_text}\relax
+\message{{[B:\the\inputlineno]}}
+\end"
+    );
+    e.input.push_file("review.tex".into(), source.into_bytes());
+    e.run();
+    std::fs::remove_file(path).unwrap();
+    assert_eq!(e.error_count, 0, "{}", e.term);
+    for expected in ["[A:2]", "[P1:1]", "[P2:5]", "[B:4]"] {
+        assert!(e.term.contains(expected), "{expected} missing: {}", e.term);
+    }
+}
+
 fn run_lenient(source: &str) -> Engine {
     let mut engine = Engine::new(true);
     engine.init_primitives();

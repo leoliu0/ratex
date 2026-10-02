@@ -38,7 +38,7 @@ pub(crate) fn is_math_node(n: &Node) -> bool {
             | Node::Radical { .. }
             | Node::Accent { .. }
             | Node::DelimBox { .. }
-            | Node::Style(_)
+            | Node::Style(_, _)
             | Node::Choice
             | Node::Overline { .. }
             | Node::VCenter { .. }
@@ -169,7 +169,7 @@ impl Engine {
                 Node::Choice => {
                     let c = self.lua_new_node(CHOICE, 0);
                     for k in 0..4 {
-                        if let Some(Node::ChoiceAlt { body }) = list.get(i + 1 + k) {
+                        if let Some(Node::ChoiceAlt { body, .. }) = list.get(i + 1 + k) {
                             let (h, _) = self.import_math_list(body, ctx, false);
                             self.lua_nodes.node_mut(c).f[k] = h as i32;
                         }
@@ -254,7 +254,7 @@ impl Engine {
     /// with its left fence and ends with the right one).
     fn import_math_node(&mut self, node: &Node, ctx: &mut LangCtx) -> u32 {
         match node {
-            Node::Style(s) => {
+            Node::Style(s, _) => {
                 let g = gstyle_of(*s);
                 let n = self.lua_new_node(STYLE, u16::from(g));
                 self.lua_nodes.node_mut(n).f[0] = i32::from(g);
@@ -263,7 +263,7 @@ impl Engine {
             Node::MathChar { fam: 255, .. } => 0,
             Node::MathChar { fam, c, class, .. } => self.import_noad_with(*class, 0, &[node.clone()], None, None, ctx, Some((*fam, *c))),
             Node::Scripts { nucleus, sup, sub, .. } => self.import_scripts(nucleus, sup.as_deref(), sub.as_deref(), ctx),
-            Node::OpLimits { op, above, below } => {
+            Node::OpLimits { op, above, below, .. } => {
                 let (marker, payload): (u8, &[Node]) = match op.first() {
                     Some(Node::MathChar { fam: 255, c, class: CL_OP, .. }) => (*c as u8, &op[1..]),
                     _ => (0, op.as_slice()),
@@ -424,7 +424,7 @@ impl Engine {
                         width: *width,
                         options: *options,
                         degree: degree.clone(),
-                        origin: MathDiagnosticOrigin::default(),
+                        origin: MathDiagnosticOrigin::default(), attr: crate::boxes::Attr::NONE,
                     },
                     ctx,
                 );
@@ -501,7 +501,7 @@ impl Engine {
                 fam: f[0].clamp(0, 255) as u8,
                 c: f[1] as u32,
                 class: CL_ORD,
-                origin: MathDiagnosticOrigin::default(),
+                origin: MathDiagnosticOrigin::default(), attr: crate::boxes::Attr::NONE,
             }],
             SUB_MLIST => {
                 let l = self.export_sub(f[0]);
@@ -540,7 +540,7 @@ impl Engine {
             nucleus,
             sup: has_sup.then_some(sup),
             sub: has_sub.then_some(sub),
-            options: 0,
+            options: 0, attr: crate::boxes::Attr::NONE,
         }
     }
 
@@ -552,13 +552,13 @@ impl Engine {
         match id {
             STYLE => {
                 let g = f[0].clamp(0, 7) as u8;
-                out.push(Node::Style(math_style_of(g)));
+                out.push(Node::Style(math_style_of(g), crate::boxes::Attr::NONE));
             }
             CHOICE => {
                 out.push(Node::Choice);
                 for k in 0..4 {
                     let body = self.export_sub(f[k]);
-                    out.push(Node::ChoiceAlt { body });
+                    out.push(Node::ChoiceAlt { body, attr: crate::boxes::Attr::NONE });
                 }
             }
             NOAD => {
@@ -571,7 +571,7 @@ impl Engine {
                 match sub {
                     SUB_UNDER | SUB_OVER => {
                         let body = self.export_math_field(f[0]);
-                        let node = Node::Overline { body, under: sub == SUB_UNDER, packed: Box::new(Node::Empty) };
+                        let node = Node::Overline { body, under: sub == SUB_UNDER, packed: Box::new(Node::Empty), attr: crate::boxes::Attr::NONE };
                         if has_sup || has_sub {
                             out.push(Self::with_scripts(vec![node], sup, subs, has_sup, has_sub));
                         } else {
@@ -596,13 +596,13 @@ impl Engine {
                         let is_box = nuc_id == SUB_BOX;
                         let _ = nuc_f;
                         if class == CL_OP && (limits != 0 || has_sup || has_sub) {
-                            let mut op = vec![Node::MathChar { fam: 255, c: u32::from(limits), class: CL_OP, origin: origin() }];
+                            let mut op = vec![Node::MathChar { fam: 255, c: u32::from(limits), class: CL_OP, origin: origin(), attr: crate::boxes::Attr::NONE }];
                             let mut body = body;
                             if let (true, Some(Node::MathChar { class: c, .. })) = (is_char, body.first_mut()) {
                                 *c = CL_OP;
                             }
                             op.append(&mut body);
-                            out.push(Node::OpLimits { op, above: has_sup.then_some(sup), below: has_sub.then_some(subs) });
+                            out.push(Node::OpLimits { op, above: has_sup.then_some(sup), below: has_sub.then_some(subs), attr: crate::boxes::Attr::NONE });
                         } else if is_char {
                             let mut body = body;
                             if let Some(Node::MathChar { class: c, .. }) = body.first_mut() {
@@ -635,7 +635,7 @@ impl Engine {
                             } else if body.is_empty() && class == CL_ORD {
                                 body
                             } else {
-                                let mut g = vec![Node::MathChar { fam: 255, c: 0, class, origin: origin() }];
+                                let mut g = vec![Node::MathChar { fam: 255, c: 0, class, origin: origin(), attr: crate::boxes::Attr::NONE }];
                                 g.extend(body);
                                 g
                             };
@@ -659,7 +659,7 @@ impl Engine {
                     width: f[5],
                     options: f[6] as u16,
                     degree,
-                    origin: origin(),
+                    origin: origin(), attr: crate::boxes::Attr::NONE,
                 };
                 if has_sup || has_sub {
                     out.push(Self::with_scripts(vec![node], sup, subs, has_sup, has_sub));
@@ -680,7 +680,7 @@ impl Engine {
                 let node = Node::Accent {
                     spec: AccentSpec { top, bottom, overlay, subtype: sub as u8, fraction: f[7] },
                     body,
-                    origin: origin(),
+                    origin: origin(), attr: crate::boxes::Attr::NONE,
                 };
                 if has_sup || has_sub {
                     out.push(Self::with_scripts(vec![node], sup, subs, has_sup, has_sub));
@@ -702,7 +702,7 @@ impl Engine {
                     right,
                     middle,
                     options: f[7] as u16,
-                    origin: origin(),
+                    origin: origin(), attr: crate::boxes::Attr::NONE,
                 });
             }
             FENCE => {
@@ -718,14 +718,14 @@ impl Engine {
                     large: (d.large_fam, d.large_char),
                     size,
                     fence: FenceOpts { height: f[2], depth: f[3], class: f[5], options: f[4] as u16 },
-                    origin: origin(),
+                    origin: origin(), attr: crate::boxes::Attr::NONE,
                 });
             }
             MATH_CHAR | MATH_TEXT_CHAR => out.push(Node::MathChar {
                 fam: f[0].clamp(0, 255) as u8,
                 c: f[1] as u32,
                 class: CL_ORD,
-                origin: origin(),
+                origin: origin(), attr: crate::boxes::Attr::NONE,
             }),
             SUB_MLIST | SUB_BOX => {
                 let list = self.export_sub(f[0]);

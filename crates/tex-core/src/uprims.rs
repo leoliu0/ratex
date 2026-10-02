@@ -474,7 +474,7 @@ impl Engine {
         self.eqtb.assign_int_param(param, value, global);
         if matches!(u, UPrim::TextDir | UPrim::LineDir) && self.mode.is_h() {
             let level = self.eqtb.cur_level;
-            self.cur_list.push(Node::Whatsit(crate::boxes::WhatIt::Dir { dir: value as u8, cancel: false, level }));
+            self.cur_list.push(Node::Whatsit(crate::boxes::WhatIt::Dir { dir: value as u8, cancel: false, level }, self.eqtb.cur_attr));
         }
     }
 
@@ -533,7 +533,7 @@ impl Engine {
                     if let Some(s) = self.math_style_stack.last_mut() {
                         *s = style;
                     }
-                    self.append_mlist_node(Node::Style(style));
+                    self.append_mlist_node(Node::Style(style, self.eqtb.cur_attr));
                 }
             }
             UPrim::USubscript | UPrim::USuperscript => {
@@ -549,19 +549,19 @@ impl Engine {
             UPrim::LateLua => {
                 let toks = self.scan_general_text_expanded();
                 let code = self.tokens_to_string(&toks).into_bytes();
-                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::LateLua { code, func: 0 }));
+                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::LateLua { code, func: 0 }, self.eqtb.cur_attr));
             }
             UPrim::LateLuaFunction => {
                 let n = self.scan_int();
                 if n <= 0 {
                     self.error("LuaTeX error (lateluafunction: invalid number)");
                 } else {
-                    self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::LateLua { code: Vec::new(), func: n }));
+                    self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::LateLua { code: Vec::new(), func: n }, self.eqtb.cur_attr));
                 }
             }
             UPrim::ClearMarks => {
                 let class = self.scan_int();
-                let node = Node::Mark { class, tokens: Vec::new() };
+                let node = Node::Mark { class, tokens: Vec::new(), attr: self.eqtb.cur_attr };
                 match self.mode {
                     Mode::Vertical | Mode::InternalVertical => self.vlist_append(node),
                     Mode::Math | Mode::DisplayMath => self.append_mlist_node(node),
@@ -653,7 +653,7 @@ impl Engine {
             node_class = class as u8;
         }
         let origin = self.math_diagnostic_origin_at(source);
-        self.append_mlist_node(Node::MathChar { fam: fam as u8, c: character, class: node_class, origin });
+        self.append_mlist_node(Node::MathChar { fam: fam as u8, c: character, class: node_class, origin, attr: self.eqtb.cur_attr });
     }
 
     /// texmath.c `math_char_in_text`: a math character outside math is a

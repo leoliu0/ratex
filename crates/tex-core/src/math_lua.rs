@@ -104,7 +104,7 @@ impl Engine {
                 width,
                 options,
                 degree: None,
-                origin,
+                origin, attr: crate::boxes::Attr::NONE,
             });
             return;
         }
@@ -122,7 +122,7 @@ impl Engine {
             width,
             options,
             degree,
-            origin,
+            origin, attr: crate::boxes::Attr::NONE,
         });
     }
 
@@ -232,19 +232,19 @@ impl Engine {
                     fam: 255,
                     c: 0,
                     class: crate::math::CL_INNER,
-                    origin: Default::default(),
+                    origin: Default::default(), attr: crate::boxes::Attr::NONE,
                 },
                 Node::DelimBox {
                     small: (delim.small_fam, delim.small_char),
                     large: (delim.large_fam, delim.large_char),
                     size: 4,
                     fence,
-                    origin,
+                    origin, attr: crate::boxes::Attr::NONE,
                 },
             ],
             sup: None,
             sub: None,
-            options: 0,
+            options: 0, attr: crate::boxes::Attr::NONE,
         });
     }
 
@@ -337,8 +337,8 @@ impl Engine {
 
     /// mlist.c `overbar`: kern `ht`, rule `t`, kern `k`, then `b`.
     fn lua_overbar(&mut self, b: Node, k: i32, t: i32, ht: i32) -> Node {
-        let rule = Node::Rule { width: crate::build::RULE_FILL, height: t, depth: 0 };
-        vpack_nat(self, vec![Node::Kern(ht), rule, Node::Kern(k), b])
+        let rule = Node::Rule { width: crate::build::RULE_FILL, height: t, depth: 0, attr: crate::boxes::Attr::NONE };
+        vpack_nat(self, vec![Node::Kern(ht, crate::boxes::Attr::NONE), rule, Node::Kern(k, crate::boxes::Attr::NONE), b])
     }
 
     /// `wrapup_over_under_delimiter`: `x` above `y`.
@@ -348,7 +348,7 @@ impl Engine {
         let mut v = null_box(VBOX);
         set_dims(&mut v, None, Some(shift_up + hx), Some(dy + shift_down));
         if let Node::Box { list, .. } = &mut v {
-            *list = vec![x, Node::Kern((shift_up - dx) - (hy - shift_down)), y];
+            *list = vec![x, Node::Kern((shift_up - dx) - (hy - shift_down), crate::boxes::Attr::NONE), y];
         }
         v
     }
@@ -359,9 +359,9 @@ impl Engine {
         let (rw, _, _) = box_whd(&r);
         if !stack && rw >= box_whd(t).0 && width != 0 && width != rw {
             let list = if noad_option::has(options, noad_option::LEFT) {
-                Some(vec![Node::Kern(width - rw), r.clone()])
+                Some(vec![Node::Kern(width - rw, crate::boxes::Attr::NONE), r.clone()])
             } else if noad_option::has(options, noad_option::MIDDLE) {
-                Some(vec![Node::Kern(half(width - rw)), r.clone()])
+                Some(vec![Node::Kern(half(width - rw), crate::boxes::Attr::NONE), r.clone()])
             } else if noad_option::has(options, noad_option::RIGHT) {
                 Some(vec![r.clone()])
             } else {
@@ -418,7 +418,7 @@ impl Engine {
                 let mut list = vec![e];
                 if !info.stack && width != 0 && width != w {
                     if noad_option::has(options, noad_option::MIDDLE) {
-                        list.insert(0, Node::Kern(half(width - w)));
+                        list.insert(0, Node::Kern(half(width - w), crate::boxes::Attr::NONE));
                         w = width;
                     } else if noad_option::has(options, noad_option::EXACT) {
                         w = width;
@@ -513,7 +513,7 @@ impl Engine {
                     theta = match &y {
                         Node::Box { list, .. } => match list.first() {
                             Some(Node::Box { kind, list: l2, .. }) if *kind == HBOX => match l2.first() {
-                                Some(Node::Char { font, c }) => self.mc_metrics(*font, u32::from(*c)).height,
+                                Some(Node::Char { font, c, .. }) => self.mc_metrics(*font, u32::from(*c)).height,
                                 Some(Node::LuaGlyph(gl)) => self.mc_metrics(gl.font, gl.c).height,
                                 _ => box_whd(&y).1,
                             },
@@ -547,9 +547,9 @@ impl Engine {
                         }
                         let raise = self.mparam_err(MATH_PARAM_RADICAL_DEGREE_RAISE, g);
                         set_shift(&mut r, -(xn_over_d(h, raise, 100) - dy - shift));
-                        list.insert(0, Node::Kern(ar));
+                        list.insert(0, Node::Kern(ar, crate::boxes::Attr::NONE));
                         list.insert(0, r);
-                        list.insert(0, Node::Kern(br));
+                        list.insert(0, Node::Kern(br, crate::boxes::Attr::NONE));
                     }
                 }
                 hpack_nat(self, list)
@@ -675,7 +675,7 @@ impl Engine {
             let mut vb = null_box(HBOX);
             set_dims(&mut vb, Some(total_w), Some(hh), Some(dd));
             if let Node::Box { list, .. } = &mut vb {
-                *list = vec![xb, Node::Kern(d1), m, Node::Kern(d2), zb];
+                *list = vec![xb, Node::Kern(d1, crate::boxes::Attr::NONE), m, Node::Kern(d2, crate::boxes::Attr::NONE), zb];
             }
             v = vb;
         } else {
@@ -685,13 +685,13 @@ impl Engine {
             let list = if thickness != 0 && !noad_option::has(options, noad_option::NO_RULE) {
                 vec![
                     x,
-                    Node::Kern((shift_up - dx) - (axis + delta)),
-                    Node::Rule { width: crate::build::RULE_FILL, height: thickness, depth: 0 },
-                    Node::Kern((axis - delta) - (hz - shift_down)),
+                    Node::Kern((shift_up - dx) - (axis + delta), crate::boxes::Attr::NONE),
+                    Node::Rule { width: crate::build::RULE_FILL, height: thickness, depth: 0, attr: crate::boxes::Attr::NONE },
+                    Node::Kern((axis - delta) - (hz - shift_down), crate::boxes::Attr::NONE),
                     z,
                 ]
             } else {
-                vec![x, Node::Kern((shift_up - dx) - (hz - shift_down)), z]
+                vec![x, Node::Kern((shift_up - dx) - (hz - shift_down), crate::boxes::Attr::NONE), z]
             };
             if let Node::Box { list: l, .. } = &mut vb {
                 *l = list;
@@ -831,7 +831,7 @@ impl Engine {
                     nucleus: body.to_vec(),
                     sup: sup.map(<[Node]>::to_vec),
                     sub: sub.map(<[Node]>::to_vec),
-                    options: 0,
+                    options: 0, attr: crate::boxes::Attr::NONE,
                 }];
                 x = self.lm_clean_list(&scripted, g);
                 let nh = box_whd(&x).1;
@@ -852,14 +852,14 @@ impl Engine {
             set_dims(&mut y, Some(0), None, None);
             let xw = box_whd(&x).0;
             let top = code & 5 != 0;
-            let list = if top { vec![y, Node::Kern(-delta), x] } else { vec![x, y] };
+            let list = if top { vec![y, Node::Kern(-delta, crate::boxes::Attr::NONE), x] } else { vec![x, y] };
             let mut r = vpack_nat(self, list);
             set_dims(&mut r, Some(xw), None, None);
             if top {
                 let hr = box_whd(&r).1;
                 if hr < h {
                     if let Node::Box { list, .. } = &mut r {
-                        list.insert(0, Node::Kern(h - hr));
+                        list.insert(0, Node::Kern(h - hr, crate::boxes::Attr::NONE));
                     }
                     set_dims(&mut r, None, Some(h), None);
                 }

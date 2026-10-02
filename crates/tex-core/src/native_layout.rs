@@ -586,7 +586,7 @@ impl Engine {
                             self.cur_list.push(Node::Whatsit(crate::boxes::WhatIt::SyncPoint {
                                 file_id,
                                 line,
-                            }));
+                            }, crate::boxes::Attr::NONE));
                         }
                     }
                 }
@@ -637,7 +637,7 @@ impl Engine {
                             self.cur_list.push(Node::Whatsit(crate::boxes::WhatIt::SyncPoint {
                                 file_id,
                                 line,
-                            }));
+                            }, crate::boxes::Attr::NONE));
                         }
                     }
                     self.cur_list.push(node);
@@ -900,9 +900,9 @@ impl Engine {
                         0,
                         0,
                         0,
-                    )));
+                    ), crate::boxes::Attr::NONE));
                 } else {
-                    nodes.push(Node::Penalty(0));
+                    nodes.push(Node::Penalty(0, crate::boxes::Attr::NONE));
                 }
                 slice_start = i;
             }
@@ -958,11 +958,11 @@ impl Engine {
 
     /// xeCJK uses ordinary Latin interword space, never in addition to explicit space.
     fn insert_cjk_latin_glue(&mut self) {
-        if matches!(self.cur_list.last(), Some(Node::Glue(_))) {
+        if matches!(self.cur_list.last(), Some(Node::Glue(_, _))) {
             return;
         }
         let glue = self.interword_glue();
-        self.cur_list.push(Node::Glue(glue));
+        self.cur_list.push(Node::Glue(glue, crate::boxes::Attr::NONE));
     }
 
     /// Check whether a character is present in the specified font.

@@ -855,8 +855,8 @@ impl Engine {
                 stream,
                 names: Box::new((full, shown)),
                 create_parent,
-                source,
-            }));
+                source: source.map(Box::new),
+            }, self.eqtb.cur_attr));
             return;
         }
         self.exec_openout(stream, &full, create_parent, source.as_ref());
@@ -981,8 +981,8 @@ impl Engine {
         if !immediate {
             self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::CloseOut {
                 stream,
-                source,
-            }));
+                source: source.map(Box::new),
+            }, self.eqtb.cur_attr));
             return;
         }
         self.exec_closeout(stream, source.as_ref());
@@ -1028,8 +1028,8 @@ impl Engine {
             self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::Write {
                 stream: if n < 0 { 17 } else { n.min(16) as u16 },
                 tokens: toks,
-                source,
-            }));
+                source: source.map(Box::new),
+            }, self.eqtb.cur_attr));
             return;
         }
         let text = self.expand_write_list(&toks, source.as_ref());
@@ -1263,7 +1263,7 @@ impl Engine {
     pub fn do_special(&mut self) {
         let toks = self.scan_general_text_expanded();
         let s = self.tokens_to_text(&toks);
-        self.cur_list.push(crate::boxes::Node::Whatsit(crate::boxes::WhatIt::Special(s)));
+        self.cur_list.push(crate::boxes::Node::Whatsit(crate::boxes::WhatIt::Special(s), self.eqtb.cur_attr));
     }
 
     pub fn do_message(&mut self, err: bool) {
@@ -2386,17 +2386,17 @@ impl Engine {
             out.push_str("  ");
         }
         match n {
-            Node::Char { c, font } => {
+            Node::Char { c, font, .. } => {
                 out.push_str(&format!("the character {} (font {})\n", *c as char, font))
             }
-            Node::Glue(g) => out.push_str(&format!("glue {}\n", self.glue_to_string(g))),
-            Node::MuGlue(g) => out.push_str(&format!("math glue {}\n", self.mu_glue_to_string(g))),
-            Node::Kern(k) => out.push_str(&format!("kern {}\n", self.scaled_to_string(*k))),
+            Node::Glue(g, _) => out.push_str(&format!("glue {}\n", self.glue_to_string(g))),
+            Node::MuGlue(g, _) => out.push_str(&format!("math glue {}\n", self.mu_glue_to_string(g))),
+            Node::Kern(k, _) => out.push_str(&format!("kern {}\n", self.scaled_to_string(*k))),
             // tex.web §4416: an explicit kern is shown with a space after
             // the escape (`\kern 1.0`), an implicit one without (`\kern1.0`)
-            Node::ExplicitKern(k) => out.push_str(&format!("kern {}\n", self.scaled_to_string(*k))),
-            Node::ItalicKern(k) => out.push_str(&format!("kern {} (italic)\n", self.scaled_to_string(*k))),
-            Node::AccentKern(k) => out.push_str(&format!(
+            Node::ExplicitKern(k, _) => out.push_str(&format!("kern {}\n", self.scaled_to_string(*k))),
+            Node::ItalicKern(k, _) => out.push_str(&format!("kern {} (italic)\n", self.scaled_to_string(*k))),
+            Node::AccentKern(k, _) => out.push_str(&format!(
                 "kern {} (for accent)\n",
                 self.scaled_to_string(*k)
             )),
@@ -2406,19 +2406,18 @@ impl Engine {
                 self.scaled_to_string(*width),
                 if *side == 0 { "left" } else { "right" }
             )),
-            Node::Penalty(p) => out.push_str(&format!("penalty {}\n", p)),
+            Node::Penalty(p, _) => out.push_str(&format!("penalty {}\n", p)),
             Node::Rule {
                 width,
                 height,
-                depth,
-            } => out.push_str(&format!(
+                depth, .. } => out.push_str(&format!(
                 "rule({}+{}x{})\n",
                 self.scaled_to_string(*width),
                 self.scaled_to_string(*height),
                 self.scaled_to_string(*depth)
             )),
             Node::Box { .. } => self.box_repr(n, depth, out),
-            Node::Whatsit(_) => out.push_str("whatsit\n"),
+            Node::Whatsit(_, _) => out.push_str("whatsit\n"),
             _ => out.push_str("node\n"),
         }
     }

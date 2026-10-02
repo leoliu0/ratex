@@ -280,7 +280,7 @@ impl Engine {
             // fin_row: the `\vadjust pre` material precedes the row and its
             // interline glue, the other adjustments follow the row
             for n in adj {
-                if let Node::PreAdjust(pre) = n {
+                if let Node::PreAdjust(pre, _) = n {
                     items.extend(plain_items(pre));
                 }
             }
@@ -310,7 +310,7 @@ impl Engine {
                 list: cells,
             })));
             for n in adj {
-                if !matches!(n, Node::PreAdjust(_)) {
+                if !matches!(n, Node::PreAdjust(_, _)) {
                     items.extend(plain_items(std::slice::from_ref(n)));
                 }
             }

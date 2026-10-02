@@ -307,9 +307,16 @@ pub struct NodeStore {
     pub nodes: Vec<LNode>,
     free: Vec<u32>,
     pub live: usize,
-    /// cache of the attribute list built from the `\attribute` registers:
-    /// (sorted pairs, list handle holding one reference)
-    attr_cache: Option<(Vec<(i32, i32)>, u32)>,
+    /// The Lua attribute lists standing for engine attribute lists
+    /// ([`crate::boxes::Attr`]): engine handle -> list handle, each list
+    /// holding one reference of the cache. Cached lists are shared, so a
+    /// Lua `set_attribute` always copies them first.
+    attr_by_engine: crate::FxHashMap<u32, u32>,
+    /// the reverse of `attr_by_engine`
+    engine_by_attr: crate::FxHashMap<u32, u32>,
+    /// While engine nodes are imported: the Lua attribute list (0 for none)
+    /// every node created for the engine node at hand carries.
+    pub import_attr: Option<u32>,
     /// `node.fix_node_lists`
     pub fix_node_lists: bool,
     /// the Lua table `node.get_properties_table()` returns
@@ -492,8 +499,8 @@ impl NodeStore {
         let l = &mut self.nodes[list as usize];
         l.f[0] -= 1;
         if l.f[0] <= 0 {
-            if self.attr_cache.as_ref().is_some_and(|(_, h)| *h == list) {
-                self.attr_cache = None;
+            if let Some(e) = self.engine_by_attr.remove(&list) {
+                self.attr_by_engine.remove(&e);
             }
             let mut p = list;
             while p != 0 {
@@ -551,27 +558,28 @@ impl NodeStore {
         out
     }
 
-    /// `current_attribute_list`: a list (kept alive by the cache) for the
-    /// attribute registers `regs` (sorted, only set ones), 0 when none is set.
-    pub fn current_attr_list(&mut self, regs: &[(i32, i32)]) -> u32 {
-        if regs.is_empty() {
-            if let Some((_, h)) = self.attr_cache.take() {
-                self.delete_attr_ref(h);
-            }
-            return 0;
-        }
-        if let Some((pairs, h)) = &self.attr_cache {
-            if pairs.as_slice() == regs && self.valid(*h) {
-                return *h;
+    /// The Lua attribute list for engine attribute list `attr` (whose
+    /// `(number, value)` pairs are `pairs`); the cache keeps it alive.
+    pub fn cached_attr_list(&mut self, attr: u32, pairs: &[(i32, i32)]) -> u32 {
+        if let Some(&h) = self.attr_by_engine.get(&attr) {
+            if self.valid(h) && self.nodes[h as usize].id == ATTRIBUTE_LIST {
+                return h;
             }
         }
-        if let Some((_, h)) = self.attr_cache.take() {
-            self.delete_attr_ref(h);
-        }
-        let h = self.build_attr_list(regs);
+        let h = self.build_attr_list(pairs);
         self.nodes[h as usize].f[0] = 1; // the cache's reference
-        self.attr_cache = Some((regs.to_vec(), h));
+        self.attr_by_engine.insert(attr, h);
+        self.engine_by_attr.insert(h, attr);
         h
+    }
+
+    /// The engine attribute list a cached Lua list stands for.
+    pub fn engine_attr_of(&self, list: u32) -> Option<u32> {
+        self.engine_by_attr.get(&list).copied()
+    }
+
+    fn is_cached_attr_list(&self, list: u32) -> bool {
+        self.engine_by_attr.contains_key(&list)
     }
 
     fn copy_attr_list(&mut self, list: u32) -> u32 {
@@ -604,7 +612,7 @@ impl NodeStore {
             }
             p = a.next;
         }
-        let shared = self.attr_ref(list) > 1 || self.attr_cache.as_ref().is_some_and(|(_, h)| *h == list);
+        let shared = self.attr_ref(list) > 1 || self.is_cached_attr_list(list);
         if shared {
             let copy = self.copy_attr_list(list);
             self.nodes[copy as usize].f[0] = 1;
@@ -658,7 +666,7 @@ impl NodeStore {
             return UNUSED_ATTRIBUTE;
         }
         let mut list = list;
-        if self.attr_ref(list) > 1 || self.attr_cache.as_ref().is_some_and(|(_, h)| *h == list) {
+        if self.attr_ref(list) > 1 || self.is_cached_attr_list(list) {
             let copy = self.copy_attr_list(list);
             self.nodes[copy as usize].f[0] = 1;
             self.delete_attr_ref(list);

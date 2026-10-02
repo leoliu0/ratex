@@ -476,10 +476,10 @@ impl Engine {
                     expansion_factor: 0,
                     data: 0,
                     subtype: 0,
-                    components: Vec::new(),
+                    components: Vec::new(), attr: crate::boxes::Attr::NONE,
                 }))
             }
-            _ => crate::boxes::Node::Char { c: c as u8, font: f },
+            _ => crate::boxes::Node::Char { c: c as u8, font: f, attr: crate::boxes::Attr::NONE },
         }
     }
 
@@ -910,7 +910,7 @@ pub(crate) fn null_box(kind: u8) -> Node {
         glue_order: 0,
         glue_set: 0.0,
         lr: 0,
-        dir: 0,
+        dir: 0, attr: crate::boxes::Attr::NONE,
     }
 }
 
@@ -988,7 +988,7 @@ impl Engine {
     }
 
     fn stack_glue_into_box(b: &mut Node, min: i32, max: i32) {
-        let g = Node::Glue(Glue::spec(min, max - min, 0, 0, 0));
+        let g = Node::Glue(Glue::spec(min, max - min, 0, 0, 0), crate::boxes::Attr::NONE);
         if let Node::Box { kind, list, .. } = b {
             if *kind == VBOX {
                 list.insert(0, g);

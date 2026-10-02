@@ -80,6 +80,15 @@ pub(crate) struct TexState {
     pub texio_noescape: bool,
     /// `lang.*` values per language.
     pub lang: crate::FxHashMap<u8, crate::lua_lang::LangParams>,
+    /// `\hjcode`/`lang.sethjcode` values the 8-bit table of the language
+    /// cannot hold: characters above 255 and codes above 255.
+    pub hj_wide: crate::FxHashMap<(u8, i32), i32>,
+    /// Languages whose hjcode table `\hjcode` created: unlike the table
+    /// `\savinghyphcodes` copies from `\lccode`, every code not assigned is 0.
+    pub hj_pure: crate::FxHashSet<u8>,
+    /// Exceptions with explicit discretionaries (`a{x}{y}{z}[3]b`) and
+    /// `=` markers, as written, by language and cleaned word.
+    pub rich_exceptions: crate::FxHashMap<u8, std::collections::BTreeMap<Vec<u8>, Vec<u8>>>,
     /// `pdf.getmatrix`: the current page matrix during a late Lua call.
     pub pdf_matrix: Option<[f64; 6]>,
     /// Lists imported for Lua that are tied to the engine (see

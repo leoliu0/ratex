@@ -732,7 +732,11 @@ impl Engine {
     /// en-dash), a null discretionary follows it — the legal break after an
     /// explicit hyphen — but only in unrestricted horizontal mode.
     fn tail_ends_hyphen(&self, f: u16) -> bool {
-        let hc = self.eqtb.hyphen_char.get(f as usize).copied().unwrap_or(-1);
+        let hc = if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            self.eqtb.int_params[IntParam::ExHyphenChar.idx() as usize]
+        } else {
+            self.eqtb.hyphen_char.get(f as usize).copied().unwrap_or(-1)
+        };
         if !(0..=255).contains(&hc) {
             return false;
         }
@@ -1040,9 +1044,17 @@ impl Engine {
             cur.lig_present = false;
         }
         if self.mode == Mode::Horizontal && self.tail_ends_hyphen(f) {
-            self.cur_list.push(Node::Disc(
-                crate::boxes::DiscNode::new(Vec::new(), Vec::new(), Vec::new(), 0).with_attr(self.eqtb.cur_attr),
-            ));
+            let mut disc = crate::boxes::DiscNode::new(Vec::new(), Vec::new(), Vec::new(), 0).with_attr(self.eqtb.cur_attr);
+            if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                // LuaTeX turns an explicit hyphen into an automatic
+                // discretionary, unless \automatichyphenmode is 2
+                if self.eqtb.int_params[IntParam::AutomaticHyphenMode.idx() as usize] == 2 {
+                    return;
+                }
+                disc.subtype = 2;
+                disc.penalty = self.automatic_disc_penalty();
+            }
+            self.cur_list.push(Node::Disc(disc));
         }
     }
 
@@ -2328,19 +2340,39 @@ impl Engine {
 
     /// tex.web §1117 for `\-`: the pre-break text is the current font's
     /// \hyphenchar when it is in 0..=255 and present in the font. LuaTeX
-    /// makes an explicit discretionary (subtype 1, `\exhyphenpenalty`) whose
-    /// pre-break text is the language's pre-hyphen character; a Lua font
-    /// makes it a glyph.
-    pub fn append_hyphen_discretionary(&mut self) {
+    /// (`append_discretionary`) makes an explicit discretionary (subtype 1)
+    /// of the language's pre- and post-hyphen characters, or, for
+    /// `\automaticdiscretionary`, an automatic one (subtype 2) with the
+    /// language's pre- and post-exhyphen characters (`\exhyphenchar` if
+    /// there is none) and `\exhyphenchar` as the no-break text; a Lua font
+    /// makes them glyphs. `\hyphenpenaltymode` picks the penalty.
+    pub fn append_hyphen_discretionary(&mut self, automatic: bool) {
         self.flush_native_text();
         let f = self.eqtb.cur_font_val;
         let lua_mode = self.engine_kind == crate::engine::EngineKind::LuaTeX;
         let mut pre_break = Vec::new();
-        if lua_mode && self.cur_font_is_lua() {
+        let mut post_break = Vec::new();
+        let mut no_break = Vec::new();
+        if lua_mode {
             let lang = u8::try_from(self.eqtb.int_params[IntParam::Language.idx() as usize]).unwrap_or(0);
-            let c = self.lua_tex.lang.get(&lang).and_then(|p| p.pre_hyphen).unwrap_or(i32::from(b'-'));
-            if c > 0 {
-                pre_break.push(self.new_lua_glyph(c as u32));
+            let p = self.lua_tex.lang.get(&lang).copied().unwrap_or_default();
+            let ex = self.eqtb.int_params[IntParam::ExHyphenChar.idx() as usize];
+            let (pre, post, rep) = if automatic {
+                (if p.pre_exhyphen > 0 { p.pre_exhyphen } else { ex }, p.post_exhyphen, ex)
+            } else {
+                (p.pre_hyphen.unwrap_or(i32::from(b'-')), p.post_hyphen, 0)
+            };
+            for (c, list) in [(pre, &mut pre_break), (post, &mut post_break), (rep, &mut no_break)] {
+                if c <= 0 {
+                    continue;
+                }
+                if self.cur_font_is_lua() {
+                    list.push(self.new_lua_glyph(c as u32));
+                } else if let Ok(c) = u8::try_from(c) {
+                    if self.font_has_character_or_warn(f, c, None) {
+                        list.push(Node::Char { c, font: f, attr: self.eqtb.cur_attr });
+                    }
+                }
             }
         } else {
             let hc = self.eqtb.hyphen_char.get(f as usize).copied().unwrap_or(-1);
@@ -2350,10 +2382,15 @@ impl Engine {
                 }
             }
         }
-        let mut disc = crate::boxes::DiscNode::new(pre_break, Vec::new(), Vec::new(), 0).with_attr(self.eqtb.cur_attr);
+        let mut disc = crate::boxes::DiscNode::new(pre_break, post_break, no_break, 0).with_attr(self.eqtb.cur_attr);
         if lua_mode {
-            disc.subtype = 1;
-            disc.penalty = self.eqtb.int_params[IntParam::ExHyphenPenalty.idx() as usize];
+            if automatic {
+                disc.subtype = 2;
+                disc.penalty = self.automatic_disc_penalty();
+            } else {
+                disc.subtype = 1;
+                disc.penalty = self.explicit_disc_penalty();
+            }
         }
         let disc = Node::Disc(disc);
         if self.mode.is_m() {

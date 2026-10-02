@@ -256,9 +256,12 @@ impl Engine {
         let mut p = self.lua_nodes.next(head);
         while p != 0 {
             if self.lua_nodes.id(p) == DISC {
-                for slot in [sl::D_PRE, sl::D_POST, sl::D_REPLACE] {
+                let flags = self.lua_nodes.node(p).f[sl::D_NOALINK];
+                for (bit, slot) in [(1, sl::D_PRE), (2, sl::D_POST), (4, sl::D_REPLACE)] {
                     let first = self.lua_nodes.node(p).f[slot] as u32;
                     let nest = self.lua_nodes.new_node(TEMP, 0, 0);
+                    // `lk_add_kern_before` reads this: no `prev` pointer on the first node
+                    self.lua_nodes.node_mut(nest).f[0] = i32::from(flags & bit != 0);
                     if first != 0 {
                         self.lua_nodes.couple(nest, first);
                     }
@@ -505,7 +508,7 @@ impl Engine {
                             let last1 = self.lua_nodes.next(next);
                             self.lk_uncouple(next);
                             self.lk_try_couple(fwd, last1);
-                            let mode = 0; // \discretionaryligaturemode
+                            let mode = self.eqtb.int_params[IntParam::DiscretionaryLigatureMode.idx() as usize];
                             if mode == 1 {
                                 let tail = self.lk_tail(self.lk_rep(cur));
                                 let copy = self.lua_nodes.copy_node(next);
@@ -651,9 +654,17 @@ impl Engine {
             if k != 0 {
                 let kern = self.lk_new_kern(k);
                 let prev = self.lua_nodes.prev(right);
-                self.lua_nodes.couple(prev, kern);
-                self.lua_nodes.couple(kern, right);
-                self.lk_copy_attr(left, kern);
+                // luatex's `alink` of the first node of a list made by
+                // `set_disc_field` is null: the kern is coupled to `right` but
+                // the list head never learns of it
+                let lost = prev != 0 && self.lua_nodes.id(prev) == TEMP && self.lua_nodes.node(prev).f[0] == 1;
+                if lost {
+                    self.lua_nodes.flush_node(kern);
+                } else {
+                    self.lua_nodes.couple(prev, kern);
+                    self.lua_nodes.couple(kern, right);
+                    self.lk_copy_attr(left, kern);
+                }
             }
         }
     }
@@ -825,23 +836,7 @@ impl Engine {
     // -------------------------------------------------------- hyphenation
 
     fn lk_hj_code(&self, lang: i32, c: i32) -> i32 {
-        let _ = lang;
-        if c < 0 {
-            0
-        } else if c < 256 {
-            i32::from(self.eqtb.lc_code[c as usize])
-        } else {
-            match char::from_u32(c as u32) {
-                Some(ch) if ch.is_alphabetic() => {
-                    let mut lower = ch.to_lowercase();
-                    match (lower.next(), lower.next()) {
-                        (Some(l), None) => l as i32,
-                        _ => c,
-                    }
-                }
-                _ => 0,
-            }
-        }
+        self.hj_code_of(u8::try_from(lang).unwrap_or(0), c)
     }
 
     /// `insert_discretionary(t, pre, post, replace, penalty)`: a new
@@ -887,9 +882,10 @@ impl Engine {
             g = self.lua_nodes.next(g);
         }
         self.lk_copy_attr(attr_node, d);
-        for (slot, list) in [(sl::D_PRE, pre), (sl::D_POST, post), (sl::D_REPLACE, replace)] {
+        for (bit, slot, list) in [(1, sl::D_PRE, pre), (2, sl::D_POST, post), (4, sl::D_REPLACE, replace)] {
             if list != 0 {
                 self.lua_nodes.node_mut(list).prev = 0;
+                self.lua_nodes.node_mut(d).f[sl::D_NOALINK] |= bit;
             }
             self.lua_nodes.node_mut(d).f[slot] = list as i32;
         }
@@ -920,6 +916,7 @@ impl Engine {
             f[sl::C_UCHYPH] = tf[sl::C_UCHYPH];
             self.lk_copy_attr(t, g);
             self.lua_nodes.node_mut(d).f[sl::D_PRE] = g as i32;
+            self.lua_nodes.node_mut(d).f[sl::D_NOALINK] |= 1;
         }
         if post_char > 0 {
             let t2 = self.lua_nodes.next(d);
@@ -935,6 +932,7 @@ impl Engine {
                 f[sl::C_UCHYPH] = tf[sl::C_UCHYPH];
                 self.lk_copy_attr(t2, g);
                 self.lua_nodes.node_mut(d).f[sl::D_POST] = g as i32;
+                self.lua_nodes.node_mut(d).f[sl::D_NOALINK] |= 2;
             }
         }
         d
@@ -959,19 +957,46 @@ impl Engine {
         p
     }
 
+    /// `set_automatic_disc_penalty`: the penalty of an automatic
+    /// discretionary under `\hyphenpenaltymode`.
+    pub(crate) fn automatic_disc_penalty(&self) -> i32 {
+        let p = |k: IntParam| self.eqtb.int_params[k.idx() as usize];
+        match p(IntParam::HyphenPenaltyMode) {
+            1 | 3 | 6 => p(IntParam::HyphenPenalty),
+            4 | 7 | 8 => p(IntParam::AutomaticHyphenPenalty),
+            _ => p(IntParam::ExHyphenPenalty),
+        }
+    }
+
+    /// `set_explicit_disc_penalty`: the penalty of an explicit
+    /// discretionary (`\-`) under `\hyphenpenaltymode`.
+    pub(crate) fn explicit_disc_penalty(&self) -> i32 {
+        let p = |k: IntParam| self.eqtb.int_params[k.idx() as usize];
+        match p(IntParam::HyphenPenaltyMode) {
+            1 | 2 | 8 => p(IntParam::HyphenPenalty),
+            4 | 5 | 6 => p(IntParam::ExplicitHyphenPenalty),
+            _ => p(IntParam::ExHyphenPenalty),
+        }
+    }
+
     /// `compound_word_break`: the explicit hyphen `t` becomes an automatic
     /// discretionary.
-    fn lk_compound_word_break(&mut self, t: u32) -> u32 {
+    fn lk_compound_word_break(&mut self, t: u32, clang: i32) -> u32 {
+        let lang = u8::try_from(clang).ok().and_then(|l| self.lua_tex.lang.get(&l)).copied().unwrap_or_default();
         let ex = self.eqtb.int_params[IntParam::ExHyphenChar.idx() as usize];
-        let pre = self.lk_insert_character(ex);
+        let pre_char = if lang.pre_exhyphen > 0 { lang.pre_exhyphen } else { ex };
+        let pre = self.lk_insert_character(pre_char);
+        let post = if lang.post_exhyphen > 0 { self.lk_insert_character(lang.post_exhyphen) } else { 0 };
         let penalty = self.eqtb.int_params[IntParam::ExHyphenPenalty.idx() as usize];
-        let disc = self.lk_insert_discretionary(t, pre, 0, t, penalty);
+        let disc = self.lk_insert_discretionary(t, pre, post, t, penalty);
         self.lua_nodes.node_mut(disc).subtype = DISC_AUTOMATIC;
+        self.lua_nodes.node_mut(disc).f[sl::D_PENALTY] = self.automatic_disc_penalty();
         disc
     }
 
     fn lk_find_next_wordstart(&mut self, mut r: u32, first_language: i32, strict_bound: i32) -> u32 {
         let ex = self.eqtb.int_params[IntParam::ExHyphenChar.idx() as usize];
+        let automatic_mode = self.eqtb.int_params[IntParam::AutomaticHyphenMode.idx() as usize];
         let mut start_ok = true;
         let mut mathlevel = 1;
         while r != 0 {
@@ -1007,11 +1032,12 @@ impl Engine {
                         let chr = self.lk_ch(r);
                         if chr == ex {
                             let mut t = self.lua_nodes.next(r);
-                            if self.lk_glyph(t) && self.lk_ch(t) != ex {
-                                // automatic hyphen mode 0: no word yet and the next
-                                // character is not a hyphen
-                                r = self.lk_compound_word_break(r);
+                            if automatic_mode == 0 && self.lk_glyph(t) && self.lk_ch(t) != ex {
+                                // no word yet and the next character is not a hyphen
+                                let lang = self.lk_lang(r);
+                                r = self.lk_compound_word_break(r, lang);
                             } else {
+                                // we jump over the sequence of hyphens
                                 while self.lk_glyph(t) && self.lk_ch(t) == ex {
                                     r = t;
                                     t = self.lua_nodes.next(r);
@@ -1076,7 +1102,9 @@ impl Engine {
             return;
         }
         let first_language = self.eqtb.int_params[IntParam::FirstValidLanguage.idx() as usize];
-        let strict_bound = 0;
+        let strict_bound = self.eqtb.int_params[IntParam::HyphenationBounds.idx() as usize];
+        let automatic_mode = self.eqtb.int_params[IntParam::AutomaticHyphenMode.idx() as usize];
+        let compound_hyphen = self.eqtb.int_params[IntParam::CompoundHyphenMode.idx() as usize] != 0;
         let ex = self.eqtb.int_params[IntParam::ExHyphenChar.idx() as usize];
         let mut r = head;
         while r != 0 && !self.lk_simple(r) {
@@ -1091,10 +1119,11 @@ impl Engine {
         self.lua_nodes.couple(tail, s);
         let mut word: Vec<u32> = Vec::new();
         let mut letters: Vec<u32> = Vec::new();
+        let mut wordlen = 0i32;
         let mut explicit_hyphen = false;
+        let mut expstart = 0u32;
         while r != 0 {
             let wordstart = r;
-            let mut end_word = r;
             let mut hyf_font = self.lk_fnt(wordstart);
             if self.eqtb.hyphen_char.get(hyf_font as usize).copied().unwrap_or(-1) < 0 {
                 hyf_font = 0;
@@ -1102,26 +1131,24 @@ impl Engine {
             let clang = self.lk_lang(wordstart);
             let mut lhmin = self.lua_nodes.node(wordstart).f[sl::C_LEFT];
             let mut rhmin = self.lua_nodes.node(wordstart).f[sl::C_RIGHT];
-            let mut wordlen = 0i32;
-            word.clear();
-            letters.clear();
+            let mut hmin = u8::try_from(clang)
+                .ok()
+                .and_then(|l| self.lua_tex.lang.get(&l))
+                .map_or(-1, |p| p.hyphenation_min);
             let mut too_long = false;
             while r != 0 && self.lk_glyph(r) && self.lk_simple(r) && clang == self.lk_lang(r) {
                 let ch = self.lk_ch(r);
-                let mut lchar;
-                if clang >= first_language {
+                let mut lchar = 0;
+                let letter = clang >= first_language && {
                     lchar = self.lk_hj_code(clang, ch);
-                    if lchar <= 0 {
-                        if ch == ex && ex != 0 {
-                            lchar = ex;
-                        } else {
-                            break;
-                        }
+                    lchar > 0
+                };
+                if !letter {
+                    if ch == ex && ex != 0 {
+                        lchar = ex;
+                    } else {
+                        break;
                     }
-                } else if ch == ex && ex != 0 {
-                    lchar = ex;
-                } else {
-                    break;
                 }
                 if ch == ex {
                     explicit_hyphen = true;
@@ -1151,11 +1178,14 @@ impl Engine {
                             rhmin = 1;
                         }
                     }
+                    hmin = hmin - lchar + 1;
+                    if hmin < 0 {
+                        rhmin = 1;
+                    }
                     lchar = ch;
                 }
                 word.push(lchar as u32);
                 letters.push(r);
-                end_word = r;
                 r = self.lua_nodes.next(r);
             }
             if too_long {
@@ -1163,9 +1193,23 @@ impl Engine {
             } else if explicit_hyphen {
                 // we are not at the start, so we only need to look ahead
                 let mut t = self.lua_nodes.next(r);
-                if self.lk_glyph(t) && self.lk_simple(t) && self.lk_ch(t) != ex {
+                if (automatic_mode == 0 || automatic_mode == 1)
+                    && self.lk_glyph(t)
+                    && self.lk_simple(t)
+                    && self.lk_ch(t) != ex
+                {
                     // we have a word already but the next character may not be a hyphen too
-                    r = self.lk_compound_word_break(r);
+                    let lang = self.lk_lang(r);
+                    r = self.lk_compound_word_break(r, lang);
+                    if compound_hyphen {
+                        if expstart == 0 {
+                            expstart = wordstart;
+                        }
+                        explicit_hyphen = false;
+                        word.push(u32::from(b'-'));
+                        r = t;
+                        continue;
+                    }
                 } else {
                     while self.lk_glyph(t) && self.lk_simple(t) && self.lk_ch(t) == ex {
                         r = t;
@@ -1178,21 +1222,33 @@ impl Engine {
             } else if self.lk_valid_wordend(r, strict_bound)
                 && clang >= first_language
                 && wordlen >= lhmin + rhmin
+                && (hmin <= 0 || wordlen >= hmin)
                 && hyf_font != 0
             {
-                let positions = self.lk_word_points(clang, &word, lhmin, rhmin);
-                for k in positions {
-                    // the discretionary after the k-th letter
-                    if let Some(&t) = letters.get(k - 1) {
-                        if k < letters.len() {
-                            let _ = end_word;
-                            self.lk_insert_syllable_disc(t);
+                let lang = u8::try_from(clang).ok();
+                if let Some(raw) = lang.and_then(|l| self.lua_exception_raw(l, &word)) {
+                    // handle the exception and go on to the next word
+                    let start = if expstart == 0 { wordstart } else { expstart };
+                    self.lk_do_exception(start, r, &raw);
+                } else if expstart != 0 {
+                    // we're done already
+                } else {
+                    for k in self.lk_word_points(clang, &word, lhmin, rhmin) {
+                        // the discretionary after the k-th letter
+                        if let Some(&t) = letters.get(k - 1) {
+                            if k < letters.len() {
+                                self.lk_insert_syllable_disc(t);
+                            }
                         }
                     }
                 }
             }
             // PICKUP
+            expstart = 0;
             explicit_hyphen = false;
+            wordlen = 0;
+            word.clear();
+            letters.clear();
             if r == 0 {
                 break;
             }
@@ -1204,15 +1260,169 @@ impl Engine {
         self.lk_try_couple(tail, save_tail1);
     }
 
-    /// The letters after which a hyphen may be inserted: exceptions as they
-    /// are, patterns within the left and right minima.
+    /// `find_exception_part`: a copy of `parent` per character of the braced
+    /// part whose opening brace is `uword[*j + 1]`; `*j` ends after the
+    /// closing brace.
+    fn lk_exception_part(&mut self, j: &mut usize, uword: &[char], parent: u32) -> u32 {
+        let u = |k: usize| uword.get(k).copied().unwrap_or('\0');
+        let mut i = *j + 1;
+        let mut first = 0u32;
+        let mut last = 0u32;
+        while i < uword.len() && u(i + 1) != '}' {
+            let g = self.lua_nodes.copy_node(parent);
+            if first == 0 {
+                first = g;
+            } else {
+                self.lua_nodes.couple(last, g);
+            }
+            last = g;
+            self.lua_nodes.node_mut(g).f[sl::C_CHAR] = u(i + 1) as i32;
+            i += 1;
+        }
+        i += 1;
+        *j = i;
+        first
+    }
+
+    /// `do_exception`: the discretionaries of the exception `raw` for the
+    /// word that starts at `wordstart` and ends before `r`. Exceptions are
+    /// taken as they are: no minimum is applied.
+    fn lk_do_exception(&mut self, wordstart: u32, r: u32, raw: &[u8]) {
+        let uword: Vec<char> = String::from_utf8_lossy(raw).chars().collect();
+        let len = uword.len();
+        let u = |k: usize| uword.get(k).copied().unwrap_or('\0');
+        let hyphen_penalty = self.eqtb.int_params[IntParam::HyphenPenalty.idx() as usize];
+        let exception_penalty = self.eqtb.int_params[IntParam::ExceptionPenalty.idx() as usize];
+        let mut t = wordstart;
+        let mut i = 0usize;
+        while i < len {
+            let c = u(i + 1);
+            if c == '\0' {
+                // we ran out of the exception pattern
+                break;
+            } else if c == '-' {
+                // a hyphen follows
+                if self.lua_nodes.next(t) == r {
+                    break;
+                }
+                self.lk_insert_syllable_disc(t);
+                // skip the new disc
+                t = self.lua_nodes.next(t);
+            } else if c == '=' {
+                // we skip a disc
+                t = self.lua_nodes.next(t);
+            } else if c == '{' {
+                // we ran into an exception {}{}{} or {}{}{}[]
+                let pre = self.lk_exception_part(&mut i, &uword, wordstart);
+                if i == len || u(i + 1) != '{' {
+                    self.error("broken pattern 1");
+                }
+                let post = self.lk_exception_part(&mut i, &uword, wordstart);
+                if i == len || u(i + 1) != '{' {
+                    self.error("broken pattern 2");
+                }
+                // the replacement
+                let mut repl = 0usize;
+                i += 1;
+                while i < len && u(i + 1) != '}' {
+                    repl += 1;
+                    i += 1;
+                }
+                i += 1;
+                if i == len {
+                    self.error("broken pattern 3");
+                }
+                // play safe
+                if self.lua_nodes.next(t) == r {
+                    break;
+                }
+                let mut replace = 0u32;
+                if repl > 0 {
+                    // assemble the replace stream
+                    let mut q = t;
+                    replace = self.lua_nodes.next(q);
+                    while repl > 0 && q != 0 {
+                        q = self.lua_nodes.next(q);
+                        if q != 0 && matches!(self.lua_nodes.id(q), GLYPH | DISC) {
+                            repl -= 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    // remove it from the main stream and finish it in the replace
+                    let after = if q != 0 { self.lua_nodes.next(q) } else { 0 };
+                    self.lk_try_couple(t, after);
+                    if q != 0 {
+                        self.lua_nodes.node_mut(q).next = 0;
+                    }
+                    // sanitize the replace stream
+                    let mut q = replace;
+                    while q != 0 {
+                        let n = self.lua_nodes.next(q);
+                        if self.lua_nodes.id(q) == DISC {
+                            // the replacement starts after the no_break pointer
+                            let rep = self.lk_rep(q);
+                            self.lua_nodes.node_mut(q).f[sl::D_REPLACE] = 0;
+                            let head = if rep != 0 {
+                                self.lua_nodes.node_mut(rep).prev = 0;
+                                let tl = self.lua_nodes.tail_of(rep);
+                                self.lk_try_couple(tl, n);
+                                rep
+                            } else {
+                                n
+                            };
+                            if q == replace {
+                                replace = head;
+                            } else {
+                                let p = self.lua_nodes.prev(q);
+                                self.lk_try_couple(p, head);
+                            }
+                            self.lua_nodes.flush_node(q);
+                        }
+                        q = n;
+                    }
+                }
+                // check if we have a penalty spec
+                let pen = if i + 3 < len && u(i + 1) == '[' && u(i + 2).is_ascii_digit() && u(i + 3) == ']' {
+                    let digit = u(i + 2) as i32 - '0' as i32;
+                    i += 3;
+                    if exception_penalty > 0 {
+                        if exception_penalty > 10000 {
+                            exception_penalty
+                        } else {
+                            digit * exception_penalty
+                        }
+                    } else {
+                        hyphen_penalty
+                    }
+                } else {
+                    hyphen_penalty
+                };
+                // and now insert a disc node, which we skip
+                t = self.lk_insert_discretionary(t, pre, post, replace, pen);
+                t = self.lua_nodes.next(t);
+                // check if we have two exceptions in a row
+                if u(i + 1) == '{' {
+                    i -= 1;
+                    t = self.lua_nodes.prev(t);
+                }
+            } else {
+                t = self.lua_nodes.next(t);
+            }
+            // again we play safe
+            if t == 0 || self.lua_nodes.next(t) == r {
+                break;
+            }
+            i += 1;
+        }
+    }
+
+    /// The letters after which a hyphen may be inserted by the patterns,
+    /// within the left and right minima.
     fn lk_word_points(&self, lang: i32, word: &[u32], lhmin: i32, rhmin: i32) -> Vec<usize> {
         let Some(trie) = u8::try_from(lang).ok().and_then(|l| self.trie_for_language(l)) else {
             return Vec::new();
         };
-        if let Some(points) = trie.exception_points(word) {
-            return points.into_iter().filter(|&k| k > 0 && k < word.len()).collect();
-        }
         let gaps = trie.gap_values(word);
         let n = word.len() as i32;
         let mut out = Vec::new();

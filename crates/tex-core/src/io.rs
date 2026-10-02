@@ -725,6 +725,42 @@ impl Engine {
         let origin = self.current_token_source_mark();
         let language = self.eqtb.int_params[crate::prim::IntParam::Language.idx() as usize];
         let language = u8::try_from(language).unwrap_or(0);
+        if !is_patterns && self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            // texlang `new_hyph_exceptions`: the braced text is expanded and
+            // handed to `load_tex_hyphenation` as one string
+            let mut text = String::new();
+            let mut depth = 1u32;
+            loop {
+                let token = self.get_x_raw();
+                if self.stopped_on_error {
+                    return;
+                }
+                if token == crate::input::EOF_MARKER {
+                    self.fatal_error_at(
+                        "File ended while scanning hyphenation patterns or exceptions",
+                        origin.as_ref().map(crate::input::SourceMark::to_context),
+                    );
+                    return;
+                }
+                if token.is_char() {
+                    match token.cc() {
+                        1 => depth += 1,
+                        2 => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    text.push(char::from_u32(token.chr()).unwrap_or(char::REPLACEMENT_CHARACTER));
+                } else if token.is_space() {
+                    text.push(' ');
+                }
+            }
+            self.lua_load_hyphenation(language, text.as_bytes());
+            return;
+        }
         let mut word = Vec::new();
         loop {
             // TeX expands macros while scanning patterns and exceptions.
@@ -757,6 +793,10 @@ impl Engine {
                         && self.eqtb.int_params
                             [crate::prim::IntParam::SavingHyphCodes.idx() as usize]
                             > 0
+                        // luatex copies the \lccode's once, when the language
+                        // comes into being
+                        && (self.engine_kind != crate::engine::EngineKind::LuaTeX
+                            || !self.hyphen_codes.contains_key(&language))
                     {
                         let mut codes = Box::new([0; 256]);
                         codes.copy_from_slice(&self.eqtb.lc_code[..256]);

@@ -3,6 +3,7 @@
 //! `NAME.lua`, which the engine runs here with `P(...)` collecting lines.
 
 use tex_core::engine::{Engine, EngineKind};
+#[cfg(unix)]
 use tex_core::{set_shell_escape, ShellEscape};
 
 fn boot_lua() -> Engine {

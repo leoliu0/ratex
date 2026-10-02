@@ -2701,20 +2701,33 @@ fn pdffilemoddate_formats_the_file_mtime_like_pdftex() {
         "main.tex",
         "\\catcode`\\{=1 \\catcode`\\}=2\n\\message{A[\\pdffilemoddate{here.txt}][\\pdffilemoddate{\"here.txt\"}][\\pdffilemoddate{ here.txt}][\\pdffilemoddate{nosuch.txt}][\\pdffilesize{\"here.txt\"}]}\n\\message{B[\\pdffilemoddate{pdflatex.ini}]}\\end\n",
     );
-    for (env, expected) in [
+    // POSIX `TZ` strings work with glibc, the macOS libc and the Windows CRT;
+    // IANA names need a zoneinfo database, which Windows does not have.
+    let mut cases = vec![
         (
-            &[("TZ", "Asia/Shanghai")][..],
+            &[("TZ", "CST-8")][..],
             "A[D:20240305140708+08'00'][D:20240305140708+08'00'][][][6]",
         ),
         (
-            &[("TZ", "America/St_Johns")],
+            &[("TZ", "NST3:30")],
             "A[D:20240305023708-03'30'][D:20240305023708-03'30'][][][6]",
         ),
         (
             &[("TZ", "Asia/Shanghai"), ("FORCE_SOURCE_DATE", "1"), ("SOURCE_DATE_EPOCH", "0")],
             "A[D:20240305060708Z][D:20240305060708Z][][][6]",
         ),
-    ] {
+    ];
+    if cfg!(unix) {
+        cases.push((
+            &[("TZ", "Asia/Shanghai")],
+            "A[D:20240305140708+08'00'][D:20240305140708+08'00'][][][6]",
+        ));
+        cases.push((
+            &[("TZ", "America/St_Johns")],
+            "A[D:20240305023708-03'30'][D:20240305023708-03'30'][][][6]",
+        ));
+    }
+    for (env, expected) in cases {
         let output = run_pdflatex(&job, &["-ini", "-interaction=nonstopmode", "main.tex"], env);
         let stdout = text(&output.stdout);
         assert!(stdout.contains(expected), "{env:?}: {}", failure_output(&output));
@@ -2837,10 +2850,14 @@ fn cnf_line_sets_search_variables() {
     std::fs::create_dir(job.dir.join("lib")).unwrap();
     job.write("lib/libfile.tex", "\\catcode`\\{=1 \\catcode`\\}=2 \\message{LIBFILE}");
     job.write("main.tex", "\\input libfile \\end\n");
+    // kpathsea's ENV_SEP
+    let sep = if cfg!(windows) { ';' } else { ':' };
+    let cnf_line = format!("-cnf-line=TEXINPUTS=./lib{sep}");
+    let dotted = format!(".{sep}");
     let output = run_pdflatex(
         &job,
-        &["-ini", "-interaction=nonstopmode", "-cnf-line=TEXINPUTS=./lib:", "main.tex"],
-        &[("TEXINPUTS", ".:")],
+        &["-ini", "-interaction=nonstopmode", cnf_line.as_str(), "main.tex"],
+        &[("TEXINPUTS", dotted.as_str())],
     );
     assert!(output.status.success(), "{}", failure_output(&output));
     assert!(text(&output.stdout).contains("LIBFILE"), "{}", failure_output(&output));

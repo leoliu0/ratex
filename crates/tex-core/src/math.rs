@@ -164,7 +164,7 @@ pub(crate) fn finish_math_group(mut inner: NodeList, flatten: i32) -> Node {
                 }
                 return n;
             }
-            Some(Node::Scripts { nucleus, sup: None, sub: None })
+            Some(Node::Scripts { nucleus, sup: None, sub: None, .. })
                 if matches!(
                     nucleus.first(),
                     Some(Node::MathChar { fam: 255, class, .. }) if *class != CL_ORD && bit(*class)

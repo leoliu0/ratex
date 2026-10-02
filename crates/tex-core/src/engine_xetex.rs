@@ -47,6 +47,14 @@ impl Engine {
         d!(self, b"XeTeXinputnormalization", XeTeXInputNormalization);
         d!(self, b"XeTeXgenerateactualtext", XeTeXGenerateActualText);
         d!(self, b"XeTeXdashbreakstate", XeTeXDashBreakState);
+        for name in [
+            &b"Umathcode"[..], b"Umathcodenum", b"Udelcode", b"Udelcodenum", b"Umathchardef",
+            b"Umathcharnumdef", b"Umathchar", b"Umathcharnum", b"Umathaccent", b"Udelimiter",
+            b"Uradical", b"Uchar",
+        ] {
+            let u = crate::uprim::UPRIMS.iter().find(|(n, _)| *n == name).unwrap().1;
+            def(name, Prim::U(u), self);
+        }
     }
 
     /// Handles `\XeTeXcharclass <char> = <class>` assignment.

@@ -270,7 +270,7 @@ pub(crate) enum FoundInputFile {
 /// They are immutable virtual files: keeping them in `InputStack`'s byte
 /// cache avoids fixed names and repeated writes in the process temp folder.
 fn compatibility_input(name: &str, kind: crate::engine::EngineKind) -> Option<&'static [u8]> {
-    if kind == crate::engine::EngineKind::LuaTeX {
+    if kind != crate::engine::EngineKind::PdfTeX {
         return None;
     }
     Some(match name {

@@ -562,6 +562,9 @@ pub fn parse_fontspec_options(input: &str) -> Result<NativeFontOptions, String> 
                         }
                     }
                 }
+                "mapping" if val.trim_end_matches(';') == "tex-text" => {
+                    options.tex_ligatures = true;
+                }
                 other => {
                     // Try parsing as feature=val
                     if let Ok(val_num) = val.parse::<u32>() {

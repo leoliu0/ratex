@@ -2589,6 +2589,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     }
     let engine_kind = match program.as_str() {
         "lualatex" => tex_core::engine::EngineKind::LuaTeX,
+        "xelatex" => tex_core::engine::EngineKind::XeTeX,
         _ => tex_core::engine::EngineKind::PdfTeX,
     };
     let mut eng = Engine::new_with_kind(engine_kind, ini || !plain);
@@ -2619,6 +2620,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     if !plain && !ini {
         let fmt_file_name = match program.as_str() {
             "lualatex" => "lualatex.fmt",
+            "xelatex" => "xelatex.fmt",
             _ => "pdflatex.fmt",
         };
         let exe_fmt = std::env::current_exe()
@@ -2708,8 +2710,9 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             );
             std::process::exit(1);
         }
-        let embedded_fmt = match program.as_str() {
+        let embedded_fmt: &[u8] = match program.as_str() {
             "lualatex" => EMBEDDED_LUALATEX_FMT,
+            "xelatex" => &[],
             _ => EMBEDDED_DEFAULT_FMT,
         };
         if !loaded && !embedded_fmt.is_empty() {
@@ -2744,6 +2747,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             eng.add_nullfont();
             let ini_file = match program.as_str() {
                 "lualatex" => "lualatex.ini",
+                "xelatex" => "xelatex.ini",
                 _ => "pdflatex.ini",
             };
             eng.input_file(ini_file);
@@ -2776,8 +2780,12 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
                 }
                 std::process::exit(1);
             }
+            // XeTeX-mode development: the xelatex format is booted from
+            // sources on every run until its embedded asset exists, so a
+            // rebuilt engine never loads a stale dump.
             let dump_target = exe_fmt.unwrap_or_else(|| std::path::PathBuf::from("pdflatex.fmt"));
-            if let Err(error) = tex_core::format::save_format_compressed(&eng, &dump_target) {
+            if program == "xelatex" {
+            } else if let Err(error) = tex_core::format::save_format_compressed(&eng, &dump_target) {
                 emit_cli_message(
                     eng.interaction_mode,
                     format_args!(

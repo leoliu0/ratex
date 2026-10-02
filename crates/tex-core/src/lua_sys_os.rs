@@ -10,7 +10,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tex_lua::{Lua, LuaApi, LuaBytes, LuaString};
 
-use crate::lua_sys::{bytes_of, os_str, strerror_no, sys_reg};
+use crate::lua_sys::{bytes_of, os_str, sys_reg};
+#[cfg(unix)]
+use crate::lua_sys::strerror_no;
 use crate::lua_sys_kpse::check_command;
 
 pub(crate) const PRELUDE: &str = include_str!("lua_sys_os.lua");

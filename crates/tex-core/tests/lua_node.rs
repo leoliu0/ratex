@@ -20,6 +20,34 @@ fn boot_lua() -> Engine {
 
 const PRELUDE: &str = include_str!("lua_node/prelude.lua");
 
+/// Path with `/` separators, which Lua string literals and chunk names accept
+/// on every platform.
+fn slashed(p: &std::path::Path) -> String {
+    p.display().to_string().replace('\\', "/")
+}
+
+/// Lua shortens chunk names longer than 59 bytes to `...<tail>` (luaO_chunkid),
+/// which happens when the temp directory path is long (macOS). Reduce
+/// `...<tail>p.lua:` to the `p.lua:` LuaTeX prints from a short path.
+fn unshorten_chunk(line: &str) -> String {
+    let mut out = String::new();
+    let mut rest = line;
+    while let Some(start) = rest.find("...") {
+        let tail = &rest[start + 3..];
+        let end = tail.find(|c: char| c.is_whitespace() || c == ':').unwrap_or(tail.len());
+        if tail[..end].ends_with("p.lua") && tail[end..].starts_with(':') {
+            out.push_str(&rest[..start]);
+            out.push_str("p.lua");
+            rest = &tail[end..];
+        } else {
+            out.push_str(&rest[..start + 3]);
+            rest = tail;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Run a Lua chunk with `\directlua`; the lines it passed to `P(...)`
 /// (tab-joined `tostring`s) are returned. Same prelude as the LuaTeX probes.
 pub fn run_lua(code: &str) -> Vec<String> {
@@ -32,13 +60,13 @@ pub fn run_lua(code: &str) -> Vec<String> {
     let path = dir.join("p.lua");
     std::fs::write(&path, format!("OUTFILE=[[{}]]\n{PRELUDE}{code}\nPEND()\n", out.display())).unwrap();
     let mut e = boot_lua();
-    let src = format!("\\directlua{{dofile(\"{}\")}}\n\\end\n", path.display());
+    let src = format!("\\directlua{{dofile(\"{}\")}}\n\\end\n", slashed(&path));
     e.input.push_file("t.tex".to_string(), src.into_bytes());
     e.run();
     // LuaTeX runs the chunk as `p.lua` from the current directory
-    let prefix = format!("{}/", dir.display());
+    let prefix = format!("{}/", slashed(&dir));
     let mut result: Vec<String> = std::fs::read_to_string(&out)
-        .map(|text| text.lines().map(|l| l.replace(&prefix, "")).collect())
+        .map(|text| text.lines().map(|l| unshorten_chunk(&l.replace(&prefix, ""))).collect())
         .unwrap_or_default();
     if e.error_count > 0 {
         // the first line of the first error message

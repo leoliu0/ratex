@@ -193,7 +193,7 @@ tex-runtime call it.
 
 - `input.rs`: character classes (bytes 128-255 are letters) and the line
   scanner shared by the `.aux`, `.bst` and `.bib` readers. `engine.rs`: state,
-  `run`, file lookup. `aux.rs`, `bst.rs`, `bib.rs`: the readers; `.bst`
+  `run`, file lookup. `auxfile.rs`, `bst.rs`, `bib.rs`: the readers; `.bst`
   commands run as soon as they are read, so messages interleave as in BibTeX.
   `exec.rs`: stack machine and built-ins; `text.rs`: string built-ins
   (`purify$`, `change.case$`, `width$`, `text.prefix$`, `substring$`,

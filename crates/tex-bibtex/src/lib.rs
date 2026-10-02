@@ -5,7 +5,7 @@
 //! `.blg` file match TeX Live's `bibtex` byte for byte; the usage
 //! statistics TeX Live appends to the `.blg` are not reproduced.
 
-mod aux;
+mod auxfile;
 mod bib;
 mod bst;
 mod engine;

@@ -28,7 +28,7 @@ fn boot_lua() -> Engine {
 }
 
 fn fixtures() -> String {
-    format!("{}/tests/fixtures/pdfe/", env!("CARGO_MANIFEST_DIR"))
+    format!("{}/tests/fixtures/pdfe/", env!("CARGO_MANIFEST_DIR").replace('\\', "/"))
 }
 
 /// Run `lua` with `\directlua`; the engine afterwards.
@@ -41,7 +41,7 @@ fn run_lua(lua: &str) -> Engine {
 }
 
 fn out_path(name: &str) -> String {
-    format!("{}/pdfe-{name}-{}.txt", env!("CARGO_TARGET_TMPDIR"), std::process::id())
+    format!("{}/pdfe-{name}-{}.txt", env!("CARGO_TARGET_TMPDIR").replace('\\', "/"), std::process::id())
 }
 
 /// Run the fixture script `script` with `globals` and return what it wrote

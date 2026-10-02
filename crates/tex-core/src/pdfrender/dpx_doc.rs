@@ -1283,16 +1283,21 @@ impl Engine {
         // information dictionary
         let mut info = std::mem::take(&mut self.dpx.docinfo);
         if !info.iter().any(|(k, _)| k == "Creator") {
-            use crate::prim::IntParam::{Day, Month, Time, Year};
-            let int = |e: &Self, p: crate::prim::IntParam| e.eqtb.int_params[p.idx() as usize];
-            let t = int(self, Time);
+            // XeTeX writes the DVI comment from \year.. \time (xetex.web
+            // §ship_out preamble); derive it from the same clock TeX reads
+            let date = self
+                .pdf_creation_date
+                .get_or_insert_with(crate::expand::pdf_creation_date)
+                .clone();
+            let d = date.trim_start_matches("D:");
+            let field = |a: usize, b: usize| d.get(a..b).unwrap_or("00").to_string();
             let creator = format!(
-                " XeTeX output {:04}.{:02}.{:02}:{:02}{:02}",
-                int(self, Year),
-                int(self, Month),
-                int(self, Day),
-                t / 60,
-                t % 60
+                " XeTeX output {}.{}.{}:{}{}",
+                field(0, 4),
+                field(4, 6),
+                field(6, 8),
+                field(8, 10),
+                field(10, 12)
             );
             info.push(("Creator".to_string(), Obj::Str(creator.into_bytes())));
         }

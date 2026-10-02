@@ -1661,6 +1661,10 @@ impl Engine {
     /// version or draft mode is a fatal setup error.
     pub(crate) fn fix_pdf_output_params(&mut self) {
         let int = |e: &Self, p: IntParam| e.eqtb.int_params[p.idx() as usize];
+        if self.engine_kind == crate::engine::EngineKind::XeTeX && self.pdf_fixed.is_some() {
+            // the pdfTeX output parameters have no meaning under xdvipdfmx
+            return;
+        }
         if let Some(fixed) = self.pdf_fixed {
             if int(self, IntParam::PdfDraftMode) != fixed.draftmode {
                 self.fatal_error(

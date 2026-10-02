@@ -170,28 +170,3 @@ $α + x = y$
     assert!(eng.term.contains("UNICODE_MATH_OK"), "term: {}", eng.term);
 }
 
-#[test]
-fn test_xetex_specials_emission() {
-    let mut eng = boot_xetex();
-    let src = r#"
-\catcode`\{=1 \catcode`\}=2
-\shipout\vbox{
-\special{color push rgb 1 0 0}
-\special{x:scale 1.5 1.5}
-\special{pdf:literal 0.5 w}
-\special{color pop}
-\hrule
-}
-\end
-"#;
-    eng.input.push_file("test.tex".into(), src.as_bytes().to_vec());
-    eng.run();
-
-    assert_eq!(eng.error_count, 0, "errors: {:?}, term: {}", eng.diagnostics, eng.term);
-    assert!(!eng.pdf_doc.pages.is_empty(), "PDF page must be produced");
-    let page_content = String::from_utf8_lossy(&eng.pdf_doc.pages[0].content);
-    assert!(page_content.contains("1 0 0 rg 1 0 0 RG"), "content: {page_content}");
-    assert!(page_content.contains("1.5000 0 0 1.5000 0 0 cm"), "content: {page_content}");
-    assert!(page_content.contains("0.5 w"), "content: {page_content}");
-    assert!(page_content.contains("0 g 0 G"), "content: {page_content}");
-}

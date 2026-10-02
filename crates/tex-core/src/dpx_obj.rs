@@ -525,3 +525,17 @@ mod tests {
         assert_eq!(o.to_bytes(), b"<feff0041>");
     }
 }
+
+#[cfg(test)]
+mod docinfo_tests {
+    use super::*;
+
+    #[test]
+    fn dict_without_separating_blanks() {
+        let mut p = Parser::new(b"<</Title()/Subject()/Creator(LaTeX with hyperref)/Author()/Keywords()>>");
+        match p.object() {
+            Some(Obj::Dict(d)) => assert_eq!(d.len(), 5),
+            other => panic!("{other:?}"),
+        }
+    }
+}

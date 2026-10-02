@@ -1361,7 +1361,9 @@ impl Engine {
     pub fn do_special(&mut self) {
         let toks = self.scan_general_text_expanded();
         let s = self.tokens_to_text(&toks);
-        self.cur_list.push(crate::boxes::Node::Whatsit(crate::boxes::WhatIt::Special(s), self.eqtb.cur_attr));
+        // tex.web §1348: a whatsit joins the current list in every mode (in the
+        // outer vertical mode that is the contribution list)
+        self.append_whatsit(crate::boxes::Node::Whatsit(crate::boxes::WhatIt::Special(s), self.eqtb.cur_attr));
     }
 
     pub fn do_message(&mut self, err: bool) {

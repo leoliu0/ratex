@@ -23,7 +23,7 @@ impl Engine {
     /// delimiter is read and no "Missing delimiter" error is issued.
     pub(crate) fn scan_delim(&mut self, report: bool) -> Delim {
         if self.engine_kind != EngineKind::LuaTeX {
-            return Delim::from_code(self.scan_delim_int());
+            return Delim::from_xetex_code(self.scan_delim_int());
         }
         self.skip_spaces_relax();
         let t = self.get_token();

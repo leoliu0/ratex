@@ -356,6 +356,8 @@ impl Engine {
             DelCode if self.engine_kind == crate::engine::EngineKind::LuaTeX => {
                 self.assign_lua_del_code_command(crate::uprims::MathExt::Tex, "\\delcode");
             }
+            MathCode if self.engine_kind == crate::engine::EngineKind::XeTeX => self.xe_def_code_command(true),
+            DelCode if self.engine_kind == crate::engine::EngineKind::XeTeX => self.xe_def_code_command(false),
             MathChar if self.engine_kind == crate::engine::EngineKind::LuaTeX => {
                 self.math_char_num_command(crate::uprims::MathExt::Tex, id);
             }
@@ -786,6 +788,15 @@ impl Engine {
                     // mmode+accent is unmatched in tex.web's main_control
                     // switch: silently ignored.
                     Mode::Math | Mode::DisplayMath
+                        if self.engine_kind == crate::engine::EngineKind::XeTeX =>
+                    {
+                        // xetex.web `mmode+accent: math_ac` (§26843)
+                        self.error("Please use \\mathaccent for accents in math mode");
+                        let command_source = self.current_token_source_mark();
+                        let v = self.scan_xe_fifteen_bit();
+                        self.do_math_accent_at(v as u16, command_source);
+                    }
+                    Mode::Math | Mode::DisplayMath
                         if self.engine_kind == crate::engine::EngineKind::LuaTeX =>
                     {
                         let command_source = self.current_token_source_mark();
@@ -834,6 +845,11 @@ impl Engine {
             MathChar if self.engine_kind == crate::engine::EngineKind::LuaTeX => {
                 self.math_char_num_command(crate::uprims::MathExt::Tex, id)
             }
+            MathChar if self.engine_kind == crate::engine::EngineKind::XeTeX => {
+                let command_source = self.current_token_source_mark();
+                let v = self.scan_xe_fifteen_bit();
+                self.append_mathchar_at(v as u16, command_source);
+            }
             MathChar => {
                 let command_source = self.current_token_source_mark();
                 let (value, source) = self.scan_int_with_source();
@@ -857,6 +873,11 @@ impl Engine {
                     let command_source = self.current_token_source_mark();
                     self.math_ac_lua(0, false, command_source);
                 }
+            }
+            MathAccent if self.engine_kind == crate::engine::EngineKind::XeTeX => {
+                let command_source = self.current_token_source_mark();
+                let v = self.scan_xe_fifteen_bit();
+                self.do_math_accent_at(v as u16, command_source);
             }
             MathAccent => {
                 let command_source = self.current_token_source_mark();
@@ -882,6 +903,11 @@ impl Engine {
                     self.math_radical_lua(0, command_source);
                 }
             }
+            Radical if self.engine_kind == crate::engine::EngineKind::XeTeX => {
+                let command_source = self.current_token_source_mark();
+                let v = self.scan_xe_delimiter_int();
+                self.do_radical_at(crate::boxes::Delim::from_code(v), command_source);
+            }
             Radical => {
                 let command_source = self.current_token_source_mark();
                 let (value, source) = self.scan_int_with_source();
@@ -897,7 +923,7 @@ impl Engine {
                     0
                 };
                 if self.mode.is_m() {
-                    self.do_radical_at(v, command_source);
+                    self.do_radical_at(crate::boxes::Delim::from_code(v), command_source);
                 }
             }
             EqNo | LeqNo => {
@@ -1439,6 +1465,7 @@ impl Engine {
             Ustartmath => self.math_shift_cs(2, id),
             Ustopmath => self.math_shift_cs(3, id),
             U(u) if !u.is_expandable() => self.uprim_command(u, id),
+            XeMath(x) => self.xemath_command(x),
             // expanded by get_token (they must be storeable by \edef etc)
             IfChar | IfCat | IfOdd | IfNum | IfDim | IfVoid | IfHBox | IfVBox | IfHMode
             | IfVMode | IfInner | IfMMode | IfTrue | IfFalse | IfEOF | IfDef | IfCSName

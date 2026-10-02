@@ -14,6 +14,7 @@ pub mod engine;
 pub mod engine_mode;
 pub mod engine_lua;
 pub mod engine_xetex;
+pub mod xemath_prims;
 pub mod eqtb;
 pub mod expand;
 pub mod font_program;

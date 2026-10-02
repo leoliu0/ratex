@@ -47,14 +47,24 @@ impl Engine {
         d!(self, b"XeTeXinputnormalization", XeTeXInputNormalization);
         d!(self, b"XeTeXgenerateactualtext", XeTeXGenerateActualText);
         d!(self, b"XeTeXdashbreakstate", XeTeXDashBreakState);
-        for name in [
-            &b"Umathcode"[..], b"Umathcodenum", b"Udelcode", b"Udelcodenum", b"Umathchardef",
-            b"Umathcharnumdef", b"Umathchar", b"Umathcharnum", b"Umathaccent", b"Udelimiter",
-            b"Uradical", b"Uchar",
-        ] {
-            let u = crate::uprim::UPRIMS.iter().find(|(n, _)| *n == name).unwrap().1;
-            def(name, Prim::U(u), self);
+        self.register_xetex_math_primitives();
+        // `\Uchar` stays the LuaTeX implementation until XeCore replaces it.
+        let uchar = crate::uprim::UPRIMS.iter().find(|(n, _)| *n == b"Uchar").unwrap().1;
+        def(b"Uchar", Prim::U(uchar), self);
+    }
+
+    /// Unicode math primitives (slice XeMath): xetex.web §27875-27895,
+    /// §6785-6890. Both the `\U...` name and the `\XeTeXmath*` alias are
+    /// defined; `\meaning` shows the `\U...` name.
+    fn register_xetex_math_primitives(&mut self) {
+        for &(name, alias, x) in crate::xemath_prims::XEMATH_NAMES {
+            for n in [name, alias] {
+                let id = self.cs.intern(n);
+                self.eqtb.assign(id, crate::eqtb::Equiv::Prim(Prim::XeMath(x)), true);
+            }
+            self.primitive_names.insert(Prim::XeMath(x).code(), name);
         }
+        self.eqtb.xe_math = true;
     }
 
     /// Handles `\XeTeXcharclass <char> = <class>` assignment.

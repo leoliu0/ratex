@@ -272,6 +272,7 @@ impl Engine {
                             (*k as i64, false)
                         }
                         Node::MarginKern { width, .. } => (*width as i64, false),
+                        Node::ExKern { width, ex, .. } => ((*width + *ex) as i64, false),
                         Node::Whatsit(crate::boxes::WhatIt::PdfRefXImage { w, .. }, _)
                         | Node::Whatsit(crate::boxes::WhatIt::PdfRefXForm { w, .. }, _) => {
                             (*w as i64, false)
@@ -467,6 +468,7 @@ fn just_copied(n: &Node) -> bool {
             | Node::Box { .. }
             | Node::Rule { .. }
             | Node::Kern(_, _)
+            | Node::ExKern { .. }
             | Node::ExplicitKern(_, _)
             | Node::AccentKern(_, _) | Node::ItalicKern(_, _)
             | Node::MathKern(..)

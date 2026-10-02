@@ -515,7 +515,7 @@ impl<'a> BoxDisplay<'a> {
                     " (right margin)"
                 });
             }
-            Node::Kern(k, _) => {
+            Node::Kern(k, _) | Node::ExKern { width: k, .. } => {
                 self.print_esc("kern");
                 self.print_scaled(*k);
                 if self.e.engine_kind == crate::engine::EngineKind::LuaTeX {

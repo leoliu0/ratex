@@ -203,6 +203,7 @@ impl<'a> RenderCtx<'a> {
                         Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) => {
                             Class::Kern(*k as i64)
                         }
+                        Node::ExKern { width, ex, .. } => Class::Kern((*width + *ex) as i64),
                         Node::Glue(g, _) => Class::Glue(*g),
                         Node::Leaders { glue, .. } => Class::Leaders(*glue),
                         &Node::MathKern(w, k, _) if k != 0 => Class::Math(w as i64, k),

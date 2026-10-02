@@ -1508,7 +1508,7 @@ impl Engine {
         }
         usize::try_from(self.eqtb.int_params[IntParam::OutputBox.idx() as usize])
             .ok()
-            .filter(|&n| n < self.eqtb.boxed.len())
+            .filter(|&n| n < crate::eqtb::NUM_REGISTERS)
             .unwrap_or(255)
     }
 

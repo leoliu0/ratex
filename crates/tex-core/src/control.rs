@@ -970,6 +970,7 @@ impl Engine {
                     self.space_factor = v;
                 }
                 self.eqtb.assign_int_param(ip, v, g);
+                self.local_penalty_assigned(ip);
                 self.clear_prefixes();
                 true
             }
@@ -1108,6 +1109,7 @@ impl Engine {
                     self.space_factor = v;
                 }
                 self.eqtb.assign_int_param(ip, v, g);
+                self.local_penalty_assigned(ip);
                 true
             }
             Some(Equiv::Prim(Prim::DimP(dp))) => {
@@ -1975,6 +1977,7 @@ impl Engine {
     /// Box constructors (`\hbox`/`\vbox`/...) consume their own `{` via begin_box.
     pub fn begin_group(&mut self, _brace: bool) {
         self.push_group_level(LevelType::Simple);
+        self.reset_local_counters();
     }
 
     pub fn end_group(&mut self) {
@@ -1989,7 +1992,7 @@ impl Engine {
                     self.error("Too many }'s");
                     return;
                 }
-                let _ = self.pop_group();
+                let _ = self.pop_group_fixup();
             }
             Some(LevelType::Group | LevelType::MathGroup) => {
                 // math/legacy groups: pack if a box context is open
@@ -2019,11 +2022,12 @@ impl Engine {
         let location = self.input.current_file_location();
         self.ss_trace.push(location);
         self.push_group_level(crate::eqtb::LevelType::SemiSimple);
+        self.reset_local_counters();
     }
     pub fn end_semi_simple(&mut self) {
         if self.eqtb.cur_group_code() == crate::eqtb::group_code::SEMI_SIMPLE {
             self.ss_trace.pop();
-            let _ = self.pop_group();
+            let _ = self.pop_group_fixup();
         } else {
             self.off_save(self.cur_tok);
         }

@@ -562,6 +562,20 @@ impl Engine {
                     ctx.right = *rhm;
                 }
                 match w {
+                    WhatIt::LocalPar(lp) => {
+                        let n = self.lua_new_node(LOCAL_PAR, 0);
+                        let left = self.import_sub(&lp.left, ctx);
+                        let right = self.import_sub(&lp.right, ctx);
+                        let f = &mut self.lua_nodes.node_mut(n).f;
+                        f[0] = lp.pen_inter;
+                        f[1] = lp.pen_broken;
+                        f[2] = i32::from(lp.dir);
+                        f[3] = left as i32;
+                        f[4] = lp.left_width;
+                        f[5] = right as i32;
+                        f[6] = lp.right_width;
+                        n
+                    }
                     WhatIt::PdfRefXImage { obj, w: bw, h: bh, d: bd } | WhatIt::PdfRefXForm { obj, w: bw, h: bh, d: bd } => {
                         let image = matches!(w, WhatIt::PdfRefXImage { .. });
                         let n = self.lua_new_node(RULE, if image { 2 } else { 1 });
@@ -834,6 +848,25 @@ impl Engine {
                 out.push(Node::MathKern(f[0], (sub as u8).min(1) + 1, crate::boxes::Attr::NONE));
             }
             BOUNDARY => out.push(Node::Whatsit(WhatIt::Boundary { kind: sub as u8, value: f[0] }, crate::boxes::Attr::NONE)),
+            LOCAL_PAR => {
+                let left = self.export_sub(f[3]);
+                let right = self.export_sub(f[5]);
+                let nd = self.lua_nodes.node_mut(n);
+                nd.f[3] = 0;
+                nd.f[5] = 0;
+                out.push(Node::Whatsit(
+                    WhatIt::LocalPar(Box::new(crate::boxes::LocalPar {
+                        pen_inter: f[0],
+                        pen_broken: f[1],
+                        dir: (f[2] & 3) as u8,
+                        left,
+                        left_width: f[4],
+                        right,
+                        right_width: f[6],
+                    })),
+                    crate::boxes::Attr::NONE,
+                ));
+            }
             WHATSIT => self.export_whatsit(n, out),
             TEMP => {
                 if let Some(o) = self.lua_nodes.node(n).ext.as_ref().and_then(|e| e.opaque.as_deref().cloned()) {

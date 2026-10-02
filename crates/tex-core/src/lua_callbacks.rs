@@ -110,9 +110,9 @@ callbacks! {
 pub(crate) const N_CALLBACKS: usize = CALLBACK_NAMES.len();
 
 /// luatex group names (`lua_push_group_code`), indexed by group code.
-pub(crate) const GROUP_NAMES: [&str; 17] = [
+pub(crate) const GROUP_NAMES: [&str; 18] = [
     "", "simple", "hbox", "adjusted_hbox", "vbox", "vtop", "align", "no_align", "output", "math", "disc", "insert",
-    "vcenter", "math_choice", "semi_simple", "math_shift", "math_left",
+    "vcenter", "math_choice", "semi_simple", "math_shift", "math_left", "local_box",
 ];
 
 pub(crate) const GROUP_BOTTOM: &str = GROUP_NAMES[0];
@@ -124,6 +124,7 @@ pub(crate) const GROUP_ALIGN: &str = GROUP_NAMES[6];
 pub(crate) const GROUP_OUTPUT: &str = GROUP_NAMES[8];
 pub(crate) const GROUP_INSERT: &str = GROUP_NAMES[11];
 pub(crate) const GROUP_MATH_SHIFT: &str = GROUP_NAMES[15];
+pub(crate) const GROUP_LOCAL_BOX: &str = GROUP_NAMES[17];
 
 /// An argument of a callback call.
 #[derive(Clone, Debug)]
@@ -413,38 +414,19 @@ impl Engine {
     }
 }
 impl Engine {
-    /// A `local_par` node as `new_graf` makes it (LuaTeX keeps one at the
-    /// head of every paragraph).
-    fn lua_local_par_node(&mut self) -> u32 {
-        let attr = self.par_langs.last().map_or(self.eqtb.cur_attr, |p| p.attr);
-        let attr = self.lua_attr_handle(attr);
-        let saved = self.lua_nodes.import_attr.replace(attr);
-        let n = self.lua_new_node(crate::lua_node::LOCAL_PAR, 0);
-        self.lua_nodes.import_attr = saved;
-        let inter = self.eqtb.int_params[crate::prim::IntParam::InterLinePenalty.idx() as usize];
-        let broken = self.eqtb.int_params[crate::prim::IntParam::BrokenPenalty.idx() as usize];
-        let f = &mut self.lua_nodes.node_mut(n).f;
-        f[0] = inter;
-        f[1] = broken;
-        n
-    }
-
-    /// The paragraph list as Lua sees it in `pre_linebreak_filter`: with
-    /// the `local_par` node in front and the final penalty typed
-    /// `linepenalty`. The head is returned; the paragraph's last node
-    /// before `\parfillskip` is the penalty.
+    /// The paragraph list as Lua sees it in `pre_linebreak_filter`: the
+    /// final penalty typed `linepenalty`. The head is returned; the
+    /// paragraph's last node before `\parfillskip` is the penalty.
     fn lua_paragraph_to_lua(&mut self, content: NodeList) -> u32 {
         let first = self.lua_nodes_from_engine(content) as u32;
-        let lp = self.lua_local_par_node();
         if first != 0 {
-            self.lua_nodes.couple(lp, first);
             let tail = self.lua_nodes.tail_of(first);
             let before = self.lua_nodes.prev(tail);
             if before != 0 && self.lua_nodes.id(before) == crate::lua_node::PENALTY {
                 self.lua_nodes.node_mut(before).subtype = 2;
             }
         }
-        lp
+        first
     }
 
     /// luatex `lua_node_filter(pre_linebreak_filter_callback, ...)` on the
@@ -625,17 +607,6 @@ impl Engine {
             Some(CbRet::Nil) => false,
             _ => indented,
         }
-    }
-
-    /// luatex `make_local_par_node`: `insert_local_par(node, "new_graf")` with
-    /// the paragraph's `local_par` node.
-    pub(crate) fn lua_insert_local_par(&mut self) {
-        if !self.cb_defined(Cb::InsertLocalPar) {
-            return;
-        }
-        let n = self.lua_local_par_node();
-        let _ = self.lua_cb_call(Cb::InsertLocalPar, "insert_local_par", vec![CbArg::Node(n), CbArg::str("new_graf")]);
-        self.lua_nodes.flush_node(n);
     }
 
     /// luatex `lua_appendtovlist_callback`: `append_to_vlist_filter(box,

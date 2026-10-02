@@ -12,6 +12,8 @@ use crate::token::{CsId, Token};
 pub const RULE_FILL: i32 = i32::MIN; // sentinel: rule dimension from context
 /// box_kinds marker for a \discretionary part group (tex.web disc_group)
 const DISC_GROUP_KIND: u8 = 10;
+/// the box group of `\localleftbox`/`\localrightbox`
+pub(crate) const LOCAL_BOX_KIND: u8 = 12;
 /// box_kinds marker for a `\vadjust pre` group (kind 9 is plain `\vadjust`)
 const VADJUST_PRE_KIND: u8 = 11;
 
@@ -1369,6 +1371,9 @@ impl Engine {
             }
         };
         self.push_group_level_coded(LevelType::Box, meta);
+        if kind <= 2 {
+            self.reset_local_dirs();
+        }
 
         self.box_targets.push(target);
         if kind <= 2 && self.engine_kind == crate::engine::EngineKind::LuaTeX {
@@ -1448,6 +1453,12 @@ impl Engine {
             }
             _ => None,
         };
+        if kind == 0
+            && self.engine_kind == crate::engine::EngineKind::LuaTeX
+            && self.eqtb.cur_group_code() == crate::eqtb::group_code::HBOX
+        {
+            self.fixup_box_directions();
+        }
         let inner = std::mem::replace(&mut self.cur_list, Vec::new());
         let (outer_mode, outer_list, pd, sf, pg, _) = self.saved_lists.pop().unwrap_or((
             // group desync (e.g. runaway end): stay in the current context
@@ -1510,6 +1521,11 @@ impl Engine {
         if kind == DISC_GROUP_KIND {
             self.cur_list = outer_list;
             self.build_discretionary(shift, inner, outer_mode);
+            return;
+        }
+        if kind == LOCAL_BOX_KIND {
+            self.cur_list = outer_list;
+            self.build_local_box(shift != 0, inner, outer_mode);
             return;
         }
         // LuaTeX package(): hyphenation, ligaturing and kerning of the
@@ -2981,9 +2997,8 @@ impl Engine {
                     return;
                 }
                 if self.engine_kind == crate::engine::EngineKind::LuaTeX {
-                    self.lua_insert_local_par();
-                }
-                if indent {
+                    self.lua_paragraph_start(indent);
+                } else if indent {
                     let pi = self.eqtb.dim_params[DimParam::ParIndent.idx() as usize];
                     let r = boxes::hpack(Vec::new(), Some(pi), boxes::HBOX, &self.eqtb);
                     self.cur_list.push(r.node);
@@ -3031,9 +3046,8 @@ impl Engine {
                     return;
                 }
                 if self.engine_kind == crate::engine::EngineKind::LuaTeX {
-                    self.lua_insert_local_par();
-                }
-                if indent {
+                    self.lua_paragraph_start(indent);
+                } else if indent {
                     let pi = self.eqtb.dim_params[DimParam::ParIndent.idx() as usize];
                     let r = boxes::hpack(Vec::new(), Some(pi), boxes::HBOX, &self.eqtb);
                     self.cur_list.push(r.node);
@@ -3080,6 +3094,10 @@ impl Engine {
     pub(crate) fn resume_after_display(&mut self) {
         self.begin_paragraph_language();
         *self.prev_graf_mut() += 3;
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            // texmath.c: "this needs to be intercepted in the display math start"
+            self.append_local_par(boxes::LocalParMode::Penalty);
+        }
     }
 
     fn run_everypar(&mut self) {
@@ -3115,7 +3133,9 @@ impl Engine {
         // etex.ch end_graf: `if LR_save<>null then flush_list(LR_save)` —
         // init_math's line_break keeps it for the display and the resumption
         let lr_key = self.saved_lists.len();
-        if self.cur_list.is_empty() {
+        if self.cur_list.is_empty()
+            || (self.engine_kind == crate::engine::EngineKind::LuaTeX && Self::only_par_nodes(&self.cur_list))
+        {
             if !self.in_display_init {
                 self.lr_save_take(lr_key);
             }

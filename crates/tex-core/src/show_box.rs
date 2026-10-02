@@ -865,6 +865,55 @@ impl<'a> BoxDisplay<'a> {
                 self.out.push(b' ');
                 self.print_int(*r as i64);
             }
+            WhatIt::Dir { dir, cancel, .. } => {
+                self.print_esc(if *cancel { "enddir" } else { "begindir" });
+                self.out.push(b' ');
+                self.print(["TLT", "TRT", "LTL", "RTT"][usize::from(*dir & 3)]);
+            }
+            WhatIt::Boundary { kind, value } => {
+                match kind {
+                    0 => self.print_esc("noboundary"),
+                    1 => self.print_esc("boundary"),
+                    2 => self.print_esc("protrusionboundary"),
+                    3 => self.print_esc("wordboundary"),
+                    k => {
+                        self.print_esc("boundary");
+                        self.out.push(b':');
+                        self.print_int(i64::from(*k));
+                    }
+                }
+                if *kind != 0 {
+                    self.out.push(b'=');
+                    self.print_int(i64::from(*value));
+                }
+            }
+            WhatIt::LocalPar(lp) => {
+                // texnodes.c show_node: each field goes on its own line, one
+                // level deeper than the node
+                self.print_esc("localpar");
+                self.prefix.push(b'.');
+                self.print_ln();
+                self.out.extend_from_slice(&self.prefix);
+                self.print_esc("localinterlinepenalty");
+                self.out.push(b'=');
+                self.print_int(i64::from(lp.pen_inter));
+                self.print_ln();
+                self.out.extend_from_slice(&self.prefix);
+                self.print_esc("localbrokenpenalty");
+                self.out.push(b'=');
+                self.print_int(i64::from(lp.pen_broken));
+                for (name, list) in [("localleftbox", &lp.left), ("localrightbox", &lp.right)] {
+                    self.print_ln();
+                    self.out.extend_from_slice(&self.prefix);
+                    self.print_esc(name);
+                    if list.is_empty() {
+                        self.print("=null");
+                    } else {
+                        self.node_list_display(list);
+                    }
+                }
+                self.prefix.pop();
+            }
             #[allow(unreachable_patterns)]
             _ => self.print("whatsit?"),
         }

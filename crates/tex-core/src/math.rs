@@ -462,7 +462,9 @@ impl Engine {
                 // interrupted paragraph is broken and its final line is
                 // measured — before the end-of-paragraph reset clears
                 // \parshape/\hangindent state.
-                let was_empty = self.cur_list.is_empty();
+                let was_empty = self.cur_list.is_empty()
+                    || (self.engine_kind == crate::engine::EngineKind::LuaTeX
+                        && matches!(self.cur_list.as_slice(), [Node::Whatsit(crate::boxes::WhatIt::LocalPar(_), _)]));
                 // tex.web §21764: the interrupted paragraph's final widow
                 // penalty is \displaywidowpenalty, not \widowpenalty
                 if !was_empty {
@@ -487,11 +489,13 @@ impl Engine {
                     let n = shape.len() as i64;
                     let k = (prev_graf + 2).min(n);
                     let e = shape[(k - 1) as usize];
-                    (e.1 as i64, e.0 as i64) // engine stores (indent, width)
+                    // engine stores (indent, width)
+                    (e.1 as i64, self.swap_parshape_indent(e.0, e.1) as i64)
                 } else if hang.0 != 0
                     && ((hang.1 >= 0 && prev_graf + 2 > hang.1) || (prev_graf + 1 < -hang.1))
                 {
-                    (hsize - hang.0.abs(), if hang.0 > 0 { hang.0 } else { 0 })
+                    let used = self.swap_hang_indent(hang.0 as i32) as i64;
+                    (hsize - used.abs(), if used > 0 { used } else { 0 })
                 } else {
                     (hsize, 0)
                 };

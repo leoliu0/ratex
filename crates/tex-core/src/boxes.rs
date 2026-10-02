@@ -347,6 +347,42 @@ pub const BOUNDARY_USER: u8 = 1;
 pub const BOUNDARY_PROTRUSION: u8 = 2;
 pub const BOUNDARY_WORD: u8 = 3;
 
+/// A luatex `local_par` node (`\localinterlinepenalty`,
+/// `\localbrokenpenalty`, `\localleftbox`, `\localrightbox`, `\pardir`).
+/// The box lists are copies of the boxes of the moment; their widths are
+/// kept apart because Lua may change either independently.
+#[derive(Clone, Debug, Default)]
+pub struct LocalPar {
+    pub pen_inter: i32,
+    pub pen_broken: i32,
+    pub dir: u8,
+    pub left: NodeList,
+    pub left_width: i32,
+    pub right: NodeList,
+    pub right_width: i32,
+}
+
+/// Why a `local_par` node was made (texnodes `make_local_par_node` mode,
+/// the second argument of the `insert_local_par` callback).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LocalParMode {
+    NewGraf,
+    LocalBox,
+    HmodePar,
+    Penalty,
+}
+
+impl LocalParMode {
+    pub fn name(self) -> &'static str {
+        match self {
+            LocalParMode::NewGraf => "new_graf",
+            LocalParMode::LocalBox => "local_box",
+            LocalParMode::HmodePar => "hmode_par",
+            LocalParMode::Penalty => "penalty",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum WhatIt {
     /// LuaTeX boundary node (`\boundary`, `\wordboundary`,
@@ -367,6 +403,9 @@ pub enum WhatIt {
         cancel: bool,
         level: u16,
     },
+    /// LuaTeX `local_par` node: the paragraph-local state `line_break`
+    /// reads when it passes the node.
+    LocalPar(Box<LocalPar>),
     PdfLiteral {
         origin: u8,
         data: String,

@@ -471,11 +471,40 @@ impl Engine {
             UPrim::MathDir => IntParam::MathDirection,
             _ => IntParam::TextDirection,
         };
-        self.eqtb.assign_int_param(param, value, global);
-        if matches!(u, UPrim::TextDir | UPrim::LineDir) && self.mode.is_h() {
-            let level = self.eqtb.cur_level;
-            self.cur_list.push(Node::Whatsit(crate::boxes::WhatIt::Dir { dir: value as u8, cancel: false, level }, self.eqtb.cur_attr));
+        if !matches!(u, UPrim::TextDir | UPrim::LineDir) {
+            self.eqtb.assign_int_param(param, value, global);
+            return;
         }
+        // maincontrol.c `assign_dir_cmd`, text_direction_code: end the
+        // direction in force (when a \textdir of this group is), begin the
+        // new one, and count the change for the group's end
+        let level = self.eqtb.cur_level;
+        let attr = self.eqtb.cur_attr;
+        if self.mode.is_h() {
+            let current = self.eqtb.int_params[IntParam::TextDirection.idx() as usize] as u8;
+            if self.eqtb.int_params[IntParam::NoLocalDirs.idx() as usize] > 0 {
+                let cancel = Node::Whatsit(crate::boxes::WhatIt::Dir { dir: current, cancel: true, level: 0 }, attr);
+                // \linedir goes before a trailing glue so the glue stays
+                // outside the direction it ends
+                let before_glue = u == UPrim::LineDir && matches!(self.cur_list.last(), Some(Node::Glue(..)));
+                if before_glue {
+                    let at = self.cur_list.len() - 1;
+                    self.cur_list.insert(at, cancel);
+                } else {
+                    self.cur_list.push(cancel);
+                }
+            }
+        }
+        match self.text_dirs.last_mut() {
+            Some(top) if top.0 == level => top.1 = value as u8,
+            _ => self.text_dirs.push((level, value as u8)),
+        }
+        if self.mode.is_h() {
+            self.cur_list.push(Node::Whatsit(crate::boxes::WhatIt::Dir { dir: value as u8, cancel: false, level }, attr));
+        }
+        self.eqtb.assign_int_param(IntParam::TextDirection, value, global);
+        let counted = self.eqtb.int_params[IntParam::NoLocalDirs.idx() as usize] + 1;
+        self.eqtb.assign_int_param(IntParam::NoLocalDirs, counted, false);
     }
 
     /// `\hrule`, `\vrule` and luatex's `\nohrule`/`\novrule` (`subtype`
@@ -600,10 +629,7 @@ impl Engine {
             UPrim::NoHRule => self.rule_command(id, true, crate::boxes::RULE_EMPTY),
             UPrim::NoVRule => self.rule_command(id, false, crate::boxes::RULE_EMPTY),
             UPrim::LeftGhost | UPrim::RightGhost => self.char_ghost(id, u == UPrim::RightGhost),
-            UPrim::LocalLeftBox | UPrim::LocalRightBox => {
-                let name = String::from_utf8_lossy(self.cs.name(id)).into_owned();
-                self.error(&format!("\\{name} is not supported: the engine's node model has no counterpart (see the LuaTeX-only primitive notes)"));
-            }
+            UPrim::LocalLeftBox | UPrim::LocalRightBox => self.append_local_box(u == UPrim::LocalRightBox),
             UPrim::URoot
             | UPrim::UUnderDelimiter
             | UPrim::UOverDelimiter

@@ -26,6 +26,7 @@ pub mod input;
 pub mod io;
 pub mod language;
 pub mod linebreak;
+mod localpar;
 pub mod luatex;
 pub mod lua_font;
 mod lua_font_hb;

@@ -267,9 +267,13 @@ pub enum IntParam {
     LineDirection,
     MathDirection,
     PageDirection,
+    /// luatex `\nolocalwhatsits`, `\nolocaldirs`: per-group counters of the
+    /// local_par and dir nodes the group appended
+    NoLocalWhatsits,
+    NoLocalDirs,
 }
 
-pub const NUM_INT_PARAMS: usize = 140 + 52;
+pub const NUM_INT_PARAMS: usize = 140 + 54;
 
 impl IntParam {
     #[inline]
@@ -470,6 +474,8 @@ impl IntParam {
         IntParam::LineDirection,
         IntParam::MathDirection,
         IntParam::PageDirection,
+        IntParam::NoLocalWhatsits,
+        IntParam::NoLocalDirs,
     ];
 
     pub fn from_idx(i: u16) -> Option<Self> {

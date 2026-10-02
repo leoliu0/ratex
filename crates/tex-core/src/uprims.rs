@@ -599,7 +599,8 @@ impl Engine {
             UPrim::GLeaders => self.begin_leaders(crate::boxes::LEADERS_G),
             UPrim::NoHRule => self.rule_command(id, true, crate::boxes::RULE_EMPTY),
             UPrim::NoVRule => self.rule_command(id, false, crate::boxes::RULE_EMPTY),
-            UPrim::LeftGhost | UPrim::RightGhost | UPrim::LocalLeftBox | UPrim::LocalRightBox => {
+            UPrim::LeftGhost | UPrim::RightGhost => self.char_ghost(id, u == UPrim::RightGhost),
+            UPrim::LocalLeftBox | UPrim::LocalRightBox => {
                 let name = String::from_utf8_lossy(self.cs.name(id)).into_owned();
                 self.error(&format!("\\{name} is not supported: the engine's node model has no counterpart (see the LuaTeX-only primitive notes)"));
             }

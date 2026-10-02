@@ -646,7 +646,7 @@ impl Engine {
     }
 
     fn lk_add_kern_before(&mut self, left: u32, right: u32) {
-        if !self.lk_right_ghost(right) && self.lk_fnt(left) == self.lk_fnt(right) && self.lk_has_kern(self.lk_fnt(left), self.lk_ch(left)) {
+        if !self.lk_ghost(left) && !self.lk_right_ghost(right) && self.lk_fnt(left) == self.lk_fnt(right) && self.lk_has_kern(self.lk_fnt(left), self.lk_ch(left)) {
             let k = self.lk_raw_kern(self.lk_fnt(left), self.lk_ch(left), self.lk_ch(right));
             if k != 0 {
                 let kern = self.lk_new_kern(k);
@@ -659,7 +659,7 @@ impl Engine {
     }
 
     fn lk_add_kern_after(&mut self, left: u32, right: u32, aft: u32) {
-        if !self.lk_right_ghost(right) && self.lk_fnt(left) == self.lk_fnt(right) && self.lk_has_kern(self.lk_fnt(left), self.lk_ch(left)) {
+        if !self.lk_ghost(left) && !self.lk_right_ghost(right) && self.lk_fnt(left) == self.lk_fnt(right) && self.lk_has_kern(self.lk_fnt(left), self.lk_ch(left)) {
             let k = self.lk_raw_kern(self.lk_fnt(left), self.lk_ch(left), self.lk_ch(right));
             if k != 0 {
                 let kern = self.lk_new_kern(k);

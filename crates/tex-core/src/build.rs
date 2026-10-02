@@ -306,6 +306,64 @@ impl Engine {
         self.space_factor = self.space_factor_of(c);
     }
 
+    /// luatex `run_char_ghost` (`\leftghost`, `\rightghost`): the next
+    /// token, when it is a character, becomes a ghost glyph that takes part
+    /// in kerning but is never typeset. A left ghost keeps the kern between
+    /// the preceding character and itself; neither kind kerns with the
+    /// character after it, and no ligature forms across a ghost.
+    pub(crate) fn char_ghost(&mut self, id: CsId, right: bool) {
+        if self.mode.is_v() {
+            self.push_token(Token::from_cs(id));
+            self.start_paragraph(true);
+            return;
+        }
+        let t = self.get_x_raw();
+        let code = if t.is_cs() {
+            match self.eqtb.resolve(t.cs_id()) {
+                Some(crate::eqtb::Equiv::CharDef(c)) => Some(*c as u32),
+                Some(crate::eqtb::Equiv::CharTok(raw)) => {
+                    let raw = Token(*raw);
+                    matches!(raw.cc(), 11 | 12).then(|| raw.chr())
+                }
+                Some(crate::eqtb::Equiv::Prim(Prim::Char)) => Some(0),
+                _ => None,
+            }
+        } else {
+            matches!(t.cc(), 11 | 12).then(|| t.chr())
+        };
+        let Some(c) = code else { return };
+        if !self.mode.is_h() {
+            return;
+        }
+        if self.cur_font_is_lua() {
+            let mut glyph = self.new_lua_glyph(c);
+            if let Node::LuaGlyph(g) = &mut glyph {
+                g.subtype = (crate::lua_node::GLYPH_GHOST | if right { crate::lua_node::GLYPH_RIGHT } else { crate::lua_node::GLYPH_LEFT }) as u8;
+            }
+            self.cur_list.push(glyph);
+            return;
+        }
+        // the ghost ends the character chain without meeting a boundary; a
+        // ghost (or \noboundary) just before it, not the character before
+        // that, is what it would kern with
+        if let Some(f) = self.native_text.lig_chain.take() {
+            self.lig_kern_loop(f, LigStack::default(), None);
+        }
+        let after_break = std::mem::replace(&mut self.native_text.suppress_left_boundary, true);
+        if right || after_break {
+            return;
+        }
+        let f = self.eqtb.cur_font_val;
+        let (Some(font), Ok(g)) = (self.eqtb.fonts.get(f as usize), u8::try_from(c)) else { return };
+        let left = match self.cur_list.last() {
+            Some(Node::Char { c, font: pf, .. } | Node::Ligature { c, font: pf, .. }) if *pf == f => Some(*c),
+            _ => None,
+        };
+        if let Some(LigKernOp::Kern(w)) = left.and_then(|l| lig_kern_step(font, Some(l), g)) {
+            self.cur_list.push(Node::Kern(w, self.eqtb.cur_attr));
+        }
+    }
+
     pub fn char_token(&mut self, c: u8, is_letter: bool) {
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => {

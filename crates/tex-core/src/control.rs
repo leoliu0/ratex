@@ -115,6 +115,7 @@ impl Engine {
             let continues_character = if t.is_cs() {
                 match self.eqtb.resolve(t.cs_id()) {
                     Some(Equiv::CharDef(_) | Equiv::Prim(Prim::Char | Prim::NoBoundary)) => true,
+                    Some(Equiv::Prim(Prim::U(crate::uprim::UPrim::LeftGhost | crate::uprim::UPrim::RightGhost))) => true,
                     Some(Equiv::CharTok(raw)) => matches!(Token(*raw).cc(), 11 | 12),
                     _ => false,
                 }

@@ -44,3 +44,47 @@ impl LuaRng {
         (mantissa as f64) * f64::from_bits(0x3CA0000000000000) // 2^-53
     }
 }
+
+/// glibc `random()`/`srandom()` (TYPE_3, degree 31, separation 3): what Lua
+/// 5.3's `math.random` uses on POSIX (`l_rand`/`l_srand`), so that a seeded
+/// sequence equals LuaTeX's.
+#[derive(Debug, Clone)]
+pub struct LibcRandom {
+    r: [i32; 34],
+    f: usize,
+    b: usize,
+}
+
+impl LibcRandom {
+    /// `srandom(seed)`.
+    pub fn from_seed(seed: u32) -> Self {
+        let seed = if seed == 0 { 1 } else { seed };
+        let mut r = [0i32; 34];
+        r[0] = seed as i32;
+        let mut word = i64::from(seed as i32);
+        for slot in r.iter_mut().take(31).skip(1) {
+            let hi = word / 127_773;
+            let lo = word % 127_773;
+            word = 16807 * lo - 2836 * hi;
+            if word < 0 {
+                word += 2_147_483_647;
+            }
+            *slot = word as i32;
+        }
+        let mut rng = LibcRandom { r, f: 3, b: 0 };
+        for _ in 0..310 {
+            rng.next_rand();
+        }
+        rng
+    }
+
+    /// `random()`: an integer in `[0, 2^31 - 1]`.
+    pub fn next_rand(&mut self) -> i64 {
+        let sum = self.r[self.f].wrapping_add(self.r[self.b]);
+        self.r[self.f] = sum;
+        let result = (sum as u32 >> 1) as i64;
+        self.f = if self.f + 1 == 31 { 0 } else { self.f + 1 };
+        self.b = if self.b + 1 == 31 { 0 } else { self.b + 1 };
+        result
+    }
+}

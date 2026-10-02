@@ -1396,7 +1396,6 @@ const FONT_PRELUDE: &str = r##"
 local B = __ratex_font_bridge
 __ratex_font_bridge = nil
 local cache = {}
-__ratex_font_cache = cache
 local type, rawget, error, select, setmetatable = type, rawget, error, select, setmetatable
 
 local function remember(id, t)
@@ -1495,6 +1494,7 @@ font.fonts = setmetatable({}, {
   __index = function(_, i) return font.getfont(i) end,
   __newindex = function(_, i, t) return font.setfont(i, t) end,
 })
+return cache
 "##;
 
 /// Install the `font` library (luatex `lfontlib.c`).
@@ -1750,7 +1750,11 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
 
     install_vf(lua)?;
     lua.set_global("__ratex_font_bridge", b).map_err(|e| format!("{e:?}"))?;
-    lua.execute(FONT_PRELUDE).map_err(|e| format!("font library: {e:?}"))?;
+    let cache: LuaTable = lua
+        .load(FONT_PRELUDE)
+        .call(())
+        .map_err(|e| format!("font library: {e:?}"))?;
+    lua.registry_set(crate::lua_bridge::REG_FONT_CACHE, cache).map_err(|e| format!("{e:?}"))?;
     Ok(())
 }
 

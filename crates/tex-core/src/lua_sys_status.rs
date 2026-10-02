@@ -155,6 +155,8 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
         table.set(i as i64, a.as_str()).map_err(|e| format!("{e:?}"))?;
     }
     lua.set_global("arg", table).map_err(|e| format!("{e:?}"))?;
+    // luatex's `luatex_core_version` (luatex.c), a Lua number.
+    lua.set_global("LUATEXCOREVERSION", 1.18_f64).map_err(|e| format!("{e:?}"))?;
     sys_reg!(lua, s, "status_names", || -> Vec<&'static str> { NAMES.to_vec() });
     // (kind, integer, string): 0 unknown, 1 integer, 2 string, 3 boolean, 4 nil
     sys_reg!(lua, s, "status_field", |name: LuaString| -> (i64, i64, Option<LuaBytes>) {

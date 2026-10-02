@@ -203,6 +203,7 @@ if shell ~= 1 then
   local lfs_symlinkattributes, lfs_touch = lfs.symlinkattributes, lfs.touch
   local EPERM, EPERM_MSG = -1, "LuaTeX: operation not permitted"
   io.saved_lines = io_lines
+  mt.saved_lines = mt.lines
 
   function io.open(name, how)
     if not how then how = "r" end

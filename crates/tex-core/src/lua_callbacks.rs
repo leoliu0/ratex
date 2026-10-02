@@ -17,7 +17,7 @@ use crate::lua_node_lib::NodeUd;
 
 macro_rules! callbacks {
     ($($variant:ident = $name:literal,)*) => {
-        /// The callbacks of `callback.listidx()`, in luatex's order (Lua's
+        /// The callbacks of `callback.list()`, in luatex's order (Lua's
         /// id is the index plus one).
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         #[repr(u8)]
@@ -104,7 +104,6 @@ callbacks! {
     ProcessPdfImageContent = "process_pdf_image_content",
     ProvideCharprocData = "provide_charproc_data",
     InputLevelString = "input_level_string",
-    DviOutput = "dvi_output",
 }
 
 /// Number of callbacks.
@@ -195,11 +194,7 @@ pub(crate) type CbResult = Result<Option<Vec<CbRet>>, String>;
 impl crate::engine_lua::LuaEngine {
     /// Call callback `cb` with `args` and collect everything it returns.
     pub(crate) fn call_callback_values(&mut self, cb: Cb, args: Vec<CbArg>) -> CbResult {
-        let f: Option<tex_lua::LuaFunction> = self
-            .lua
-            .load("return __ratex_callback(...)")
-            .call(CALLBACK_NAMES[cb as usize])
-            .map_err(|e| self.lua.get_error_message(e).message().to_string())?;
+        let f = self.lua_callback_fn(CALLBACK_NAMES[cb as usize])?;
         let Some(f) = f else {
             return Ok(None);
         };

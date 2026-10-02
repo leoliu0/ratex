@@ -3,7 +3,7 @@
 
 use std::any::Any;
 
-use tex_lua::{Lua, LuaTable, UdValue, UserDataTrait};
+use tex_lua::{Lua, LuaApi, LuaTable, UdValue, UserDataTrait};
 
 use crate::engine::Engine;
 use crate::lua_bridge::with_engine;
@@ -115,11 +115,18 @@ pub(crate) fn install_tokens(lua: &mut Lua, b: &LuaTable) -> Result<(), String> 
 
 /// Install the language object constructors into the `lang` natives `b`.
 pub(crate) fn install_lang(lua: &mut Lua, b: &LuaTable) -> Result<(), String> {
+    // llanglib.c `luaopen_lang`: the metatable "luatex.lang" is its own
+    // `__index`; the Lua side adds the methods.
+    let meta: LuaTable = lua.create_table().map_err(|e| format!("{e:?}"))?;
+    lua.registry_set("luatex.lang", &meta).map_err(|e| format!("{e:?}"))?;
+    b.set("lang_mt", &meta).map_err(|e| format!("{e:?}"))?;
     let lang_new = lua
-        .create_callback(|cb| {
+        .create_callback(move |cb| {
             let id: i64 = cb.arg(1)?;
             let ud = cb.create_userdata(LangUd(id))?;
-            cb.push(ud)
+            let value = cb.pack(&ud)?;
+            value.set_metatable(Some(&meta))?;
+            cb.push(value)
         })
         .map_err(|e| format!("{e:?}"))?;
     b.set("lang_new", lang_new).map_err(|e| format!("{e:?}"))?;

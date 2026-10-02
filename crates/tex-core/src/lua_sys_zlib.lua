@@ -75,7 +75,7 @@ function zlib.decompress(data, window_bits)
   return out, code + 0.0
 end
 
-local zmeta = {}
+local zmeta = { __name = "zlib.zstream" }
 zmeta.__index = zmeta
 
 local function stream(z, kind, fname)
@@ -96,12 +96,12 @@ function zlib.compressobj(level, method, window_bits, mem_level, strategy)
   optint(mem_level, 8, 4, "compressobj")
   optint(strategy, 0, 5, "compressobj")
   if method ~= 8 then error("failed to start decompressing", 2) end
-  return setmetatable({ id = S.zlib_new_deflate(level, window_bits) }, zmeta)
+  return S.ud_new(S.zlib_new_deflate(level, window_bits), zmeta)
 end
 
 function zlib.decompressobj(window_bits)
   window_bits = optint(window_bits, 15, 1, "decompressobj")
-  return setmetatable({ id = S.zlib_new_inflate(window_bits) }, zmeta)
+  return S.ud_new(S.zlib_new_inflate(window_bits), zmeta)
 end
 
 function zmeta.compress(z, data)
@@ -136,7 +136,7 @@ end
 function zmeta.__tostring(z)
   local kind = z.id and S.zlib_stream_kind(z.id)
   if kind == nil then return "zlib stream (closed)" end
-  return format("zlib %s stream (%s)", kind, pointer(z))
+  return format("zlib %s stream (%s)", kind, S.address(z))
 end
 
 function zmeta.__gc(z)

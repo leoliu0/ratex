@@ -706,11 +706,7 @@ impl crate::engine_lua::LuaEngine {
         id: FontId,
     ) -> Result<Option<tex_lua::Value>, String> {
         use tex_lua::{LuaApi, LuaBytes, LuaFunction, Value};
-        let f: Option<LuaFunction> = self
-            .lua
-            .load("return __ratex_callback(...)")
-            .call("define_font")
-            .map_err(|e| self.lua.get_error_message(e).message().to_string())?;
+        let f: Option<LuaFunction> = self.lua_callback_fn("define_font")?;
         let Some(f) = f else {
             return Ok(None);
         };
@@ -723,7 +719,7 @@ impl crate::engine_lua::LuaEngine {
     /// Store `t` in the hidden cache consulted by `font.getfont`.
     pub(crate) fn set_font_cache(&mut self, f: FontId, t: &tex_lua::LuaTable) {
         use tex_lua::LuaApi;
-        if let Ok(Some(cache)) = self.lua.get_global::<tex_lua::LuaTable>("__ratex_font_cache") {
+        if let Ok(Some(cache)) = self.lua.registry_get::<tex_lua::LuaTable>(crate::lua_bridge::REG_FONT_CACHE) {
             let _ = cache.raw_seti(i64::from(f), t);
         }
     }

@@ -349,43 +349,38 @@ function tex.uniform_rand(x)
 end
 function tex.normal_rand() return T.normal_rand() end
 
--- xoshiro256** (the generator of Lua 5.4's math.random)
+-- ltexlib.c: `lua_math_randomseed` is `init_rand`; `lua_math_random` is the
+-- Lua interface of `math.random` over the TeX generator.
+function tex.lua_math_randomseed(seed)
+  if type(seed) ~= "number" then error("argument must be a number", 2) end
+  T.rand_init(lua_int(seed))
+end
 do
-  local s0, s1, s2, s3 = 0, 0, 0, 0
-  local function rotl(x, n) return (x << n) | (x >> (64 - n)) end
-  local function nextrand()
-    local r = rotl(s1 * 5, 7) * 9
-    local t = s1 << 17
-    s2 = s2 ~ s0; s3 = s3 ~ s1; s1 = s1 ~ s2; s0 = s0 ~ s3
-    s2 = s2 ~ t; s3 = rotl(s3, 45)
-    return r
-  end
-  local function seed(n1, n2)
-    s0, s1, s2, s3 = n1, 0xff, n2, 0
-    for _ = 1, 16 do nextrand() end
-  end
-  seed(0, 0)
-  local function project(ran, lim)
-    if lim & (lim + 1) == 0 then return ran & lim end
-    local l = lim
-    l = l | (l >> 1); l = l | (l >> 2); l = l | (l >> 4); l = l | (l >> 8); l = l | (l >> 16); l = l | (l >> 32)
-    ran = ran & l
-    while math.ult(lim, ran) do ran = nextrand() & l end
-    return ran
-  end
-  function tex.lua_math_randomseed(a, b)
-    if a == nil then a = os.time() end
-    seed(lua_int(a), lua_int(b))
-  end
-  function tex.lua_math_random(m, n)
-    local r = nextrand()
-    local low, up
-    if m == nil then
-      return (r >> 11) * (0.5 / (1 << 52))
+  local function number_arg(i, v)
+    local x = tonumber(v)
+    if type(v) == "boolean" or x == nil or type(v) == "table" then
+      error("bad argument #" .. i .. " to 'lua_math_random' (number expected, got " .. (v == nil and "no value" or type(v)) .. ")", 3)
     end
-    if n == nil then low, up = 1, lua_int(m) else low, up = lua_int(m), lua_int(n) end
-    if low > up then error("bad argument #" .. (n == nil and 1 or 2) .. " to 'lua_math_random' (interval is empty)", 2) end
-    return (low + project(r, up - low)) + 0.0
+    return x + 0.0
+  end
+  function tex.lua_math_random(...)
+    local max = 0x7fffffff
+    local r = T.uniform_rand(max)
+    if r < 0 then r = -r end
+    r = r / max
+    local n = select("#", ...)
+    if n == 0 then return r end
+    if n == 1 then
+      local u = number_arg(1, (...))
+      if not (1.0 <= u) then error("bad argument #1 to 'lua_math_random' (interval is empty)", 2) end
+      return math.floor(r * u) + 1.0
+    elseif n == 2 then
+      local l, u = ...
+      l, u = number_arg(1, l), number_arg(2, u)
+      if not (l <= u) then error("bad argument #2 to 'lua_math_random' (interval is empty)", 2) end
+      return math.floor(r * (u - l + 1)) + l
+    end
+    error("wrong number of arguments", 2)
   end
 end
 

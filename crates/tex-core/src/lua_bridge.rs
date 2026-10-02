@@ -1316,10 +1316,13 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
         names.raw_seti(code as i64, *name).map_err(|e| format!("{e:?}"))?;
     }
     lua.set_global("__ratex_command_names", names).map_err(|e| format!("{e:?}"))?;
-    lua.load(LUA_PRELUDE)
+    let (function_slot, callback_lookup): (LuaFunction, LuaFunction) = lua
+        .load(LUA_PRELUDE)
         .set_name("=[ratex bridge]")
-        .exec()
+        .call(())
         .map_err(|e| format!("bridge prelude: {}", lua.get_error_message(e).message()))?;
+    lua.registry_set(REG_FUNCTION, function_slot).map_err(|e| format!("{e:?}"))?;
+    lua.registry_set(REG_CALLBACK, callback_lookup).map_err(|e| format!("{e:?}"))?;
     crate::lua_tex::install(lua)
 }
 
@@ -1378,15 +1381,40 @@ impl Engine {
     }
 }
 
+/// Registry keys of the two Lua-side lookups the prelude hands to Rust, so
+/// they never appear in `_G`.
+const REG_FUNCTION: &str = "ratex.function";
+const REG_CALLBACK: &str = "ratex.callback";
+/// Registry key of the table `font.getfont` consults.
+pub(crate) const REG_FONT_CACHE: &str = "ratex.font_cache";
+
 impl LuaEngine {
+    /// The function registered in `lua.get_functions_table()` at `slot`.
+    fn lua_function_slot(&mut self, slot: i64) -> Result<Option<LuaFunction>, String> {
+        let lookup: LuaFunction = self
+            .lua
+            .registry_get(REG_FUNCTION)
+            .ok()
+            .flatten()
+            .ok_or("function lookup missing")?;
+        lookup.call(slot).map_err(|e| self.lua.get_error_message(e).message().to_string())
+    }
+
+    /// The Lua function registered for callback `name`, if any.
+    pub(crate) fn lua_callback_fn(&mut self, name: &str) -> Result<Option<LuaFunction>, String> {
+        let lookup: LuaFunction = self
+            .lua
+            .registry_get(REG_CALLBACK)
+            .ok()
+            .flatten()
+            .ok_or("callback lookup missing")?;
+        lookup.call(name).map_err(|e| self.lua.get_error_message(e).message().to_string())
+    }
+
     /// The function behind `\luafunction n`.
     pub(crate) fn call_function_slot(&mut self, slot: i32) -> Result<(), String> {
         let f: Option<LuaFunction> = self
-            .lua
-            .load("return __ratex_function(...)")
-            .set_name("=[luafunction]")
-            .call(i64::from(slot))
-            .map_err(|e| self.lua.get_error_message(e).message().to_string())?;
+            .lua_function_slot(i64::from(slot))?;
         if let Some(f) = f {
             f.call::<_, ()>(i64::from(slot))
                 .map_err(|e| self.lua.get_error_message(e).message().to_string())?;
@@ -1407,20 +1435,13 @@ impl LuaEngine {
     }
 
     pub(crate) fn has_callback(&mut self, name: &str) -> bool {
-        self.lua
-            .load("return __ratex_callback(...) ~= nil")
-            .call::<_, bool>(name)
-            .unwrap_or(false)
+        matches!(self.lua_callback_fn(name), Ok(Some(_)))
     }
 
     /// Call callback `name` with an optional string argument and return its
     /// string result.
     pub(crate) fn call_callback(&mut self, name: &str, arg: Option<&str>) -> Result<Option<String>, String> {
-        let f: Option<LuaFunction> = self
-            .lua
-            .load("return __ratex_callback(...)")
-            .call(name)
-            .map_err(|e| self.lua.get_error_message(e).message().to_string())?;
+        let f = self.lua_callback_fn(name)?;
         let Some(f) = f else {
             return Ok(None);
         };

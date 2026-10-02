@@ -5,7 +5,7 @@
 
 use std::collections::VecDeque;
 
-use tex_lua::{Lua, LuaApi, LuaResult, SafeOption, Stdlib, Value};
+use tex_lua::{Lua, LuaApi, SafeOption, Stdlib};
 
 use crate::engine::Engine;
 use crate::token::Token;
@@ -100,85 +100,14 @@ impl LuaEngine {
         crate::lua_bridge::install(&mut self.lua)?;
         crate::lua_sys::install(&mut self.lua)?;
 
-        // 13. mplib module backed by native Rust tex-mplib
-        let mplib_raw_exec_fn = self
-            .lua
-            .create_function(|code: String| -> LuaResult<(i64, String, String, String, String, String)> {
-                let mut session = tex_mplib::MpSession::new(tex_mplib::MpConfig::default());
-                let res = session.execute(&code);
-                let (ps, svg, bbox, charcode, num_objs) = if let Some(fig) = res.fig.first() {
-                    (
-                        fig.to_postscript(),
-                        fig.to_svg(),
-                        fig.bounding_box,
-                        fig.charcode as i64,
-                        fig.objects.len() as i64,
-                    )
-                } else {
-                    (String::new(), String::new(), (0.0, 0.0, 0.0, 0.0), 0, 0)
-                };
-                let meta = format!(
-                    "{:.4} {:.4} {:.4} {:.4} {} {}",
-                    bbox.0, bbox.1, bbox.2, bbox.3, charcode, num_objs
-                );
-                Ok((res.status as i64, res.log, res.term, ps, svg, meta))
-            })
-            .unwrap();
-        self.lua.set_global("__mplib_raw_execute", mplib_raw_exec_fn).unwrap();
-
-        self.lua.execute(r#"
-            mplib = {}
-            function mplib.version()
-                return "3.00"
-            end
-            function mplib.new(params)
-                local sess = { finished = false }
-                function sess:execute(code)
-                    if self.finished then
-                        return { status = 2, log = "Session finished\n", term = "Session finished\n", fig = {} }
-                    end
-                    local status, log, term, ps, svg, meta = __mplib_raw_execute(code)
-                    local llx, lly, urx, ury, charcode, num_objects = meta:match("([^%s]+)%s+([^%s]+)%s+([^%s]+)%s+([^%s]+)%s+([^%s]+)%s+([^%s]+)")
-                    llx = tonumber(llx) or 0
-                    lly = tonumber(lly) or 0
-                    urx = tonumber(urx) or 0
-                    ury = tonumber(ury) or 0
-                    charcode = tonumber(charcode) or 0
-                    num_objects = tonumber(num_objects) or 0
-                    local figs = {}
-                    if ps and #ps > 0 then
-                        local fig = {
-                            charcode = function() return charcode end,
-                            boundingbox = function() return { llx, lly, urx, ury } end,
-                            width = function() return math.max(0, urx - llx) end,
-                            height = function() return math.max(0, ury) end,
-                            depth = function() return math.max(0, -lly) end,
-                            postscript = function() return ps end,
-                            svg = function() return svg end,
-                            objects = function()
-                                local objs = {}
-                                for i = 1, num_objects do
-                                    objs[i] = { type = "stroke" }
-                                end
-                                return objs
-                            end
-                        }
-                        figs[1] = fig
-                    end
-                    return {
-                        status = status,
-                        log = log,
-                        term = term,
-                        fig = figs,
-                    }
-                end
-                function sess:finish()
-                    self.finished = true
-                    return { status = 0, log = "", term = "", fig = {} }
-                end
-                return sess
-            end
-        "#).map_err(|e| format!("failed to initialize mplib: {e:?}"))?;
+        // 13. mplib (lmplib.c) over tex-mplib
+        crate::lua_mplib::install(&mut self.lua)?;
+        // 14. the visible environment of a LuaTeX run
+        self.lua
+            .load(FINALIZE_ENVIRONMENT)
+            .set_name("=[ratex environment]")
+            .exec()
+            .map_err(|e| format!("environment: {}", self.lua.get_error_message(e).message()))?;
         Ok(())
     }
 
@@ -288,3 +217,58 @@ impl Engine {
         }
     }
 }
+
+/// What luatex's `luainit.c`/`luastuff.c` leave visible once all libraries
+/// are open: `package.loaded` knows the libraries, `ffi` is a stub preload,
+/// `package.loaders` is `package.searchers`, the userdata and library
+/// metatables carry their `__name`, and `debug` shrinks to `traceback`.
+const FINALIZE_ENVIRONMENT: &str = r##"
+local debug, package, getmetatable, rawget, type, ipairs, pairs =
+      debug, package, getmetatable, rawget, type, ipairs, pairs
+local reg = debug.getregistry()
+
+-- luaL_newmetatable convention for the host userdata (reported by getmetatable)
+reg["luatex.token"] = {
+  __name = "luatex.token",
+  __eq = function(a, b) return a == b end,
+  __gc = function() end,
+  __index = function(t, k) return t[k] end,
+  __tostring = function(t) return tostring(t) end,
+}
+reg["luatex.node"] = {
+  __name = "luatex.node",
+  __eq = function(a, b) return a == b end,
+  __index = function(n, k) return n[k] end,
+  __newindex = function(n, k, v) n[k] = v end,
+  __tostring = function(n) return tostring(n) end,
+}
+
+local function named(t, name)
+  local mt = type(t) == "table" and getmetatable(t) or nil
+  if type(mt) == "table" then mt.__name = name end
+end
+named(font and font.fonts, "tex.fonts")
+named(status, "tex.stats")
+named(lua.bytecode, "tex.bytecode")
+named(tex, "tex.meta")
+for _, k in ipairs{ "attribute", "box", "catcode", "count", "delcode", "dimen", "glue", "lccode", "lists",
+                    "mathcode", "muglue", "muskip", "nest", "sfcode", "skip", "toks", "uccode" } do
+  named(rawget(tex, k), "tex." .. k)
+end
+
+local loaded = package.loaded
+for _, k in ipairs{ "bit32", "callback", "font", "img", "kpse", "lang", "lfs", "lua", "mplib", "node", "pdf",
+                    "pdfe", "pdfscanner", "status", "tex", "texio", "token", "vf" } do
+  local v = rawget(_G, k)
+  if v ~= nil and loaded[k] == nil then loaded[k] = v end
+end
+-- luainit.c: the ffi loader of a LuaTeX without ffi support
+package.preload.ffi = function(...) error((...), 0) end
+package.loaders = package.searchers
+
+local keep = debug.traceback
+for k in pairs(debug) do
+  if k ~= "traceback" then debug[k] = nil end
+end
+debug.traceback = keep
+"##;

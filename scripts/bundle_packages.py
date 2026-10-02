@@ -1849,7 +1849,266 @@ SUPPLEMENT_PACKAGES = {
         "select": [("tex/lualatex/luacode", None)],
         "map_files": [],
     },
+    # XeTeX (xelatex) runtime fonts. The archive lacked the OpenType files that
+    # real XeLaTeX documents load by name: ctex's default fontset, unicode-math's
+    # default math font, stix2 and the other maintained math/text OpenType
+    # families. Only runtime fonts are taken; each package's license text is
+    # shipped from the legal directory at the "notices" destination.
+    "fandol": {
+        "version": "0.3",
+        "revision": 37889,
+        "license": "GPL-3.0 with font exception",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/fandol.tar.xz",
+        "upstream_sha256": "0b71eebb1c9b9fbd1eb4281f8af3f6c1a556a394ba2b6eae69ed9bb76c5fa56a",
+        "upstream_size_bytes": 21582588,
+        "description": "Fandol Song, Hei, Kai and Fang OpenType fonts (ctex's default Chinese fonts on Linux)",
+        "source_obligations": 'GPL-3.0 with font exception. The OTF files are the upstream preferred form: CTAN and TeX Live distribute no other source for Fandol, so no corresponding-source archive is added to sources.tar.zst; the pinned upstream archive is the source distribution.',
+        "select": [("fonts/opentype/public/fandol", (".otf",))],
+        "map_files": [],
+        "notices": [
+            ("fandol-COPYING.txt", "doc/fonts/fandol/COPYING"),
+            ("fandol-README.txt", "doc/fonts/fandol/README"),
+        ],
+    },
+    "lm-math": {
+        "version": "1.959",
+        "revision": 67718,
+        "license": "GUST-FONT-LICENSE",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/lm-math.tar.xz",
+        "upstream_sha256": "876211c73c151423bb4d1fc17064847e09436ffbfd183d7f0078a1fa8ba9c387",
+        "upstream_size_bytes": 377796,
+        "description": 'Latin Modern Math OpenType math font (unicode-math default)',
+        "source_obligations": 'GUST Font License; modification permitted provided renamed. Unmodified; no separate source obligations.',
+        "select": [("fonts/opentype/public/lm-math", (".otf",))],
+        "map_files": [],
+        "notices": [
+            ("lm-math-GUST-FONT-LICENSE.txt", "doc/fonts/lm-math/GUST-FONT-LICENSE.txt"),
+            ("lm-math-README.txt", "doc/fonts/lm-math/README-Latin-Modern-Math.txt"),
+            ("lm-math-MANIFEST.txt", "doc/fonts/lm-math/MANIFEST-Latin-Modern-Math.txt"),
+        ],
+    },
+    "tex-gyre-math": {
+        "version": "2016-05-19",
+        "revision": 41264,
+        "license": "GUST-FONT-LICENSE / DejaVu (TeX Gyre DejaVu Math)",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/tex-gyre-math.tar.xz",
+        "upstream_sha256": "8972d19fec5a701499fb6edc86f3ac4266343d42140cf6ae27edd44c2e916da3",
+        "upstream_size_bytes": 1182712,
+        "description": 'TeX Gyre math OpenType fonts',
+        "source_obligations": 'GUST Font License (DejaVu license for the DejaVu Math font). Unmodified; no separate source obligations.',
+        "select": [("fonts/opentype/public/tex-gyre-math", (".otf",))],
+        "map_files": [],
+        "notices": [
+            ("tex-gyre-math-GUST-FONT-LICENSE.txt", "doc/fonts/tex-gyre-math/GUST-FONT-LICENSE.txt"),
+            ("tex-gyre-math-LICENSE-DejaVu.txt", "doc/fonts/tex-gyre-math/LICENSE-DejaVu.txt"),
+            ("tex-gyre-math-README.txt", "doc/fonts/tex-gyre-math/README"),
+        ],
+    },
+    "stix2-otf": {
+        "version": "2.12",
+        "revision": 79618,
+        "license": "OFL-1.1",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/stix2-otf.tar.xz",
+        "upstream_sha256": "9582ec46aeda3581f9e6a065559f7096872aaa6aad3f76c0aa94937a43c9403e",
+        "upstream_size_bytes": 1382988,
+        "description": 'STIX Two Text and Math OpenType fonts',
+        "source_obligations": 'SIL Open Font License 1.1. Unmodified; no separate source obligations.',
+        "select": [("fonts/opentype/public/stix2-otf", (".otf",))],
+        "map_files": [],
+        "notices": [
+            ("stix2-otf-OFL.txt", "doc/fonts/stix2-otf/OFL.txt"),
+            ("stix2-otf-README.md", "doc/fonts/stix2-otf/README.md"),
+        ],
+    },
+    "xits": {
+        "version": "1.302",
+        "revision": 55730,
+        "license": "OFL-1.1",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/xits.tar.xz",
+        "upstream_sha256": "cdc51390b6ad6e1151d0186c5be4b24d8bc910e338fa472db282023825c74409",
+        "upstream_size_bytes": 541240,
+        "description": 'XITS OpenType text and math fonts',
+        "source_obligations": 'SIL Open Font License 1.1. Unmodified; no separate source obligations.',
+        "select": [("fonts/opentype/public/xits", (".otf",))],
+        "map_files": [],
+        "notices": [
+            ("xits-OFL.txt", "doc/fonts/xits/OFL.txt"),
+            ("xits-README.txt", "doc/fonts/xits/README.txt"),
+        ],
+    },
+    "libertinus-fonts": {
+        "version": "7.051",
+        "revision": 72484,
+        "license": "OFL-1.1",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/libertinus-fonts.tar.xz",
+        "upstream_sha256": "376c628a838987fa9ae0ba407a0ed8731063acf911b8efdef917365a01705193",
+        "upstream_size_bytes": 1795384,
+        "description": 'Libertinus OpenType fonts',
+        "source_obligations": 'SIL Open Font License 1.1. Unmodified; no separate source obligations.',
+        "select": [("fonts/opentype/public/libertinus-fonts", (".otf",))],
+        "map_files": [],
+        "notices": [
+            ("libertinus-fonts-OFL.txt", "doc/fonts/libertinus-fonts/OFL.txt"),
+            ("libertinus-fonts-README.md", "doc/fonts/libertinus-fonts/README.md"),
+        ],
+    },
+    # XeTeX TECkit mappings (fontspec `Mapping=`, polyglossia/arabxetex digit and
+    # transliteration maps) and the XeLaTeX macro packages that the main archive
+    # lacks. xetex's tex-text and qx-unicode back `Mapping=tex-text`.
+    "xetex": {
+        "version": "TeX Live 2026",
+        "revision": 80015,
+        "license": "X11",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/xetex.tar.xz",
+        "upstream_sha256": "1916d6706a413a9c711d6012d7396f06cf559497e5fa0288692f9550fb741769",
+        "upstream_size_bytes": 7988,
+        "select": [("fonts/misc/xetex/fontmapping/base", None)],
+        "map_files": [],
+    },
+    "polyglossia": {
+        "version": "2.13",
+        "revision": 80238,
+        "license": "MIT / LPPL-1.3 / CC0-1.0",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/polyglossia.tar.xz",
+        "upstream_sha256": "69022dd99105ad75862dc33b3d6b10c13a9f456f39b58c9aa67384124e25bee5",
+        "upstream_size_bytes": 132092,
+        # The main archive carries polyglossia 2.9's TeX files (they differ from
+        # this revision's); mixing in 2.13's language modules would split the
+        # package across versions, so only the digit mappings are taken.
+        "select": [("fonts/misc/xetex/fontmapping/polyglossia", None)],
+        "map_files": [],
+    },
+    "arabxetex": {
+        "version": "1.2.1",
+        "revision": 79618,
+        "license": "LPPL-1.3c",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/arabxetex.tar.xz",
+        "upstream_sha256": "862b1b7fe698286d46779f4b0b0feeb068334ca4322dc1319dae98c88e8674cf",
+        "upstream_size_bytes": 147676,
+        "select": [
+            ("tex/xelatex/arabxetex", None),
+            ("fonts/misc/xetex/fontmapping/arabxetex", None),
+        ],
+        "map_files": [],
+    },
+    "bidi": {
+        "version": "26.01.08",
+        "revision": 77682,
+        "license": "LPPL-1.3c",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/bidi.tar.xz",
+        "upstream_sha256": "eaa01a43b4a21659a65810c2afbebc232c725ac81b01b66b5b5227499444db79",
+        "upstream_size_bytes": 131248,
+        "select": [("tex/latex/bidi", None)],
+        "map_files": [],
+    },
+    "xepersian": {
+        "version": "26.01.01",
+        "revision": 77682,
+        "license": "LPPL-1.3c",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/xepersian.tar.xz",
+        "upstream_sha256": "033dd53ecd3236e9e8a4ac46f4d33f150bc9724c6717d72c18f2079039a0ce0c",
+        "upstream_size_bytes": 61040,
+        "select": [
+            ("tex/latex/xepersian", None),
+            ("fonts/misc/xetex/fontmapping/xepersian", None),
+        ],
+        "map_files": [],
+    },
+    "xetex-devanagari": {
+        "version": "0.5",
+        "revision": 34296,
+        "license": "LPPL",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/xetex-devanagari.tar.xz",
+        "upstream_sha256": "2b8ff45641f207deacaa06b1e7c0d0e025f3c8a813829c0ef330b019b35fd2b5",
+        "upstream_size_bytes": 12452,
+        "select": [("fonts/misc/xetex/fontmapping/xetex-devanagari", (".map", ".tec"))],
+        "map_files": [],
+    },
+    "xetex-itrans": {
+        "version": "4.2",
+        "revision": 55475,
+        "license": "LPPL-1.3",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/xetex-itrans.tar.xz",
+        "upstream_sha256": "8c20f36ae226d089fee5bf8be80614cb418d8615b2900e8c742a7e3e65180523",
+        "upstream_size_bytes": 24624,
+        "select": [("fonts/misc/xetex/fontmapping/xetex-itrans", None)],
+        "map_files": [],
+    },
+    "xetex-tibetan": {
+        "version": "0.1",
+        "revision": 28847,
+        "license": "LPPL",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/xetex-tibetan.tar.xz",
+        "upstream_sha256": "b16ea132c2a42f89dd75c435e5c179cd52148dc68cff514c2be043c68f8f16fe",
+        "upstream_size_bytes": 7048,
+        "select": [("fonts/misc/xetex/fontmapping/xetex-tibetan", None)],
+        "map_files": [],
+    },
+    "xunicode": {
+        "version": "0.981",
+        "revision": 77682,
+        "license": "LPPL-1.3",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/xunicode.tar.xz",
+        "upstream_sha256": "e0ab404031563884e3769dda49113ddb363c01172b0008a2efdbc0560420b4db",
+        "upstream_size_bytes": 25760,
+        "select": [("tex/xelatex/xunicode", None)],
+        "map_files": [],
+    },
+    "xltxtra": {
+        "version": "0.7",
+        "revision": 77682,
+        "license": "LPPL-1.3c",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/xltxtra.tar.xz",
+        "upstream_sha256": "9a42c28340a004d9cc35b0ca94eb21f09491617a7b4d308760d76d4ede6a99e8",
+        "upstream_size_bytes": 2532,
+        "select": [("tex/xelatex/xltxtra", None)],
+        "map_files": [],
+    },
+    "xecolor": {
+        "version": "0.1",
+        "revision": 77682,
+        "license": "LPPL-1.3",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/xecolor.tar.xz",
+        "upstream_sha256": "66d88a80b0528f57237c78e61ee67032db01fa2cffff59ad5918a2213b320311",
+        "upstream_size_bytes": 2292,
+        "select": [("tex/xelatex/xecolor", None)],
+        "map_files": [],
+    },
+    "mathspec": {
+        "version": "0.2b",
+        "revision": 79618,
+        "license": "LPPL-1.3c",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/mathspec.tar.xz",
+        "upstream_sha256": "a4e6fea1fac6ae350d37044ef960fea5a8b49765c7325456c3c1dfd5c0e7898f",
+        "upstream_size_bytes": 9728,
+        "select": [("tex/xelatex/mathspec", None)],
+        "map_files": [],
+    },
+    "xecyr": {
+        "version": "1.2",
+        "revision": 77682,
+        "license": "LPPL-1.3",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/xecyr.tar.xz",
+        "upstream_sha256": "593896b80b3a4ac794d6364b6601a3eb709272fe46454d23e784413370339d64",
+        "upstream_size_bytes": 3580,
+        "select": [("tex/xelatex/xecyr", None)],
+        "map_files": [],
+    },
+    "xetexko": {
+        "version": "4.6",
+        "revision": 77682,
+        "license": "LPPL-1.3c",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/xetexko.tar.xz",
+        "upstream_sha256": "c3167cf55470716b18900f08928d7e36419381b7a2511bd86f314b5defc50e30",
+        "upstream_size_bytes": 54620,
+        "select": [("tex/xetex/xetexko", None)],
+        "map_files": [],
+    },
 }
+# Supplement-wide license notice (legal directory name, shipped path).
+SUPPLEMENT_EXTRA_NOTICES = [
+    ("NOTICES-FONTS-XETEX.txt", "doc/fonts/NOTICES-FONTS-XETEX.txt"),
+]
 # Map files that TeX Live's updmap enables and whose fonts the main archive
 # already ships, but which the baseline consolidation never merged.
 SUPPLEMENT_MAP_ROOTS = [
@@ -3237,7 +3496,21 @@ def read_main_archive(assets_dir, lock_data, wanted):
     return members, contents
 
 
-def build_supplement(assets_dir, lock_file_path, cache_dir):
+def add_supplement_notice(added, main_members, legal_dir, legal_name, dest_rel, record):
+    """Ship a license text from the legal directory at dest_rel. Notices are
+    documentation, never looked up by basename, so only the full path must be new."""
+    src = os.path.join(legal_dir, legal_name)
+    if not os.path.exists(src):
+        raise FileNotFoundError(f"Required legal file not found: {src}")
+    if dest_rel in main_members or dest_rel in added:
+        raise RuntimeError(f"REJECTED: notice path already shipped: {dest_rel}")
+    with open(src, "rb") as f:
+        data = f.read()
+    added[dest_rel] = data
+    record[dest_rel] = hashlib.sha256(data).hexdigest()
+
+
+def build_supplement(assets_dir, lock_file_path, cache_dir, legal_dir):
     """Write the append-only overlay archive described at SUPPLEMENT_PACKAGES
     and record it in the lock, leaving the main archive parts untouched."""
     with open(lock_file_path, "r") as f:
@@ -3275,6 +3548,11 @@ def build_supplement(assets_dir, lock_file_path, cache_dir):
                 shadow = main_by_basename.get(fname)
                 if shadow == rel:
                     continue
+                twin = next((r for r in added if os.path.basename(r) == fname), None)
+                if twin is not None and shadow is None and added[twin] == data:
+                    # Two packages ship the byte-identical file (polyglossia and
+                    # arabxetex digit mappings); lookup by basename is unambiguous.
+                    continue
                 if shadow is not None or fname in {os.path.basename(r) for r in added}:
                     raise RuntimeError(
                         f"REJECTED: basename collision on '{fname}': {rel} vs {shadow or 'supplement'}"
@@ -3286,8 +3564,20 @@ def build_supplement(assets_dir, lock_file_path, cache_dir):
             for key in ("version", "revision", "license", "upstream_url", "upstream_sha256",
                         "upstream_size_bytes", "map_files")
         }
+        for key in ("description", "source_obligations"):
+            if key in info:
+                package_records[pkg_id][key] = info[key]
         package_records[pkg_id]["file_count"] = len(files)
         package_records[pkg_id]["files"] = files
+        if info.get("notices"):
+            package_records[pkg_id]["notices"] = {}
+            for legal_name, dest_rel in info["notices"]:
+                add_supplement_notice(added, main_members, legal_dir, legal_name, dest_rel,
+                                      package_records[pkg_id]["notices"])
+
+    notice_records = {}
+    for legal_name, dest_rel in SUPPLEMENT_EXTRA_NOTICES:
+        add_supplement_notice(added, main_members, legal_dir, legal_name, dest_rel, notice_records)
 
     # Consolidate pdftex.map: main records stay byte-identical; the declared
     # roots contribute records for still-unmapped TFMs whose files exist.
@@ -3347,6 +3637,7 @@ def build_supplement(assets_dir, lock_file_path, cache_dir):
         "total_members": len(added),
         "precedence": "read before the main archive; its members shadow same-named main members",
         "packages": package_records,
+        "notices": notice_records,
         "map_roots": {
             "output_map": PDFTEX_MAP_REL,
             "total_entries": len(map_lines),
@@ -3474,7 +3765,7 @@ def main():
         return
 
     if args.supplement:
-        build_supplement(args.assets_dir, args.lock, args.cache_dir)
+        build_supplement(args.assets_dir, args.lock, args.cache_dir, args.legal_dir)
         return
 
     if args.build_sources:

@@ -1,0 +1,62 @@
+Ratex XeTeX supplement: font and package notices
+================================================
+
+These OpenType fonts and XeTeX support files ship in packages-supplement.tar.zst
+(the append-only overlay on the main archive). Every upstream archive is pinned by
+URL, SHA-256 and size in packages.lock.json (supplement_archive.packages) and in
+SUPPLEMENT_PACKAGES of scripts/bundle_packages.py. Fonts are redistributed unmodified.
+The license texts quoted below are shipped in the runtime tree under doc/fonts/.
+
+Fonts
+-----
+
+fandol (0.3, TeX Live revision 37889)
+- Upstream: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/fandol.tar.xz
+- Authors: Fandol team (Clerk Ma, Jie Su). Chinese Song, Hei, Kai, Fang and Braille OpenType fonts; ctex's default fontset on Linux.
+- License: GNU GPL with font exception (the upstream README states "GPL + GPL font exception"; the shipped COPYING is GPL-3.0 text whose
+  final section holds the exception: documents that merely use the font are not covered by the GPL).
+- Shipped notice: doc/fonts/fandol/COPYING
+- Shipped notice: doc/fonts/fandol/README
+- Corresponding source: upstream publishes only the compiled OpenType files; the hash-pinned upstream archive is the complete
+  corresponding distribution (also available as https://mirror.aarnet.edu.au/pub/CTAN/fonts/fandol.zip).
+
+lm-math (1.959, TeX Live revision 67718)
+- Upstream: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/lm-math.tar.xz
+- Authors: B. Jackowski, J. M. Nowacki and the GUST e-foundry. Latin Modern Math (unicode-math's default).
+- License: GUST Font License (GFL, an instance of LPPL). Modified versions must be renamed to not contain "Latin Modern" or "LM".
+- Shipped notice: doc/fonts/lm-math/GUST-FONT-LICENSE.txt, README-Latin-Modern-Math.txt, MANIFEST-Latin-Modern-Math.txt
+
+tex-gyre-math (bundle of 2016-05-19, TeX Live revision 41264)
+- Upstream: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/tex-gyre-math.tar.xz
+- Authors: B. Jackowski, P. Strzelczyk, P. Pianowski (GUST). Bonum, DejaVu, Pagella, Schola and Termes Math.
+- License: GUST Font License (GFL); TeX Gyre DejaVu Math is derived from DejaVu Serif and is additionally under the DejaVu/Bitstream Vera license.
+  Modifications must be renamed to not contain "TeX Gyre".
+- Shipped notice: doc/fonts/tex-gyre-math/GUST-FONT-LICENSE.txt, LICENSE-DejaVu.txt, README
+
+stix2-otf (2.12, TeX Live revision 79618)
+- Upstream: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/stix2-otf.tar.xz
+- Authors: STI Pub Companies. STIX Two Text and STIX Two Math OpenType fonts.
+- License: SIL Open Font License 1.1. Reserved Font Name: STIX. Modifications must not use the Reserved Font Name.
+- Shipped notice: doc/fonts/stix2-otf/OFL.txt, README.md
+
+xits (1.302, TeX Live revision 55730)
+- Upstream: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/xits.tar.xz
+- Author: Khaled Hosny (derived from STIX). XITS and XITS Math.
+- License: SIL Open Font License 1.1. Modifications must not use the Reserved Font Names.
+- Shipped notice: doc/fonts/xits/OFL.txt, README.txt
+
+libertinus-fonts (7.051, TeX Live revision 72484)
+- Upstream: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/libertinus-fonts.tar.xz
+- Authors: Khaled Hosny and contributors (derived from Linux Libertine and Linux Biolinum). Libertinus Serif, Sans, Mono, Math, Keyboard.
+- License: SIL Open Font License 1.1. Modifications must not use the Reserved Font Names.
+- Shipped notice: doc/fonts/libertinus-fonts/OFL.txt, README.md
+
+XeTeX support packages (TeX sources and TECkit mappings, runtime files only)
+----------------------------------------------------------------------------
+
+These carry their own licenses; each upstream archive and its license field are pinned in the lock.
+- xetex (TL revision 80015, X11): TECkit mappings tex-text and qx-unicode (fonts/misc/xetex/fontmapping/base).
+- polyglossia (2.13, MIT / LPPL-1.3 / CC0): digit TECkit mappings only (the main archive's polyglossia TeX files are kept as is).
+- bidi (26.01.08, LPPL-1.3c), xepersian (26.01.01, LPPL-1.3c), arabxetex (1.2.1, LPPL-1.3c): right-to-left support and mappings.
+- xetex-devanagari (0.5, LPPL), xetex-itrans (4.2, LPPL-1.3), xetex-tibetan (0.1, LPPL): TECkit mappings.
+- xunicode (0.981), xltxtra (0.7), xecolor (0.1), xecyr (1.2) (LPPL-1.3 / 1.3c), mathspec (0.2b, LPPL-1.3c), xetexko (4.6, LPPL-1.3c): XeLaTeX macros.

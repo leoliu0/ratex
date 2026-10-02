@@ -10,15 +10,15 @@ use tex_kpse::fs::{self, MemoryFs, ResourceContext};
 pub mod engine_selection;
 
 const FORMAT_PDFLATEX: &[u8] = include_bytes!("../../tex-cli/assets/default.fmt.zst");
+const FORMAT_XELATEX: &[u8] = include_bytes!("../../tex-cli/assets/xelatex.fmt.zst");
 const FORMAT_LUALATEX: &[u8] = include_bytes!("../../tex-cli/assets/lualatex.fmt.zst");
 
-/// The embedded format for an engine the library can run. XeTeX has none:
-/// `ratex xelatex` is a pdfTeX compatibility invocation, not XeTeX.
-fn format_for_engine(kind: EngineKind) -> Option<&'static [u8]> {
+/// The embedded format of an engine.
+fn format_for_engine(kind: EngineKind) -> &'static [u8] {
     match kind {
-        EngineKind::PdfTeX => Some(FORMAT_PDFLATEX),
-        EngineKind::XeTeX => None,
-        EngineKind::LuaTeX => Some(FORMAT_LUALATEX),
+        EngineKind::PdfTeX => FORMAT_PDFLATEX,
+        EngineKind::XeTeX => FORMAT_XELATEX,
+        EngineKind::LuaTeX => FORMAT_LUALATEX,
     }
 }
 
@@ -113,7 +113,6 @@ pub enum Status {
     InvalidInput = 2,
     NoConvergence = 3,
     InternalError = 4,
-    UnsupportedEngine = 5,
 }
 
 pub struct Compilation {
@@ -331,13 +330,6 @@ impl Session {
                 engine_selection::detect_required_engine_from_source(&source).unwrap_or(EngineKind::PdfTeX)
             }
         };
-        if format_for_engine(selected_engine).is_none() {
-            return Compilation::error_for(
-                selected_engine,
-                Status::UnsupportedEngine,
-                format!("{} semantics are not implemented", selected_engine.command_name()),
-            );
-        }
         let mut attempted_engines = vec![selected_engine];
         let mut result = Compilation::error_for(selected_engine, Status::NoConvergence, "");
         let mut previous = BTreeMap::new();
@@ -479,13 +471,7 @@ impl Session {
         output_dir: &Path,
         job: &str,
     ) -> PassOutcome {
-        let Some(format_bytes) = format_for_engine(selected_engine) else {
-            return PassOutcome::failed(
-                Status::UnsupportedEngine,
-                format!("{} semantics are not implemented", selected_engine.command_name()),
-            );
-        };
-        let mut engine = match tex_core::format::load_format_from(format_bytes) {
+        let mut engine = match tex_core::format::load_format_from(format_for_engine(selected_engine)) {
             Ok(engine) => engine,
             Err(error) => {
                 return PassOutcome::failed(Status::InternalError, format!("embedded LaTeX format: {error}"))

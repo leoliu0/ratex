@@ -105,19 +105,21 @@ Wasm instance rather than attempting to reuse it.
 | 2 | Invalid entry path, missing entry, or invalid project |
 | 3 | Auxiliary files did not converge within five passes |
 | 4 | Internal runtime error |
-| 5 | The entry file requests XeTeX, which the library does not run |
 
-`tex.h`'s `enum tex_status` names statuses 0–4; status 5 is returned as the
-plain value.
+`tex.h`'s `enum tex_status` names the statuses above.
 
 The library chooses the engine from the entry file before the first pass: a
 `% !TeX program = …`, `% !TeX TS-program = …`, or `%&…` directive in the leading
 comment lines selects pdfTeX, XeTeX, or LuaTeX; otherwise loading `luatexja`,
-`luacode`, `luatextra`, or `unicode-math`, or using `\directlua`, in the
-preamble selects the LuaTeX-compatible mode; anything else uses pdfTeX. If a
-pass fails with a log message stating that another engine is required, the
-compilation restarts with that engine; each engine is tried at most once, and
-all attempts share the five-pass limit.
+`luacode`, or `luatextra`, or using `\directlua`, in the preamble selects the
+LuaTeX-compatible mode; loading `fontspec`, `xeCJK`, `ctex` (or a `ctex` class),
+`unicode-math`, or `polyglossia` selects XeTeX, as `texmk` does; anything else
+uses pdfTeX. If a
+pass fails with a log message stating that another engine is required (a
+package asking for XeTeX or LuaTeX moves a pdfTeX run to XeTeX; one that needs
+LuaTeX moves a pdfTeX or XeTeX run to LuaTeX), the
+compilation restarts with that engine; each engine is tried at most once, each
+with its own five-pass limit.
 
 Projects use relative paths with `/` separators. The entry file's parent is the
 working directory; includes resolve with ordinary TeX project semantics. Inputs
@@ -129,7 +131,7 @@ Both interfaces expose PDF bytes, accumulated logs, rendered diagnostics,
 generated files, TeX pass count, and BibTeX run count. The default clock is the
 host clock; set UTC Unix seconds for reproducible dates. Shell tools, Biber,
 interactive terminal input, and operating-system file access are unavailable
-through the library API. Native `fontspec`/`xeCJK` selection uses the same
+through the library API. Native `fontspec`/`xeCJK` selection runs on the XeTeX engine with the same
 bundled faces and shaping path as the CLI. Supply custom font files with
 `add_file` and select them by project-relative `Path`; a separate session
 cannot access those files. See the [font capabilities and engine limits](../README.md#fonts-and-unicode-in-the-source-build).

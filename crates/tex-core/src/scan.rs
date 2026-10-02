@@ -504,6 +504,18 @@ impl Engine {
                         v = i64::from(self.eqtb.cat_code(c));
                         break 'scan_loop;
                     }
+                    Some(Prim::MathCode) if self.engine_kind == EngineKind::XeTeX => {
+                        v = i64::from(self.xe_the_mathcode());
+                        break 'scan_loop;
+                    }
+                    Some(Prim::DelCode) if self.engine_kind == EngineKind::XeTeX => {
+                        v = i64::from(self.xe_the_delcode());
+                        break 'scan_loop;
+                    }
+                    Some(Prim::XeMath(x)) if x.is_value() => {
+                        v = self.xemath_internal(x).unwrap_or(0);
+                        break 'scan_loop;
+                    }
                     Some(Prim::MathCode) => {
                         let c = self.scan_profile_character_code("\\mathcode");
                         v = if self.engine_kind == EngineKind::LuaTeX {
@@ -1126,7 +1138,10 @@ impl Engine {
 
     pub(crate) fn scan_math_family(&mut self, command: &str) -> usize {
         let (family, origin) = self.scan_int_with_origin();
-        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+        if matches!(
+            self.engine_kind,
+            crate::engine::EngineKind::LuaTeX | crate::engine::EngineKind::XeTeX
+        ) {
             // scanning.c `scan_limited_int(255, "math family")`
             if (0..=255).contains(&family) {
                 return family as usize;
@@ -2246,6 +2261,18 @@ impl Engine {
                 let c = self.scan_profile_character_code("\\catcode");
                 emit_the!(self.eqtb.cat_code(c).to_string().as_bytes());
             }
+            Some(Prim::MathCode) if self.engine_kind == EngineKind::XeTeX => {
+                let v = self.xe_the_mathcode();
+                emit_the!(v.to_string().as_bytes());
+            }
+            Some(Prim::DelCode) if self.engine_kind == EngineKind::XeTeX => {
+                let v = self.xe_the_delcode();
+                emit_the!(v.to_string().as_bytes());
+            }
+            Some(Prim::XeMath(x)) if x.is_value() => {
+                let v = self.xemath_internal(x).unwrap_or(0);
+                emit_the!(v.to_string().as_bytes());
+            }
             Some(Prim::MathCode) => {
                 let c = self.scan_profile_character_code("\\mathcode");
                 if self.engine_kind == EngineKind::LuaTeX {
@@ -2794,6 +2821,9 @@ impl Engine {
             Some(Equiv::MuSkipReg(i)) => format!("{}muskip{}", esc_str, i),
             Some(Equiv::ToksReg(i)) => format!("{}toks{}", esc_str, i),
             Some(Equiv::BoxReg(i)) => format!("{}box{}", esc_str, i),
+            Some(Equiv::UMathCharDef(v)) if self.engine_kind == EngineKind::XeTeX => {
+                format!("{}{}", esc_str, crate::xemath_prims::umathchardef_meaning(v))
+            }
             Some(Equiv::UMathCharDef(v)) => {
                 let (class, family, slot) = crate::uprims::decode_umath_num(v);
                 format!("{}Umathchar\"{:X}\"{:02X}\"{:06X}", esc_str, class, family, slot)

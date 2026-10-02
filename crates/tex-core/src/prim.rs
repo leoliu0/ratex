@@ -1332,6 +1332,10 @@ pub enum Prim {
     XeTeXLinebreakLocale,
     /// XeTeX font queries without a variant of their own (slice XeText).
     XeTeXQuery(crate::xetex_query::XeQuery),
+    /// XeTeX's own math primitives (`\Umathcode`, `\Umathchardef`,
+    /// `\Uradical`, ... and their `\XeTeXmath*` aliases), see
+    /// [`crate::xemath_prims`]. Wire codes `0x5A00 | index`.
+    XeMath(crate::xemath_prims::XeMath),
 }
 
 /// Stable wire codes for the format dump (`crate::format`). Unit variants
@@ -1817,6 +1821,7 @@ impl Prim {
             Prim::U(u) => 0x5000 | u.idx(),
             Prim::UMath(id) => 0x5800 | id as u16,
             Prim::XeTeXQuery(q) => 0x5900 | q.idx(),
+            Prim::XeMath(x) => 0x5A00 | x.idx(),
             Prim::ScriptScriptStyle => 284,
             Prim::Patterns => 287,
             Prim::Hyphenation => 288,
@@ -2290,6 +2295,7 @@ impl Prim {
                 Some(Prim::UMath((c & 0xff) as u8))
             }
             0x5900..=0x59ff => Some(Prim::XeTeXQuery(crate::xetex_query::XeQuery::from_idx(c & 0xff)?)),
+            0x5A00..=0x5Aff => Some(Prim::XeMath(crate::xemath_prims::XeMath::from_idx(c & 0xff)?)),
             0x1000..=0x1fff => {
                 let i = c & 0x0fff;
                 Some(Prim::IntP(IntParam::from_idx(i)?))

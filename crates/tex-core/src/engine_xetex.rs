@@ -110,16 +110,18 @@ impl Engine {
         }
     }
 
-    /// Unicode math primitives (slice XeMath).
+    /// Unicode math primitives (slice XeMath): xetex.web §27875-27895,
+    /// §6785-6890. Both the `\U...` name and the `\XeTeXmath*` alias are
+    /// defined; `\meaning` shows the `\U...` name.
     fn register_xetex_math_primitives(&mut self) {
-        for name in [
-            &b"Umathcode"[..], b"Umathcodenum", b"Udelcode", b"Udelcodenum", b"Umathchardef",
-            b"Umathcharnumdef", b"Umathchar", b"Umathcharnum", b"Umathaccent", b"Udelimiter",
-            b"Uradical",
-        ] {
-            let &(name, u) = crate::uprim::UPRIMS.iter().find(|(n, _)| *n == name).unwrap();
-            self.xetex_define(name, Prim::U(u));
+        for &(name, alias, x) in crate::xemath_prims::XEMATH_NAMES {
+            for n in [name, alias] {
+                let id = self.cs.intern(n);
+                self.eqtb.assign(id, crate::eqtb::Equiv::Prim(Prim::XeMath(x)), true);
+            }
+            self.primitive_names.insert(Prim::XeMath(x).code(), name);
         }
+        self.eqtb.xe_math = true;
     }
 
     /// Images and PDF queries (slice XeDriver).

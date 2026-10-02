@@ -287,6 +287,16 @@ impl Engine {
                         self.reject_assignment_prefixes(&format!("\\mathchar\"{v:X}"));
                         self.math_given_command(i32::from(v), false, id);
                     }
+                    Some(Equiv::UMathCharDef(v)) if self.engine_kind == crate::engine::EngineKind::XeTeX => {
+                        // xetex.web `mmode+XeTeX_math_given: set_math_char(cur_chr)`
+                        self.reject_assignment_prefixes("\\Umathchar");
+                        if self.mode.is_m() {
+                            let source = self.current_token_source_mark();
+                            self.xe_set_math_char_at(i64::from(v as u32), v as u32, source);
+                        } else {
+                            self.insert_dollar_sign(Token::from_cs(id));
+                        }
+                    }
                     Some(Equiv::UMathCharDef(v)) => {
                         self.reject_assignment_prefixes("\\Umathchar");
                         self.math_given_command(v, true, id);
@@ -440,6 +450,12 @@ impl Engine {
         }
         if self.engine_kind == crate::engine::EngineKind::XeTeX && !self.mode.is_m() {
             self.xetex_main_char(scalar, is_letter);
+            return;
+        }
+        if self.mode.is_m() && self.engine_kind == crate::engine::EngineKind::XeTeX {
+            // xetex.web §26601: every letter, other character and \chardef in
+            // math mode follows `math_code(cur_chr)`, whatever its size
+            self.xe_math_char_token(scalar);
             return;
         }
         if let Ok(byte) = u8::try_from(scalar) {
@@ -635,6 +651,7 @@ impl Engine {
                 true
             }
             U(u) => self.uprim_assign(u, id),
+            XeMath(x) => self.xemath_assign(x),
             Attribute => {
                 let n = self.scan_attribute_num();
                 self.scan_optional_equals();
@@ -769,6 +786,16 @@ impl Engine {
                 let (class, family, character) = self.scan_mathchar_lua(crate::uprims::MathExt::Tex);
                 let value = (class * 16 + family) * 256 + character;
                 self.eqtb.assign(t, Equiv::MathCharDef(value as u16), g);
+                self.clear_prefixes();
+                true
+            }
+            MathCharDef if self.engine_kind == crate::engine::EngineKind::XeTeX => {
+                let t = self.scan_definable_cs();
+                let g = self.take_global();
+                self.eqtb.assign(t, Equiv::Prim(Prim::Relax), g);
+                self.scan_optional_equals();
+                let v = self.scan_xe_fifteen_bit();
+                self.eqtb.assign(t, Equiv::MathCharDef(v as u16), g);
                 self.clear_prefixes();
                 true
             }
@@ -2072,6 +2099,13 @@ impl Engine {
             MathChar
                 | MathAccent
                 | Radical
+                | XeMath(
+                    crate::xemath_prims::XeMath::MathChar
+                    | crate::xemath_prims::XeMath::MathCharNum
+                    | crate::xemath_prims::XeMath::Delimiter
+                    | crate::xemath_prims::XeMath::Radical
+                    | crate::xemath_prims::XeMath::MathAccent,
+                )
                 | Overline
                 | Underline
                 | MathOrd

@@ -214,6 +214,9 @@ impl Engine {
             Equiv::ToksReg(i) => self.print_register(out, escape, b"toks", *i),
             Equiv::BoxReg(i) => self.print_register(out, escape, b"box", *i),
             Equiv::AttributeReg(i) => self.print_register(out, escape, b"attribute", *i),
+            Equiv::UMathCharDef(v) if self.engine_kind == crate::engine::EngineKind::XeTeX => {
+                Self::print_esc_bytes(out, escape, crate::xemath_prims::umathchardef_meaning(*v).as_bytes());
+            }
             Equiv::UMathCharDef(v) => {
                 let (class, family, slot) = crate::uprims::decode_umath_num(*v);
                 Self::print_esc_bytes(out, escape, b"Umathchar");

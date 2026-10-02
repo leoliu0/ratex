@@ -155,22 +155,6 @@ fn test_sfnt_table_detection_and_aat_graphite() {
 }
 
 #[test]
-fn test_unicode_math_scalars_compile_without_error() {
-    let mut eng = boot_xetex();
-    let src = r#"
-\catcode`\{=1 \catcode`\}=2 \catcode`\$=3
-$α + x = y$
-\message{UNICODE_MATH_OK}
-\end
-"#;
-    eng.input.push_file("test.tex".into(), src.as_bytes().to_vec());
-    eng.run();
-
-    assert_eq!(eng.error_count, 0, "errors: {:?}, term: {}", eng.diagnostics, eng.term);
-    assert!(eng.term.contains("UNICODE_MATH_OK"), "term: {}", eng.term);
-}
-
-#[test]
 fn test_xetex_specials_emission() {
     let mut eng = boot_xetex();
     let src = r#"

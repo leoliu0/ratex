@@ -620,6 +620,8 @@ pub struct Engine {
     /// luatex `cur_f`/`cur_c` of `fetch` (LuaTeX math conversion)
     pub(crate) lm_cur_f: crate::tfm::FontId,
     pub(crate) reported_missing_math_atoms: crate::FxHashSet<(u32, u16, u8)>,
+    /// XeTeX OpenType math state (`cur_f`, font and glyph caches)
+    pub(crate) xe_math: crate::math_xetex::XeMathState,
     pub(crate) token_vec_pool: Vec<Vec<crate::token::Token>>,
     /// The previous line buffer of a file source, reused for the next line.
     pub(crate) spare_line_buf: Vec<u8>,
@@ -1304,6 +1306,7 @@ impl Engine {
             math_diagnostic_depth: 0,
             lm_cur_f: 0,
             reported_missing_math_atoms: crate::FxHashSet::default(),
+            xe_math: Default::default(),
             pre_display_size: -0x3FFF_FFFF,
             pre_display_l: 0,
             last_par_line: None,

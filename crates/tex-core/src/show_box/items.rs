@@ -589,6 +589,15 @@ impl<'a> BoxDisplay<'a> {
 
     /// texmath.c `print_delimiter` (without the `\Uleft` options).
     fn print_delimiter(&mut self, d: &Delim) {
+        if self.e.engine_kind == crate::engine::EngineKind::XeTeX {
+            // xetex.web §16268: `small_fam * 256 + small_char`, then the
+            // large field (the integers of `xetex -ini` hold all of it)
+            let a = (i64::from(d.small_fam) * 256 + i64::from(d.small_char)) * 0x1000
+                + i64::from(d.large_fam) * 256
+                + i64::from(d.large_char);
+            self.print(&format!("\"{a:X}"));
+            return;
+        }
         if d.small_fam < 16 && d.large_fam < 16 && d.small_char < 256 && d.large_char < 256 {
             // traditional tex style
             let a = ((u32::from(d.small_fam) * 256 + d.small_char) << 12)
@@ -736,8 +745,16 @@ impl<'a> BoxDisplay<'a> {
             n.kind,
             NoadKind::Left(_) | NoadKind::Right(_) | NoadKind::Middle(_)
         ) {
-            if n.subtype != 0 {
-                self.print_esc(if n.subtype == 1 { "limits" } else { "nolimits" });
+            // xetex.web §16364: an accent noad's `fixed_acc`/`bottom_acc`
+            // subtype shows as `\limits` (1) or `\nolimits` (other)
+            let subtype = match n.kind {
+                NoadKind::Accent(spec) if self.e.engine_kind == crate::engine::EngineKind::XeTeX => {
+                    spec.subtype.min(2)
+                }
+                _ => n.subtype,
+            };
+            if subtype != 0 {
+                self.print_esc(if subtype == 1 { "limits" } else { "nolimits" });
             }
             // luatex's `sub_sup` gives a nucleus-less noad an empty
             // `sub_mlist` nucleus (`{}`); tex.web leaves it empty

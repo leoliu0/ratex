@@ -745,8 +745,14 @@ impl<'a> BoxDisplay<'a> {
             }
             Node::NativeGlyphRun { run, .. } => {
                 self.print_font_identifier(run.font);
-                self.out.push(b' ');
-                self.print(&run.text);
+                if run.glyphs.len() == 1 && run.glyphs[0].cluster_start == run.glyphs[0].cluster_end {
+                    // xetex.web glyph_node: `\font glyph#n`
+                    self.print(" glyph#");
+                    self.print(&run.glyphs[0].glyph_id.to_string());
+                } else {
+                    self.out.push(b' ');
+                    self.print(&run.text);
+                }
             }
             // §690-§698: the cases of show_box that arise in mlists only
             Node::Style(s, _) => self.print_style(*s),
@@ -1042,8 +1048,44 @@ impl<'a> BoxDisplay<'a> {
                 let mut buf = [0u8; 4];
                 self.out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
             }
+        } else if self.e.engine_kind == crate::engine::EngineKind::XeTeX {
+            self.print_xetex_char(c);
         } else {
             self.print_ascii(c as u8);
+        }
+    }
+
+    /// xetex.web §16264 `print_fam_and_char` for a USV: `print_ASCII(c)` below
+    /// 0x10000 (`print`: the new-line character, then `print_char`, whose
+    /// `^^` notation covers the C0 controls, DEL and C1 and whose other
+    /// characters are UTF-8), `print_char(c)` above.
+    #[inline(never)]
+    fn print_xetex_char(&mut self, c: u32) {
+        if i64::from(c) == i64::from(self.e.new_line_char()) {
+            self.out.push(b'\n');
+        } else if c < 32 {
+            self.out.extend_from_slice(&[b'^', b'^', (c + 64) as u8]);
+        } else if c < 127 {
+            self.out.push(c as u8);
+        } else if c == 127 {
+            self.out.extend_from_slice(b"^^?");
+        } else if c < 0xA0 {
+            self.out.extend_from_slice(format!("^^{c:02x}").as_bytes());
+        } else if c < 0x800 {
+            self.out.extend_from_slice(&[(0xC0 + c / 0x40) as u8, (0x80 + c % 0x40) as u8]);
+        } else if c < 0x10000 {
+            self.out.extend_from_slice(&[
+                (0xE0 + c / 0x1000) as u8,
+                (0x80 + (c % 0x1000) / 0x40) as u8,
+                (0x80 + c % 0x40) as u8,
+            ]);
+        } else {
+            self.out.extend_from_slice(&[
+                (0xF0 + c / 0x4_0000) as u8,
+                (0x80 + (c % 0x4_0000) / 0x1000) as u8,
+                (0x80 + (c % 0x1000) / 0x40) as u8,
+                (0x80 + c % 0x40) as u8,
+            ]);
         }
     }
 }

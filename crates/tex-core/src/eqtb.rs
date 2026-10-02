@@ -644,6 +644,10 @@ pub struct Eqtb {
     pub lua_math_codes: crate::FxHashMap<u32, (u64, u16)>,
     /// LuaTeX delimiter codes that were assigned.
     pub lua_del_codes: crate::FxHashMap<u32, (u64, u16)>,
+    /// XeTeX: `\mathcode`/`\delcode` hold xetex.web's packed 32-bit values for
+    /// every character (see [`Eqtb::xe_math_code`]); set by
+    /// `init_xetex_primitives`. Never dumped: it follows the engine kind.
+    pub xe_math: bool,
 
     /// style_fonts[style][fam] -> font id (0 = none); style: 0=text 1=script 2=ss
     pub style_fonts: [[u16; 256]; 3],
@@ -961,6 +965,7 @@ impl Eqtb {
             math_glue_params: crate::FxHashMap::default(),
             lua_math_codes: crate::FxHashMap::default(),
             lua_del_codes: crate::FxHashMap::default(),
+            xe_math: false,
             style_fonts: [[0; 256]; 3],
             style_font_levels: [[LEVEL_ONE; 256]; 3],
             fonts: Vec::new(),
@@ -1180,6 +1185,8 @@ impl Eqtb {
             TraceSlot::Toks(i) => TraceValue::Toks(self.toks[i as usize].clone()),
             TraceSlot::Box(i) => TraceValue::Box(self.boxed[i as usize].clone()),
             TraceSlot::Cat(c) => TraceValue::Int(self.cat_code(c).into()),
+            TraceSlot::MathCode(c) if self.xe_math => TraceValue::Int(self.xe_math_code(c)),
+            TraceSlot::DelCode(c) if self.xe_math => TraceValue::Int(self.xe_del_code(c).into()),
             TraceSlot::MathCode(c) => TraceValue::Int(self.math_code_for(c).into()),
             TraceSlot::DelCode(c) => TraceValue::Int(self.delimiter_code_for(c)),
             TraceSlot::LcCode(c) => TraceValue::Int(self.case_code(c, false).into()),
@@ -2039,6 +2046,74 @@ impl Eqtb {
         }
     }
 
+    /// xetex.web §240 INITEX `math_code(k)`: the character itself, digits in
+    /// the variable family class and letters in class 7 of family 1.
+    pub fn xe_default_math_code(c: u32) -> i64 {
+        i64::from(match c {
+            0x30..=0x39 => c + 7 * 0x20_0000,
+            0x41..=0x5A | 0x61..=0x7A => c + 0x100_0000 + 7 * 0x20_0000,
+            _ => c,
+        })
+    }
+
+    /// XeTeX `math_code(c)`: `(class + 8 * fam) * 0x200000 + char`, or
+    /// `0x1FFFFF` for an active math character. A XeTeX integer holds the
+    /// whole `(class + 8 * 255) * 0x200000 + 0x1FFFFF`, so the values live in
+    /// [`Eqtb::lua_math_codes`] (a table a XeTeX engine does not otherwise
+    /// use) as 64-bit values; `\showthe` prints them unsigned beyond 2^31.
+    pub fn xe_math_code(&self, c: u32) -> i64 {
+        match self.lua_math_codes.get(&c) {
+            Some(&(value, _)) => value as i64,
+            None => Self::xe_default_math_code(c),
+        }
+    }
+
+    /// XeTeX `eq_define(math_code_base + c, data, v)`.
+    pub fn assign_xe_math_code(&mut self, c: u32, v: i64, global: bool) {
+        let slot = TraceSlot::MathCode(c);
+        if !self.begin_assign(global, self.xe_math_code(c) == v, slot) {
+            return;
+        }
+        Self::sparse_slot(
+            &mut self.lua_math_codes,
+            c,
+            v as u64,
+            global,
+            self.cur_level,
+            &mut self.save_stack,
+            |old| SaveItem::LuaMathCode(c, old),
+        );
+        self.end_assign(slot);
+    }
+
+    /// XeTeX `del_code(c)`: 0 for the period and -1 elsewhere unless assigned
+    /// (xetex.web §240); either a tex.web 27-bit code or `0x40000000 + fam *
+    /// 0x200000 + usv`.
+    pub fn xe_del_code(&self, c: u32) -> i32 {
+        match self.unicode_del_codes.get(&c) {
+            Some(&(value, _)) => value as i32,
+            None if c == u32::from(b'.') => 0,
+            None => -1,
+        }
+    }
+
+    /// XeTeX `eq_word_define(del_code_base + c, v)`.
+    pub fn assign_xe_del_code(&mut self, c: u32, v: i32, global: bool) {
+        let slot = TraceSlot::DelCode(c);
+        if !self.begin_assign(global, self.xe_del_code(c) == v, slot) {
+            return;
+        }
+        Self::sparse_slot(
+            &mut self.unicode_del_codes,
+            c,
+            i64::from(v),
+            global,
+            self.cur_level,
+            &mut self.save_stack,
+            |old| SaveItem::UnicodeDel(c, old),
+        );
+        self.end_assign(slot);
+    }
     pub fn space_factor_code(&self, character: u32) -> u16 {
         self.unicode_sf_codes
             .get(&character)
@@ -2549,7 +2624,13 @@ impl Eqtb {
                     Self::restore_sparse(&mut self.math_params, key, old);
                 }
                 SaveItem::LuaMathCode(key, old) => {
-                    Self::restore_sparse(&mut self.lua_math_codes, key, old);
+                    if self.xe_math {
+                        let restored = Self::sparse_is_local(&self.lua_math_codes, key);
+                        Self::restore_sparse(&mut self.lua_math_codes, key, old);
+                        self.trace_restore(restored, TraceSlot::MathCode(key));
+                    } else {
+                        Self::restore_sparse(&mut self.lua_math_codes, key, old);
+                    }
                 }
                 SaveItem::LuaDelCode(key, old) => {
                     Self::restore_sparse(&mut self.lua_del_codes, key, old);

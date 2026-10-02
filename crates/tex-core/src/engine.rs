@@ -1350,6 +1350,7 @@ impl Engine {
             term: String::new(),
             xprn: match engine_kind {
                 EngineKind::PdfTeX => crate::tex_bytes::default_xprn(),
+                EngineKind::XeTeX => crate::tex_bytes::xetex_xprn(),
                 _ => crate::tex_bytes::cp227_xprn(),
             },
             tcx: None,

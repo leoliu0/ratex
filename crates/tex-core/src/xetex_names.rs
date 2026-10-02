@@ -99,3 +99,52 @@ pub(crate) static XETEX_PRIMITIVE_NAMES: &[&[u8]] = &[
 
 /// The control-symbol primitives `\ `, `\/` and `\-`.
 pub(crate) static XETEX_SYMBOL_NAMES: &[&[u8]] = &[b" ", b"/", b"-"];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::{Engine, EngineKind};
+    use crate::eqtb::Equiv;
+
+    /// TeX Live names that belong to another slice and are registered on
+    /// its branch (`register_xetex_{text,math,driver}_primitives`); empty
+    /// once every slice has landed.
+    const NOT_YET_REGISTERED: &[&str] = &[
+        "XeTeXOTcountfeatures", "XeTeXOTcountlanguages", "XeTeXOTcountscripts", "XeTeXOTfeaturetag",
+        "XeTeXOTlanguagetag", "XeTeXOTscripttag", "XeTeXcountselectors", "XeTeXdelcode",
+        "XeTeXdelcodenum", "XeTeXdelimiter", "XeTeXfindfeaturebyname", "XeTeXfindselectorbyname",
+        "XeTeXfindvariationbyname", "XeTeXfirstfontchar", "XeTeXisdefaultselector",
+        "XeTeXisexclusivefeature", "XeTeXlastfontchar", "XeTeXmathaccent", "XeTeXmathchar",
+        "XeTeXmathchardef", "XeTeXmathcharnum", "XeTeXmathcharnumdef", "XeTeXmathcode",
+        "XeTeXmathcodenum", "XeTeXpdfpagecount", "XeTeXradical", "XeTeXselectorcode",
+        "XeTeXselectorname", "XeTeXvariationdefault", "XeTeXvariationmax", "XeTeXvariationmin",
+    ];
+
+    /// The primitives the XeTeX engine defines are exactly the ones
+    /// `xetex -ini -etex` defines (probed with `\ifdefined` over every
+    /// string of the binary).
+    #[test]
+    fn xetex_primitive_table_is_texlives() {
+        let mut eng = Engine::new_with_kind(EngineKind::XeTeX, true);
+        eng.init_primitives();
+        let defined: std::collections::BTreeSet<Vec<u8>> = eng
+            .cs
+            .all_ids()
+            .filter(|&id| id != eng.ids.frozen_primitive)
+            .filter(|&id| matches!(eng.eqtb.get(id), Some(Equiv::Prim(_))))
+            .map(|id| eng.cs.name(id).to_vec())
+            .collect();
+        let expected: std::collections::BTreeSet<Vec<u8>> = XETEX_PRIMITIVE_NAMES
+            .iter()
+            .chain(XETEX_SYMBOL_NAMES)
+            .map(|n| n.to_vec())
+            .collect();
+        let name = |n: &Vec<u8>| String::from_utf8_lossy(n).into_owned();
+        let extra: Vec<_> = defined.difference(&expected).map(name).collect();
+        assert!(extra.is_empty(), "defined but not in TeX Live's XeTeX: {extra:?}");
+        let mut missing: Vec<_> = expected.difference(&defined).map(name).collect();
+        // `\nullfont` is a font identifier, defined together with the null font
+        missing.retain(|n| n != "nullfont" && !NOT_YET_REGISTERED.contains(&n.as_str()));
+        assert!(missing.is_empty(), "TeX Live's XeTeX defines, this one does not: {missing:?}");
+    }
+}

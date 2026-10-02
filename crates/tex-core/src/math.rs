@@ -1990,7 +1990,22 @@ impl Engine {
             return Vec::new();
         }
         if t.is_char() && t.cc() == 1 {
-            return self.scan_math_group_braced(owner.unwrap_or(ScanKind::Brace));
+            let mut list = self.scan_math_group_braced(owner.unwrap_or(ScanKind::Brace));
+            // xetex.web §1186: a field that is one unscripted ord noad
+            // (`{{x\over y}}`) takes that noad's nucleus -- the braces of the
+            // inner group are the field
+            if self.engine_kind == crate::engine::EngineKind::XeTeX {
+                if let [Node::Scripts { nucleus, sup: None, sub: None, .. }] = list.as_mut_slice() {
+                    if nucleus.len() >= 2
+                        && matches!(nucleus.first(), Some(Node::MathChar { fam: 255, class: CL_ORD, .. }))
+                    {
+                        let mut inner = std::mem::take(nucleus);
+                        inner.remove(0);
+                        return inner;
+                    }
+                }
+            }
+            return list;
         }
         // single token: run it into a temporary math list
         let xe_char = self.engine_kind == crate::engine::EngineKind::XeTeX
@@ -3242,7 +3257,13 @@ impl Engine {
                     ), *a)
                 }
                 Node::MathKern(k, 0, a) => {
-                    Node::Kern((*k as i64 * self.mu_unit(style) as i64 / 65536) as i32, *a)
+                    let v = (*k as i64 * self.mu_unit(style) as i64 / 65536) as i32;
+                    // tex.web math_kern: the result is an `explicit` kern
+                    if self.engine_kind == crate::engine::EngineKind::XeTeX {
+                        Node::ExplicitKern(v, *a)
+                    } else {
+                        Node::Kern(v, *a)
+                    }
                 }
                 _ => n.clone(),
             };
@@ -3758,7 +3779,13 @@ impl Engine {
                         } else {
                             delta = ic;
                         }
-                        nuc = hpack(core, None, HBOX, &self.eqtb).node;
+                        // tex.web §755: the nucleus is the character node itself
+                        if self.engine_kind == crate::engine::EngineKind::XeTeX {
+                            xe_list = Some(core);
+                            nuc = Node::Empty;
+                        } else {
+                            nuc = hpack(core, None, HBOX, &self.eqtb).node;
+                        }
                     } else {
                         nuc = hpack(Vec::new(), None, HBOX, &self.eqtb).node;
                     }
@@ -3784,7 +3811,12 @@ impl Engine {
                     } else {
                         delta = ic;
                     }
-                    nuc = hpack(core, None, HBOX, &self.eqtb).node;
+                    if self.engine_kind == crate::engine::EngineKind::XeTeX {
+                        xe_list = Some(core);
+                        nuc = Node::Empty;
+                    } else {
+                        nuc = hpack(core, None, HBOX, &self.eqtb).node;
+                    }
                 } else {
                     nuc = hpack(Vec::new(), None, HBOX, &self.eqtb).node;
                 }

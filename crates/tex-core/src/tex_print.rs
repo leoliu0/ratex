@@ -19,55 +19,60 @@ pub(crate) const MAX_PRINT_LINE: usize = 79;
 pub(crate) struct Lane {
     pub(crate) out: Vec<u8>,
     pub(crate) offset: usize,
-    /// XeTeX prints UTF-8: a scalar is one column, however many bytes it
-    /// has, and a line is never broken inside one
+    /// XeTeX: the text is UTF-8 and a scalar is one column (`print_raw_char`
+    /// of xetex.web counts the last byte of a character only); a wrap never
+    /// splits one.
     unicode: bool,
-    wrap_pending: bool,
+    /// Continuation bytes still to come for the character being put.
+    need_cont: u8,
+    /// The line is full: break after the character being put.
+    wrap_after: bool,
 }
 
 impl Lane {
     fn new(offset: usize, unicode: bool) -> Lane {
-        Lane { out: Vec::new(), offset, unicode, wrap_pending: false }
+        Lane { out: Vec::new(), offset, unicode, need_cont: 0, wrap_after: false }
     }
 
     /// tex.web print_char for a byte that is not the new-line character.
     fn put(&mut self, byte: u8) {
-        if self.unicode {
-            if byte & 0xC0 == 0x80 {
-                // continuation byte of the scalar just started
-                self.out.push(byte);
-                return;
-            }
-            if self.wrap_pending {
+        if self.need_cont > 0 && byte & 0xC0 == 0x80 {
+            self.out.push(byte);
+            self.need_cont -= 1;
+            if self.need_cont == 0 && self.wrap_after {
                 self.out.push(b'\n');
                 self.offset = 0;
-                self.wrap_pending = false;
+                self.wrap_after = false;
             }
+            return;
         }
+        let (cont, units) = if self.unicode {
+            match byte {
+                0xC0..=0xDF => (1, 1),
+                0xE0..=0xEF => (2, 1),
+                0xF0..=0xF7 => (3, 1),
+                _ => (0, 1),
+            }
+        } else {
+            (0, 1)
+        };
         self.out.push(byte);
-        self.offset += 1;
-        if self.offset == MAX_PRINT_LINE {
-            if self.unicode && byte >= 0xC0 {
-                self.wrap_pending = true;
-            } else {
+        self.offset += units;
+        if self.offset >= MAX_PRINT_LINE {
+            if cont == 0 {
                 self.out.push(b'\n');
                 self.offset = 0;
+            } else {
+                self.wrap_after = true;
+                self.need_cont = cont;
             }
-        }
-    }
-
-    /// The line break a scalar ending the line was waiting for.
-    fn finish(&mut self) {
-        if self.wrap_pending {
-            self.out.push(b'\n');
-            self.offset = 0;
-            self.wrap_pending = false;
+        } else {
+            self.need_cont = cont;
         }
     }
 
     /// tex.web print_ln.
     pub(crate) fn ln(&mut self) {
-        self.finish();
         self.out.push(b'\n');
         self.offset = 0;
     }
@@ -88,14 +93,19 @@ impl Lane {
     /// character ends the line, any other character prints as itself or in
     /// `^^` notation according to `xprn`.
     pub(crate) fn chars(&mut self, raw: &[u8], xprn: &Xprn, nl: i32) {
+        let unicode = crate::tex_bytes::is_unicode_xprn(xprn);
         let mut shown = Vec::with_capacity(4);
-        for &byte in raw {
-            if i32::from(byte) == nl {
+        let mut i = 0;
+        while i < raw.len() {
+            let n = if unicode { crate::tex_bytes::next_unit_len(&raw[i..]) } else { 1 };
+            let unit = &raw[i..i + n];
+            i += n;
+            if n == 1 && i32::from(unit[0]) == nl {
                 self.ln();
                 continue;
             }
             shown.clear();
-            push_printable(xprn, &mut shown, &[byte]);
+            push_printable(xprn, &mut shown, unit);
             for &b in &shown {
                 self.put(b);
             }
@@ -115,6 +125,16 @@ impl Lane {
 }
 
 impl Engine {
+    /// The length tex.web measures a printed string by: bytes, or UTF-16
+    /// code units for XeTeX's Unicode strings.
+    pub(crate) fn code_units(&self, bytes: &[u8]) -> usize {
+        if crate::tex_bytes::is_unicode_xprn(&self.xprn) {
+            String::from_utf8_lossy(bytes).chars().map(char::len_utf16).sum()
+        } else {
+            bytes.len()
+        }
+    }
+
     pub(crate) fn new_line_char(&self) -> i32 {
         self.eqtb.int_params[IntParam::NewLineChar.idx() as usize]
     }
@@ -125,11 +145,10 @@ impl Engine {
     pub(crate) fn print_to(&mut self, term: bool, log: bool, body: &dyn Fn(&mut Lane)) {
         // queued trace lines come first and move the columns read below
         self.flush_trace_events();
-        let unicode = self.engine_kind == crate::engine::EngineKind::XeTeX;
+        let unicode = crate::tex_bytes::is_unicode_xprn(&self.xprn);
         if term && self.interaction_mode != InteractionMode::Batch {
             let mut lane = Lane::new(self.term_offset, unicode);
             body(&mut lane);
-            lane.finish();
             self.term_pad = false;
             self.append_term(&bytes_to_text(&lane.out));
             self.term_offset = lane.offset;
@@ -137,7 +156,6 @@ impl Engine {
         if log {
             let mut lane = Lane::new(self.file_offset, unicode);
             body(&mut lane);
-            lane.finish();
             self.log_pad = false;
             self.append_log(&bytes_to_text(&lane.out));
             self.file_offset = lane.offset;
@@ -180,21 +198,28 @@ impl Engine {
     /// tex.web §1280 issue_message for `\message`. web2c builds the message
     /// string with `message_printing` set, so characters are already in
     /// `^^` notation (only the new-line character stays itself) when its
-    /// length is compared with the line width.
+    /// length is compared with the line width. XeTeX does not: its string
+    /// holds the characters themselves and is measured in code units.
     pub(crate) fn tex_message(&mut self, raw: &[u8]) {
         self.flush_trace_events();
         let nl = self.new_line_char();
         let mut s = Vec::with_capacity(raw.len());
-        for &byte in raw {
-            if i32::from(byte) == nl {
-                s.push(byte);
+        let unicode = crate::tex_bytes::is_unicode_xprn(&self.xprn);
+        let mut i = 0;
+        while i < raw.len() {
+            let n = if unicode { crate::tex_bytes::next_unit_len(&raw[i..]) } else { 1 };
+            let unit = &raw[i..i + n];
+            i += n;
+            if n == 1 && i32::from(unit[0]) == nl {
+                s.push(unit[0]);
             } else {
-                push_printable(&self.xprn, &mut s, &[byte]);
+                push_printable(&self.xprn, &mut s, unit);
             }
         }
         let term_active = self.interaction_mode != InteractionMode::Batch;
         let term_offset = if term_active { self.term_offset } else { 0 };
-        if term_offset + s.len() > MAX_PRINT_LINE - 2 {
+        let measured = if unicode { self.code_units(raw) } else { s.len() };
+        if term_offset + measured > MAX_PRINT_LINE - 2 {
             self.tex_print_ln(true, true);
         } else if term_offset > 0 || self.file_offset > 0 {
             self.tex_print_str(true, true, " ");
@@ -204,10 +229,17 @@ impl Engine {
 }
 
 /// Keep a column counter in step with text appended without TeX's wrapping.
-pub(crate) fn advance_offset(offset: usize, text: &str) -> usize {
+pub(crate) fn advance_offset(offset: usize, text: &str, unicode: bool) -> usize {
+    let len = |text: &str| {
+        if unicode {
+            text.chars().count()
+        } else {
+            crate::tex_bytes::printed_len(text)
+        }
+    };
     match text.as_bytes().iter().rposition(|&b| b == b'\n') {
-        Some(newline) => crate::tex_bytes::printed_len(&text[newline + 1..]),
-        None => offset + crate::tex_bytes::printed_len(text),
+        Some(newline) => len(&text[newline + 1..]),
+        None => offset + len(text),
     }
 }
 
@@ -222,7 +254,7 @@ impl Engine {
         } else {
             self.term_offset
         };
-        if term_offset + name.len() > MAX_PRINT_LINE - 2 {
+        if term_offset + self.code_units(name) > MAX_PRINT_LINE - 2 {
             self.tex_print_ln(true, true);
         } else if term_offset > 0 || self.file_offset > 0 {
             self.tex_print_str(true, true, " ");

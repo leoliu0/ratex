@@ -1096,7 +1096,9 @@ impl Engine {
                     self.right_delim = Some(v);
                     // ends the \left...\right group
                     self.pop_math_group_delimited_at(v, fence, command_source);
-                } else {
+                } else if !self.mode.is_m() {
+                    // in math mode `mismatched_right_or_middle` already reported
+                    // `Extra \right`
                     self.error("Missing $ inserted (\\right)");
                 }
             }

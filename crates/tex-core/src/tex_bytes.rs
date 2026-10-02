@@ -59,9 +59,70 @@ fn push_caret(out: &mut Vec<u8>, byte: u8) {
     }
 }
 
+/// XeTeX's table (xetex.web §49 with Unicode strings): 32..=126 and the
+/// scalars 160..=255 print as themselves, the controls and 128..=159 in `^^`
+/// notation. Strings are UTF-8, so [`push_printable`] reads them by scalar
+/// when it is given this table (see [`is_unicode_xprn`]).
+pub fn xetex_xprn() -> Xprn {
+    let mut table = default_xprn();
+    for entry in &mut table[160..] {
+        *entry = true;
+    }
+    table
+}
+
+/// Whether `xprn` is the Unicode table: byte strings are UTF-8 and a lone
+/// byte 128..=255 stands for the scalar of that value.
+#[inline]
+pub fn is_unicode_xprn(xprn: &Xprn) -> bool {
+    !xprn[0x80] && xprn[0xA0]
+}
+
+/// Length of the printing unit at the start of the non-empty `bytes` of a
+/// Unicode-table string: a whole UTF-8 sequence or one byte.
+pub fn next_unit_len(bytes: &[u8]) -> usize {
+    let need = match bytes[0] {
+        0xC2..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        0xF0..=0xF4 => 4,
+        _ => return 1,
+    };
+    if bytes.len() >= need && std::str::from_utf8(&bytes[..need]).is_ok() {
+        need
+    } else {
+        1
+    }
+}
+
 /// Append `bytes` as TeX prints them: a byte `k` verbatim when `xprn[k]`,
-/// else in `^^` notation.
+/// else in `^^` notation. With the Unicode table the bytes are UTF-8 (a
+/// byte that is not part of a sequence is the scalar of its value) and the
+/// scalars below 256 follow the table.
 pub fn push_printable(xprn: &Xprn, out: &mut Vec<u8>, bytes: &[u8]) {
+    if is_unicode_xprn(xprn) {
+        let mut i = 0;
+        while i < bytes.len() {
+            let n = next_unit_len(&bytes[i..]);
+            let unit = &bytes[i..i + n];
+            i += n;
+            let scalar = if n == 1 {
+                u32::from(unit[0])
+            } else {
+                std::str::from_utf8(unit).ok().and_then(|s| s.chars().next()).map_or(0xFFFD, u32::from)
+            };
+            if scalar >= 256 {
+                out.extend_from_slice(unit);
+            } else if xprn[scalar as usize] {
+                match char::from_u32(scalar) {
+                    Some(c) => out.extend_from_slice(c.encode_utf8(&mut [0u8; 4]).as_bytes()),
+                    None => out.push(scalar as u8),
+                }
+            } else {
+                push_caret(out, scalar as u8);
+            }
+        }
+        return;
+    }
     for &byte in bytes {
         if xprn[usize::from(byte)] {
             out.push(byte);

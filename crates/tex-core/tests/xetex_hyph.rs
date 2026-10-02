@@ -197,6 +197,92 @@ const FORMAT_ERRORS: [&str; 1] = [
         r####"Patterns can be loaded only by INITEX"####,
     ];
 
+/// `\hyphenchar` above 255 (or beyond `biggest_char`, or negative) in a TFM font:
+/// up to 65535 the word is hyphenated although no hyphen glyph exists.
+#[test]
+fn tfm_hyphenchar_beyond_the_font_still_hyphenates() {
+    let mut eng = boot();
+    run(&mut eng, WIDE_SRC);
+    let got = showbox_lines(&eng.log);
+    assert_eq!(got.len(), WIDE_EXPECTED.len());
+    for (case, (got, expected)) in got.iter().zip(WIDE_EXPECTED.iter()).enumerate() {
+        let got: Vec<&str> = got.iter().map(String::as_str).collect();
+        assert_eq!(got.as_slice(), *expected, "case {case}");
+    }
+}
+
+const WIDE_SRC: &str = r####"\catcode`\{=1 \catcode`\}=2 \catcode`\#=6 \catcode`\^=7 \def\empty{}\let\bgroup={ \let\egroup=}
+\def\lcrange#1#2#3{\ifnum#1>#2 \else \lccode#1=\numexpr#1+#3\relax \expandafter\lcrange\expandafter{\number\numexpr#1+1\relax}{#2}{#3}\fi}
+\lcrange{"C0}{"D6}{32} \lcrange{"D8}{"DE}{32} \lcrange{"DF}{"DF}{0} \lcrange{"E0}{"F6}{0} \lcrange{"F8}{"FF}{0}
+\lcrange{"152}{"152}{1} \lcrange{"153}{"153}{0} \lcrange{"2019}{"2019}{0}
+\lcrange{"410}{"42F}{32} \lcrange{"430}{"44F}{0} \lcrange{"451}{"451}{0}
+\lcrange{"386}{"386}{38} \lcrange{"388}{"38A}{37} \lcrange{"391}{"3A1}{32} \lcrange{"3A3}{"3AB}{32}
+\lcrange{"390}{"390}{0} \lcrange{"3AC}{"3CE}{0} \lcrange{"3F2}{"3F2}{0} \lcrange{"2BC}{"2BC}{0}
+\lcrange{"1F71}{"1F71}{0} \lcrange{"1F73}{"1F73}{0} \lcrange{"1F75}{"1F75}{0} \lcrange{"1F77}{"1F77}{0}
+\lcrange{"1F79}{"1F79}{0} \lcrange{"1F7B}{"1F7B}{0} \lcrange{"1F7D}{"1F7D}{0} \lcrange{"1FBD}{"1FBD}{0} \lcrange{"1FBF}{"1FBF}{0}
+\savinghyphcodes=1
+\language=0\relax \input hyphen.tex\relax
+\font\x=ec-lmr10 \scrollmode \uchyph=1 \showboxdepth=100 \showboxbreadth=10000 \hbadness=10000 \hfuzz=1000pt \parindent=0pt \parfillskip=0pt plus 1fil \pretolerance=-1 \tolerance=10000
+\hyphenchar\x=`\- \setbox0\vbox{\hsize=1sp \language=0 \lefthyphenmin=1 \righthyphenmin=1 \x hyphenation supercalifragilistic algorithms\par}\showbox0
+\hyphenchar\x=300 \setbox0\vbox{\hsize=1sp \language=0 \lefthyphenmin=1 \righthyphenmin=1 \x hyphenation supercalifragilistic algorithms\par}\showbox0
+\hyphenchar\x=65535 \setbox0\vbox{\hsize=1sp \language=0 \lefthyphenmin=1 \righthyphenmin=1 \x hyphenation supercalifragilistic algorithms\par}\showbox0
+\hyphenchar\x=65536 \setbox0\vbox{\hsize=1sp \language=0 \lefthyphenmin=1 \righthyphenmin=1 \x hyphenation supercalifragilistic algorithms\par}\showbox0
+\hyphenchar\x=-1 \setbox0\vbox{\hsize=1sp \language=0 \lefthyphenmin=1 \righthyphenmin=1 \x hyphenation supercalifragilistic algorithms\par}\showbox0
+\end
+"####;
+
+const WIDE_EXPECTED: [&[&str]; 5] = [
+        &[
+            r####"hyphenation"####,
+            r####"su-"####,
+            r####"per-"####,
+            r####"cal-"####,
+            r####"ifrag-"####,
+            r####"ilis-"####,
+            r####"tic"####,
+            r####"al-"####,
+            r####"go-"####,
+            r####"rithm-"####,
+            r####"s"####,
+        ],
+        &[
+            r####"hyphenation"####,
+            r####"su"####,
+            r####"per"####,
+            r####"cal"####,
+            r####"ifrag"####,
+            r####"ilis"####,
+            r####"tic"####,
+            r####"al"####,
+            r####"go"####,
+            r####"rithm"####,
+            r####"s"####,
+        ],
+        &[
+            r####"hyphenation"####,
+            r####"su"####,
+            r####"per"####,
+            r####"cal"####,
+            r####"ifrag"####,
+            r####"ilis"####,
+            r####"tic"####,
+            r####"al"####,
+            r####"go"####,
+            r####"rithm"####,
+            r####"s"####,
+        ],
+        &[
+            r####"hyphenation"####,
+            r####"supercalifragilistic"####,
+            r####"algorithms"####,
+        ],
+        &[
+            r####"hyphenation"####,
+            r####"supercalifragilistic"####,
+            r####"algorithms"####,
+        ],
+    ];
+
 const TFM_SRC: &str = r####"\catcode`\{=1 \catcode`\}=2 \catcode`\#=6 \catcode`\^=7 \def\empty{}\let\bgroup={ \let\egroup=}
 \def\lcrange#1#2#3{\ifnum#1>#2 \else \lccode#1=\numexpr#1+#3\relax \expandafter\lcrange\expandafter{\number\numexpr#1+1\relax}{#2}{#3}\fi}
 \lcrange{"C0}{"D6}{32} \lcrange{"D8}{"DE}{32} \lcrange{"DF}{"DF}{0} \lcrange{"E0}{"F6}{0} \lcrange{"F8}{"FF}{0}

@@ -2767,7 +2767,11 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             // pdftexconfig.tex (paper size and driver settings) before
             // latex.ltx builds and dumps the format.
             // fmtutil builds pdflatex.fmt with -translate-file=cp227.tcx.
-            eng.xprn = tex_core::tex_bytes::cp227_xprn();
+            // XeTeX ignores TCX files: its printable table (C0 controls print
+            // as ^^ notation) stays the engine's own
+            if program != "xelatex" {
+                eng.xprn = tex_core::tex_bytes::cp227_xprn();
+            }
             eng.add_nullfont();
             let ini_file = match program.as_str() {
                 "lualatex" => "lualatex.ini",

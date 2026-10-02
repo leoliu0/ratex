@@ -869,7 +869,7 @@ impl Node {
     /// (`None` for other nodes and for `glyph_node`s).
     pub fn native_word(&self) -> Option<(FontId, &str, bool)> {
         match self {
-            Node::NativeGlyphRun { run, .. } if !run.text.is_empty() => {
+            Node::NativeGlyphRun { run, .. } if !run.text.is_empty() && !run.is_glyph_node() => {
                 Some((run.font, &run.text, run.actual_text))
             }
             _ => None,

@@ -1323,11 +1323,16 @@ impl Engine {
                     let raw: &[u8] = replaced.as_deref().unwrap_or(raw);
                     let nl = self.new_line_char();
                     let mut line = Vec::with_capacity(raw.len() + 1);
-                    for &byte in raw {
-                        if i32::from(byte) == nl {
+                    let unicode = crate::tex_bytes::is_unicode_xprn(&self.xprn);
+                    let mut at = 0;
+                    while at < raw.len() {
+                        let n = if unicode { crate::tex_bytes::next_unit_len(&raw[at..]) } else { 1 };
+                        let unit = &raw[at..at + n];
+                        at += n;
+                        if n == 1 && i32::from(unit[0]) == nl {
                             line.push(b'\n');
                         } else {
-                            crate::tex_bytes::push_printable(&self.xprn, &mut line, &[byte]);
+                            crate::tex_bytes::push_printable(&self.xprn, &mut line, unit);
                         }
                     }
                     line.push(b'\n');

@@ -509,7 +509,7 @@ $}
 \end
 "####,
         &[],
-        &["Bad mathchar (32768)", "Bad mathchar (-1)", "Bad delimiter code (134217728)", "Bad delimiter code (134217728)", "Bad mathchar (32768)", "Bad math class (8)", "Bad math family (598)", "Bad character code (1114112)", "Bad XeTeX math character code (1114112)", "Bad XeTeX math character code (2097150)", "Bad math family (256)", "Bad character code (1114112)", "Bad math class (8)", "Bad character code (1114112)", "Bad math class (8)", "Bad math family (768)", "Bad character code (1114112)", "Missing delimiter (. inserted)", "Missing delimiter (. inserted)", "Bad math family (598)", "Bad delimiter code (134217728)", "Missing delimiter (. inserted)", "Missing delimiter (. inserted)", "Missing number, treated as zero", "Illegal unit of measure (pt inserted)", "Missing delimiter (. inserted)"],
+        &["Bad mathchar (32768)", "Bad mathchar (-1)", "Bad delimiter code (134217728)", "Bad delimiter code (134217728)", "Bad mathchar (32768)", "Bad math class (8)", "Bad math family (598)", "Bad character code (1114112)", "Bad XeTeX math character code (1114112)", "Bad XeTeX math character code (2097150)", "Bad math family (256)", "Bad character code (1114112)", "Bad math class (8)", "Bad character code (1114112)", "Bad math class (8)", "Bad math family (768)", "Bad character code (1114112)", "Missing delimiter (. inserted)", "Missing delimiter (. inserted)", "Bad math family (598)", "Bad delimiter code (134217728)", "Missing delimiter (. inserted)", "Missing delimiter (. inserted)", "Missing number, treated as zero", "Illegal unit of measure (pt inserted)", "Missing delimiter (. inserted)", "Math formula deleted: Insufficient symbol fonts"],
     );
 }
 
@@ -531,7 +531,7 @@ fn math_commands_outside_math_insert_a_dollar() {
 \end
 "####,
         &[],
-        &["Missing $ inserted", "Missing $ inserted", "Missing $ inserted", "Missing $ inserted", "Missing $ inserted", "Missing $ inserted", "Missing $ inserted", "Missing $ inserted", "Missing $ inserted"],
+        &["Missing $ inserted", "Math formula deleted: Insufficient symbol fonts", "Missing $ inserted", "Math formula deleted: Insufficient symbol fonts", "Missing $ inserted", "Math formula deleted: Insufficient symbol fonts", "Missing $ inserted", "Math formula deleted: Insufficient symbol fonts", "Missing $ inserted", "Math formula deleted: Insufficient symbol fonts", "Missing $ inserted", "Math formula deleted: Insufficient symbol fonts", "Missing $ inserted", "Math formula deleted: Insufficient symbol fonts", "Missing $ inserted", "Math formula deleted: Insufficient symbol fonts", "Missing $ inserted", "Math formula deleted: Insufficient symbol fonts"],
     );
 }
 

@@ -29,7 +29,7 @@ fn page_content() -> (String, i64, i64) {
     eng.run();
     assert_eq!(eng.error_count, 0, "errors: {:?}, term: {}", eng.diagnostics, eng.term);
     let page = &eng.pdf_doc.pages[0];
-    (String::from_utf8_lossy(&page.content).into_owned(), page.width_sp, page.height_sp)
+    (String::from_utf8_lossy(&page.content).split_whitespace().collect::<Vec<_>>().join(" "), page.width_sp, page.height_sp)
 }
 
 fn color_ops(content: &str) -> Vec<String> {
@@ -123,4 +123,80 @@ fn page_content_starts_at_the_dvi_origin_and_background_precedes_it() {
         "{content}"
     );
     assert!(content.trim_end().ends_with('Q'));
+}
+
+const GOTO_SRC: &str = r#"\catcode`\{=1 \catcode`\}=2 \catcode`\#=6
+\pdfpagewidth=200pt \pdfpageheight=100pt
+\shipout\vbox{CONFIG\hbox{\special{pdf:dest (alpha) [@thispage /XYZ @xpos @ypos null]}\special{pdf:dest (unused) [@thispage /Fit]}\special{pdf:dest (beta) [@thispage /Fit]}\vrule width 5pt height 5pt}
+\hbox{\special{pdf:bann << /Type /Annot /Subtype /Link /Border [0 0 1] /Dest (beta) >>}\vrule width 5pt height 5pt\special{pdf:eann}\special{pdf:bann << /Type /Annot /Subtype /Link /A << /S /GoTo /D (alpha) >> >>}\vrule width 5pt height 5pt\special{pdf:eann}}
+\special{pdf:outline 1 << /Title (T) /A << /S /GoTo /D (beta) >> >>}}
+\end
+"#;
+
+fn goto_pdf(config: &str) -> String {
+    let mut eng = Engine::new_with_kind(EngineKind::XeTeX, true);
+    eng.init_primitives();
+    eng.add_nullfont();
+    eng.set_interaction_mode(InteractionMode::Nonstop);
+    eng.input.push_file("test.tex".into(), GOTO_SRC.replace("CONFIG", config).into_bytes());
+    eng.run();
+    assert_eq!(eng.error_count, 0, "errors: {:?}, term: {}", eng.diagnostics, eng.term);
+    let pdf = tex_core::driver::finish_pdf(&mut eng, false).expect("pdf");
+    // no blanks at all: only the names and their order matter
+    String::from_utf8_lossy(&pdf).chars().filter(|c| c.is_ascii_graphic()).collect()
+}
+
+/// xdvipdfmx (`-C 0`, the default) renames the destinations links and
+/// bookmarks use to 0, 1, ... in order of first use and drops the others.
+/// The expectation is the PDF TeX Live 2026 `xdvipdfmx` writes for this input.
+#[test]
+fn used_destinations_get_short_names_and_unused_ones_go() {
+    let text = goto_pdf("");
+    assert!(text.contains("/Dest(0)"), "{text}");
+    assert!(text.contains("/D(1)"), "{text}");
+    assert!(text.contains("/D(0)"), "{text}");
+    assert!(text.contains("/Names[(0)[") && text.contains("(1)["), "{text}");
+    for gone in ["(alpha)", "(beta)", "(unused)"] {
+        assert!(!text.contains(gone), "{gone} in {text}");
+    }
+}
+
+/// hyperref asks for `dvipdfmx:config C 0x0010`: every destination stays,
+/// under its own name.
+#[test]
+fn config_c_flag_keeps_all_destinations() {
+    let text = goto_pdf(r"\special{dvipdfmx:config C 0x0010}");
+    assert!(text.contains("/Dest(beta)"), "{text}");
+    assert!(text.contains("/D(alpha)"), "{text}");
+    for kept in ["(alpha)", "(beta)", "(unused)"] {
+        assert!(text.contains(kept), "{kept} missing in {text}");
+    }
+}
+
+/// The complete content stream TL's xetex + xdvipdfmx write for rules, colour
+/// specials, transformations and literals (same sources as the colour test).
+#[test]
+fn content_stream_equals_xdvipdfmx() {
+    let (content, _, _) = page_content();
+    assert_eq!(
+        content,
+        "q 1 0 0 1 72 27.626 cm 0 G 0 g q 4.9813 w 0 -2.491 m 9.963 -2.491 l S Q 1 0 0 RG 1 0 0 rg q 4.9813 w 0 -7.472 m 9.963 -7.472 l S Q 0 1 1 0 K 0 1 1 0 k q 4.9813 w 0 -12.453 m 9.963 -12.453 l S Q 1 0 0 RG 1 0 0 rg q 4.9813 w 0 -17.435 m 9.963 -17.435 l S Q 0 G 0 g q 4.9813 w 0 -22.416 m 9.963 -22.416 l S Q 0.5 G 0.5 g q 4.9813 w 0 -27.397 m 9.963 -27.397 l S Q 0 G 0 g q 0 1 -1 0 -29.888 -29.888 cm q 4.9813 w 0 -32.379 m 9.963 -32.379 l S Q Q 0 G 0 g q 2 0 0 3 0 69.738 cm q 4.9813 w 0 -37.36 m 9.963 -37.36 l S Q Q 0 G 0 g 1 0 0 1 0 -39.851 cm 0 0 m 1 1 l S 1 0 0 1 0 39.851 cm 2 0 m Q"
+    );
+}
+
+/// Rules inside (nested) `pdf:bcontent` are positioned relative to the
+/// translated origin (`dvi_set_compensation`); the stream is TL's.
+#[test]
+fn bcontent_compensates_rule_positions() {
+    let (_, content) = ship(
+        r#"\catcode`\{=1 \catcode`\}=2
+\pdfpagewidth=200pt \pdfpageheight=100pt
+\shipout\vbox{\hbox{\kern20pt\special{pdf:bcontent}\special{pdf:literal 0 0 m 5 5 l S}\raise3pt\hbox{\vrule width 10pt height 2pt}\special{pdf:bcontent}\kern4pt\vrule width 7pt height 6pt\special{pdf:econtent}\special{pdf:econtent}\vrule width 3pt height 6pt}}
+\end
+"#,
+    );
+    assert_eq!(
+        content,
+        "q 1 0 0 1 72 27.626 cm 0 G 0 g q 1 0 0 1 19.925 -5.978 cm 0 0 m 5 5 l S q 1.9925 w 0 3.985 m 9.963 3.985 l S Q q 1 0 0 1 9.963 0 cm q 3.985 0 6.974 5.978 re f Q Q 0 G 0 g Q 0 G 0 g q 2.9888 w 42.341 -5.978 m 42.341 0 l S Q Q"
+    );
 }

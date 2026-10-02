@@ -702,7 +702,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
         };
         let top = cb.arg_count();
         if let (Some(doc), true) = (doc, top > 1) {
-            let mut pass = |i: usize, cb: &mut CallbackLua<'_>| -> LuaResult<Option<Vec<u8>>> {
+            let pass = |i: usize, cb: &mut CallbackLua<'_>| -> LuaResult<Option<Vec<u8>>> {
                 if i <= top && cb.arg_kind(i) == Some(LuaValueKind::String) {
                     Ok(Some(bytes_arg(cb, i)?))
                 } else {

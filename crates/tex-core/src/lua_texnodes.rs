@@ -816,12 +816,15 @@ pub(crate) fn install(lua: &mut Lua, t: &LuaTable) -> Result<(), String> {
             e.main_loop();
         })
     });
+    // luatex's `tex.finish` ends the run on the spot: the rest of the running
+    // Lua chunk never executes (the error below is swallowed by `lua_run_with_output`).
     reg!(lua, t, "finish", || -> Result<(), String> {
         with_engine(|e| {
             e.lua_sync_links(true);
             e.explicit_end_seen = true;
             e.end_occurred = true;
-        })
+        })?;
+        Err(crate::lua_bridge::FINISH_ABORT.to_string())
     });
     reg!(lua, t, "show_context", || -> Result<(), String> { with_engine(Engine::lua_show_context) });
     reg!(lua, t, "linebreak", |head: i64, params: LuaTable| -> Result<(i64, i64, i64, i64, i64), String> {

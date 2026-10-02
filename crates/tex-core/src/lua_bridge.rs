@@ -97,6 +97,9 @@ pub(crate) struct ScannerState {
     chr: i32,
 }
 
+/// Error text `tex.finish` raises to stop the running Lua chunk.
+pub(crate) const FINISH_ABORT: &str = "ratex: tex.finish";
+
 impl Engine {
     pub(crate) fn save_scanner(&self) -> ScannerState {
         ScannerState {
@@ -144,7 +147,10 @@ impl Engine {
         f: impl FnOnce(&mut LuaEngine) -> Result<(), String>,
     ) -> Result<(), String> {
         let outer = std::mem::take(&mut self.lua_print_queue);
-        let result = self.lua_run(f);
+        let mut result = self.lua_run(f);
+        if self.end_occurred && result.as_ref().is_err_and(|e| e.contains(FINISH_ABORT)) {
+            result = Ok(());
+        }
         self.flush_lua_output();
         self.lua_print_queue = outer;
         result

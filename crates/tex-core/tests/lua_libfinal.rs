@@ -128,3 +128,9 @@ fn check_tex(name: &str) {
 fn scan_toks_reads_a_macro_definition() {
     check_tex("scan_toks");
 }
+
+// luatex: tex.finish stops the running chunk and the run
+#[test]
+fn tex_finish_aborts_the_chunk() {
+    check_tex("finish");
+}

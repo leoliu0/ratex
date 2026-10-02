@@ -1,0 +1,11 @@
+\catcode`\{=1 \catcode`\}=2
+\def\p#1{}\directlua{function p(...) texio.write_nl("@@"..table.concat({...}," ")) end}
+\font\f=cmr10 \f
+\hsize 100pt
+\output={\directlua{p("OUT", tex.count[0])}\shipout\box255}
+\begingroup
+\hbox{a}
+\directlua{p("before") tex.finish() p("after")}
+\hbox{b}
+\directlua{p("later")}
+\end

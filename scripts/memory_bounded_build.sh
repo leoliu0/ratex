@@ -12,7 +12,7 @@
 # Usage: scripts/memory_bounded_build.sh [source-dir]
 #   source-dir  checkout to build (default: this repository); mounted read-only
 # Environment:
-#   RATEX_MEMORY_LIMIT  container memory ceiling, swap disabled (default 1g)
+#   RATEX_MEMORY_LIMIT  container memory ceiling, swap disabled (default 2g)
 #   RATEX_BUILD_CPUS    container CPUs (default 4)
 #   RATEX_BUILD_JOBS    cargo build jobs (default 1)
 #   RUST_IMAGE          official Rust image to build in (default rust:1-bookworm)
@@ -20,7 +20,7 @@
 set -euo pipefail
 
 SRC=$(cd "${1:-$(dirname "$0")/..}" && pwd)
-LIMIT=${RATEX_MEMORY_LIMIT:-1g}
+LIMIT=${RATEX_MEMORY_LIMIT:-2g}
 CPUS=${RATEX_BUILD_CPUS:-4}
 JOBS=${RATEX_BUILD_JOBS:-1}
 IMAGE=${RUST_IMAGE:-rust:1-bookworm}

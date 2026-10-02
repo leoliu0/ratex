@@ -1199,8 +1199,23 @@ impl Engine {
         0
     }
 
+    /// xetex.web `scan_decimal`: `xetex_scan_dimen(false, false, false, false)`,
+    /// a dimension without units (`\XeTeXpicfile ... rotated 37.3`).
+    pub(crate) fn scan_decimal(&mut self) -> i32 {
+        let prev = self.in_expanded_scan;
+        self.in_expanded_scan = false;
+        let r = self.scan_dimen_ex(false, false, false);
+        self.in_expanded_scan = prev;
+        r
+    }
+
     /// `inf`: fil/fill/filll units are allowed (glue stretch and shrink).
     fn scan_dimen_inner(&mut self, mu: bool, inf: bool) -> i32 {
+        self.scan_dimen_ex(mu, inf, true)
+    }
+
+    /// xetex.web `xetex_scan_dimen`; `requires_units` false skips the unit.
+    fn scan_dimen_ex(&mut self, mu: bool, inf: bool, requires_units: bool) -> i32 {
         // tex.web §441: get the next non-blank non-sign token (blanks are
         // skipped, \relax is not)
         let mut negate = false;
@@ -1544,6 +1559,16 @@ impl Engine {
             return if negate { -d } else { d };
         }
         let (mut cur_val, mut f) = (int_part, frac_f);
+        if !requires_units {
+            // xetex.web: without units the value is cur_val + f/2^16
+            if cur_val >= 0o40000 {
+                self.error("Dimension too large");
+                let v = 0x3FFF_FFFF;
+                return if negate { -v } else { v };
+            }
+            let v = (cur_val * 65536 + f) as i32;
+            return if negate { -v } else { v };
+        }
         let v: i64 = 'attach_sign: {
             // tex.web §453-458: units
             if inf && self.scan_unit_keyword(b"fil") {

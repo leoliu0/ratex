@@ -256,12 +256,80 @@ fn bmp_info(bytes: &[u8]) -> Option<(i32, i32, Dpi)> {
     }
 }
 
+/// Decode an uncompressed (BI_RGB) BMP of 1, 4, 8, 24 or 32 bits per pixel
+/// and write it as a PNG: indexed for palette images, RGB otherwise. The
+/// rows are stored bottom-up (top-down for a negative height), padded to
+/// four bytes.
+fn bmp_to_png(bytes: &[u8]) -> Option<Vec<u8>> {
+    let u16_at = |at: usize| bytes.get(at..at + 2).map(|b| u16::from_le_bytes(b.try_into().unwrap()));
+    let u32_at = |at: usize| bytes.get(at..at + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
+    let data_offset = u32_at(10)? as usize;
+    let header = u32_at(14)? as usize;
+    let (width, raw_height, bpp, compression, colors_used, entry) = if header == 12 {
+        (u32::from(u16_at(18)?), i32::from(u16_at(20)? as i16), u16_at(24)?, 0, 0u32, 3usize)
+    } else if header >= 40 {
+        (u32_at(18)?, u32_at(22)? as i32, u16_at(28)?, u32_at(30)?, u32_at(46)?, 4usize)
+    } else {
+        return None;
+    };
+    if width == 0 || raw_height == 0 || compression != 0 || !matches!(bpp, 1 | 4 | 8 | 24 | 32) {
+        return None;
+    }
+    let height = raw_height.unsigned_abs();
+    let top_down = raw_height < 0;
+    let row_bytes = ((u64::from(width) * u64::from(bpp) + 31) / 32 * 4) as usize;
+    let pixels = bytes.get(data_offset..)?;
+    if pixels.len() < row_bytes.checked_mul(height as usize)? {
+        return None;
+    }
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, width, height);
+    let mut rows: Vec<u8> = Vec::new();
+    if bpp <= 8 {
+        let count = if colors_used != 0 { colors_used as usize } else { 1usize << bpp };
+        let table = bytes.get(14 + header..14 + header + count * entry)?;
+        let mut palette = Vec::with_capacity(count * 3);
+        for c in table.chunks_exact(entry) {
+            palette.extend_from_slice(&[c[2], c[1], c[0]]);
+        }
+        encoder.set_color(png::ColorType::Indexed);
+        encoder.set_depth(match bpp {
+            1 => png::BitDepth::One,
+            4 => png::BitDepth::Four,
+            _ => png::BitDepth::Eight,
+        });
+        encoder.set_palette(palette);
+        for y in 0..height as usize {
+            let src = if top_down { y } else { height as usize - 1 - y };
+            let row = &pixels[src * row_bytes..src * row_bytes + (width as usize * usize::from(bpp) + 7) / 8];
+            rows.extend_from_slice(row);
+        }
+    } else {
+        encoder.set_color(png::ColorType::Rgb);
+        encoder.set_depth(png::BitDepth::Eight);
+        let step = usize::from(bpp) / 8;
+        for y in 0..height as usize {
+            let src = if top_down { y } else { height as usize - 1 - y };
+            let row = &pixels[src * row_bytes..];
+            for x in 0..width as usize {
+                rows.extend_from_slice(&[row[x * step + 2], row[x * step + 1], row[x * step]]);
+            }
+        }
+    }
+    let mut writer = encoder.write_header().ok()?;
+    writer.write_image_data(&rows).ok()?;
+    writer.finish().ok()?;
+    Some(out)
+}
+
 /// Densities for [`DpxImage`] (dvipdfmx: bp per pixel, 1.0 without a resolution).
 pub(crate) fn raster_density(bytes: &[u8]) -> (f64, f64) {
     let dpi = if bytes.starts_with(&[0xff, 0xd8]) {
         jpeg_dpi(bytes)
     } else if bytes.starts_with(b"\x89PNG") {
         png_dpi(bytes)
+    } else if bytes.starts_with(b"BM") {
+        bmp_info(bytes).and_then(|(_, _, dpi)| dpi)
     } else {
         None
     };
@@ -512,69 +580,6 @@ impl Engine {
         ));
     }
 
-    /// xetex.web `scan_decimal`: a decimal fraction without units, as a
-    /// 16.16 fixed value (`xetex_scan_dimen(false, false, false, false)`).
-    fn scan_decimal(&mut self) -> i32 {
-        let is_point = |t: crate::token::Token| t.is_char() && (t.chr() == u32::from(b'.') || t.chr() == u32::from(b','));
-        let is_digit = |t: crate::token::Token| t.is_char() && (u32::from(b'0')..=u32::from(b'9')).contains(&t.chr());
-        let mut negative = false;
-        let first = loop {
-            let t = self.get_x_raw();
-            if t.is_space() || (t.is_char() && t.chr() == u32::from(b'+')) {
-                continue;
-            }
-            if t.is_char() && t.chr() == u32::from(b'-') {
-                negative = !negative;
-                continue;
-            }
-            break t;
-        };
-        let value = if is_digit(first) || is_point(first) {
-            self.push_token(first);
-            let int_part = if is_point(first) { 0 } else { i64::from(self.scan_int()) };
-            let mut fraction = 0i64;
-            let next = self.get_x_raw();
-            if is_point(next) {
-                let mut digits = Vec::new();
-                loop {
-                    let t = self.get_x_raw();
-                    if is_digit(t) {
-                        if digits.len() < 17 {
-                            digits.push((t.chr() - u32::from(b'0')) as i64);
-                        }
-                    } else {
-                        if !t.is_space() {
-                            self.push_token(t);
-                        }
-                        break;
-                    }
-                }
-                // tex.web round_decimals
-                let mut a = 0i64;
-                for &d in digits.iter().rev() {
-                    a = (a + d * 131_072) / 10;
-                }
-                fraction = (a + 1) / 2;
-            } else {
-                self.push_token(next);
-            }
-            if int_part >= 0x4000 {
-                self.error("Dimension too large");
-                0x3FFF_FFFF
-            } else {
-                (int_part * 65536 + fraction) as i32
-            }
-        } else {
-            // an internal quantity: handled by the ordinary dimension scanner
-            self.push_token(first);
-            return if negative { -self.scan_dimen(false, false) } else { self.scan_dimen(false, false) };
-        };
-        if negative {
-            -value
-        } else {
-            value
-        }
-    }
 
     /// `\XeTeXpdfpagecount <file name>`: `count_pdf_file_pages`.
     pub(crate) fn xetex_pdf_page_count(&mut self) -> i32 {
@@ -606,6 +611,12 @@ impl Engine {
                 page_no = if page > pages { pages } else { page };
                 page_no = if page_no < 0 { pages + 1 + page_no } else { page_no }.max(1);
             }
+        }
+        // xdvipdfmx reads BMP files itself (bmp.c); the pixels go through the
+        // PNG route here, as an in-memory stream under the file's name
+        if pict.bytes.starts_with(b"BM") {
+            let png = bmp_to_png(&pict.bytes).ok_or_else(|| format!("Could not read BMP image `{name}`"))?;
+            self.pdfe_memstreams.insert(name.to_owned(), png);
         }
         let fixed = self.pdf_fixed.unwrap_or(PdfFixedParams {
             major_version: 1,
@@ -657,6 +668,16 @@ impl Engine {
                 bbox: [0.0; 4],
             }
         };
+        // pdfximage.c numbers images and forms from 0 in one sequence; a PDF
+        // page is a form (Fm<n>)
+        let id = self.dpx.xobj_next;
+        self.dpx.xobj_next += 1;
+        self.pdf_doc.image_names.remove(&read.obj);
+        if info.kind == ImageKind::Pdf {
+            self.pdf_doc.form_names.insert(read.obj, id);
+        } else {
+            self.pdf_doc.image_names.insert(read.obj, id);
+        }
         self.pdf_images.insert(read.obj, info);
         self.xe_images.insert(key, image.clone());
         Ok(image)

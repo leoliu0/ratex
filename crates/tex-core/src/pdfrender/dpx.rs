@@ -476,6 +476,13 @@ pub(crate) struct Dpx {
     pub catalog: Vec<(String, Obj)>,
     /// `pdf:dest`, `pdf:names Dests`: key bytes and destination array
     pub dests: Vec<(Vec<u8>, Obj)>,
+    /// `pdoc.gotos`: destination names used by links and bookmarks, with the
+    /// hexadecimal name xdvipdfmx renames them to (first use order)
+    pub gotos: Vec<(Vec<u8>, Vec<u8>)>,
+    /// `-C 0x10` (`OPT_PDFDOC_NO_DEST_REMOVE`): keep every destination
+    pub no_dest_remove: bool,
+    /// the next `Im<n>`/`Fm<n>` number (`count` of pdfximage.c, from 0)
+    pub xobj_next: i32,
     /// other `pdf:names` categories
     pub name_trees: BTreeMap<String, Vec<(Vec<u8>, Obj)>>,
     pub outlines: super::dpx_doc::Outlines,

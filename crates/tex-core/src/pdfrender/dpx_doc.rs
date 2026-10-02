@@ -408,7 +408,7 @@ impl<'a> RenderCtx<'a> {
     /// `pdf_doc_add_annot`: record the annotation on the current page.
     fn dpx_add_annot(&mut self, rect: [f64; 4], dict: &[(String, Obj)]) {
         let subtype = match dict.iter().find(|(k, _)| k == "Subtype") {
-            Some((_, Obj::Name(n))) => Some(n.clone()),
+            Some((_, Obj::Name(n))) => Some(format!("/{n}")),
             _ => None,
         };
         let rest: Vec<(String, Obj)> = dict
@@ -439,6 +439,8 @@ impl<'a> RenderCtx<'a> {
         }
         let dict = self.dpx_parse_dict(p, env).ok_or("Could not find dictionary object.")?;
         let rect = self.dpx_annot_rect(env, &ti);
+        let mut dict = dict;
+        self.eng.dpx_add_goto(&mut dict);
         self.dpx_add_annot(rect, &dict);
         Ok(())
     }
@@ -484,12 +486,21 @@ impl<'a> RenderCtx<'a> {
 
     /// `pdf_doc_break_annot`
     pub(super) fn dpx_break_annot(&mut self) {
-        let (rect, dict) = {
+        let (rect, dict, first) = {
             let a = &mut self.eng.dpx.annot;
-            (a.rect.take(), a.dict.clone())
+            (a.rect.take(), a.dict.clone(), !a.broken)
         };
-        if let (Some(rect), Some(dict)) = (rect, dict) {
-            self.dpx_add_annot(rect, &dict);
+        if let (Some(rect), Some(mut piece)) = (rect, dict) {
+            // pdf_doc_add_annot(.., new_annot = !broken): only the first
+            // piece looks up the destination; /A is shared by all pieces
+            if first && self.eng.dpx_add_goto(&mut piece) {
+                if let Some((_, a)) = piece.iter().find(|(k, _)| k == "A").cloned() {
+                    if let Some(pending) = self.eng.dpx.annot.dict.as_mut() {
+                        dict_set(pending, "A", a);
+                    }
+                }
+            }
+            self.dpx_add_annot(rect, &piece);
             self.eng.dpx.annot.broken = true;
         }
     }
@@ -585,7 +596,8 @@ impl<'a> RenderCtx<'a> {
         let dpx = &mut self.eng.dpx;
         dpx.lowest_level = dpx.lowest_level.min(level);
         let level = level + 1 - dpx.lowest_level;
-        let dict = self.dpx_parse_dict(p, env).ok_or("Ignoring invalid dictionary.")?;
+        let mut dict = self.dpx_parse_dict(p, env).ok_or("Ignoring invalid dictionary.")?;
+        self.eng.dpx_add_goto(&mut dict);
         let current = self.eng.dpx.outlines.depth.max(1);
         // jumping down more than one level creates empty parents
         if level > current + 1 {
@@ -774,8 +786,8 @@ impl<'a> RenderCtx<'a> {
         let (cx, cy) = self.dpx_current_point(env);
         let obj = self.eng.dpx_name_obj(&name);
         if self.eng.dpx.forms.get(&name).is_none() {
-            self.eng.pdf_xform_count += 1;
-            let n = self.eng.pdf_xform_count;
+            let n = self.eng.dpx.xobj_next;
+            self.eng.dpx.xobj_next += 1;
             self.eng.pdf_doc.form_names.insert(obj, n);
         }
         self.dpx_begin_form(name, obj, (cx, cy), bbox);
@@ -831,13 +843,8 @@ impl<'a> RenderCtx<'a> {
         }
         let mut xobjects: Vec<(String, Obj)> = Vec::new();
         let prefix = self.eng.pdf_doc.resname_prefix.clone();
-        for o in &xforms {
-            let n = self.eng.pdf_doc.form_names.get(o).copied().unwrap_or(*o);
-            xobjects.push((format!("Fm{n}{prefix}"), Obj::Ref(*o)));
-        }
-        for o in &ximages {
-            let n = self.eng.pdf_doc.image_names.get(o).copied().unwrap_or(*o);
-            xobjects.push((format!("Im{n}{prefix}"), Obj::Ref(*o)));
+        for o in xforms.iter().chain(&ximages) {
+            xobjects.push((self.eng.dpx_xobject_name(*o, &prefix), Obj::Ref(*o)));
         }
         if !xobjects.is_empty() {
             match resources.iter_mut().find(|(k, _)| k == "XObject") {
@@ -895,8 +902,8 @@ impl<'a> RenderCtx<'a> {
         let info = match self.eng.dpx.forms.get(&name).copied() {
             Some(i) => i,
             None => {
-                self.eng.pdf_xform_count += 1;
-                let n = self.eng.pdf_xform_count;
+                let n = self.eng.dpx.xobj_next;
+                self.eng.dpx.xobj_next += 1;
                 self.eng.pdf_doc.form_names.insert(obj, n);
                 let info = FormInfo { obj, defined: false, bbox: [0.0, 0.0, 1.0, 1.0] };
                 self.eng.dpx.forms.insert(name, info);
@@ -971,8 +978,8 @@ impl<'a> RenderCtx<'a> {
             self.dpx_emit(&text);
         }
         let prefix = self.eng.pdf_doc.resname_prefix.clone();
-        let res_name = if is_image {
-            let n = self.eng.pdf_doc.image_names.get(&obj).copied().unwrap_or(obj);
+        let is_form = self.eng.pdf_doc.form_names.contains_key(&obj);
+        if !is_form {
             if let Some(image) = self.eng.pdf_images.get_mut(&obj) {
                 image.used = true;
             }
@@ -980,14 +987,19 @@ impl<'a> RenderCtx<'a> {
                 self.ximage_list.push(obj);
             }
             self.dpx_page_group(obj);
-            format!("Im{n}{prefix}")
-        } else {
-            let n = self.eng.pdf_doc.form_names.get(&obj).copied().unwrap_or(obj);
-            if !self.xform_list.contains(&obj) {
-                self.xform_list.push(obj);
+        } else if !self.xform_list.contains(&obj) && !self.eng.pdf_images.contains_key(&obj) {
+            self.xform_list.push(obj);
+        } else if let Some(image) = self.eng.pdf_images.get_mut(&obj) {
+            // an included PDF page is a form XObject (Fm<n>) that is
+            // written like an image
+            image.used = true;
+            if !self.ximage_list.contains(&obj) {
+                self.ximage_list.push(obj);
             }
-            format!("Fm{n}{prefix}")
-        };
+            self.dpx_page_group(obj);
+        }
+        let _ = is_image;
+        let res_name = self.eng.dpx_xobject_name(obj, &prefix);
         self.dpx_emit(&format!("/{res_name} Do"));
         // is_drawable: the clip box (unit square / bbox) through the CTM
         if self.dpx_tracking() {
@@ -1238,8 +1250,30 @@ impl Engine {
         // destination name tree
         let mut tree_entries: Vec<(&str, Vec<(Vec<u8>, Obj)>)> = Vec::new();
         let dests = std::mem::take(&mut self.dpx.dests);
-        if !dests.is_empty() {
-            tree_entries.push(("Dests", dests));
+        // check_gotos: only destinations that links and bookmarks use are
+        // kept, under their short names
+        let gotos = std::mem::take(&mut self.dpx.gotos);
+        let mut kept: Vec<(Vec<u8>, Obj)> = Vec::new();
+        if self.dpx.no_dest_remove {
+            kept = dests.clone();
+        }
+        for (key, value) in &dests {
+            if let Some((_, short)) = gotos.iter().find(|(k, _)| k == key) {
+                kept.push((short.clone(), value.clone()));
+            }
+        }
+        if kept.len() < gotos.len() {
+            for (key, _) in &gotos {
+                if !dests.iter().any(|(k, _)| k == key) {
+                    self.warning_at(
+                        &format!("xdvipdfmx warning: PDF destination \"{}\" not defined.", String::from_utf8_lossy(key)),
+                        None,
+                    );
+                }
+            }
+        }
+        if !kept.is_empty() {
+            tree_entries.push(("Dests", kept));
         }
         let others = std::mem::take(&mut self.dpx.name_trees);
         let others: Vec<(String, Vec<(Vec<u8>, Obj)>)> = others.into_iter().collect();
@@ -1387,5 +1421,69 @@ impl Engine {
         ];
         self.pdf_doc.objects.push((root, Obj::Dict(root_dict).to_bytes()));
         Some(root)
+    }
+}
+
+
+/// `pdf_doc_add_goto`: a link or bookmark that goes to a named destination
+/// is rewritten to the short hexadecimal name xdvipdfmx gives it (`-C` default:
+/// unused destinations are dropped). Returns whether the name sits in the
+/// action dictionary `/A`, which broken annotation pieces share.
+pub(super) fn add_goto(gotos: &mut Vec<(Vec<u8>, Vec<u8>)>, dict: &mut Vec<(String, Obj)>) -> bool {
+    match dict.iter().find(|(k, _)| k == "Subtype") {
+        Some((_, Obj::Name(n))) if n == "Link" => {}
+        Some(_) => return false,
+        None => {}
+    }
+    let top = dict.iter().find(|(k, _)| k == "Dest").map(|(_, v)| v.clone());
+    let action = dict.iter().find(|(k, _)| k == "A").map(|(_, v)| v.clone());
+    let (in_action, current) = match action {
+        Some(Obj::Dict(a)) => {
+            if top.is_some() {
+                return false;
+            }
+            match a.iter().find(|(k, _)| k == "S") {
+                Some((_, Obj::Name(n))) if n == "GoTo" => {}
+                _ => return false,
+            }
+            (true, a.iter().find(|(k, _)| k == "D").map(|(_, v)| v.clone()))
+        }
+        Some(_) => return false,
+        None => (false, top),
+    };
+    let Some(Obj::Str(name)) = current else { return false };
+    let new = match gotos.iter().find(|(k, _)| *k == name) {
+        Some((_, v)) => v.clone(),
+        None => {
+            let v = format!("{:x}", gotos.len()).into_bytes();
+            gotos.push((name, v.clone()));
+            v
+        }
+    };
+    if in_action {
+        if let Some((_, Obj::Dict(a))) = dict.iter_mut().find(|(k, _)| k == "A") {
+            dict_set(a, "D", Obj::Str(new));
+        }
+    } else {
+        dict_set(dict, "Dest", Obj::Str(new));
+    }
+    in_action
+}
+
+impl Engine {
+    /// `pdf_doc_add_goto` unless every destination is kept (`-C 0x10`).
+    pub(super) fn dpx_add_goto(&mut self, dict: &mut Vec<(String, Obj)>) -> bool {
+        !self.dpx.no_dest_remove && add_goto(&mut self.dpx.gotos, dict)
+    }
+}
+
+impl Engine {
+    /// `Im<id>` for an image, `Fm<id>` for a form (pdfximage.c `res_name`).
+    pub(super) fn dpx_xobject_name(&self, obj: i32, prefix: &str) -> String {
+        match (self.pdf_doc.image_names.get(&obj), self.pdf_doc.form_names.get(&obj)) {
+            (Some(n), _) => format!("Im{n}{prefix}"),
+            (None, Some(n)) => format!("Fm{n}{prefix}"),
+            (None, None) => format!("Im{obj}{prefix}"),
+        }
     }
 }

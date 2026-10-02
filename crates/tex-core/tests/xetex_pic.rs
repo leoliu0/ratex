@@ -123,3 +123,45 @@ fn show_box_prints_picture_nodes() {
     assert!(text.contains(&format!("\\XeTeXpdffile \"{dir}/multi.pdf\"")), "{text}");
     assert!(text.contains(&format!("\\XeTeXpicfile \"{dir}/tmp-1.png\"")), "{text}");
 }
+
+/// xetex.web `scan_decimal` reads `xetex_scan_dimen(.., requires_units=false)`:
+/// internal integers and dimensions stand for their value as a number.
+#[test]
+fn rotated_takes_internal_quantities_without_units() {
+    let lines = run(r"
+\count1=30 \dimen2=45.5pt
+\t{\XeTeXpicfile}{tmp-1.png rotated \count1 }
+\t{\XeTeXpicfile}{tmp-1.png rotated \dimen2 }
+\t{\XeTeXpicfile}{tmp-1.png rotated -\count1 }
+\t{\XeTeXpicfile}{tmp-1.png rotated 12\relax}
+");
+    assert_eq!(
+        dims(&lines),
+        [
+            "399.7712pt,370.65845pt,0.0pt",
+            "398.29774pt,399.27933pt,0.0pt",
+            "399.77121pt,370.65843pt,0.0pt",
+            "365.0963pt,303.83362pt,0.0pt",
+        ]
+    );
+}
+
+/// BMP files of 24, 8, 4 and 1 bits (the resolution field is 2835 pixels/m).
+#[test]
+fn bmp_pictures_have_xetex_sizes() {
+    let lines = run(r"
+\t{\XeTeXpicfile}{rgb24.bmp}
+\t{\XeTeXpicfile}{pal8.bmp width 40pt}
+\t{\XeTeXpicfile}{pal4.bmp scaled 3000 rotated 30}
+\t{\XeTeXpicfile}{bw1.bmp height 20pt}
+");
+    assert_eq!(
+        dims(&lines),
+        [
+            "30.10873pt,20.0725pt,0.0pt",
+            "40.0pt,30.58824pt,0.0pt",
+            "68.30629pt,55.08162pt,0.0pt",
+            "40.0pt,20.0pt,0.0pt",
+        ]
+    );
+}

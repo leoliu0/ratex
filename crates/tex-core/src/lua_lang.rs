@@ -38,6 +38,20 @@ fn language_id(id: i64) -> Result<u8, String> {
     u8::try_from(id).map_err(|_| format!("lang.new({id}): undefined language"))
 }
 
+/// hyphen.c `hnj_string_hash(word) % HASH_SIZE`.
+fn pattern_bucket(word: &[u8]) -> u32 {
+    let mut h: u32 = 0;
+    for &b in word {
+        h = (h << 4).wrapping_add(u32::from(b));
+        let g = h & 0xf000_0000;
+        if g != 0 {
+            h ^= g >> 24;
+            h ^= g;
+        }
+    }
+    h % 31627
+}
+
 /// The text of the patterns in `trie` as `lang.patterns` returns them:
 /// every pattern followed by one space.
 fn trie_patterns(trie: &Trie) -> Vec<u8> {
@@ -76,7 +90,11 @@ fn trie_patterns(trie: &Trie) -> Vec<u8> {
             child = c.sibling;
         }
     }
-    patterns.sort();
+    // hyphen.c keeps the patterns in a hash table of `HASH_SIZE` chains and
+    // `hnj_serialize` walks its buckets in order; the newest pattern leads a
+    // chain, which the (unrecorded) insertion order would decide, so a chain
+    // is walked from the greatest word down.
+    patterns.sort_by(|a, b| pattern_bucket(&a.0).cmp(&pattern_bucket(&b.0)).then_with(|| b.0.cmp(&a.0)));
     let mut out = Vec::new();
     for (_, text) in patterns {
         out.extend_from_slice(&text);
@@ -250,6 +268,22 @@ impl Engine {
                     map.remove(&key);
                 }
                 if n >= 1 {
+                    // the paragraph pass of 8-bit (TFM) text looks words up as
+                    // bytes, the pass of Lua fonts as UTF-8
+                    let text = String::from_utf8_lossy(&key).into_owned();
+                    if !key.is_ascii() && text.chars().all(|c| (c as u32) < 256) {
+                        let mut latin1 = Vec::with_capacity(key.len());
+                        let mut latin1_points = Vec::with_capacity(points.len());
+                        let mut at = 0usize;
+                        for c in text.chars() {
+                            if points.contains(&at) {
+                                latin1_points.push(latin1.len());
+                            }
+                            latin1.push(c as u8);
+                            at += c.len_utf8();
+                        }
+                        self.trie_for_language_mut(lang).exceptions.insert(latin1, latin1_points);
+                    }
                     self.trie_for_language_mut(lang).exceptions.insert(key, points);
                 }
             } else {
@@ -329,6 +363,10 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
             let mut words: Vec<Vec<u8>> = Vec::new();
             if let Some(trie) = e.trie_for_language(id) {
                 for (word, points) in &trie.exceptions {
+                    // the 8-bit twin of a UTF-8 word is not a word of its own
+                    if std::str::from_utf8(word).is_err() {
+                        continue;
+                    }
                     let mut raw = Vec::with_capacity(word.len() + points.len());
                     for (i, byte) in word.iter().enumerate() {
                         if points.contains(&i) && i > 0 {

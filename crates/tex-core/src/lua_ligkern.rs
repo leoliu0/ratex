@@ -256,9 +256,12 @@ impl Engine {
         let mut p = self.lua_nodes.next(head);
         while p != 0 {
             if self.lua_nodes.id(p) == DISC {
-                for slot in [sl::D_PRE, sl::D_POST, sl::D_REPLACE] {
+                let flags = self.lua_nodes.node(p).f[sl::D_NOALINK];
+                for (bit, slot) in [(1, sl::D_PRE), (2, sl::D_POST), (4, sl::D_REPLACE)] {
                     let first = self.lua_nodes.node(p).f[slot] as u32;
                     let nest = self.lua_nodes.new_node(TEMP, 0, 0);
+                    // `lk_add_kern_before` reads this: no `prev` pointer on the first node
+                    self.lua_nodes.node_mut(nest).f[0] = i32::from(flags & bit != 0);
                     if first != 0 {
                         self.lua_nodes.couple(nest, first);
                     }
@@ -651,9 +654,17 @@ impl Engine {
             if k != 0 {
                 let kern = self.lk_new_kern(k);
                 let prev = self.lua_nodes.prev(right);
-                self.lua_nodes.couple(prev, kern);
-                self.lua_nodes.couple(kern, right);
-                self.lk_copy_attr(left, kern);
+                // luatex's `alink` of the first node of a list made by
+                // `set_disc_field` is null: the kern is coupled to `right` but
+                // the list head never learns of it
+                let lost = prev != 0 && self.lua_nodes.id(prev) == TEMP && self.lua_nodes.node(prev).f[0] == 1;
+                if lost {
+                    self.lua_nodes.flush_node(kern);
+                } else {
+                    self.lua_nodes.couple(prev, kern);
+                    self.lua_nodes.couple(kern, right);
+                    self.lk_copy_attr(left, kern);
+                }
             }
         }
     }
@@ -871,9 +882,10 @@ impl Engine {
             g = self.lua_nodes.next(g);
         }
         self.lk_copy_attr(attr_node, d);
-        for (slot, list) in [(sl::D_PRE, pre), (sl::D_POST, post), (sl::D_REPLACE, replace)] {
+        for (bit, slot, list) in [(1, sl::D_PRE, pre), (2, sl::D_POST, post), (4, sl::D_REPLACE, replace)] {
             if list != 0 {
                 self.lua_nodes.node_mut(list).prev = 0;
+                self.lua_nodes.node_mut(d).f[sl::D_NOALINK] |= bit;
             }
             self.lua_nodes.node_mut(d).f[slot] = list as i32;
         }
@@ -904,6 +916,7 @@ impl Engine {
             f[sl::C_UCHYPH] = tf[sl::C_UCHYPH];
             self.lk_copy_attr(t, g);
             self.lua_nodes.node_mut(d).f[sl::D_PRE] = g as i32;
+            self.lua_nodes.node_mut(d).f[sl::D_NOALINK] |= 1;
         }
         if post_char > 0 {
             let t2 = self.lua_nodes.next(d);
@@ -919,6 +932,7 @@ impl Engine {
                 f[sl::C_UCHYPH] = tf[sl::C_UCHYPH];
                 self.lk_copy_attr(t2, g);
                 self.lua_nodes.node_mut(d).f[sl::D_POST] = g as i32;
+                self.lua_nodes.node_mut(d).f[sl::D_NOALINK] |= 2;
             }
         }
         d

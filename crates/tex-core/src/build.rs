@@ -732,7 +732,11 @@ impl Engine {
     /// en-dash), a null discretionary follows it — the legal break after an
     /// explicit hyphen — but only in unrestricted horizontal mode.
     fn tail_ends_hyphen(&self, f: u16) -> bool {
-        let hc = self.eqtb.hyphen_char.get(f as usize).copied().unwrap_or(-1);
+        let hc = if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            self.eqtb.int_params[IntParam::ExHyphenChar.idx() as usize]
+        } else {
+            self.eqtb.hyphen_char.get(f as usize).copied().unwrap_or(-1)
+        };
         if !(0..=255).contains(&hc) {
             return false;
         }
@@ -1040,9 +1044,17 @@ impl Engine {
             cur.lig_present = false;
         }
         if self.mode == Mode::Horizontal && self.tail_ends_hyphen(f) {
-            self.cur_list.push(Node::Disc(
-                crate::boxes::DiscNode::new(Vec::new(), Vec::new(), Vec::new(), 0).with_attr(self.eqtb.cur_attr),
-            ));
+            let mut disc = crate::boxes::DiscNode::new(Vec::new(), Vec::new(), Vec::new(), 0).with_attr(self.eqtb.cur_attr);
+            if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                // LuaTeX turns an explicit hyphen into an automatic
+                // discretionary, unless \automatichyphenmode is 2
+                if self.eqtb.int_params[IntParam::AutomaticHyphenMode.idx() as usize] == 2 {
+                    return;
+                }
+                disc.subtype = 2;
+                disc.penalty = self.automatic_disc_penalty();
+            }
+            self.cur_list.push(Node::Disc(disc));
         }
     }
 

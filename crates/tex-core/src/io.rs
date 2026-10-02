@@ -1915,6 +1915,10 @@ impl Engine {
             );
             return;
         }
+        if let Some(stream) = self.show_stream() {
+            self.show_stream_meaning(stream, t);
+            return;
+        }
         let target = if t.is_cs() {
             self.display_cs(t.cs_id())
         } else {

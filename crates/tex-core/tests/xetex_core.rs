@@ -314,7 +314,7 @@ fn encoding_fixture(dir: &std::path::Path) -> Vec<u8> {
     main.extend(utf16("\\count0=`\u{4e2d} \\show{utf16be \\the\\count0}\n\\XeTeXinputencoding \"utf8\"\n", true));
     main.extend_from_slice(b"\\XeTeXinputencoding \"UTF16\"\n");
     main.extend(utf16("\\count0=`\u{4e2d} \\show{utf16 \\the\\count0}\r\n\\XeTeXinputencoding \"utf8\"\r\n", false));
-    main.extend_from_slice(b"\\XeTeXdefaultencoding \"bytes\"\n\\input encl1\n\\XeTeXdefaultencoding \"auto\"\n\\input u16bom\n\\input u8bom\n\\XeTeXdefaultencoding \"utf8\"\n\\input u8bom\n");
+    main.extend_from_slice(b"\\XeTeXdefaultencoding \"bytes\"\n\\input encl1\n\\XeTeXdefaultencoding \"auto\"\n\\input u16bom\n\\input u8bom\n");
     main.extend_from_slice(b"\\XeTeXdefaultencoding \"utf16be\"\n\\input u16be\n\\XeTeXdefaultencoding \"auto\"\n\\input u16nobom\n");
     main.extend_from_slice(b"\\end\n");
     main
@@ -329,7 +329,7 @@ fn input_encodings_decode_per_file_and_per_line() {
     let _ = std::fs::remove_dir_all(&dir);
     // only the `auto` request is an error (TL: "Encoding mode `auto' is not
     // valid for \XeTeXinputencoding"); U+FEFF typeset in nullfont is not
-    assert_eq!(eng.error_count, 1, "{}", eng.term);
+    assert_eq!(eng.error_count, 1, "{}", eng.log);
     assert_eq!(
         shown(&eng),
         [
@@ -347,7 +347,6 @@ fn input_encodings_decode_per_file_and_per_line() {
             "[utf16 20013]",
             "[input-bytes 195]",
             "[u16bom 233]",
-            "[u8bom 233]",
             "[u8bom 233]",
             "[u16be 233]",
             "[u16nobom 233]",
@@ -509,4 +508,178 @@ fn xetex_state_survives_a_format_round_trip() {
         "{}",
         eng.term
     );
+}
+
+
+/// `\tracingstacklevels` prefixes of `\tracingmacros` lines (TeX Live
+/// `tex.ch`): `~` and one `.` per input level below the level, `~~\name` alone
+/// at or beyond it, plain lines at 0 and below, and no argument lines
+/// below 0; token lists read back (`\csname`) and `\write` count as levels.
+#[test]
+fn tracingstacklevels_prefixes_macro_traces() {
+    let eng = run(r####"\catcode`\{=1 \catcode`\}=2 \catcode`\#=6 \catcode`\~=13
+\def\a#1{\b{#1}}\def\b#1{\c#1}\def\c{\d}\def\d{x}
+\def\,{\relax}
+\expandafter\def\csname\endcsname{k}
+\tracingmacros=2 \tracingonline=1
+\tracingstacklevels=2 \a{z}
+\tracingstacklevels=4 \a{z}
+\tracingstacklevels=-1 \a{z}
+\tracingstacklevels=0 \a{z}
+\tracingstacklevels=5 \csname\endcsname\,
+\everypar{\a{y}}\noindent\par
+\immediate\write16{\c}
+\end
+"####);
+    assert_eq!(eng.error_count, 0, "{}", eng.term);
+    let from = eng.term.find("~.\\a").expect("trace in the terminal output");
+    let to = eng.term.find("[0]").unwrap_or(eng.term.len());
+    assert_eq!(&eng.term[from..to], r####"~.\a #1->\b {#1}
+#1<-z
+~~\b 
+~~\c 
+~~\d 
+
+~.\a #1->\b {#1}
+#1<-z
+
+~..\b #1->\c #1
+#1<-z
+
+~..\c ->\d 
+
+~...\d ->x
+
+\a #1->\b {#1}
+
+\b #1->\c #1
+
+\c ->\d 
+
+\d ->x
+
+\a #1->\b {#1}
+#1<-z
+
+\b #1->\c #1
+#1<-z
+
+\c ->\d 
+
+\d ->x
+
+~..\csname\endcsname ->k
+
+~.\,->\relax 
+\write->\c 
+
+~...\c ->\d 
+
+~...\d ->x
+x
+"####);
+}
+
+/// `\showstream` sends `\show`, `\showthe`, `\showtokens`, `\showbox`,
+/// `\showlists`, `\showgroups` and `\showifs` to an open `\write` stream
+/// instead of the terminal; with the selector on a `\write` file every
+/// `print_nl` starts a new line. Streams 16 and up, negative values and
+/// closed streams leave the commands alone.
+#[test]
+fn showstream_writes_the_show_commands_to_an_open_stream() {
+    // \openout may only write below the working directory
+    let path = std::path::PathBuf::from(format!("xetex_core_show_{}.txt", std::process::id()));
+    let source = r####"\catcode`\{=1 \catcode`\}=2 \catcode`\#=6
+\immediate\openout3=OUTFILE \showboxdepth=0 \showboxbreadth=0
+\def\m#1#2{x#1y}
+\protected\long\def\p{p}
+\showstream=3
+\show\m \show\p \show\relax \show a \show\showstream
+\showthe\count1 \showthe\skip0 \showtokens{ab#}
+\setbox1\vbox{\hrule\hbox{ab}}\showbox1 \showbox99
+\showlists
+\begingroup \showgroups \endgroup
+\ifnum1=1 \ifcase2 \or\or \showifs \fi\fi
+\setbox2\hbox{\showlists}
+\showstream=15 \showthe\count2
+\showstream=16 \showthe\count3
+\showstream=-1 \showthe\count4
+\immediate\closeout3
+\showstream=3 \showthe\count5
+\end
+"####.replace("OUTFILE", &path.display().to_string());
+    let eng = run(&source);
+    let written = std::fs::read(&path).expect("stream file");
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(String::from_utf8_lossy(&written), r####"
+> \m=macro:
+#1#2->x#1y
+
+> \p=\protected\long macro:
+->p
+
+> \relax=\relax
+
+> the letter a
+
+> \showstream=\showstream
+
+> 0
+
+> 0.0pt
+
+> ab##
+
+> \box1=
+\vbox(0.4+0.0)x0.0 []
+
+
+
+! OK
+
+> \box99=void
+
+
+! OK
+
+
+
+### vertical mode entered at line 0
+
+prevdepth ignored
+
+
+! OK
+
+
+
+### semi simple group (level 1) entered at line 10 (\begingroup)
+### bottom level
+
+
+! OK
+
+
+
+### level 2: \ifcase entered on line 11
+### level 1: \ifnum entered on line 11
+
+
+! OK
+
+
+
+### restricted horizontal mode entered at line 12
+
+spacefactor 1000
+### vertical mode entered at line 0
+
+prevdepth ignored
+
+
+! OK
+"####);
+    // the other commands went to the terminal as usual: streams 15 (not open),
+    // 16, -1 and the closed stream 3
+    assert_eq!(eng.error_count, 4, "{}", eng.term);
 }

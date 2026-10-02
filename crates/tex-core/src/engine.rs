@@ -505,6 +505,11 @@ pub struct Engine {
     /// `\XeTeXlinebreaklocale` (xetex.web `XeTeX_linebreak_locale`); `None`
     /// when unset. Not part of a format.
     pub xetex_linebreak_locale: Option<String>,
+    /// A `\showstream` display is being built: `print_nl` always breaks.
+    pub(crate) show_stream_nl: bool,
+    /// The token most recently read back from `pushed` (tex.web's backed-up
+    /// input level), for `\tracingstacklevels`.
+    pub(crate) pushed_read: Token,
     pub asset_fingerprint: u64,
     pub job_ended_by_end: bool,
     pub align_preamble: Vec<crate::align::ColSpec>,
@@ -1245,6 +1250,8 @@ impl Engine {
             xetex_last_char_class: None,
             xetex_default_encoding: crate::xetex_input::EncSpec::Auto,
             xetex_linebreak_locale: None,
+            show_stream_nl: false,
+            pushed_read: Token(0),
             asset_fingerprint: 0,
             align_preamble: Vec::new(),
             align_tabskip_0: crate::boxes::Glue::zero(),

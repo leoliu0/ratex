@@ -258,6 +258,7 @@ impl Engine {
                     || self.pushed.len() > self.align_pushed_base)
             {
                 if let Some(t) = self.pushed.pop() {
+                    self.pushed_read = t;
                     self.retain_diagnostic_sources_for(t);
                     if self.lua_cb[crate::lua_callbacks::Cb::ShowErrorHook as usize] > 0 {
                         self.recent_pushed = Some((t, self.input.signature()));
@@ -756,6 +757,11 @@ impl Engine {
             self.recycle_token_vec(toks);
             return true;
         }
+        if self.eqtb.int_params[crate::prim::IntParam::TracingMacros.idx() as usize] > 1
+            && self.engine_kind == crate::engine::EngineKind::XeTeX
+        {
+            self.trace_token_list(name, &toks);
+        }
         if !self.prepare_token_list_push(toks.len()) {
             return false;
         }
@@ -943,7 +949,7 @@ impl Engine {
                                 self.set_cur_cs(t);
                                 return t;
                             }
-                            if m.num_params == 0 && m.prefix.is_empty() {
+                            if m.num_params == 0 && m.prefix.is_empty() && !self.xetex_macro_trace() {
                                 let body = std::rc::Rc::clone(&m.body);
                                 self.enter_macro_diagnostic(id, t.cs_id());
                                 if body.is_empty() {
@@ -1349,7 +1355,7 @@ impl Engine {
                             Equiv::Macro(m) => {
                                 if self.freeze_gts_in_edef(id2) {
                                     self.push_token(t2);
-                                } else if m.num_params == 0 && m.prefix.is_empty() {
+                                } else if m.num_params == 0 && m.prefix.is_empty() && !self.xetex_macro_trace() {
                                     let body = std::rc::Rc::clone(&m.body);
                                     self.enter_macro_diagnostic(id2, invocation);
                                     self.push_tokens_rc(body, id2);
@@ -3039,6 +3045,20 @@ impl Engine {
             return;
         }
 
+        if self.xetex_macro_trace() {
+            self.current_macro = id;
+            let show_args = self.trace_macro_call(invocation, m);
+            if m.num_params == 0 && m.prefix.is_empty() {
+                self.enter_macro_diagnostic(id, invocation);
+                self.push_tokens_rc(std::rc::Rc::clone(&m.body), id);
+                return;
+            }
+            self.enter_macro_diagnostic(id, invocation);
+            let call_site = self.diagnostic_macro_call_site.clone();
+            self.expand_macro_with_args(id, m, call_site.as_ref(), Some(show_args));
+            return;
+        }
+
         // Numeric scanners and expandafter also enter here. Parameterless
         // macros need no argument buffers or substituted replacement list.
         if m.num_params == 0 && m.prefix.is_empty() {
@@ -3050,13 +3070,14 @@ impl Engine {
         self.current_macro = id;
         self.enter_macro_diagnostic(id, invocation);
         let call_site = self.diagnostic_macro_call_site.clone();
-        self.expand_macro_with_args(id, m, call_site.as_ref());
+        self.expand_macro_with_args(id, m, call_site.as_ref(), None);
     }
     fn expand_macro_with_args(
         &mut self,
         id: CsId,
         m: &Macro,
         origin: Option<&crate::input::SourceMark>,
+        trace: Option<bool>,
     ) {
         if !m.prefix.is_empty() {
             // tex.web: tokens before the first # must match the next
@@ -3088,7 +3109,9 @@ impl Engine {
         }
         // Selectors and discarders only retain one (or no) argument. The
         // other arguments still undergo ordinary TeX scanning and validation.
-        let selector = if m.body.is_empty() {
+        let selector = if trace.is_some() {
+            None
+        } else if m.body.is_empty() {
             Some(0)
         } else if m.has_param_refs
             && m.body.len() == 1
@@ -3120,6 +3143,10 @@ impl Engine {
                 args.buffer().truncate(start);
             }
             args.finish_arg();
+            if trace == Some(true) {
+                let shown = args.get(i).unwrap_or_default().to_vec();
+                self.trace_macro_arg(i + 1, &shown);
+            }
         }
         // A `show_error_hook` shows the macro level and its `<argument>`
         // like TeX, so the shortcut that drops the macro level is not taken.

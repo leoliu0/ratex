@@ -16,6 +16,7 @@ pub mod engine_lua;
 pub mod engine_xetex;
 mod xetex_names;
 mod xetex_input;
+mod xetex_trace;
 pub mod eqtb;
 pub mod expand;
 pub mod font_program;

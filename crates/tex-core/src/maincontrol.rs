@@ -658,8 +658,12 @@ impl Engine {
                 let idx = self.scan_reg_num();
                 self.diagnostic_source_override = previous;
                 if self.error_count == errors_before {
-                    self.show_box_register(idx);
-                    self.report_logged_inspection("\\showbox", source);
+                    if let Some(stream) = self.show_stream() {
+                        self.show_box_register_stream(stream, idx);
+                    } else {
+                        self.show_box_register(idx);
+                        self.report_logged_inspection("\\showbox", source);
+                    }
                 }
             }
             ShowThe => {
@@ -679,24 +683,42 @@ impl Engine {
                 self.diagnostic_source_override = previous;
                 if self.error_count == errors_before {
                     let value = self.pending_the_string.take().unwrap_or_default();
-                    self.report_inspection("\\showthe", format!("value: {value}"), source);
+                    if let Some(stream) = self.show_stream() {
+                        self.show_stream_text(stream, &value);
+                    } else {
+                        self.report_inspection("\\showthe", format!("value: {value}"), source);
+                    }
                 } else {
                     self.pending_the_string = None;
                 }
             }
             ShowLists => {
                 let source = self.current_token_source_mark();
-                // tex.web §1293: begin_diagnostic; show_activities
+                let stream = self.show_stream();
+                self.show_stream_nl = stream.is_some();
                 let display = self.show_activities();
-                self.emit_box_diagnostic(display);
-                self.report_logged_inspection("\\showlists", source);
+                self.show_stream_nl = false;
+                if let Some(stream) = stream {
+                    self.show_stream_display(stream, true, &display.bytes);
+                } else {
+                    // tex.web §1293: begin_diagnostic; show_activities
+                    self.emit_box_diagnostic(display);
+                    self.report_logged_inspection("\\showlists", source);
+                }
             }
             ShowGroups => {
                 let source = self.current_token_source_mark();
-                // e-TeX: begin_diagnostic; show_save_groups
+                let stream = self.show_stream();
+                self.show_stream_nl = stream.is_some();
                 let display = self.show_save_groups();
-                self.emit_box_diagnostic(display);
-                self.report_logged_inspection("\\showgroups", source);
+                self.show_stream_nl = false;
+                if let Some(stream) = stream {
+                    self.show_stream_display(stream, true, &display);
+                } else {
+                    // e-TeX: begin_diagnostic; show_save_groups
+                    self.emit_box_diagnostic(display);
+                    self.report_logged_inspection("\\showgroups", source);
+                }
             }
             ShowTokens => {
                 let source = self.current_token_source_mark();
@@ -714,14 +736,25 @@ impl Engine {
                 self.diagnostic_source_override = previous;
                 if self.error_count == errors_before {
                     let shown = self.diagnostic_tokens_to_string(&tokens, MAX_INSPECTION_BYTES / 2);
-                    self.report_inspection("\\showtokens", format!("tokens: {shown}"), source);
+                    if let Some(stream) = self.show_stream() {
+                        self.show_stream_text(stream, &shown);
+                    } else {
+                        self.report_inspection("\\showtokens", format!("tokens: {shown}"), source);
+                    }
                 }
             }
             ShowIfs => {
                 let source = self.current_token_source_mark();
+                let stream = self.show_stream();
+                self.show_stream_nl = stream.is_some();
                 let display = self.show_ifs();
-                self.emit_box_diagnostic(display);
-                self.report_logged_inspection("\\showifs", source);
+                self.show_stream_nl = false;
+                if let Some(stream) = stream {
+                    self.show_stream_display(stream, true, &display);
+                } else {
+                    self.emit_box_diagnostic(display);
+                    self.report_logged_inspection("\\showifs", source);
+                }
             }
             Char | RatexLiteralChar => {
                 if p == RatexLiteralChar && self.mode.is_v() {

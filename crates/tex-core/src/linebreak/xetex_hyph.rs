@@ -105,7 +105,31 @@ impl Engine {
                     s += 1;
                     continue;
                 }
-                Node::Ligature { .. } | Node::Kern(_, _) | Node::Whatsit(_, _) => {
+                Node::Ligature { .. } | Node::Kern(_, _) => {
+                    ha = s;
+                    s += 1;
+                    continue;
+                }
+                // a native word that holds a letter is the word; one that
+                // holds none is skipped like any other whatsit
+                node @ Node::NativeGlyphRun { .. } => {
+                    if let Some((f, text)) = native_word(node) {
+                        for ch in text.chars() {
+                            let c = ch as u32;
+                            let lc = self.eqtb.case_code(c, false);
+                            if lc != 0 {
+                                if lc == c || ctx.uc_hyph {
+                                    return self.xetex_hyphenate_native(list, s, f, &ctx);
+                                }
+                                return None;
+                            }
+                        }
+                    }
+                    ha = s;
+                    s += 1;
+                    continue;
+                }
+                Node::Whatsit(_, _) => {
                     ha = s;
                     s += 1;
                     continue;
@@ -275,5 +299,143 @@ impl Engine {
         (ctx.lh..=hn - ctx.rh)
             .any(|j| hyf[j] % 2 == 1)
             .then_some(hyf)
+    }
+}
+
+/// A native word's font and text (xetex.web `is_native_word_node`); glyph
+/// nodes of `\XeTeXglyph` carry no text.
+// TEMPORARY(XeHyph): replaced by `Node::native_word` of xetex/text
+fn native_word(node: &Node) -> Option<(FontId, &str)> {
+    match node {
+        Node::NativeGlyphRun { run, .. } if !run.text.is_empty() => Some((run.font, &run.text)),
+        _ => None,
+    }
+}
+
+impl Engine {
+    /// A native word node of `text` in font `hf` shaped like `like`.
+    // TEMPORARY(XeHyph): replaced by `xetex_native_word_like` of xetex/text
+    fn xe_make_native(&self, hf: FontId, text: &str, _like: &Node) -> Option<Node> {
+        self.shape_native_slice(hf, text).ok()?.pop()
+    }
+
+    /// xetex.web "Check that nodes after native_word permit hyphenation",
+    /// "Prepare a native_word_node for hyphenation" and "Hyphenate the
+    /// native_word_node at ha" for the native word `list[ha]` of font `hf`.
+    fn xetex_hyphenate_native(
+        &self,
+        list: &[Node],
+        ha: usize,
+        hf: FontId,
+        ctx: &XeCtx<'_>,
+    ) -> Option<(usize, usize, NodeList)> {
+        let hyf_char = self.eqtb.hyphen_char.get(hf as usize).copied().unwrap_or(-1);
+        if !(0..=65535).contains(&hyf_char) || ctx.lh + ctx.rh > ctx.max_len {
+            return None;
+        }
+        let mut s = ha + 1;
+        loop {
+            match list.get(s) {
+                Some(Node::Char { .. } | Node::Ligature { .. } | Node::Kern(_, _)) => s += 1,
+                None
+                | Some(
+                    Node::ExplicitKern(_, _)
+                    | Node::AccentKern(_, _)
+                    | Node::ItalicKern(_, _)
+                    | Node::Whatsit(_, _)
+                    | Node::NativeGlyphRun { .. }
+                    | Node::Glue(_, _)
+                    | Node::Leaders { .. }
+                    | Node::Penalty(_, _)
+                    | Node::Ins { .. }
+                    | Node::VAdjust(_, _)
+                    | Node::PreAdjust(_, _)
+                    | Node::Mark { .. },
+                ) => break,
+                _ => return None,
+            }
+        }
+        let like = &list[ha];
+        let (_, text) = native_word(like)?;
+        // "Prepare a native_word_node for hyphenation": the letters of the
+        // word (as UTF-16 code units) and where the node is split
+        let mut hc: Vec<u32> = vec![0];
+        let mut hn = 0usize;
+        let mut head_end = 0usize;
+        let mut tail_start: Option<usize> = None;
+        for (at, ch) in text.char_indices() {
+            let c = ch as u32;
+            let lc = self.xe_lc_code(ctx.codes, c);
+            if lc == 0 {
+                if hn > 0 {
+                    tail_start = Some(at);
+                    break;
+                }
+                continue;
+            }
+            if hn == 0 && at > 0 {
+                head_end = at;
+            } else if hn == ctx.max_len {
+                break;
+            }
+            if c < 0x10000 {
+                hc.push(lc);
+                hn += 1;
+            } else {
+                let lc = i64::from(lc) - 0x10000;
+                hc.push((lc.div_euclid(0x400) + 0xD800) as u32);
+                hc.push((lc.rem_euclid(0x400) + 0xDC00) as u32);
+                hn += 2;
+            }
+        }
+        let word_end = tail_start.unwrap_or(text.len());
+        let split = head_end > 0 || tail_start.is_some();
+        let hyf = if hn >= ctx.lh + ctx.rh {
+            ctx.trie.and_then(|trie| Self::xe_find_hyphens(trie, ctx, &hc, hn))
+        } else {
+            None
+        };
+        if !split && hyf.is_none() {
+            return None;
+        }
+        let mut nodes = NodeList::new();
+        if head_end > 0 {
+            nodes.push(self.xe_make_native(hf, &text[..head_end], like)?);
+        }
+        let word = &text[head_end..word_end];
+        match hyf {
+            None => nodes.push(self.xe_make_native(hf, word, like)?),
+            Some(hyf) => {
+                let units: Vec<u16> = word.encode_utf16().collect();
+                let hyphen = char::from_u32(hyf_char as u32).map(String::from);
+                let mut passed = 0usize;
+                for j in ctx.lh..=hn - ctx.rh {
+                    if hyf[j] % 2 == 0 {
+                        continue;
+                    }
+                    // a break between the halves of a surrogate pair cannot
+                    // be made
+                    let Ok(piece) = String::from_utf16(&units[passed..j]) else {
+                        continue;
+                    };
+                    nodes.push(self.xe_make_native(hf, &piece, like)?);
+                    let mut pre_break = NodeList::new();
+                    if let Some(hyphen) = &hyphen {
+                        pre_break.push(self.xe_make_native(hf, hyphen, like)?);
+                    }
+                    nodes.push(Node::Disc(
+                        crate::boxes::DiscNode::new(pre_break, NodeList::new(), NodeList::new(), 0)
+                            .with_attr(like.attr()),
+                    ));
+                    passed = j;
+                }
+                let last = String::from_utf16(&units[passed..]).ok()?;
+                nodes.push(self.xe_make_native(hf, &last, like)?);
+            }
+        }
+        if word_end < text.len() {
+            nodes.push(self.xe_make_native(hf, &text[word_end..], like)?);
+        }
+        Some((ha, ha + 1, nodes))
     }
 }

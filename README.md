@@ -41,21 +41,21 @@ See [PERFORMANCE.md](PERFORMANCE.md) for how speed is measured.
 ## Installation
 
 ### Linux
-Download the native package for your distribution from [GitHub Releases](https://github.com/leoliu0/ratex/releases/tag/v0.4.6):
+Download the native package for your distribution from [GitHub Releases](https://github.com/leoliu0/ratex/releases/tag/v0.4.7):
 
 ```bash
 # Ubuntu / Debian (.deb)
-sudo apt install ./ratex_0.4.6_amd64.deb
+sudo apt install ./ratex_0.4.7_amd64.deb
 
 # Fedora / RHEL / openSUSE (.rpm)
-sudo dnf install ./ratex-0.4.6-1.x86_64.rpm
+sudo dnf install ./ratex-0.4.7-1.x86_64.rpm
 
 # Arch Linux (AUR): prebuilt binary or source build
 yay -S ratex-bin
 yay -S ratex
 
 # Any Linux (archive with installer; installs to ~/.local by default)
-tar -xzf tex-suite-v0.4.6-linux-x86_64.tar.gz && ./tex-suite-linux-x86_64/install.sh
+tar -xzf tex-suite-v0.4.7-linux-x86_64.tar.gz && ./tex-suite-linux-x86_64/install.sh
 ```
 
 ### macOS
@@ -69,8 +69,8 @@ brew install leoliu0/ratex/ratex
 This tap is independent of `homebrew/core`; `brew install ratex` uses core's separately reviewed version.
 
 Or download and run the native installer package:
-- [macOS Apple Silicon (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.4.6/ratex-v0.4.6-macos-aarch64.pkg)
-- [macOS Intel (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.4.6/ratex-v0.4.6-macos-x86_64.pkg)
+- [macOS Apple Silicon (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.4.7/ratex-v0.4.7-macos-aarch64.pkg)
+- [macOS Intel (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.4.7/ratex-v0.4.7-macos-x86_64.pkg)
 
 #### Migrating from the GitHub installer to Homebrew
 
@@ -104,7 +104,7 @@ installing `leoliu0/ratex/ratex`. Neither uninstall your documents nor TeX Live
 just to change which executable your editor uses.
 
 ### Windows
-- [Download Windows Setup (.exe)](https://github.com/leoliu0/ratex/releases/download/v0.4.6/ratex-setup-v0.4.6-windows-x64.exe)
+- [Download Windows Setup (.exe)](https://github.com/leoliu0/ratex/releases/download/v0.4.7/ratex-setup-v0.4.7-windows-x64.exe)
 
 ---
 

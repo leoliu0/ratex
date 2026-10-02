@@ -104,7 +104,7 @@ impl Engine {
                 width,
                 options,
                 degree: None,
-                origin,
+                origin, attr: crate::boxes::Attr::NONE,
             });
             return;
         }
@@ -122,7 +122,7 @@ impl Engine {
             width,
             options,
             degree,
-            origin,
+            origin, attr: crate::boxes::Attr::NONE,
         });
     }
 
@@ -232,18 +232,18 @@ impl Engine {
                     fam: 255,
                     c: 0,
                     class: crate::math::CL_INNER,
-                    origin: Default::default(),
+                    origin: Default::default(), attr: crate::boxes::Attr::NONE,
                 },
                 Node::DelimBox {
                     small: (delim.small_fam, delim.small_char),
                     large: (delim.large_fam, delim.large_char),
                     size: 4,
                     fence,
-                    origin,
+                    origin, attr: crate::boxes::Attr::NONE,
                 },
             ],
             sup: None,
-            sub: None,
+            sub: None, attr: crate::boxes::Attr::NONE,
         });
     }
 

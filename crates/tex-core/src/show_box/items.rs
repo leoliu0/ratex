@@ -184,8 +184,7 @@ pub(super) fn field_of<'a>(list: &'a [Node]) -> Field<'a> {
         [Node::Scripts {
             nucleus,
             sup: None,
-            sub: None,
-        }] if matches!(
+            sub: None, .. }] if matches!(
             nucleus.first(),
             Some(Node::MathChar {
                 fam: 255,
@@ -212,11 +211,11 @@ fn lr_close<'a>(node: &'a Node) -> Option<(Delim, Field<'a>, Field<'a>)> {
     };
     match node {
         Node::DelimBox { .. } => delim(node).map(|d| (d, Field::Empty, Field::Empty)),
-        Node::Scripts { nucleus, sup, sub } => match nucleus.as_slice() {
+        Node::Scripts { nucleus, sup, sub, .. } => match nucleus.as_slice() {
             [n] => delim(n).map(|d| (d, field_opt(sup.as_ref()), field_opt(sub.as_ref()))),
             _ => None,
         },
-        Node::OpLimits { op, above, below } => match op.as_slice() {
+        Node::OpLimits { op, above, below, .. } => match op.as_slice() {
             [n] => delim(n).map(|d| (d, field_opt(above.as_ref()), field_opt(below.as_ref()))),
             _ => None,
         },
@@ -298,8 +297,7 @@ fn scripts_items<'a>(
             fam: 255,
             class,
             c,
-            origin,
-        },
+            origin, .. },
         rest,
     )) = nucleus.split_first()
     {
@@ -357,14 +355,14 @@ fn view_node<'a>(node: &'a Node, out: &mut Vec<Item<'a>>) {
             Field::Empty,
             Field::Empty,
         )),
-        Node::Scripts { nucleus, sup, sub } => scripts_items(
+        Node::Scripts { nucleus, sup, sub, .. } => scripts_items(
             nucleus,
             field_opt(sup.as_ref()),
             field_opt(sub.as_ref()),
             2,
             out,
         ),
-        Node::OpLimits { op, above, below } => scripts_items(
+        Node::OpLimits { op, above, below, .. } => scripts_items(
             op,
             field_opt(above.as_ref()),
             field_opt(below.as_ref()),
@@ -407,7 +405,7 @@ pub(super) fn view_list<'a>(list: &'a [Node]) -> Vec<Item<'a>> {
             Node::Choice => {
                 let mut parts: [Vec<Item<'a>>; 4] = Default::default();
                 for part in parts.iter_mut() {
-                    if let Some(Node::ChoiceAlt { body }) = list.get(i) {
+                    if let Some(Node::ChoiceAlt { body, .. }) = list.get(i) {
                         *part = view_list(body);
                         i += 1;
                     } else {
@@ -507,7 +505,7 @@ impl<'a> BoxDisplay<'a> {
     fn display_item(&mut self, item: &Item<'_>) {
         match item {
             Item::Node(n) => self.display_node(n),
-            Item::Glue(g) => self.display_node(&Node::Glue(*g)),
+            Item::Glue(g) => self.display_node(&Node::Glue(*g, crate::boxes::Attr::NONE)),
             Item::Unset(u) => {
                 self.print_esc("unsetbox(");
                 self.print_scaled(u.h);
@@ -596,7 +594,7 @@ impl<'a> BoxDisplay<'a> {
             self.print_int(i64::from(spec.fraction));
             self.print(" ");
         }
-        let mut fc = |d: &mut Self, a: Option<(u8, u32)>| {
+        let fc = |d: &mut Self, a: Option<(u8, u32)>| {
             let (fam, c) = a.unwrap_or((0, 0));
             d.print_fam_and_char(fam, c);
         };

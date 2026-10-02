@@ -19,6 +19,7 @@ every dumped-layout change and conflict on every merge.
 """
 
 import argparse
+import contextlib
 import hashlib
 import os
 import shutil
@@ -105,10 +106,14 @@ def main() -> None:
         sys.exit(f"build_formats: {binary} does not exist; build it first "
                  "(cargo build --release --locked --bin ratex)")
     failures = []
+    if args.keep:
+        args.keep.mkdir(parents=True, exist_ok=True)
     for engine in args.engine or sorted(FORMATS):
         asset = ASSETS / FORMATS[engine]
-        with tempfile.TemporaryDirectory(prefix=f"formats-{engine}-",
-                                         dir=args.keep) as scratch:
+        prefix = f"formats-{engine}-"
+        workdir = (contextlib.nullcontext(tempfile.mkdtemp(prefix=prefix, dir=args.keep))
+                   if args.keep else tempfile.TemporaryDirectory(prefix=prefix))
+        with workdir as scratch:
             first = dump_format(binary, engine, args.epoch, Path(scratch) / "a")
             compressed = zstd(["-19", "-c"], first)
             print(f"{engine}: {len(first)} bytes -> {len(compressed)} "

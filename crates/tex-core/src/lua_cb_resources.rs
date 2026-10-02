@@ -203,7 +203,9 @@ impl Engine {
             let resolved = self.font_loader.kpse.find(name, fmt);
             self.font_loader.record_lookup_dependency(name, fmt, resolved.as_deref());
             if let Some(path) = self.lua_kpse_find(name, fmt) {
-                return Some(path);
+                // kpathsea reports a file of the working directory as `./name`
+                let local = !path.starts_with('/') && !path.starts_with("./") && !path.starts_with("../");
+                return Some(if local { format!("./{path}") } else { path });
             }
         }
         None
@@ -340,6 +342,8 @@ impl Engine {
         let id = self.push_engine_font(font, cs);
         if self.lua_res_mode() {
             self.lua_res.pending_map.insert(id);
+            // do_vf loads the local fonts of a virtual font right away
+            self.ensure_vf_bases(id);
         }
         id
     }

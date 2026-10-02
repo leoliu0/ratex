@@ -279,8 +279,11 @@ impl Engine {
                 let n = self.lua_new_node(FRACTION, 0);
                 let nu = self.import_math_sub_mlist(num, ctx);
                 let de = self.import_math_sub_mlist(den, ctx);
-                let l = if left.is_null() { 0 } else { self.import_delim(left) };
-                let r = if right.is_null() { 0 } else { self.import_delim(right) };
+                // a `\withdelims` fraction keeps its delimiter nodes even when
+                // they are null delimiters
+                use crate::boxes::noad_option as no;
+                let l = if no::has(*options, no::FRAC_LEFT_DELIM) || !left.is_null() { self.import_delim(left) } else { 0 };
+                let r = if no::has(*options, no::FRAC_RIGHT_DELIM) || !right.is_null() { self.import_delim(right) } else { 0 };
                 let m = if middle.is_null() { 0 } else { self.import_delim(middle) };
                 let f = &mut self.lua_nodes.node_mut(n).f;
                 f[0] = *thickness;
@@ -289,8 +292,8 @@ impl Engine {
                 f[3] = l as i32;
                 f[4] = r as i32;
                 f[5] = m as i32;
-                f[6] = if *fam == crate::boxes::FRAC_NO_FAM { -1 } else { i32::from(*fam) };
-                f[7] = i32::from(*options & !crate::boxes::noad_option::FRAC_DELIMITED);
+                f[6] = if *fam == crate::boxes::NO_FAM { -1 } else { i32::from(*fam) };
+                f[7] = i32::from(*options & !crate::boxes::noad_option::FRAC_DELIMS);
                 n
             }
             Node::Radical { body, delim, subtype, width, options, degree, .. } => {
@@ -328,10 +331,12 @@ impl Engine {
                     }
                 }
             }
-            Node::Overline { body, under, .. } => {
+            Node::Overline { body, under, fam, .. } => {
                 let inner = self.import_math_field(body, ctx);
                 let noad = self.lua_new_node(NOAD, if *under { SUB_UNDER } else { SUB_OVER });
-                self.lua_nodes.node_mut(noad).f[0] = inner as i32;
+                let f = &mut self.lua_nodes.node_mut(noad).f;
+                f[0] = inner as i32;
+                f[3] = if *fam == crate::boxes::NO_FAM { -1 } else { i32::from(*fam) };
                 noad
             }
             Node::VCenter { box_node } => {
@@ -467,12 +472,13 @@ impl Engine {
                 f[2] = sup_n as i32;
                 noad
             }
-            [Node::Overline { body, under, .. }] => {
+            [Node::Overline { body, under, fam, .. }] => {
                 let inner = self.import_math_field(body, ctx);
                 let sup_n = sup.map_or(0, |l| self.import_math_field(l, ctx));
                 let sub_n = sub.map_or(0, |l| self.import_math_field(l, ctx));
                 let noad = self.lua_new_node(NOAD, if *under { SUB_UNDER } else { SUB_OVER });
                 let f = &mut self.lua_nodes.node_mut(noad).f;
+                f[3] = if *fam == crate::boxes::NO_FAM { -1 } else { i32::from(*fam) };
                 f[0] = inner as i32;
                 f[1] = sub_n as i32;
                 f[2] = sup_n as i32;
@@ -572,7 +578,8 @@ impl Engine {
                 match sub {
                     SUB_UNDER | SUB_OVER => {
                         let body = self.export_math_field(f[0]);
-                        let node = Node::Overline { body, under: sub == SUB_UNDER, packed: Box::new(Node::Empty), attr: crate::boxes::Attr::NONE };
+                        let fam = if (0..255).contains(&f[3]) { f[3] as u8 } else { crate::boxes::NO_FAM };
+                        let node = Node::Overline { body, under: sub == SUB_UNDER, fam, packed: Box::new(Node::Empty), attr: crate::boxes::Attr::NONE };
                         if has_sup || has_sub {
                             out.push(Self::with_scripts(vec![node], sup, subs, has_sup, has_sub));
                         } else {
@@ -703,8 +710,9 @@ impl Engine {
                     right: right.unwrap_or_default(),
                     middle: middle.unwrap_or_default(),
                     options: f[7] as u16
-                        | if f[3] != 0 || f[4] != 0 { crate::boxes::noad_option::FRAC_DELIMITED } else { 0 },
-                    fam: if (0..255).contains(&f[6]) { f[6] as u8 } else { crate::boxes::FRAC_NO_FAM },
+                        | if f[3] != 0 { crate::boxes::noad_option::FRAC_LEFT_DELIM } else { 0 }
+                        | if f[4] != 0 { crate::boxes::noad_option::FRAC_RIGHT_DELIM } else { 0 },
+                    fam: if (0..255).contains(&f[6]) { f[6] as u8 } else { crate::boxes::NO_FAM },
                     origin: origin(), attr: crate::boxes::Attr::NONE,
                 });
             }

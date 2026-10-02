@@ -325,9 +325,15 @@ end
 function node.mlist_to_hlist(n, style, penalties)
   return tonode(N.mlist_to_hlist(todirect_ud(n), style, penalties))
 end
+-- luatex lua_nodelib_make_extensible: the arguments past the third are read
+-- only when given (an explicit nil is lua_tointeger 0 / false / no node)
 function node.make_extensible(...)
-  if select("#", ...) < 3 then return nil end
-  return tonode(N.make_extensible(...))
+  local top = select("#", ...)
+  if top < 3 then return nil end
+  local fnt, chr, size, overlap, horizontal, attlist = ...
+  if top >= 4 then overlap = math.tointeger(tonumber(overlap)) or 0 else overlap = 65536 end
+  if top >= 6 and attlist ~= nil then attlist = todirect_ud(attlist) else attlist = nil end
+  return tonode(N.make_extensible(fnt, chr, size, overlap, horizontal and true or false, attlist))
 end
 node.hpack = lenient_pack(N.wrap_hpack, "hpack")
 node.vpack = lenient_pack(N.wrap_vpack, "vpack")

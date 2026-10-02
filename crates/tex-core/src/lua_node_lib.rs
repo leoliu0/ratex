@@ -1917,14 +1917,21 @@ fn install_lists(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
         })
     });
     // node.make_extensible(font, char, size [, overlap [, horizontal [, attr]]])
-    nat!(lua, n, "make_extensible", |fnt: Value, chr: Value, size: Value, overlap: Option<Value>, horizontal: Option<Value>| -> Result<Option<i64>, String> {
+    nat!(lua, n, "make_extensible", |fnt: Value, chr: Value, size: Value, overlap: Option<Value>, horizontal: Option<Value>, attlist: Option<Value>| -> Result<Option<i64>, String> {
         let fnt = value_int(&fnt);
         let chr = value_int(&chr);
         let size = value_int(&size);
         let overlap = overlap.as_ref().map_or(65536, value_int);
         let horizontal = is_truthy(horizontal.as_ref());
+        let attlist = attlist.as_ref().filter(|v| !v.is_nil()).map(value_int);
         with_engine(|e| {
-            let b = e.make_extensible(fnt as crate::tfm::FontId, chr as u32, size as i32, overlap as i32, horizontal);
+            let att = match attlist {
+                Some(h) if h > 0 && e.lua_nodes.valid(h as u32) && e.lua_nodes.id(h as u32) == crate::lua_node::ATTRIBUTE_LIST => {
+                    e.engine_attr_of_list(h as u32)
+                }
+                _ => crate::boxes::Attr::NONE,
+            };
+            let b = e.make_extensible(fnt as crate::tfm::FontId, chr as u32, size as i32, overlap as i32, horizontal, att);
             let head = e.lua_nodes_from_engine(vec![b]);
             (head != 0).then_some(head)
         })

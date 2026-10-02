@@ -1811,6 +1811,9 @@ impl Engine {
                 let final_pd = prev.unwrap_or(self.prev_depth);
                 self.prev_depth = final_pd;
                 self.display_halign = Some((rows, final_pd));
+                if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                    self.finish_display_alignment();
+                }
             }
             _ => {
                 let vbox = crate::boxes::vpack(rows, None, crate::boxes::VBOX, &self.eqtb).node;

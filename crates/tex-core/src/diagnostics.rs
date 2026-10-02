@@ -1970,6 +1970,8 @@ fn default_help(message: &str) -> Option<String> {
         Some("balance `$...$` or `\\(...\\)` math delimiters near this location")
     } else if message.starts_with("Display math should end with $$") {
         Some("the `$` here matches an earlier `$$`, so TeX assumed `$$` both times; close the display with `$$`")
+    } else if message.starts_with("Display math should end with \\Ustopdisplaymath") {
+        Some("LuaTeX expected `\\Ustopdisplaymath` or `$$` here and assumed it was typed; close the display explicitly")
     } else if message.starts_with("Missing control sequence") {
         Some("supply a command name such as `\\name` after the definition or assignment command")
     } else if message.starts_with("Missing { inserted") {

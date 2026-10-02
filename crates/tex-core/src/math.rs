@@ -713,6 +713,53 @@ impl Engine {
     /// texmath.c `after_math`; `closer` is the `\Ustartmath` family command
     /// (character, control sequence) that ended the formula instead of `$`.
     pub(crate) fn exit_math_with(&mut self, closer: Option<(u8, crate::token::CsId)>) {
+        self.exit_math_core(closer, true);
+    }
+
+    /// texmath.c `finish_display_alignment`: the alignment of a display is
+    /// over, so what follows it is checked at once. Assignments are done,
+    /// then the next token must close the display (`$` and another `$`, or
+    /// `\Ustopdisplaymath`); with `\suppressmathparerror` a `\par` there is
+    /// skipped. Anything else is an error that eats the token. The display
+    /// then ends without scanning for a closing `$$` again.
+    pub(crate) fn finish_display_alignment(&mut self) {
+        use crate::eqtb::Equiv;
+        use crate::prim::Prim;
+        use crate::uprim::UPrim;
+        let mut t = self.do_assignments();
+        loop {
+            if t.is_char() && t.cc() == 3 {
+                // check_second_math_shift
+                let t2 = self.get_x_raw();
+                if t2 != crate::input::EOF_MARKER && !(t2.is_char() && t2.cc() == 3) {
+                    self.error("Display math should end with $$");
+                    self.push_token(t2);
+                }
+            } else if self.eqtb.int_params[IntParam::SuppressMathParError.idx() as usize] != 0
+                && t.is_cs()
+                && matches!(self.eqtb.resolve(t.cs_id()), Some(Equiv::Prim(Prim::Par)))
+            {
+                t = self.get_x_raw();
+                continue;
+            } else {
+                // check_display_math_end: `cur_chr` must be the style of
+                // \Ustopdisplaymath (cramped display, 1)
+                let closes = if t.is_cs() {
+                    matches!(self.eqtb.resolve(t.cs_id()), Some(Equiv::Prim(Prim::U(UPrim::UStopDisplayMath))))
+                } else {
+                    t.chr() == 1
+                };
+                if !closes {
+                    self.error("Display math should end with \\Ustopdisplaymath");
+                }
+            }
+            break;
+        }
+        self.exit_math_core(None, false);
+    }
+
+    /// `check_end` is off when the display's closing was already checked.
+    fn exit_math_core(&mut self, closer: Option<(u8, crate::token::CsId)>, check_end: bool) {
         if let Some((chr, id)) = closer {
             if chr == 0 || chr == 2 {
                 // `\Ustartmath` inside math: luatex complains, then closes the
@@ -741,20 +788,22 @@ impl Engine {
             danger = true;
         }
         if was_display {
-            match closer {
-                // tex.web §1197 <Check that another $ follows>: get_x_token; a
-                // non-math-shift token is an error and is read again (back_error)
-                None => {
-                    let t = self.get_token();
-                    if t != crate::input::EOF_MARKER && !(t.is_char() && t.cc() == 3) {
-                        self.error("Display math should end with $$");
-                        self.push_token(t);
+            if check_end {
+                match closer {
+                    // tex.web §1197 <Check that another $ follows>: get_x_token; a
+                    // non-math-shift token is an error and is read again (back_error)
+                    None => {
+                        let t = self.get_token();
+                        if t != crate::input::EOF_MARKER && !(t.is_char() && t.cc() == 3) {
+                            self.error("Display math should end with $$");
+                            self.push_token(t);
+                        }
                     }
-                }
-                // texmath.c check_display_math_end
-                Some((chr, _)) => {
-                    if chr != 1 {
-                        self.error("Display math should end with \\Ustopdisplaymath");
+                    // texmath.c check_display_math_end
+                    Some((chr, _)) => {
+                        if chr != 1 {
+                            self.error("Display math should end with \\Ustopdisplaymath");
+                        }
                     }
                 }
             }
@@ -2164,6 +2213,7 @@ impl Engine {
         self.append_mlist_node(Node::Overline {
             body: group,
             under,
+            fam: crate::boxes::NO_FAM,
             packed: Box::new(vb), attr: self.eqtb.cur_attr,
         });
     }
@@ -2350,8 +2400,8 @@ impl Engine {
             left: ld,
             right: rd,
             middle: middle.unwrap_or_default(),
-            options: if delimited && self.engine_kind == crate::engine::EngineKind::LuaTeX { options | noad_option::FRAC_DELIMITED } else { options },
-            fam: crate::boxes::FRAC_NO_FAM,
+            options: if delimited && self.engine_kind == crate::engine::EngineKind::LuaTeX { options | noad_option::FRAC_DELIMS } else { options },
+            fam: crate::boxes::NO_FAM,
             origin, attr: self.eqtb.cur_attr,
         });
     }
@@ -3267,7 +3317,7 @@ impl Engine {
                 if self.engine_kind == crate::engine::EngineKind::LuaTeX && (sup.is_some() || sub.is_some()) {
                     if let Some((spec, body, _)) = accent_noad_of(nucleus) {
                         let (b, consumed) =
-                            self.make_math_accent_lua(&spec, body, sup.as_deref(), sub.as_deref(), style);
+                            self.make_math_accent_lua(&spec, body, sup.as_deref(), sub.as_deref(), style, nucleus.first().map_or(crate::boxes::Attr::NONE, Node::attr));
                         if consumed {
                             return vec![b];
                         }
@@ -3333,18 +3383,20 @@ impl Engine {
                 middle,
                 options,
                 fam,
-                origin, .. } => {
+                origin,
+                attr } => {
                 if self.engine_kind == crate::engine::EngineKind::LuaTeX {
                     vec![self.make_fraction_lua(
                         num,
                         den,
                         *thickness,
-                        noad_option::has(*options, noad_option::FRAC_DELIMITED).then_some(left),
-                        noad_option::has(*options, noad_option::FRAC_DELIMITED).then_some(right),
+                        noad_option::has(*options, noad_option::FRAC_LEFT_DELIM).then_some(left),
+                        noad_option::has(*options, noad_option::FRAC_RIGHT_DELIM).then_some(right),
                         (!middle.is_null()).then_some(middle),
-                        *options & !noad_option::FRAC_DELIMITED,
-                        if *fam == crate::boxes::FRAC_NO_FAM { -1 } else { i32::from(*fam) },
+                        *options & !noad_option::FRAC_DELIMS,
+                        if *fam == crate::boxes::NO_FAM { -1 } else { i32::from(*fam) },
                         style,
+                        *attr,
                     )]
                 } else {
                     let opt = |d: &Delim| (!d.is_null()).then_some(*d);
@@ -3359,17 +3411,17 @@ impl Engine {
                 options,
                 degree,
                 origin,
-                ..
+                attr,
             } => {
                 if self.engine_kind == crate::engine::EngineKind::LuaTeX {
-                    vec![self.make_radical_lua(body, delim, *subtype, *width, *options, degree.as_deref(), style)]
+                    vec![self.make_radical_lua(body, delim, *subtype, *width, *options, degree.as_deref(), style, *attr)]
                 } else {
                     self.make_radical(body, *delim, style, origin)
                 }
             }
-            Node::Accent { spec, body, origin, .. } => {
+            Node::Accent { spec, body, origin, attr } => {
                 if self.engine_kind == crate::engine::EngineKind::LuaTeX {
-                    vec![self.make_math_accent_lua(spec, body, None, None, style).0]
+                    vec![self.make_math_accent_lua(spec, body, None, None, style, *attr).0]
                 } else {
                     let accent = spec.top.map_or((0, 0), |(fam, c)| (fam, c as u8));
                     self.make_accent(accent, body, style, None, None, origin)

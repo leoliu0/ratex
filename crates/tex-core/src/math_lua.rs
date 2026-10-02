@@ -104,7 +104,7 @@ impl Engine {
                 width,
                 options,
                 degree: None,
-                origin, attr: crate::boxes::Attr::NONE,
+                origin, attr: self.eqtb.cur_attr,
             });
             return;
         }
@@ -122,7 +122,7 @@ impl Engine {
             width,
             options,
             degree,
-            origin, attr: crate::boxes::Attr::NONE,
+            origin, attr: self.eqtb.cur_attr,
         });
     }
 
@@ -409,6 +409,7 @@ impl Engine {
         options: u16,
         degree: Option<&[Node]>,
         g: GStyle,
+        att: crate::boxes::Attr,
     ) -> Node {
         let size = font_size(g);
         let dt = delim_tuple(Some(delim));
@@ -416,7 +417,7 @@ impl Engine {
         let size_up = size + usize::from(size != 2);
         match subtype {
             7 => {
-                let (e, info) = self.do_delimiter(dt, size, width, true, g, true, 0);
+                let (e, info) = self.do_delimiter(dt, size, width, true, g, true, 0, att);
                 let (mut w, _, _) = box_whd(&e);
                 let mut list = vec![e];
                 if !info.stack && width != 0 && width != w {
@@ -441,7 +442,7 @@ impl Engine {
                 let mut n = self.lm_clean_list(body, nuc_style, crate::boxes::list_subtype::NUCLEUS);
                 let wd = if width != 0 { width } else { box_whd(&n).0 };
                 let dsize = if subtype >= 5 { size_up } else { size };
-                let (d, info) = self.do_delimiter(dt, dsize, wd, true, g, true, 0);
+                let (d, info) = self.do_delimiter(dt, dsize, wd, true, g, true, 0, att);
                 let mut d = self.lua_check_radical(width, options, info.stack, d, &n);
                 Self::lua_fixup_widths(width, &mut n, &mut d);
                 let (hn, dn) = (box_whd(&n).1, box_whd(&n).2);
@@ -512,7 +513,7 @@ impl Engine {
                 let mut y;
                 if theta == UNDEFINED_MATH_PARAMETER {
                     let fr = self.mparam_err(MATH_PARAM_FRACTION_RULE, g);
-                    y = self.do_delimiter(dt, size, hx + dx + clr + fr, false, g, true, 0).0;
+                    y = self.do_delimiter(dt, size, hx + dx + clr + fr, false, g, true, 0, att).0;
                     theta = match &y {
                         Node::Box { list, .. } => match list.first() {
                             Some(Node::Box { kind, list: l2, .. }) if *kind == HBOX => match l2.first() {
@@ -525,7 +526,7 @@ impl Engine {
                         _ => box_whd(&y).1,
                     };
                 } else {
-                    y = self.do_delimiter(dt, size, hx + dx + clr + theta, false, g, true, 0).0;
+                    y = self.do_delimiter(dt, size, hx + dx + clr + theta, false, g, true, 0, att).0;
                 }
                 let (_, hy, dy) = box_whd(&y);
                 let delta = (dy + hy - theta) - (hx + dx + clr);
@@ -573,6 +574,7 @@ impl Engine {
         options: u16,
         fam: i32,
         g: GStyle,
+        att: crate::boxes::Attr,
     ) -> Node {
         let size = font_size(g);
         let mut thickness = thickness;
@@ -592,7 +594,7 @@ impl Engine {
         let mut z = self.lm_clean_list(den, den_style(g), crate::boxes::list_subtype::DENOMINATOR);
         let axis = self.math_axis_size(size);
         let m = if let Some(md) = middle {
-            Some(self.do_delimiter(delim_tuple(Some(md)), size, 0, false, g, true, 0).0)
+            Some(self.do_delimiter(delim_tuple(Some(md)), size, 0, false, g, true, 0, att).0)
         } else {
             let (wx, _, _) = box_whd(&x);
             let (wz, _, _) = box_whd(&z);
@@ -708,8 +710,8 @@ impl Engine {
             let (_, hv, dv) = box_whd(&v);
             dsize = self.lm_delimiter_height(dv, hv, true, size);
         }
-        let (l, _) = self.do_delimiter(delim_tuple(left), size, dsize, false, g, true, 0);
-        let (r, _) = self.do_delimiter(delim_tuple(right), size, dsize, false, g, true, 0);
+        let (l, _) = self.do_delimiter(delim_tuple(left), size, dsize, false, g, true, 0, att);
+        let (r, _) = self.do_delimiter(delim_tuple(right), size, dsize, false, g, true, 0, att);
         with_list_subtype(hpack_nat(self, vec![l, v, r]), crate::boxes::list_subtype::FRACTION)
     }
 
@@ -723,6 +725,7 @@ impl Engine {
         sup: Option<&[Node]>,
         sub: Option<&[Node]>,
         g: GStyle,
+        att: crate::boxes::Attr,
     ) -> (Node, bool) {
         let size = font_size(g);
         let topstretch = spec.subtype % 2 == 0;
@@ -796,7 +799,7 @@ impl Engine {
                     let tag = self.mc_tag(f, c);
                     if tag == CharTag::Ext && self.mc_variants(f, c, true).is_some() {
                         let ov = self.mparam_err(MATH_PARAM_CONNECTOR_OVERLAP_MIN, g);
-                        y = Some(self.get_delim_box(f, c, w, ov, true));
+                        y = Some(self.get_delim_box(f, c, w, ov, true, att));
                         ext = true;
                         break;
                     } else if let CharTag::List(yy) = tag {

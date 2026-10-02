@@ -177,10 +177,13 @@ pub mod noad_option {
     pub const NO_SUPER_SCRIPT: u16 = 0x22 + 0x08;
     pub const NO_SCRIPT: u16 = 0x23 + 0x08;
     pub const NO_RULE: u16 = 0x24 + 0x08;
-    /// not a luatex option: a fraction scanned with `withdelims` (its two
-    /// delimiters exist even when they are the null delimiter, which typesets
-    /// as an unshifted empty box; without them the box is axis-shifted)
-    pub const FRAC_DELIMITED: u16 = 0x4000;
+    /// not luatex options: the fraction has a left / right delimiter node
+    /// (`\withdelims`, or a Lua fraction noad with `left` / `right` set), even
+    /// when it is the null delimiter, which typesets as an unshifted empty
+    /// box; without the node the empty box is axis-shifted
+    pub const FRAC_LEFT_DELIM: u16 = 0x4000;
+    pub const FRAC_RIGHT_DELIM: u16 = 0x2000;
+    pub const FRAC_DELIMS: u16 = FRAC_LEFT_DELIM | FRAC_RIGHT_DELIM;
 
     /// `(options & bit) == bit`
     pub fn has(options: u16, bit: u16) -> bool {
@@ -600,8 +603,12 @@ impl DiscNode {
     }
 }
 
-/// `Node::Frac::fam` of a fraction that names no family (luatex -1).
-pub const FRAC_NO_FAM: u8 = 255;
+/// `Node::Box::dir` of a box that no direction was ever assigned to (luatex
+/// `new_node` sets `box_dir` to -1; `\showbox` prints it as `-RTT`).
+pub const BOX_DIR_UNSET: u8 = 255;
+
+/// `fam` of a fraction or over/under noad that names no family (luatex -1).
+pub const NO_FAM: u8 = 255;
 
 /// Stable identity for a math atom that may need to report a missing glyph
 /// after TeX has selected the conversion style and font. Source marks live in
@@ -860,7 +867,8 @@ pub enum Node {
         /// e-TeX `box_lr` (the hlist subtype): 0, [`BOX_LR_REVERSED`] once
         /// ship_out reversed the list, [`BOX_LR_DLIST`] for display math.
         lr: u8,
-        /// LuaTeX `box_dir` (`\boxdir`): 0 TLT, 1 TRT, 2 LTL, 3 RTT.
+        /// LuaTeX `box_dir` (`\boxdir`): 0 TLT, 1 TRT, 2 LTL, 3 RTT;
+        /// [`BOX_DIR_UNSET`] for a box `node.new` made (luatex -1).
         dir: u8,
         /// LuaTeX `list_subtypes` (`line`, `box`, `indent`, `alignment`, `cell`,
         /// `equation`, ..., `radical`): see [`list_subtype`].
@@ -909,7 +917,7 @@ pub enum Node {
     Frac {
         /// luatex `fractionoptions` (`noad_option_*`, see [`noad_option`])
         options: u16,
-        /// luatex `fraction_fam`: `FRAC_NO_FAM` unless a Lua fraction noad sets
+        /// luatex `fraction_fam`: `NO_FAM` unless a Lua fraction noad sets
         /// `fam`; with `\mathrulethicknessmode` its font gives the rule
         /// thickness (one byte keeps the node within its size budget)
         fam: u8,
@@ -981,6 +989,9 @@ pub enum Node {
     Overline {
         body: NodeList,
         under: bool,
+        /// luatex `noad_fam`: [`NO_FAM`] unless a Lua noad sets `fam`; with
+        /// `\mathrulethicknessmode` its font gives the bar thickness
+        fam: u8,
         /// the already-packed bar-and-body box the conversion yields; `body`
         /// is the original field, kept for `\showlists` (tex.web §692)
         packed: Box<Node>,

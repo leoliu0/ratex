@@ -33,7 +33,7 @@ enum Special {
 #[derive(Clone, Debug)]
 enum Nuc {
     None,
-    Char { fam: u8, c: u32, origin: MathDiagnosticOrigin },
+    Char { fam: u8, c: u32, origin: MathDiagnosticOrigin, attr: crate::boxes::Attr },
     Mlist(NodeList),
     /// a `\left...\right` list: starts and ends with its fence markers
     Fenced(NodeList),
@@ -54,11 +54,13 @@ struct Noad {
     text_char: bool,
     /// luatex `noadoptions` (`noad_option::NO_SUB_SCRIPT`, `NO_SUPER_SCRIPT`)
     options: u16,
+    /// luatex `noad_fam` of an over/under noad ([`crate::boxes::NO_FAM`] for none)
+    fam: u8,
 }
 
 impl Noad {
     fn new(class: u8, nuc: Nuc) -> Noad {
-        Noad { class, special: Special::None, opsub: OP_NORMAL, nuc, sup: None, sub: None, text_char: false, options: 0 }
+        Noad { class, special: Special::None, opsub: OP_NORMAL, nuc, sup: None, sub: None, text_char: false, options: 0, fam: crate::boxes::NO_FAM }
     }
     fn has_scripts(&self) -> bool {
         self.sup.is_some() || self.sub.is_some()
@@ -80,7 +82,7 @@ enum Item {
     /// a fraction/radical/accent converted by `convert_atom`; `inner`
     /// spacing class for fractions
     Raw { node: Node, frac: bool },
-    Fence { side: Side, delim: Option<(u8, u32, u8, u32)>, fence: crate::boxes::FenceOpts },
+    Fence { side: Side, delim: Option<(u8, u32, u8, u32)>, fence: crate::boxes::FenceOpts, attr: crate::boxes::Attr },
     Style(GStyle),
     NonScript,
     Other(Node),
@@ -131,11 +133,11 @@ impl Engine {
             match n {
                 Node::Style(s, _) => out.push(Slot::new(Item::Style(crate::math::gstyle_of(*s)))),
                 Node::NonScript => out.push(Slot::new(Item::NonScript)),
-                Node::DelimBox { small, large, size, fence, .. } => {
+                Node::DelimBox { small, large, size, fence, attr, .. } => {
                     let d = Some((small.0, u32::from(small.1), large.0, u32::from(large.1)));
                     match *size {
                         0 if fenced && i == 0 => {
-                            out.push(Slot::new(Item::Fence { side: Side::Left, delim: d, fence: *fence }))
+                            out.push(Slot::new(Item::Fence { side: Side::Left, delim: d, fence: *fence, attr: *attr }))
                         }
                         0 => {
                             let mut depth = 1usize;
@@ -170,27 +172,27 @@ impl Engine {
                             i = end;
                         }
                         1 if fenced && i + 1 == list.len() => {
-                            out.push(Slot::new(Item::Fence { side: Side::Right, delim: d, fence: *fence }))
+                            out.push(Slot::new(Item::Fence { side: Side::Right, delim: d, fence: *fence, attr: *attr }))
                         }
                         1 => {
                             // stray right delimiter: a close noad
                             out.push(Slot::new(Item::Noad(Noad::new(
                                 CL_CLOSE,
-                                Nuc::Char { fam: small.0, c: u32::from(small.1), origin: MathDiagnosticOrigin::default() },
+                                Nuc::Char { fam: small.0, c: u32::from(small.1), origin: MathDiagnosticOrigin::default(), attr: *attr },
                             ))));
                         }
-                        3 if fenced => out.push(Slot::new(Item::Fence { side: Side::Middle, delim: d, fence: *fence })),
+                        3 if fenced => out.push(Slot::new(Item::Fence { side: Side::Middle, delim: d, fence: *fence, attr: *attr })),
                         3 => {}
-                        4 => out.push(Slot::new(Item::Fence { side: Side::Plain, delim: d, fence: *fence })),
+                        4 => out.push(Slot::new(Item::Fence { side: Side::Plain, delim: d, fence: *fence, attr: *attr })),
                         _ => out.push(Slot::new(Item::Noad(Noad::new(
                             CL_ORD,
-                            Nuc::Char { fam: small.0, c: u32::from(small.1), origin: MathDiagnosticOrigin::default() },
+                            Nuc::Char { fam: small.0, c: u32::from(small.1), origin: MathDiagnosticOrigin::default(), attr: *attr },
                         )))),
                     }
                 }
                 Node::MathChar { fam: 255, .. } => {}
-                Node::MathChar { fam, c, class, origin, .. } => {
-                    let mut noad = Noad::new(*class, Nuc::Char { fam: *fam, c: *c, origin: origin.clone() });
+                Node::MathChar { fam, c, class, origin, attr } => {
+                    let mut noad = Noad::new(*class, Nuc::Char { fam: *fam, c: *c, origin: origin.clone(), attr: *attr });
                     noad.opsub = OP_NORMAL;
                     out.push(Slot::new(Item::Noad(noad)));
                 }
@@ -214,9 +216,10 @@ impl Engine {
                     noad.special = Special::VCenter;
                     out.push(Slot::new(Item::Noad(noad)));
                 }
-                Node::Overline { body, under, .. } => {
+                Node::Overline { body, under, fam, .. } => {
                     let mut noad = Noad::new(CL_ORD, Nuc::Mlist(body.clone()));
                     noad.special = if *under { Special::Under } else { Special::Over };
+                    noad.fam = *fam;
                     out.push(Slot::new(Item::Noad(noad)));
                 }
                 Node::Empty | Node::InsDisc => {}
@@ -237,13 +240,14 @@ impl Engine {
             _ => op,
         };
         let nuc = match payload {
-            [Node::MathChar { fam, c, class: CL_OP, origin, .. }] if *fam != 255 => {
-                Nuc::Char { fam: *fam, c: *c, origin: origin.clone() }
+            [Node::MathChar { fam, c, class: CL_OP, origin, attr }] if *fam != 255 => {
+                Nuc::Char { fam: *fam, c: *c, origin: origin.clone(), attr: *attr }
             }
-            [Node::DelimBox { small, size: 2, .. }] => Nuc::Char {
+            [Node::DelimBox { small, size: 2, attr, .. }] => Nuc::Char {
                 fam: small.0,
                 c: u32::from(small.1),
                 origin: MathDiagnosticOrigin::default(),
+                attr: *attr,
             },
             _ => Nuc::Mlist(payload.to_vec()),
         };
@@ -282,16 +286,16 @@ impl Engine {
                 }
                 n
             }
-            [Node::MathChar { fam, c, class, origin, .. }] => {
-                let mut n = Noad::new(*class, Nuc::Char { fam: *fam, c: *c, origin: origin.clone() });
+            [Node::MathChar { fam, c, class, origin, attr }] => {
+                let mut n = Noad::new(*class, Nuc::Char { fam: *fam, c: *c, origin: origin.clone(), attr: *attr });
                 if *class == CL_OP {
                     n.opsub = OP_NOLIMITS;
                 }
                 n
             }
-            [Node::DelimBox { small, size: 2, .. }] => Noad::new(
+            [Node::DelimBox { small, size: 2, attr, .. }] => Noad::new(
                 CL_ORD,
-                Nuc::Char { fam: small.0, c: u32::from(small.1), origin: MathDiagnosticOrigin::default() },
+                Nuc::Char { fam: small.0, c: u32::from(small.1), origin: MathDiagnosticOrigin::default(), attr: *attr },
             ),
             [Node::Box { .. }] => Noad::new(CL_ORD, Nuc::Box(nucleus[0].clone())),
             [Node::VCenter { box_node }] => {
@@ -299,9 +303,10 @@ impl Engine {
                 n.special = Special::VCenter;
                 n
             }
-            [Node::Overline { body, under, .. }] => {
+            [Node::Overline { body, under, fam, .. }] => {
                 let mut n = Noad::new(CL_ORD, Nuc::Mlist(body.clone()));
                 n.special = if *under { Special::Under } else { Special::Over };
+                n.fam = *fam;
                 n
             }
             [n @ (Node::Accent { .. } | Node::Radical { .. })] => Noad::new(CL_ORD, Nuc::Atom(n.clone())),
@@ -612,8 +617,8 @@ impl Engine {
 
     fn lm_clean_nuc(&mut self, nuc: &Nuc, s: GStyle, st: u8) -> Node {
         match nuc {
-            Nuc::Char { fam, c, origin } => {
-                let l = [Node::MathChar { fam: *fam, c: *c, class: CL_ORD, origin: origin.clone(), attr: crate::boxes::Attr::NONE }];
+            Nuc::Char { fam, c, origin, attr } => {
+                let l = [Node::MathChar { fam: *fam, c: *c, class: CL_ORD, origin: origin.clone(), attr: *attr }];
                 let nodes = self.lm_convert(&l, s, false, false);
                 self.lm_finish_clean(nodes, st)
             }
@@ -707,8 +712,29 @@ impl Engine {
         }
     }
 
+    /// The bar thickness of an over/under noad: `\mathrulethicknessmode`
+    /// takes it from the math font of the noad's own `fam` when that font has
+    /// the parameter (`par` is its `MathConstants` index).
+    fn lm_bar_thickness(&mut self, slots: &[Slot], i: usize, cur_style: GStyle, base: i32, par: usize) -> i32 {
+        let fam = match &slots[i].item {
+            Item::Noad(q) => q.fam,
+            _ => crate::boxes::NO_FAM,
+        };
+        if self.eqtb.int_params[IntParam::MathRuleThicknessMode.idx() as usize] > 0 && fam != crate::boxes::NO_FAM {
+            let f = self.fam_fnt(u32::from(fam), size_of_style(cur_style));
+            if self.assume_new_math(f) {
+                let t = self.font_math_par(f, par);
+                if t != UNDEFINED_MATH_PARAMETER {
+                    return t;
+                }
+            }
+        }
+        base
+    }
+
     fn lm_make_over(&mut self, slots: &mut Vec<Slot>, i: usize, cur_style: GStyle) {
-        let thickness = self.mparam_err(MATH_PARAM_OVERBAR_RULE, cur_style);
+        let base = self.mparam_err(MATH_PARAM_OVERBAR_RULE, cur_style);
+        let thickness = self.lm_bar_thickness(slots, i, cur_style, base, mc::OVERBAR_RULE_THICKNESS);
         let nuc = self.lm_nuc_of(slots, i);
         let b = self.lm_clean_nuc(&nuc, cramped(cur_style), crate::boxes::list_subtype::NUCLEUS);
         let vgap = self.mparam_err(MATH_PARAM_OVERBAR_VGAP, cur_style);
@@ -720,7 +746,8 @@ impl Engine {
     }
 
     fn lm_make_under(&mut self, slots: &mut Vec<Slot>, i: usize, cur_style: GStyle) {
-        let thickness = self.mparam_err(MATH_PARAM_UNDERBAR_RULE, cur_style);
+        let base = self.mparam_err(MATH_PARAM_UNDERBAR_RULE, cur_style);
+        let thickness = self.lm_bar_thickness(slots, i, cur_style, base, mc::UNDERBAR_RULE_THICKNESS);
         let nuc = self.lm_nuc_of(slots, i);
         let x = self.lm_clean_nuc(&nuc, cur_style, crate::boxes::list_subtype::NUCLEUS);
         let vgap = self.mparam_err(MATH_PARAM_UNDERBAR_VGAP, cur_style);
@@ -795,14 +822,14 @@ impl Engine {
                         1 | 5 => set_nuc_char(&mut slots[i], repl),
                         2 | 6 => set_nuc_char(&mut slots[i + 1], repl),
                         3 | 7 | 11 => {
-                            let origin = match &slots[i].item {
+                            let (origin, attr) = match &slots[i].item {
                                 Item::Noad(q) => match &q.nuc {
-                                    Nuc::Char { origin, .. } => origin.clone(),
-                                    _ => MathDiagnosticOrigin::default(),
+                                    Nuc::Char { origin, attr, .. } => (origin.clone(), *attr),
+                                    _ => (MathDiagnosticOrigin::default(), crate::boxes::Attr::NONE),
                                 },
-                                _ => MathDiagnosticOrigin::default(),
+                                _ => (MathDiagnosticOrigin::default(), crate::boxes::Attr::NONE),
                             };
-                            let mut r = Noad::new(CL_ORD, Nuc::Char { fam, c: repl, origin });
+                            let mut r = Noad::new(CL_ORD, Nuc::Char { fam, c: repl, origin, attr });
                             r.text_char = ltype >= 11;
                             slots.insert(i + 1, Slot::new(Item::Noad(r)));
                         }
@@ -853,7 +880,7 @@ impl Engine {
             }
         }
         let mut cur_f = self.lm_cur_f;
-        if let Nuc::Char { fam, c, origin } = nuc.clone() {
+        if let Nuc::Char { fam, c, origin, attr: nuc_attr } = nuc.clone() {
             let (f, mut cc) = self.lm_fetch(fam, c, size);
             cur_f = f;
             let mut x;
@@ -861,7 +888,7 @@ impl Engine {
             if cur_style < 2 {
                 let ok_size = self.mparam(MATH_PARAM_OPERATOR_SIZE, cur_style);
                 if ok_size != UNDEFINED_MATH_PARAMETER {
-                    let (xb, info) = self.do_delimiter(Some((fam, cc, 0, 0)), 0, ok_size, false, cur_style, true, 0);
+                    let (xb, info) = self.do_delimiter(Some((fam, cc, 0, 0)), 0, ok_size, false, cur_style, true, 0, nuc_attr);
                     x = xb;
                     delta = info.delta;
                     if delta != 0 && has_sub && opsub != OP_LIMITS {
@@ -883,7 +910,7 @@ impl Engine {
                         cc = next;
                     }
                     delta = self.mc_metrics(f, cc).italic;
-                    let tmp = Nuc::Char { fam, c: cc, origin: origin.clone() };
+                    let tmp = Nuc::Char { fam, c: cc, origin: origin.clone(), attr: nuc_attr };
                     x = self.lm_clean_nuc(&tmp, cur_style, crate::boxes::list_subtype::NUCLEUS);
                     if delta != 0 && has_sub && opsub != OP_LIMITS {
                         if let Node::Box { w, .. } = &mut x {
@@ -1324,8 +1351,8 @@ impl Engine {
             }
             let mut new_hlist: NodeList = slot.hlist.clone();
             let mut fence_right = false;
-            if let Item::Fence { side, delim, fence } = &slot.item {
-                let (hl, class) = self.lm_make_left_right(*side, *delim, *fence, style, max_d, max_hl);
+            if let Item::Fence { side, delim, fence, attr } = &slot.item {
+                let (hl, class) = self.lm_make_left_right(*side, *delim, *fence, *attr, style, max_d, max_hl);
                 new_hlist = hl;
                 t = class;
                 fence_right = *side == Side::Right;
@@ -1367,6 +1394,7 @@ impl Engine {
         side: Side,
         delim: Option<(u8, u32, u8, u32)>,
         fence: crate::boxes::FenceOpts,
+        att: crate::boxes::Attr,
         style: GStyle,
         max_d: i32,
         max_h: i32,
@@ -1381,7 +1409,7 @@ impl Engine {
         };
         let tmp = if fence.height != 0 || fence.depth != 0 {
             let delta = fence.height + fence.depth;
-            let (mut t, info) = self.do_delimiter(delim, size, delta, false, style, false, same);
+            let (mut t, info) = self.do_delimiter(delim, size, delta, false, style, false, same, att);
             let (mut fh, mut fd) = (fence.height, fence.depth);
             if info.stack {
                 crate::math_otf::set_shift(&mut t, fd);
@@ -1411,7 +1439,7 @@ impl Engine {
         } else {
             let axis = !no::has(fence.options, no::NO_AXIS);
             let delta = self.lm_delimiter_height(max_d, max_h, axis, size);
-            self.do_delimiter(delim, size, delta, false, style, axis, same).0
+            self.do_delimiter(delim, size, delta, false, style, axis, same, att).0
         };
         let class = if (0..=7).contains(&fence.class) {
             fence.class as u8

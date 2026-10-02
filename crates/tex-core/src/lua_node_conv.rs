@@ -363,7 +363,7 @@ impl Engine {
         nd.f[sl::B_HEIGHT] = *h;
         nd.f[sl::B_DEPTH] = *d;
         nd.f[sl::B_ORDER] = crate::lua_node_pack::lua_order_of(*glue_order);
-        nd.f[sl::B_DIR] = i32::from(*dir);
+        nd.f[sl::B_DIR] = if *dir == boxes::BOX_DIR_UNSET { -1 } else { i32::from(*dir) };
         nd.f[sl::B_SHIFT] = *shift;
         nd.f[sl::B_SIGN] = i32::from(*glue_sign);
         nd.fl = *glue_set;

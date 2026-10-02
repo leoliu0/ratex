@@ -952,6 +952,20 @@ pub(crate) fn box_shift(n: &Node) -> i32 {
     }
 }
 
+/// luatex `reset_attributes` over a freshly built box tree: every node of
+/// `n` takes attribute list `a`.
+pub(crate) fn stamp_attr(n: &mut Node, a: crate::boxes::Attr) {
+    if a == crate::boxes::Attr::NONE {
+        return;
+    }
+    n.set_attr(a);
+    if let Node::Box { list, .. } = n {
+        for c in list.iter_mut() {
+            stamp_attr(c, a);
+        }
+    }
+}
+
 impl Engine {
     /// `char_box`: a box with one glyph whose width includes the italic
     /// correction.
@@ -1008,29 +1022,42 @@ impl Engine {
     }
 
     /// mlist.c `get_delim_box`: the `make_extensible` callback may build the
-    /// box; no result means the default construction.
-    pub(crate) fn get_delim_box(&mut self, fnt: FontId, chr: u32, v: i32, min_overlap: i32, horizontal: bool) -> Node {
+    /// box (it receives the delimiter's attribute list); no result means the
+    /// default construction, and anything but a box is a fatal error.
+    pub(crate) fn get_delim_box(
+        &mut self,
+        fnt: FontId,
+        chr: u32,
+        v: i32,
+        min_overlap: i32,
+        horizontal: bool,
+        att: crate::boxes::Attr,
+    ) -> Node {
         use crate::lua_callbacks::{Cb, CbArg, CbRet};
         if self.is_luamath() && self.cb_defined(Cb::MakeExtensible) {
+            let att_list = self.lua_attr_handle(att);
             let args = vec![
                 CbArg::Int(i64::from(fnt)),
                 CbArg::Int(i64::from(chr)),
                 CbArg::Int(i64::from(v)),
                 CbArg::Int(i64::from(min_overlap)),
                 CbArg::Bool(horizontal),
-                CbArg::Nil,
+                if att_list == 0 { CbArg::Nil } else { CbArg::Node(att_list) },
             ];
             if let Some(CbRet::Node(h)) = self.lua_cb_call(Cb::MakeExtensible, "make_extensible", args).as_deref().and_then(|r| r.first()) {
-                let list = self.lua_nodes_to_engine(i64::from(*h));
-                match list.into_iter().next() {
-                    Some(b @ Node::Box { .. }) => return b,
-                    _ => self.error(&format!(
-                        "invalid extensible character {chr} created for font {fnt}, [h|v]list expected"
-                    )),
+                let h = u32::try_from(*h).unwrap_or(0);
+                if matches!(self.lua_nodes.id(h), crate::lua_node::HLIST | crate::lua_node::VLIST) {
+                    if let Some(b @ Node::Box { .. }) = self.lua_nodes_to_engine(i64::from(h)).into_iter().next() {
+                        return b;
+                    }
                 }
+                self.fatal_error(&format!(
+                    "error:  (fonts): invalid extensible character {chr} created for font {fnt}, [h|v]list expected"
+                ));
+                return null_box(HBOX);
             }
         }
-        self.make_extensible(fnt, chr, v, min_overlap, horizontal)
+        self.make_extensible(fnt, chr, v, min_overlap, horizontal, att)
     }
 
     /// luatex `make_extensible`.
@@ -1041,6 +1068,7 @@ impl Engine {
         v: i32,
         min_overlap: i32,
         horizontal: bool,
+        att: crate::boxes::Attr,
     ) -> Node {
         let mut b = with_list_subtype(
             null_box(if horizontal { HBOX } else { VBOX }),
@@ -1056,6 +1084,7 @@ impl Engine {
                 if let Node::Box { w, .. } = &mut b {
                     *w = self.eqtb.dim_params[crate::prim::DimParam::NullDelimiterSpace.idx() as usize];
                 }
+                stamp_attr(&mut b, att);
                 return b;
             }
             if cur.extender > 0 {
@@ -1154,6 +1183,7 @@ impl Engine {
                 *h = b_max;
             }
         }
+        stamp_attr(&mut b, att);
         b
     }
 
@@ -1170,6 +1200,7 @@ impl Engine {
         cur_style: GStyle,
         shift: bool,
         same_in: u8,
+        att: crate::boxes::Attr,
     ) -> (Node, DelimInfo) {
         let mut info = DelimInfo::default();
         if let Some((0, 0, 0, 0)) = d {
@@ -1179,6 +1210,7 @@ impl Engine {
                     *w = self.eqtb.dim_params[crate::prim::DimParam::NullDelimiterSpace.idx() as usize];
                 }
             }
+            stamp_attr(&mut b, att);
             return (b, info);
         }
         let mut f: FontId = 0;
@@ -1250,7 +1282,7 @@ impl Engine {
             if variants.is_some() {
                 parts_done = true;
                 let ov = self.mparam_err(MATH_PARAM_CONNECTOR_OVERLAP_MIN, cur_style);
-                b = self.get_delim_box(f, c, v, ov, flat);
+                b = self.get_delim_box(f, c, v, ov, flat, att);
                 let m = self.mc_metrics(f, x_start);
                 info.delta = if self.assume_new_math(f) { m.vert_italic } else { m.italic };
                 info.stack = true;
@@ -1259,6 +1291,7 @@ impl Engine {
                     info.same = emas;
                 }
                 b = self.char_box(f, c);
+                stamp_attr(&mut b, att);
                 info.delta = self.mc_metrics(f, c).italic;
                 info.stack = false;
             }
@@ -1269,6 +1302,7 @@ impl Engine {
                     *w = self.eqtb.dim_params[crate::prim::DimParam::NullDelimiterSpace.idx() as usize];
                 }
             }
+            stamp_attr(&mut b, att);
             info.stack = false;
         }
         if !flat {

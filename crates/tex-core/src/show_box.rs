@@ -393,6 +393,7 @@ impl<'a> BoxDisplay<'a> {
                 glue_order,
                 glue_set,
                 lr,
+                dir,
                 ..
             } => {
                 self.print_esc(match *kind {
@@ -424,7 +425,13 @@ impl<'a> BoxDisplay<'a> {
                     self.print_scaled(*shift);
                 }
                 if self.e.engine_kind == crate::engine::EngineKind::LuaTeX {
-                    self.print(", direction TLT");
+                    self.print(match *dir {
+                        1 => ", direction TRT",
+                        2 => ", direction LTL",
+                        3 => ", direction RTT",
+                        crate::boxes::BOX_DIR_UNSET => ", direction -RTT",
+                        _ => ", direction TLT",
+                    });
                 }
                 // etex.ch "Display if this box is never to be reversed"
                 if *kind == crate::boxes::HBOX

@@ -1,0 +1,10 @@
+32 warning  (pdfe lib): invalid arguments
+47 warning  (pdfe lib): lua <pdfe array> expected
+41 warning  (pdfe lib): lua <pdfe dictionary> expected
+267 warning  (pdfe lib): lua <pdfe document> expected
+24 warning  (pdfe lib): lua <pdfe reference> expected
+108 warning  (pdfe lib): lua <pdfe stream> expected
+1 warning  (pdfe lib): no valid pdf file ''
+1 warning  (pdfe lib): no valid pdf file '1'
+1 warning  (pdfe lib): no valid pdf file '<FIXDIR>/nonexist.pdf'
+56 warning  (pdfe lib): second argument should be integer or string

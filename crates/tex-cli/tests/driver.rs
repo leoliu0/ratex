@@ -387,15 +387,15 @@ fn copied_texmk_symlink_personalities_need_no_sibling_executables() {
     assert_eq!(physical_files, 1);
 
     // First line of `--version`, shaped like TeX Live 2026's `xetex --version`
-    // ("XeTeX 3.141592653-2.6-0.999998 (TeX Live 2026)"): XeTeX personalities
-    // name the XeTeX engine, the others stay pdfTeX/LuaTeX with Ratex's label.
+    // ("XeTeX 3.141592653-2.6-0.999998 (TeX Live 2026)"): the engine
+    // personalities name their engine, the build driver names Ratex.
     for (alias, engine) in [
-        ("ratex", "pdfTeX"),
-        ("texmk", "pdfTeX"),
+        ("ratex", "Rust TeX engine"),
+        ("texmk", "Rust TeX engine"),
         ("pdflatex", "pdfTeX"),
         ("xelatex", "XeTeX 3.141592653-2.6-0.999998"),
         ("lualatex", "LuaTeX"),
-        ("latexmk", "pdfTeX"),
+        ("latexmk", "Rust TeX engine"),
     ] {
         let output = Command::new(bin.join(alias))
             .arg("--version")

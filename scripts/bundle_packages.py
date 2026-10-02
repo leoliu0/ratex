@@ -1861,6 +1861,8 @@ SUPPLEMENT_PACKAGES = {
         "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/fandol.tar.xz",
         "upstream_sha256": "0b71eebb1c9b9fbd1eb4281f8af3f6c1a556a394ba2b6eae69ed9bb76c5fa56a",
         "upstream_size_bytes": 21582588,
+        "description": "Fandol Song, Hei, Kai and Fang OpenType fonts (ctex's default Chinese fonts on Linux)",
+        "source_obligations": 'GPL-3.0 with font exception. The OTF files are the upstream preferred form: CTAN and TeX Live distribute no other source for Fandol, so no corresponding-source archive is added to sources.tar.zst; the pinned upstream archive is the source distribution.',
         "select": [("fonts/opentype/public/fandol", (".otf",))],
         "map_files": [],
         "notices": [
@@ -1875,6 +1877,8 @@ SUPPLEMENT_PACKAGES = {
         "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/lm-math.tar.xz",
         "upstream_sha256": "876211c73c151423bb4d1fc17064847e09436ffbfd183d7f0078a1fa8ba9c387",
         "upstream_size_bytes": 377796,
+        "description": 'Latin Modern Math OpenType math font (unicode-math default)',
+        "source_obligations": 'GUST Font License; modification permitted provided renamed. Unmodified; no separate source obligations.',
         "select": [("fonts/opentype/public/lm-math", (".otf",))],
         "map_files": [],
         "notices": [
@@ -1890,6 +1894,8 @@ SUPPLEMENT_PACKAGES = {
         "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/tex-gyre-math.tar.xz",
         "upstream_sha256": "8972d19fec5a701499fb6edc86f3ac4266343d42140cf6ae27edd44c2e916da3",
         "upstream_size_bytes": 1182712,
+        "description": 'TeX Gyre math OpenType fonts',
+        "source_obligations": 'GUST Font License (DejaVu license for the DejaVu Math font). Unmodified; no separate source obligations.',
         "select": [("fonts/opentype/public/tex-gyre-math", (".otf",))],
         "map_files": [],
         "notices": [
@@ -1905,6 +1911,8 @@ SUPPLEMENT_PACKAGES = {
         "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/stix2-otf.tar.xz",
         "upstream_sha256": "9582ec46aeda3581f9e6a065559f7096872aaa6aad3f76c0aa94937a43c9403e",
         "upstream_size_bytes": 1382988,
+        "description": 'STIX Two Text and Math OpenType fonts',
+        "source_obligations": 'SIL Open Font License 1.1. Unmodified; no separate source obligations.',
         "select": [("fonts/opentype/public/stix2-otf", (".otf",))],
         "map_files": [],
         "notices": [
@@ -1919,6 +1927,8 @@ SUPPLEMENT_PACKAGES = {
         "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/xits.tar.xz",
         "upstream_sha256": "cdc51390b6ad6e1151d0186c5be4b24d8bc910e338fa472db282023825c74409",
         "upstream_size_bytes": 541240,
+        "description": 'XITS OpenType text and math fonts',
+        "source_obligations": 'SIL Open Font License 1.1. Unmodified; no separate source obligations.',
         "select": [("fonts/opentype/public/xits", (".otf",))],
         "map_files": [],
         "notices": [
@@ -1933,6 +1943,8 @@ SUPPLEMENT_PACKAGES = {
         "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/libertinus-fonts.tar.xz",
         "upstream_sha256": "376c628a838987fa9ae0ba407a0ed8731063acf911b8efdef917365a01705193",
         "upstream_size_bytes": 1795384,
+        "description": 'Libertinus OpenType fonts',
+        "source_obligations": 'SIL Open Font License 1.1. Unmodified; no separate source obligations.',
         "select": [("fonts/opentype/public/libertinus-fonts", (".otf",))],
         "map_files": [],
         "notices": [
@@ -3552,6 +3564,9 @@ def build_supplement(assets_dir, lock_file_path, cache_dir, legal_dir):
             for key in ("version", "revision", "license", "upstream_url", "upstream_sha256",
                         "upstream_size_bytes", "map_files")
         }
+        for key in ("description", "source_obligations"):
+            if key in info:
+                package_records[pkg_id][key] = info[key]
         package_records[pkg_id]["file_count"] = len(files)
         package_records[pkg_id]["files"] = files
         if info.get("notices"):

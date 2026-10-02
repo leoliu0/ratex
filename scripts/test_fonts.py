@@ -2006,6 +2006,13 @@ class FontTestHarness:
         if not rust_res["pdf_valid"]:
             reasons.append("Ratex did not produce a valid PDF")
 
+        # TeX Live's own diagnostics that a successful run must also print
+        # (e.g. XeTeX's "Missing character" warning).
+        run_output = (rust_res.get("stdout") or "") + (rust_res.get("stderr") or "")
+        for expected in case.get("expected_output_substrings", []):
+            if expected not in run_output:
+                reasons.append(f"Expected diagnostic '{expected}' not found in Ratex output")
+
         rust_fonts: list[dict[str, Any]] = []
         missing_embeddings: list[str] = []
         rust_text = ""

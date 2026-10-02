@@ -2811,7 +2811,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             let cached = if embedded_fmt.is_empty() {
                 Ok(())
             } else {
-                tex_core::format::save_format_compressed(&eng, &dump_target)
+                tex_core::format::save_format_compressed(&eng, &dump_target).map(drop)
             };
             if let Err(error) = cached {
                 emit_cli_message(

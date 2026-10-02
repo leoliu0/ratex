@@ -50,10 +50,23 @@ fn run_fixture(name: &str) -> String {
     String::from_utf8_lossy(&std::fs::read(work.join("probe.out")).expect("no output")).into_owned()
 }
 
+/// The OS byte of a gzip header (RFC 1952, byte 9) is zlib's `OS_CODE`
+/// (zutil.h): 10 under `_WIN32`, 19 on Apple, 3 elsewhere. The `.expected`
+/// files come from the Linux luatex; luatex on the other platforms writes
+/// the byte of its own platform.
+const GZIP_OS_CODE: u8 = if cfg!(windows) {
+    10
+} else if cfg!(target_vendor = "apple") {
+    19
+} else {
+    3
+};
+
 /// Compares against the output TeX Live 2026 `luatex --ini` produced for the
 /// same script (`tests/lua_sys/NAME.expected`).
 fn check(name: &str) {
     let expected = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/lua_sys/{name}.expected"))).unwrap();
+    let expected = expected.replace("1f8b0800000000000003", &format!("1f8b08000000000000{GZIP_OS_CODE:02x}"));
     let got = run_fixture(name);
     for (n, (a, b)) in expected.lines().zip(got.lines()).enumerate() {
         assert_eq!(a, b, "{name}: line {}", n + 1);

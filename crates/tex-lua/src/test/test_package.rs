@@ -246,8 +246,8 @@ fn test_package_module_compat_53() {
     run_with_modules(
         LuaLanguageLevel::Lua53,
         &[("mymod.lua", "module('mymod', package.seeall)\nfunction hello() return type(print) end\n")],
-        r#"
-        assert(package.config == "/\n;\n?\n!\n-\n")
+        &r#"
+        assert(package.config == "@DIRSEP@\n;\n?\n!\n-\n")
         assert(package.loaders == package.searchers)
         local m = require("mymod")
         assert(m == mymod and m.hello() == "function" and m._NAME == "mymod" and m._PACKAGE == "")
@@ -258,7 +258,8 @@ fn test_package_module_compat_53() {
         local name, pkg, mod = f()
         assert(name == "a.b.c" and pkg == "a.b." and a.b.c == mod and package.loaded["a.b.c"] == mod)
         assert(select('#', require("mymod")) == 1)
-        "#,
+        "#
+        .replace("@DIRSEP@", if cfg!(windows) { "\\\\" } else { "/" }),
     );
 }
 

@@ -74,8 +74,29 @@ fn local_offset_minutes(epoch: i64) -> i64 {
     tm.tm_gmtoff as i64 / 60
 }
 
-/// Without a portable zone database the offset is UTC.
-#[cfg(not(unix))]
+/// The Windows CRT's `localtime_s` knows the system zone (and a POSIX-style
+/// `TZ` such as `CST-8`); the offset is the broken-down local time read as
+/// UTC minus `epoch`.
+#[cfg(windows)]
+fn local_offset_minutes(epoch: i64) -> i64 {
+    let time = epoch as libc::time_t;
+    // SAFETY: `localtime_s` reads `time` and writes only to `tm`.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    if unsafe { libc::localtime_s(&mut tm, &time) } != 0 {
+        return 0;
+    }
+    let (year, month, day) = (i64::from(tm.tm_year) + 1900, i64::from(tm.tm_mon) + 1, i64::from(tm.tm_mday));
+    let y = year - i64::from(month <= 2);
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let days = era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468;
+    let local = days * 86_400 + i64::from(tm.tm_hour) * 3600 + i64::from(tm.tm_min) * 60 + i64::from(tm.tm_sec);
+    (local - epoch) / 60
+}
+
+/// Without a zone database (wasm) the offset is UTC.
+#[cfg(not(any(unix, windows)))]
 fn local_offset_minutes(_epoch: i64) -> i64 {
     0
 }

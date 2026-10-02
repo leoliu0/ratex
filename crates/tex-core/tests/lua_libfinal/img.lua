@@ -4,7 +4,7 @@ local function rec(tag, ok, ...)
   local t = table.pack(...)
   for i = 1, t.n do t[i] = tostring(t[i]) end
   -- the position prefix names the script, which differs between the two runs
-  P(tag, ok, (table.concat(t, ' '):gsub("^[^:]*:%d+: ", "")))
+  P(tag, ok, (table.concat(t, ' '):gsub("^.-:%d+: ", "")))
 end
 local function dump(tag, i)
   local o = {}
@@ -55,7 +55,7 @@ for _, case in ipairs {
   { "transform", 4 }, { "bogus", 1 },
 } do
   local ok, msg = pcall(function() i1[case[1]] = case[2] end)
-  P("set", case[1], ok, (tostring(msg):gsub("^[^:]*:%d+: ", "")), tostring(i1[case[1]]) == tostring(case[2]))
+  P("set", case[1], ok, (tostring(msg):gsub("^.-:%d+: ", "")), tostring(i1[case[1]]) == tostring(case[2]))
 end
 
 -- copies share the dictionary

@@ -41,6 +41,7 @@ pub(crate) mod sl {
     pub const R_HEIGHT: usize = 2;
     pub const R_DIR: usize = 3;
     pub const R_INDEX: usize = 4;
+    pub const R_TRANSFORM: usize = 7;
     // glyph
     pub const C_CHAR: usize = 0;
     pub const C_FONT: usize = 1;
@@ -572,7 +573,7 @@ impl Engine {
                     ctx.right = *rhm;
                 }
                 match w {
-                    WhatIt::PdfRefXImage { obj, w: bw, h: bh, d: bd } | WhatIt::PdfRefXForm { obj, w: bw, h: bh, d: bd } => {
+                    WhatIt::PdfRefXImage { obj, w: bw, h: bh, d: bd, .. } | WhatIt::PdfRefXForm { obj, w: bw, h: bh, d: bd } => {
                         let image = matches!(w, WhatIt::PdfRefXImage { .. });
                         let index = if image { self.lua_image_index(*obj) } else { *obj };
                         let n = self.lua_new_node(RULE, if image { 2 } else { 1 });
@@ -581,6 +582,9 @@ impl Engine {
                         f[sl::R_HEIGHT] = *bh;
                         f[sl::R_DEPTH] = *bd;
                         f[sl::R_INDEX] = index;
+                        if let WhatIt::PdfRefXImage { transform, .. } = w {
+                            f[sl::R_TRANSFORM] = i32::from(*transform);
+                        }
                         n
                     }
                     _ => self.import_whatsit(w),
@@ -724,7 +728,13 @@ impl Engine {
                 let (w, h, d) = (f[sl::R_WIDTH], f[sl::R_HEIGHT], f[sl::R_DEPTH]);
                 match sub {
                     1 | 2 => {
-                        let wh = WhatIt::PdfRefXImage { obj: self.lua_image_obj(f[sl::R_INDEX]), w, h, d };
+                        let wh = WhatIt::PdfRefXImage {
+                            obj: self.lua_image_obj(f[sl::R_INDEX]),
+                            w,
+                            h,
+                            d,
+                            transform: (f[sl::R_TRANSFORM] & 7) as u8,
+                        };
                         out.push(Node::Whatsit(if sub == 2 {
                             wh
                         } else {

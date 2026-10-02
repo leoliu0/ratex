@@ -1289,6 +1289,7 @@ impl Engine {
                     w,
                     h,
                     d,
+                    transform: 0,
                 }, self.eqtb.cur_attr));
             }
             PdfFontAttr => self.do_pdffontattr(),

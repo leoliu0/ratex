@@ -1,0 +1,116 @@
+page | streams.pdf | 1 | pdfe.array
+scan | false | bad argument #1 to 'pdfscanner.scan' (luatex.pdfe.stream expected, got luatex.pdfe.array)
+page | obj.pdf | 1 | pdfe.stream
+obj.pdf#1 | q | 
+obj.pdf#1 | cm | {1="integer",2=float:1.0} {1="integer",2=float:0.0} {1="integer",2=float:0.0} {1="integer",2=float:1.0} {1="integer",2=float:0.0} {1="integer",2=float:0.0}
+obj.pdf#1 | BT | 
+obj.pdf#1 | Tf | {1="name",2="F1"} {1="integer",2=float:12.0}
+obj.pdf#1 | Tj | {1="string",2="Hello"}
+obj.pdf#1 | ET | 
+obj.pdf#1 | Q | 
+scan | true
+page | obj.pdf | 2 | pdfe.array
+scan | false | bad argument #1 to 'pdfscanner.scan' (luatex.pdfe.stream expected, got luatex.pdfe.array)
+page | objstm.pdf | 1 | pdfe.stream
+objstm.pdf#1 | q | 
+objstm.pdf#1 | cm | {1="integer",2=float:1.0} {1="integer",2=float:0.0} {1="integer",2=float:0.0} {1="integer",2=float:1.0} {1="integer",2=float:0.0} {1="integer",2=float:0.0}
+objstm.pdf#1 | BT | 
+objstm.pdf#1 | Tf | {1="name",2="F1"} {1="integer",2=float:12.0}
+objstm.pdf#1 | Tj | {1="string",2="Hello"}
+objstm.pdf#1 | ET | 
+objstm.pdf#1 | Q | 
+scan | true
+page | objstm.pdf | 2 | pdfe.array
+scan | false | bad argument #1 to 'pdfscanner.scan' (luatex.pdfe.stream expected, got luatex.pdfe.array)
+page | incr.pdf | 1 | pdfe.stream
+incr.pdf#1 | q | 
+incr.pdf#1 | cm | {1="integer",2=float:1.0} {1="integer",2=float:0.0} {1="integer",2=float:0.0} {1="integer",2=float:1.0} {1="integer",2=float:0.0} {1="integer",2=float:0.0}
+incr.pdf#1 | BT | 
+incr.pdf#1 | Tf | {1="name",2="F1"} {1="integer",2=float:12.0}
+incr.pdf#1 | Tj | {1="string",2="Hello"}
+incr.pdf#1 | ET | 
+incr.pdf#1 | Q | 
+scan | true
+page | incr.pdf | 2 | pdfe.array
+scan | false | bad argument #1 to 'pdfscanner.scan' (luatex.pdfe.stream expected, got luatex.pdfe.array)
+str | q | 
+str | cm | {1="integer",2=float:1.0} {1="integer",2=float:0.0} {1="integer",2=float:0.0} {1="integer",2=float:1.0} {1="real",2=float:100.5} {1="integer",2=float:-200.0}
+str | d | {2="",A={1="integer",2=float:1.0},B={1="array",2={1={1="integer",2=float:1.0},2={1="integer",2=float:2.0}}},C={1="dict",2={D={1="string",2="e"}}}} {1="integer",2=float:12.0} {1="real",2=float:0.5} {1="real",2=float:-0.5} {1="integer",2=float:-3.0}
+str | BT | {1="real",2=float:0.0} {1="real",2=float:1.25} {1="real",2=float:-0.75} {1="integer",2=float:17.0}
+str | Tf | {1="name",2="F1"} {1="integer",2=float:12.0}
+str | Tj | {1="string",2="Hello"}
+str | TJ | {1="array",2={1={1="string",2="A"},2={1="integer",2=float:-120.0},3={1="string",2="B"}}}
+str | ET | 
+str | w | {1="string",2="back\0slash q"} {1="string",2=""} {1="string",2=""} {1="string",2=""}
+str | m | {1="real",2=float:-0.0} {1="integer",2=float:16.0}
+str | re | {1="real",2=float:1.5}
+str | y | {1="integer",2=float:7.0}
+str | Q | 
+string
+pop | m | n=float:2.0 nm="nil" s="nil" a="nil" d="nil" b="nil" any={1="integer",2=float:1.0} info=7
+pop | Do | n="nil" nm="N" s="nil" a="nil" d="nil" b="nil" any="nil" info=7
+pop | Tj | n="nil" nm="nil" s="s" a="nil" d="nil" b="nil" any="nil" info=7
+pop | w | n="nil" nm="nil" s="nil" a={1={1="integer",2=float:1.0},2={1="integer",2=float:2.0}} d="nil" b="nil" any="nil" info=7
+pop | gs | n="nil" nm="nil" s="nil" a="nil" d={K={1="integer",2=float:1.0}} b="nil" any="nil" info=7
+pop | q | n="nil" nm="nil" s="nil" a="nil" d="nil" b="true" any="nil" info=7
+pop | d | n="nil" nm="nil" s="nil" a={1={1="integer",2=float:1.0},2={1="array",2={1={1="integer",2=float:2.0},2={1="integer",2=float:3.0}}},3={1="integer",2=float:4.0},4={1="array"}} d="nil" b="nil" any="nil" info=7
+pop | re | n=float:1.5 nm="nil" s="nil" a="nil" d="nil" b="nil" any="nil" info=7
+pop | Tf | n="nil" nm="B" s="nil" a="nil" d="nil" b="nil" any={1="name",2="A"} info=7
+x1 | TJ | {1="name",2="A#20B"} {1="name",2="C"} {1="string",2="x"} {1="name",2="D"} {1="string",2="A"} {1="name",2="E"} {1="array",2={1={1="integer",2=float:1.0}}} {1="name",2="F"} {1="dict",2={G={1="integer",2=float:1.0}}} {1="real",2=float:2.0} {1="real",2=float:5.0} {1="real",2=float:0.0} {1="integer",2=float:158.0}
+y1 | TJ | n=float:158.0 nm="nil" s="nil" a="nil" d="nil" b="nil" any={1="real",2=float:0.0} info=1
+x2 | TJ | {1="boolean",2="true"} {1="boolean",2="false"}
+y2 | TJ | n="nil" nm="nil" s="nil" a="nil" d="nil" b="false" any={1="boolean",2="true"} info=2
+x3 | gs | {1="dict",2={K={1="array",2={1={1="array",2={1={1="integer",2=float:1.0}}},2={1="integer",2=float:2.0},3={1="array"},4={1="dict"}}}}}
+y3 | gs | n="nil" nm="nil" s="nil" a="nil" d={K={1="array",2={1={1="array",2={1={1="integer",2=float:1.0}}},2={1="integer",2=float:2.0},3={1="array"},4={1="dict"}}}} b="nil" any="nil" info=3
+x4 | d | {1="array",2={1={1="array",2={1={1="array",2={1={1="integer",2=float:1.0}}},2={1="array"}}}}}
+y4 | d | n="nil" nm="nil" s="nil" a={1={1="array",2={1={1="array",2={1={1="integer",2=float:1.0}}},2={1="array"}}}} d="nil" b="nil" any="nil" info=4
+x5 | re | {1="array",2={1={1="integer",2=float:1.0},2={1="integer",2=float:2.0},3={1="integer",2=float:3.0}}} {1="array",2={1={1="integer",2=float:4.0},2={1="integer",2=float:5.0}}}
+y5 | re | n="nil" nm="nil" s="nil" a={1={1="integer",2=float:4.0},2={1="integer",2=float:5.0}} d="nil" b="nil" any={1="array",2={1={1="integer",2=float:1.0},2={1="integer",2=float:2.0},3={1="integer",2=float:3.0}}} info=5
+x6 | gs | {1="dict",2={A={1="integer",2=float:1.0}}} {1="dict",2={B={1="integer",2=float:2.0}}}
+y6 | gs | n="nil" nm="nil" s="nil" a="nil" d={B={1="integer",2=float:2.0}} b="nil" any={1="dict",2={A={1="integer",2=float:1.0}}} info=6
+x7 | TJ | {1="array",2={1={1="string",2="a"},2={1="array",2={1={1="string",2="b"}}},3={1="string",2="c"},4={1="array"}}}
+x7 | TJ | {1="array",2={}}
+x7 | gs | {1="dict",2={}}
+y7 | TJ | n="nil" nm="nil" s="nil" a={1={1="string",2="a"},2={1="array",2={1={1="string",2="b"}}},3={1="string",2="c"},4={1="array"}} d="nil" b="nil" any="nil" info=7
+y7 | TJ | n="nil" nm="nil" s="nil" a={} d="nil" b="nil" any="nil" info=7
+y7 | gs | n="nil" nm="nil" s="nil" a="nil" d={} b="nil" any="nil" info=7
+x8 | m | {1="integer",2=float:1.0} {1="integer",2=float:2.0} {1="integer",2=float:3.0}
+x8 | l | {1="integer",2=float:4.0} {1="integer",2=float:5.0}
+y8 | m | n=float:3.0 nm="nil" s="nil" a="nil" d="nil" b="nil" any={1="integer",2=float:2.0} info=8
+y8 | l | n=float:5.0 nm="nil" s="nil" a="nil" d="nil" b="nil" any={1="integer",2=float:4.0} info=8
+x9 | q | 
+x9 | q | 
+x9 | Q | 
+x9 | Q | 
+y9 | q | n="nil" nm="nil" s="nil" a="nil" d="nil" b="nil" any="nil" info=9
+y9 | q | n="nil" nm="nil" s="nil" a="nil" d="nil" b="nil" any="nil" info=9
+y9 | Q | n="nil" nm="nil" s="nil" a="nil" d="nil" b="nil" any="nil" info=9
+y9 | Q | n="nil" nm="nil" s="nil" a="nil" d="nil" b="nil" any="nil" info=9
+x10 | Tj | {1="string",2="aAb\7c\0018"}
+x10 | Tj | {1="string",2="AB"}
+y10 | Tj | n="nil" nm="nil" s="aAb\7c\0018" a="nil" d="nil" b="nil" any="nil" info=10
+y10 | Tj | n="nil" nm="nil" s="AB" a="nil" d="nil" b="nil" any="nil" info=10
+x11 | w | {1="integer",2=float:1.0}
+y11 | w | n=float:1.0 nm="nil" s="nil" a="nil" d="nil" b="nil" any="nil" info=11
+x12 | w | {1="integer",2=float:1.0}
+y12 | w | n=float:1.0 nm="nil" s="nil" a="nil" d="nil" b="nil" any="nil" info=12
+x14 | w | {1="integer",2=float:1.0}
+y14 | w | n=float:1.0 nm="nil" s="nil" a="nil" d="nil" b="nil" any="nil" info=14
+order | float:2.5 | "true" | {K={1="integer",2=float:1.0}} | {1={1="integer",2=float:1.0}} | "s" | "N" | float:1.0 | "nil"
+a | got
+BI
+ID
+EI | str
+Q
+noargs
+two
+bad2 | false | bad argument #2 to 'pdfscanner.scan' (table expected, got number)
+bad3 | false | bad argument #3 to 'pdfscanner.scan' (table expected, got number)
+bad1 | false | bad argument #1 to 'pdfscanner.scan' (userdata expected, got number)
+empty
+error | false | boom
+scanner type | table | true
+scanner | userdata | pdfscanner
+array | pdfe.array | 9
+scan | false | bad argument #1 to 'pdfscanner.scan' (luatex.pdfe.stream expected, got luatex.pdfe.array)
+count | 0

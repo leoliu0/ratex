@@ -71,10 +71,16 @@ impl Engine {
     }
     /// tex.web fire_up's `push_nest` for a routine just fired: done by the first command the
     /// routine runs (or the first Lua call, which sees the nest through `tex.nest`).
+    #[inline(always)]
     pub(crate) fn enter_pending_output(&mut self) {
-        if !self.output_pending {
-            return;
+        if self.output_pending {
+            self.begin_output_nest();
         }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn begin_output_nest(&mut self) {
         self.output_pending = false;
         let ignore_depth = self.ignore_depth();
         let saved = std::mem::replace(&mut self.prev_depth, ignore_depth);

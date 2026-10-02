@@ -55,6 +55,7 @@ mod lua_lang;
 mod lua_mplib;
 mod lua_pdf;
 mod lua_pdfe;
+mod lua_pdfscanner;
 mod lua_tex;
 mod lua_texnodes;
 mod lua_ud;

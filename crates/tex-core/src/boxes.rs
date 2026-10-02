@@ -382,6 +382,8 @@ pub enum WhatIt {
         w: i32,
         h: i32,
         d: i32,
+        /// LuaTeX's image rule `transform` (0-7: rotation by quarter turns, 4-7 mirrored); 0 in pdfTeX
+        transform: u8,
     },
     PdfRefXForm {
         obj: i32,

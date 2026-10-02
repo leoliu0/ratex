@@ -1,0 +1,16 @@
+\catcode`\{=1 \catcode`\}=2 \catcode`\#=6
+\directlua{
+tex.enableprimitives('', tex.extraprimitives())
+tex.set('outputmode', 1)
+pdf.setcompresslevel(0) pdf.setobjcompresslevel(0)
+tex.set('pagewidth', 200*65536) tex.set('pageheight', 200*65536) pdf.setorigin(0)
+for t = 0, 7 do
+  local n = img.node { filename = 'a.png', width = 20*65536, height = 10*65536, depth = 2*65536, transform = t }
+  local b = node.new('hlist')
+  b.head = n
+  b.width = 20*65536 b.height = 12*65536
+  tex.box[0] = b
+  tex.shipout(0)
+end
+}
+\end

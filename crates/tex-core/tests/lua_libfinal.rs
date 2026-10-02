@@ -185,3 +185,20 @@ fn pdf_library_functions_match_luatex() {
     };
     assert!(obj.starts_with("<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] /Border [0 0 0] >>"), "{obj:.200}");
 }
+
+// luatex: an image rule's `transform` (0-7) rotates by quarter turns and mirrors (pdfimage.c place_img)
+#[test]
+fn image_transform_places_like_luatex() {
+    let mut content = String::new();
+    run_tex("imgtransform", |e| {
+        for page in &e.pdf_doc.pages {
+            content.push_str(&String::from_utf8_lossy(&page.content));
+            content.push('\n');
+        }
+    });
+    let lines: Vec<&str> = content.lines().collect();
+    let got: Vec<&str> =
+        lines.windows(2).filter(|w| w[0].ends_with(" cm") && w[1].starts_with("/Im")).map(|w| w[0]).collect();
+    let expected = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/lua_libfinal/imgtransform.expected")).unwrap();
+    assert_eq!(got, expected.lines().collect::<Vec<_>>());
+}

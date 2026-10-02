@@ -2524,7 +2524,7 @@ impl<'a> RenderCtx<'a> {
     /// height plus depth) with its lower left corner at (`cur_h`, `cur_v`).
     /// Raster images scale a unit square (4 decimals of bp); included PDF
     /// pages scale their own /BBox (6 decimals) and shift by its origin.
-    fn out_image(&mut self, obj: i32, width: i32, height: i32, cur_h: i64, cur_v: i64) {
+    fn out_image(&mut self, obj: i32, width: i32, height: i32, cur_h: i64, cur_v: i64, transform: u8) {
         use crate::engine::ImageKind;
         let Some(image) = self.eng.pdf_images.get_mut(&obj) else {
             return;
@@ -2543,7 +2543,81 @@ impl<'a> RenderCtx<'a> {
             self.ximage_list.push(obj);
         }
         let (width, height) = (width as i64, height as i64);
-        if kind != ImageKind::Pdf {
+        if transform != 0 {
+            // LuaTeX pdfimage.c place_img with a rule transform: rotation by quarter turns,
+            // mirrored when bit 2 is set
+            let is_pdf = kind == ImageKind::Pdf;
+            let (mut a0, mut a3) = if is_pdf { (1.0e6 / img_w as f64, 1.0e6 / img_h as f64) } else {
+                let s = 1.0e6 / ONE_HUNDRED_BP_SP as f64;
+                (s, s)
+            };
+            let (mut a1, mut a2) = (0.0f64, 0.0f64);
+            let (mut xoff, mut yoff) = if is_pdf { (orig_x as f64 / img_w as f64, orig_y as f64 / img_h as f64) } else { (0.0, 0.0) };
+            let digits = if is_pdf { 6 } else { 4 };
+            let t = i32::from(transform);
+            if (t & 7) > 3 {
+                a0 = -a0;
+                xoff = -xoff;
+            }
+            match t & 3 {
+                1 => {
+                    a1 = a0;
+                    a2 = -a3;
+                    a3 = 0.0;
+                    a0 = 0.0;
+                    let tmp = yoff;
+                    yoff = xoff;
+                    xoff = -tmp;
+                }
+                2 => {
+                    a0 = -a0;
+                    a3 = -a3;
+                    xoff = -xoff;
+                    yoff = -yoff;
+                }
+                3 => {
+                    a1 = -a0;
+                    a2 = a3;
+                    a3 = 0.0;
+                    a0 = 0.0;
+                    let tmp = yoff;
+                    yoff = -xoff;
+                    xoff = tmp;
+                }
+                _ => {}
+            }
+            let (wd, ht) = (width as f64, height as f64);
+            xoff *= wd;
+            yoff *= ht;
+            let (a0, a1, a2, a3) = (a0 * wd, a1 * ht, a2 * wd, a3 * ht);
+            let mut a4 = (cur_h - self.origin_h) as f64 - xoff;
+            let mut a5 = (self.origin_v - cur_v) as f64 - yoff;
+            let mut k = t;
+            if (t & 7) > 3 {
+                k += 1;
+            }
+            match k & 3 {
+                1 => a4 += wd,
+                2 => {
+                    a4 += wd;
+                    a5 += ht;
+                }
+                3 => a5 += ht,
+                _ => {}
+            }
+            let round = |v: f64| (v + 0.5).floor() as i64;
+            self.push_real(round(a0), digits);
+            self.content.push(' ');
+            self.push_real(round(a1), digits);
+            self.content.push(' ');
+            self.push_real(round(a2), digits);
+            self.content.push(' ');
+            self.push_real(round(a3), digits);
+            self.content.push(' ');
+            self.push_bp(round(a4));
+            self.content.push(' ');
+            self.push_bp(round(a5));
+        } else if kind != ImageKind::Pdf {
             if kind == ImageKind::Png && group_ref > 0 && self.eng.pdf_page_group_val == 0 {
                 self.eng.pdf_page_group_val = group_ref;
             }
@@ -2663,7 +2737,9 @@ impl<'a> RenderCtx<'a> {
                     self.colorstack_literal(&out, mode, cur_h, cur_v);
                 }
             }
-            PdfRefXImage { obj, w, h, d } => self.out_image(*obj, *w, *h + *d, cur_h, cur_v + *d as i64),
+            PdfRefXImage { obj, w, h, d, transform } => {
+                self.out_image(*obj, *w, *h + *d, cur_h, cur_v + *d as i64, *transform)
+            }
             PdfSnapRefPoint => self.eng.pdf_snap_refpos = (cur_h, cur_v),
             PdfRefXForm { obj, d, .. } => {
                 if !self.xform_list.contains(obj) {

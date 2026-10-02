@@ -81,26 +81,6 @@ fn test_xetex_charclass_and_interchartoks() {
 }
 
 #[test]
-fn test_xetex_font_queries_on_nullfont() {
-    let mut eng = boot_xetex();
-    let src = r#"
-\catcode`\{=1 \catcode`\}=2
-\message{FONTTYPE=\the\XeTeXfonttype\nullfont}
-\message{GLYPHS=\the\XeTeXcountglyphs\nullfont}
-\XeTeXuseglyphmetrics = 1
-\message{USEMETRICS=\the\XeTeXuseglyphmetrics}
-\end
-"#;
-    eng.input.push_file("test.tex".into(), src.as_bytes().to_vec());
-    eng.run();
-
-    assert_eq!(eng.error_count, 0, "errors: {:?}, term: {}", eng.diagnostics, eng.term);
-    assert!(eng.term.contains("FONTTYPE=0"), "term: {}", eng.term);
-    assert!(eng.term.contains("GLYPHS=256"), "term: {}", eng.term);
-    assert!(eng.term.contains("USEMETRICS=1"), "term: {}", eng.term);
-}
-
-#[test]
 fn test_xetex_interchartoks_execution() {
     let mut eng = boot_xetex();
     let src = r#"

@@ -140,3 +140,49 @@ font.current(fid)
         ]
     );
 }
+
+/// The boxes the math, paragraph, alignment and display code build carry
+/// luatex's list subtypes (`math_char_list`, `math_numerator_list`, `radical`,
+/// `indent`, `line`, `cell`, `equation`, ...), and the math rules theirs.
+#[test]
+fn list_and_rule_subtypes_follow_luatex() {
+    let body = r##"\font\x=cmr10 \font\xs=cmr7 \font\is=cmmi7 \font\i=cmmi10 \font\y=cmsy10 \font\z=cmex10
+\textfont0=\x \scriptfont0=\xs \scriptscriptfont0=\xs
+\textfont1=\i \scriptfont1=\is \scriptscriptfont1=\is
+\textfont2=\y \scriptfont2=\y \scriptscriptfont2=\y
+\textfont3=\z \scriptfont3=\z \scriptscriptfont3=\z
+\hsize=100pt \parindent=5pt \delcode`(="028300 \delcode`)="029301 \hbadness=10000
+\directlua{
+function sub(n)
+  local o, k = {}, 0
+  for l in node.traverse(n) do
+    if l.id == 0 or l.id == 1 then k = k + 1 o[k] = (l.id==0 and "h" or "v") .. l.subtype .. "(" .. sub(l.list) .. ")"
+    elseif l.id == 2 then k = k + 1 o[k] = "r" .. l.subtype end
+  end
+  return table.concat(o, " ")
+end
+function dump(b) texio.write_nl("[" .. sub(b or tex.box[0]) .. "]") end
+}
+\def\b#1{\setbox0\hbox{$#1$}\directlua{dump()}}
+\b{a\over b} \b{\Uradical 3 "70 {x}} \b{\overline{x}\underline{x}} \b{\left(x\right)}
+\b{\Uroot 0 "70 {a}{x}} \b{\mathaccent"7016 x} \b{x_a^b}
+\setbox0\vbox{\x\noindent a\par\indent b\par} \directlua{dump()}
+\setbox0\vbox{\x\halign{#\cr a\cr}} \directlua{dump()}
+\setbox0\vbox{\hsize=50pt \noindent $$a\eqno b$$} \directlua{dump()}
+\setbox0\vbox{\hbox{a}\hbox{b}} \directlua{dump()}"##;
+    let out = run(body);
+    let expected = [
+        "[h2(h19(h13() v19(h16() r0 h0()) h13()))]",
+        "[h2(h0(h9() v28(r0 h20())))]",
+        "[h2(v25(r0 h20()) v26(h20() r0))]",
+        "[h2(h0(h9() h9()))]",
+        "[h2(h0(h23() h9() v28(r0 h20())))]",
+        "[h2(v27(h9() h20()))]",
+        "[h2(v24(h21() h22()))]",
+        "[v0(h1() h1(h3()))]",
+        "[v0(h4(h5()))]",
+        "[v0(h6(h6() h7()))]",
+        "[v0(h2() h2())]",
+    ];
+    assert_eq!(out, expected);
+}

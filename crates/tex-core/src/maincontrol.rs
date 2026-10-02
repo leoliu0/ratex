@@ -1147,18 +1147,18 @@ impl Engine {
             }
             PdfSave => {
                 let source = self.current_token_source_mark();
-                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfSave { source }, self.eqtb.cur_attr));
+                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfSave { source: source.map(std::boxed::Box::new) }, self.eqtb.cur_attr));
             }
             PdfRestore => {
                 let source = self.current_token_source_mark();
-                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfRestore { source }, self.eqtb.cur_attr));
+                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfRestore { source: source.map(std::boxed::Box::new) }, self.eqtb.cur_attr));
             }
             PdfSetMatrix => {
                 let source = self.current_token_source_mark();
                 let matrix = self.scan_pdf_string();
                 self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfSetMatrix {
                     matrix,
-                    source,
+                    source: source.map(std::boxed::Box::new),
                 }, self.eqtb.cur_attr));
             }
             PdfStartLink => self.do_pdfstartlink(),

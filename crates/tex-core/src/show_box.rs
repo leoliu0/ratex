@@ -1134,7 +1134,8 @@ impl Engine {
                 clang = clang_above.unwrap_or(self.clang);
                 clang_above = pl.map(|pl| pl.outer_clang);
                 let start = pl.map_or_else(|| self.current_language(), |pl| pl.start);
-                if (start.lhm, start.rhm, start.lang) != (2, 3, 0) {
+                // luatex keeps the language in the glyphs, not in the nest
+                if self.engine_kind != crate::engine::EngineKind::LuaTeX && (start.lhm, start.rhm, start.lang) != (2, 3, 0) {
                     d.print(" (language");
                     d.print_int(i64::from(start.lang));
                     d.print(":hyphenmin");

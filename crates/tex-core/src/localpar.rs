@@ -103,6 +103,14 @@ impl Engine {
         let node = self.make_local_par(LocalParMode::NewGraf);
         self.cur_list.push(node);
         let par_dir = (self.int_param(IntParam::ParDirection) & 3) as u8;
+        // the dir nodes of the directions still in force follow the
+        // local_par node, outermost first, and precede the \parindent box
+        let attr = self.eqtb.cur_attr;
+        for (i, &(_, dir)) in self.text_dirs.iter().enumerate() {
+            if i != 0 || dir != par_dir {
+                self.cur_list.push(Node::Whatsit(WhatIt::Dir { dir, cancel: false, level: 0 }, attr));
+            }
+        }
         if indent {
             let pi = self.eqtb.dim_params[crate::prim::DimParam::ParIndent.idx() as usize];
             let mut r = crate::boxes::hpack(Vec::new(), Some(pi), crate::boxes::HBOX, &self.eqtb).node;
@@ -110,12 +118,6 @@ impl Engine {
                 *dir = par_dir;
             }
             self.cur_list.push(r);
-        }
-        let attr = self.eqtb.cur_attr;
-        for (i, &(_, dir)) in self.text_dirs.iter().enumerate() {
-            if i != 0 || dir != par_dir {
-                self.cur_list.push(Node::Whatsit(WhatIt::Dir { dir, cancel: false, level: 0 }, attr));
-            }
         }
     }
 

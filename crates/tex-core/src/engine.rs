@@ -1068,7 +1068,7 @@ impl Engine {
             lua_nodes: crate::lua_node::NodeStore::new(),
             lua_cb: [0; crate::lua_callbacks::N_CALLBACKS],
             lua_par_group: 0,
-            text_dirs: vec![(0, 0)],
+            text_dirs: vec![(crate::eqtb::LEVEL_ONE, 0)],
             lua_par_lines: Default::default(),
             prev_depth: -1000 * 65536,
             space_factor: 1000,

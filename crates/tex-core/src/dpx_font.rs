@@ -573,7 +573,7 @@ pub fn to_unicode_cmap(
     let mut remaining: BTreeSet<u16> = used.clone();
     let mut map: BTreeMap<u16, Vec<u8>> = BTreeMap::new();
     let mut count = 0;
-    let mut add = |map: &mut BTreeMap<u16, Vec<u8>>, cid: u16, dst: Vec<u8>| {
+    let add = |map: &mut BTreeMap<u16, Vec<u8>>, cid: u16, dst: Vec<u8>| {
         map.insert(cid, dst);
     };
     // base mapping
@@ -934,6 +934,164 @@ pub fn w_array_text(runs: &[(u16, Vec<f64>)]) -> String {
     }
     s.push_str(" ]");
     s
+}
+
+/// Per-font tables for `font->gm[]` of dvi.c `dvi_locate_native_font`.
+pub struct NativeMetrics {
+    pub upem: f64,
+    pub num_glyphs: u16,
+    pub advance: Vec<u16>,
+    pub ascent: i16,
+    pub descent: i16,
+}
+
+impl NativeMetrics {
+    pub fn read(data: &[u8], face_index: u32, vertical: bool) -> Result<NativeMetrics, String> {
+        let sf = Sfnt::parse(data, face_index)?;
+        let m = FaceMetrics::read(&sf)?;
+        let advance = match (&m.vmtx, vertical) {
+            (Some(v), true) => v.clone(),
+            _ => m.hmtx.clone(),
+        };
+        Ok(NativeMetrics {
+            upem: m.units_per_em as f64,
+            num_glyphs: m.num_glyphs,
+            advance,
+            ascent: m.hhea_ascent,
+            descent: m.hhea_descent,
+        })
+    }
+}
+
+
+
+// ------------------------------------------------------------ assembling
+
+/// The objects of one native font except for their numbering.
+pub struct XeFontParts {
+    /// `BaseFont` of the Type0 dictionary
+    pub type0_name: String,
+    /// `BaseFont` of the CIDFont and `FontName` of the descriptor (tagged)
+    pub cid_name: String,
+    pub cff: bool,
+    /// descriptor entries, `FontFile*` excluded
+    pub descriptor: Vec<(&'static str, String)>,
+    pub file_key: &'static str,
+    /// stream dictionary entries of the font file
+    pub file_dict: String,
+    pub file: Vec<u8>,
+    /// `/CIDSet` payload (PDF < 2.0)
+    pub cidset: Vec<u8>,
+    pub dw: f64,
+    pub w: Vec<(u16, Vec<f64>)>,
+    pub dw2: Option<[f64; 2]>,
+    pub w2: Vec<[f64; 5]>,
+    /// `/CIDToGIDMap` stream; None = `/Identity` (CIDFontType2 only)
+    pub cid_to_gid_map: Option<Vec<u8>>,
+    pub tounicode: Option<String>,
+}
+
+/// Build the PDF objects of a native font in the way xdvipdfmx does for
+/// `pdf_insert_native_fontmap_record` fonts (CID = glyph id, Identity-H or
+/// Identity-V). `tag` is the six letter subset tag.
+pub fn build_xe_font(
+    data: &[u8],
+    face_index: u32,
+    vertical: bool,
+    used: &BTreeSet<u16>,
+    tag: &str,
+) -> Result<XeFontParts, String> {
+    let sf = Sfnt::parse(data, face_index)?;
+    let metrics = FaceMetrics::read(&sf)?;
+    let mut desc = font_descriptor(&sf)?;
+    let dir = if vertical { "Identity-V" } else { "Identity-H" };
+    let cff_table = sf.table(b"CFF ");
+    if let Some(cff) = cff_table {
+        let name = cff_name(cff).ok_or("No valid FontName found in the CFF font")?;
+        let tagged = format!("{tag}+{name}");
+        let info = crate::dpx_cff::cff_info(data, face_index)?;
+        if info.is_cid {
+            return Err(format!(
+                "CID-keyed OpenType font `{name}` is not supported by the native font writer yet"
+            ));
+        }
+        let sub = crate::dpx_cff::subset_cid_cff(data, face_index, used, &tagged)?;
+        if let Some(stem) = sub.std_vw {
+            if let Some(e) = desc.entries.iter_mut().find(|e| e.0 == "StemV") {
+                e.1 = pdf_number(stem);
+            }
+        }
+        let (dw, w) = horizontal_metrics(&metrics, used);
+        let (dw2, w2) = if vertical {
+            vertical_metrics(&sf, &metrics, used).unwrap_or((None, Vec::new()))
+        } else {
+            (None, Vec::new())
+        };
+        let tounicode = to_unicode_cmap(&sf, used, &format!("{tagged}-UTF16"), &|gid| {
+            info.glyph_names.get(gid as usize).cloned().flatten()
+        });
+        return Ok(XeFontParts {
+            type0_name: format!("{tagged}-{dir}"),
+            cid_name: tagged,
+            cff: true,
+            descriptor: desc.entries,
+            file_key: "/FontFile3",
+            file_dict: "/Subtype /CIDFontType0C".into(),
+            file: sub.data,
+            cidset: sub.cidset,
+            dw,
+            w,
+            dw2,
+            w2,
+            cid_to_gid_map: None,
+            tounicode,
+        });
+    }
+    // TrueType (CIDFontType2)
+    let name = ps_name(&sf).unwrap_or_default();
+    let tagged = format!("{tag}+{name}");
+    let sub = crate::dpx_tt::subset_cid_truetype(data, face_index, used)?;
+    let (dw2, w2) = if vertical { (None, Vec::new()) } else { (None, Vec::new()) };
+    let tounicode = to_unicode_cmap(&sf, used, &format!("{tagged}-UTF16"), &|gid| post_glyph_name(&sf, gid));
+    Ok(XeFontParts {
+        type0_name: tagged.clone(),
+        cid_name: tagged,
+        cff: false,
+        descriptor: desc.entries,
+        file_key: "/FontFile2",
+        file_dict: format!("/Length1 {}", sub.data.len()),
+        file: sub.data,
+        cidset: sub.cidset,
+        dw: sub.dw,
+        w: sub.w.into_iter().map(|(s, v)| (s as u16, v)).collect(),
+        dw2,
+        w2,
+        cid_to_gid_map: sub.cid_to_gid_map,
+        tounicode,
+    })
+}
+
+/// `tt_get_glyphname`: the name of a glyph from a `post` table of format 2.
+fn post_glyph_name(sf: &Sfnt, gid: u16) -> Option<String> {
+    let post = sf.table(b"post")?;
+    if be32(post, 0)? != 0x0002_0000 {
+        return None;
+    }
+    let n = be16(post, 32)? as usize;
+    if gid as usize >= n {
+        return None;
+    }
+    let idx = be16(post, 34 + 2 * gid as usize)? as usize;
+    if idx < 258 {
+        return None; // standard Macintosh names: not needed for the AGL forms handled
+    }
+    // pascal strings after the index array
+    let mut p = 34 + 2 * n;
+    for _ in 258..idx {
+        p += 1 + *post.get(p)? as usize;
+    }
+    let len = *post.get(p)? as usize;
+    Some(String::from_utf8_lossy(post.get(p + 1..p + 1 + len)?).into_owned())
 }
 
 #[cfg(test)]

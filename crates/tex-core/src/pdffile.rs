@@ -155,6 +155,7 @@ pub fn make_embed_font(
         init_order: 0,
         desc_obj: 0,
         pdftex: None,
+        xe: None,
     };
     set_font_usage(&mut font, used_chars);
     font
@@ -1015,6 +1016,101 @@ fn make_subset_tag(content_hash: &[u8; 16], base_font: &str) -> String {
     tag
 }
 
+/// xdvipdfmx's Type0/CIDFont objects of a XeTeX native font
+/// (`dpx_font::build_xe_font`).
+fn write_xe_font(
+    b: &mut PdfBuilder,
+    doc: &PdfDoc,
+    f: &EmbedFont,
+    xe: &crate::pdfout::XeFont,
+    font_obj: usize,
+    tags: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    // six letter subset tag from the program and the glyph set, unique per document
+    let mut tag = make_subset_tag(&f.content_hash, &format!("{}{:?}{}", f.face_index, xe.used, xe.vertical));
+    tag.pop();
+    let mut salt = 0u32;
+    while !tags.insert(tag.clone()) {
+        salt += 1;
+        tag = make_subset_tag(&f.content_hash, &format!("{salt}{}{:?}", f.face_index, xe.used));
+        tag.pop();
+    }
+    let p = crate::dpx_font::build_xe_font(&f.font_file, f.face_index, xe.vertical, &xe.used, &tag)
+        .map_err(|e| format!("Cannot embed native font `{}`: {e}", f.base_font))?;
+    let file = b.alloc();
+    b.set_stream(file, &p.file_dict, &p.file, true);
+    let mut d = format!("<< /Type /FontDescriptor /FontName /{}", escape_pdf_name(&p.cid_name));
+    for (k, v) in &p.descriptor {
+        d.push_str(&format!(" /{k} {v}"));
+    }
+    d.push_str(&format!(" {} {} 0 R", p.file_key, file));
+    if doc.major_version < 2 {
+        let cidset = b.alloc();
+        b.set_stream(cidset, "", &p.cidset, true);
+        d.push_str(&format!(" /CIDSet {cidset} 0 R"));
+    }
+    d.push_str(" >>");
+    let desc = b.alloc();
+    b.set(desc, d);
+    let cidfont = b.alloc();
+    let mut c = format!(
+        "<< /Type /Font /Subtype {} /BaseFont /{} /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor {desc} 0 R /DW {}",
+        if p.cff { "/CIDFontType0" } else { "/CIDFontType2" },
+        escape_pdf_name(&p.cid_name),
+        crate::dpx_font::pdf_number(p.dw),
+    );
+    if !p.w.is_empty() {
+        let w = b.alloc();
+        b.set(w, crate::dpx_font::w_array_text(&p.w));
+        c.push_str(&format!(" /W {w} 0 R"));
+    }
+    if let Some(dw2) = p.dw2 {
+        c.push_str(&format!(" /DW2 [{} {}]", crate::dpx_font::pdf_number(dw2[0]), crate::dpx_font::pdf_number(dw2[1])));
+    }
+    if !p.w2.is_empty() {
+        let w2 = b.alloc();
+        let mut s = String::from("[");
+        for e in &p.w2 {
+            s.push_str(&format!(
+                " {} {} {} {} {}",
+                crate::dpx_font::pdf_number(e[0]),
+                crate::dpx_font::pdf_number(e[1]),
+                crate::dpx_font::pdf_number(e[2]),
+                crate::dpx_font::pdf_number(e[3]),
+                crate::dpx_font::pdf_number(e[4])
+            ));
+        }
+        s.push_str(" ]");
+        b.set(w2, s);
+        c.push_str(&format!(" /W2 {w2} 0 R"));
+    }
+    if !p.cff {
+        match &p.cid_to_gid_map {
+            None => c.push_str(" /CIDToGIDMap /Identity"),
+            Some(map) => {
+                let m = b.alloc();
+                b.set_stream(m, "", map, true);
+                c.push_str(&format!(" /CIDToGIDMap {m} 0 R"));
+            }
+        }
+    }
+    c.push_str(" >>");
+    b.set(cidfont, c);
+    let mut t0 = format!(
+        "<< /Type /Font /Subtype /Type0 /BaseFont /{} /Encoding /{} /DescendantFonts [ {cidfont} 0 R ]",
+        escape_pdf_name(&p.type0_name),
+        if xe.vertical { "Identity-V" } else { "Identity-H" },
+    );
+    if let Some(cmap) = &p.tounicode {
+        let tu = b.alloc();
+        b.set_stream(tu, "", cmap.as_bytes(), true);
+        t0.push_str(&format!(" /ToUnicode {tu} 0 R"));
+    }
+    t0.push_str(" >>");
+    b.set(font_obj, t0);
+    Ok(())
+}
+
 fn extract_cff_table(bytes: &[u8]) -> Option<&[u8]> {
     if bytes.len() >= 2 && bytes[0] == 1 && bytes[1] == 0 {
         return Some(bytes);
@@ -1359,7 +1455,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
     let mut sfnt_samples: HashMap<SfntKey, usize> = HashMap::new();
 
     for (idx, font) in doc.fonts.iter().enumerate() {
-        if is_sfnt(font) {
+        if is_sfnt(font) && font.xe.is_none() {
             let key = SfntKey {
                 content_hash: font.content_hash,
                 face_index: font.face_index,
@@ -1514,6 +1610,9 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             } else {
                 b.alloc()
             };
+            if f.xe.is_some() {
+                return FontObjs { font, desc: 0, file: None, tounicode: None, cidfont: None, encoding: None, widths: None };
+            }
             let sfnt = is_sfnt(f);
             // writefont.c: fonts of one Type 1 program share its descriptor
             let desc = if sfnt || f.font_file.is_empty() {
@@ -1682,7 +1781,12 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         }
     }
 
+    let mut xe_tags: BTreeSet<String> = BTreeSet::new();
     for ((f, fo), key) in doc.fonts.iter().zip(&font_objs).zip(&font_keys) {
+        if let Some(xe) = &f.xe {
+            write_xe_font(&mut b, doc, f, xe, fo.font, &mut xe_tags)?;
+            continue;
+        }
         if is_sfnt(f) {
             let sfnt_k = SfntKey {
                 content_hash: f.content_hash,

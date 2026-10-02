@@ -7,7 +7,7 @@
 //! rounding-error compensation of `Td` come out the same.
 
 use super::{RenderCtx, ONE_HUNDRED_BP_SP};
-use crate::dpx_font::FaceMetrics;
+use crate::dpx_font::NativeMetrics;
 use crate::native_layout::NativeRun;
 use std::rc::Rc;
 
@@ -151,40 +151,13 @@ impl DpxText {
     }
 }
 
-/// Per-font tables for `font->gm[]` of dvi.c `dvi_locate_native_font`.
-pub(crate) struct NativeMetrics {
-    upem: f64,
-    num_glyphs: u16,
-    advance: Vec<u16>,
-    ascent: i16,
-    descent: i16,
-}
-
-impl NativeMetrics {
-    fn read(data: &[u8], face_index: u32, vertical: bool) -> Result<NativeMetrics, String> {
-        let sf = crate::dpx_font::Sfnt::parse(data, face_index)?;
-        let m = FaceMetrics::read(&sf)?;
-        let advance = match (&m.vmtx, vertical) {
-            (Some(v), true) => v.clone(),
-            _ => m.hmtx.clone(),
-        };
-        Ok(NativeMetrics {
-            upem: m.units_per_em as f64,
-            num_glyphs: m.num_glyphs,
-            advance,
-            ascent: m.hhea_ascent,
-            descent: m.hhea_descent,
-        })
-    }
-}
-
 fn utf16_pdf_string(units: &[u16]) -> String {
     // pdf_dev_begin_actualtext: PDFDocEncoding when every unit is below
     // 0x100 and outside 0x80..0xA1, else UTF-16BE with a BOM; bytes above
     // 0x7e are written as octal escapes (equivalent to the raw bytes)
     let doc = units.iter().all(|&u| u <= 0xff && !(u > 0x7f && u < 0xa1));
     let mut s = String::new();
-    let mut put = |c: u8, s: &mut String| {
+    let put = |c: u8, s: &mut String| {
         if c == b'(' || c == b')' || c == b'\\' {
             s.push('\\');
             s.push(c as char);
@@ -232,25 +205,33 @@ impl<'a> RenderCtx<'a> {
     /// `pdf_dev_locate_font`: the device font of native font `fid` (same
     /// program, direction and synthetic options share a PDF font).
     fn dpxt_locate_font(&mut self, fid: u16, nf: &crate::native_font::NativeFont, sptsize: i64) -> usize {
-        let key = crate::pdfout::XeGroupKey {
-            hash: nf.program.content_hash,
-            face_index: nf.program.face_index,
-            variations: nf.program.variations.iter().map(|(t, v)| (u32::from_be_bytes(t.to_bytes()), v.to_bits())).collect(),
-            vertical: nf.vertical,
-            extend: crate::native_font::d2fix(nf.extend as f64),
-            slant: crate::native_font::d2fix(nf.slant as f64),
-            embolden: crate::native_font::d2fix(nf.embolden as f64),
+        let ext = crate::native_font::d2fix(nf.extend as f64);
+        let slant = crate::native_font::d2fix(nf.slant as f64);
+        let bold = crate::native_font::d2fix(nf.embolden as f64);
+        let rep = match self.eng.pdf_doc.xe_fid_rep.get(&fid) {
+            Some(&rep) => rep,
+            None => {
+                let key = crate::pdfout::XeGroupKey {
+                    hash: nf.program.content_hash,
+                    face_index: nf.program.face_index,
+                    variations: nf.program.variations.iter().map(|(t, v)| (u32::from_be_bytes(t.to_bytes()), v.to_bits())).collect(),
+                    vertical: nf.vertical,
+                    extend: ext,
+                    slant,
+                    embolden: bold,
+                };
+                self.eng.pdf_doc.xe_group_rep(fid, key)
+            }
         };
-        let rep = self.eng.pdf_doc.xe_group_rep(fid, key.clone());
         if let Some(i) = self.dpxt.fonts.iter().position(|f| f.rep == rep && f.sptsize == sptsize) {
             return i;
         }
         self.dpxt.fonts.push(DevFont {
             rep,
             sptsize,
-            extend: key.extend as f64 / 65536.0,
-            slant: key.slant as f64 / 65536.0,
-            bold: key.embolden as f64 / 65536.0,
+            extend: ext as f64 / 65536.0,
+            slant: slant as f64 / 65536.0,
+            bold: bold as f64 / 65536.0,
             wmode: nf.vertical,
         });
         self.dpxt.fonts.len() - 1
@@ -391,12 +372,8 @@ impl<'a> RenderCtx<'a> {
     fn dpxt_set_font(&mut self, idx: usize) {
         self.dpxt_text_mode();
         let f = self.dpxt.fonts[idx];
-        let vert_font = i32::from(f.wmode);
-        let text_rotate = (vert_font << 2) | vert_font;
-        let text_rotate = if text_rotate == 5 { WMODE_VH } else { text_rotate };
-        let _ = text_rotate;
         // autorotate: the direction stays horizontal (dir_mode 0)
-        let text_rotate = vert_font << 2;
+        let text_rotate = i32::from(f.wmode) << 2;
         let t = &mut self.dpxt;
         if f.slant != t.slant || f.extend != t.extend || ((text_rotate - t.rotate).abs() % 5) != 0 {
             t.force_reset = true;

@@ -11,6 +11,7 @@ use crate::prim::{DimParam, IntParam};
 pub(crate) mod dpx;
 mod dpx_doc;
 mod dpx_page;
+mod dpx_text;
 mod lr;
 mod lua_glyph;
 pub(crate) use lua_glyph::with_vf_packet;
@@ -391,6 +392,8 @@ pub struct RenderCtx<'a> {
     pub xform_list: Vec<i32>,
     /// XeTeX: page-local state of the xdvipdfmx special interpreter.
     dpx: dpx::DpxPage,
+    /// XeTeX: the pdfdev.c text state of native glyph runs.
+    dpxt: dpx_text::DpxText,
 }
 
 /// A shipped \pdfxform box: its content stream and resources.
@@ -558,6 +561,7 @@ impl Engine {
             ximage_list: Vec::new(),
             xform_list: Vec::new(),
             dpx: dpx::DpxPage::new(),
+            dpxt: dpx_text::DpxText::new(),
         }
     }
 
@@ -1842,6 +1846,9 @@ impl<'a> RenderCtx<'a> {
     }
     /// pdfTeX `pdf_end_text`.
     fn end_text(&mut self) {
+        if self.dpxt.in_text() {
+            self.dpxt_graphics_mode();
+        }
         if self.doing_text {
             self.end_string_nl();
             self.content.push_str("ET\n");
@@ -2193,6 +2200,9 @@ impl<'a> RenderCtx<'a> {
         if at_size_sp <= 0 {
             return; // nullfont: nothing to draw
         }
+        if self.eng.engine_kind == crate::engine::EngineKind::XeTeX && self.dpxt.in_text() {
+            self.dpxt_graphics_mode();
+        }
         if self.eng.engine_kind == crate::engine::EngineKind::XeTeX && self.dpx_tracking() {
             let adv = self.font_char_advance_sp(f, c);
             let (h, d) = self
@@ -2465,6 +2475,8 @@ impl<'a> RenderCtx<'a> {
         adv_sp
     }
 
+
+    /// A native word or glyph node: the xdvipdfmx text engine (`dpx_text.rs`).
     fn emit_native_glyph_run_sp(
         &mut self,
         run: &std::rc::Rc<crate::native_layout::NativeRun>,
@@ -2473,115 +2485,7 @@ impl<'a> RenderCtx<'a> {
         cur_x: i64,
         y: i64,
     ) {
-        if start >= end || start >= run.glyphs.len() {
-            return;
-        }
-        let bound_end = end.min(run.glyphs.len());
-        let fid = run.font;
-        let at_size_sp = self
-            .eng
-            .eqtb
-            .fonts
-            .get(fid as usize)
-            .map(|ff| ff.at_size as i64)
-            .unwrap_or(0);
-        if at_size_sp <= 0 {
-            return;
-        }
-        let (_, m) = divide_scaled(at_size_sp, ONE_HUNDRED_BP_SP, 6);
-        let ratio = self.font_ratio(fid);
-        let x_bp = sp_to_bp(cur_x);
-        let y_bp = self.y_pdf(sp_to_bp(y));
-
-        self.display_list
-            .push(crate::boxes::DisplayItem::NativeGlyphRun {
-                run: run.clone(),
-                start,
-                end: bound_end,
-                x_bp,
-                y_bp,
-                tag: None,
-                span: None,
-            });
-        let mut pen_x = cur_x;
-        let mut idx = start;
-        while idx < bound_end {
-            let c_start = run.glyphs[idx].cluster_start;
-            let c_end = run.glyphs[idx].cluster_end;
-            let mut j = idx + 1;
-            while j < bound_end
-                && run.glyphs[j].cluster_start == c_start
-                && run.glyphs[j].cluster_end == c_end
-            {
-                j += 1;
-            }
-            let cluster_glyph_count = j - idx;
-            let extraction = if c_start == c_end && run.glyphs.len() == 1 {
-                // a single-glyph node (XeTeX `glyph_node`) reports its own text
-                &run.text[..]
-            } else if (c_start as usize) < run.text.len()
-                && (c_end as usize) <= run.text.len()
-                && c_start <= c_end
-            {
-                &run.text[c_start as usize..c_end as usize]
-            } else {
-                ""
-            };
-
-            if cluster_glyph_count > 1 {
-                self.end_string();
-                let mut actual_hex = String::from("FEFF");
-                for u in extraction.encode_utf16() {
-                    use std::fmt::Write;
-                    let _ = write!(&mut actual_hex, "{:04X}", u);
-                }
-                self.content.push_str("/Span << /ActualText <");
-                self.content.push_str(&actual_hex);
-                self.content.push_str("> >> BDC\n");
-            }
-
-            for k in idx..j {
-                let g = &run.glyphs[k];
-                let txt = if cluster_glyph_count == 1 {
-                    extraction
-                } else if k == idx {
-                    extraction
-                } else {
-                    ""
-                };
-                let (binding_idx, code) =
-                    self.eng
-                        .pdf_doc
-                        .get_or_alloc_native_code(fid as usize, g.glyph_id, txt);
-                let glyph_target_x = pen_x + g.x_offset as i64;
-                let glyph_target_y = y - g.y_offset as i64;
-
-                self.begin_hex_string(glyph_target_x, glyph_target_y, fid, binding_idx, ratio);
-                use std::fmt::Write;
-                let _ = write!(&mut self.content, "{:04X}", code);
-
-                let nom_sp = self.native_glyph_nom_advance_sp(fid, g.glyph_id);
-                let (_, nom_out) = if self.cur_tm_a == 0 {
-                    divide_scaled(nom_sp, m, 4)
-                } else {
-                    let (_, out) = divide_scaled(
-                        round_xn_over_d(nom_sp, 1000, 1000 + self.cur_tm_a as i64),
-                        m,
-                        4,
-                    );
-                    (0, out)
-                };
-                self.delta_h += nom_out;
-                pen_x += g.x_advance as i64;
-            }
-
-            if cluster_glyph_count > 1 {
-                self.end_string();
-                self.content.push_str("EMC\n");
-            }
-
-            idx = j;
-        }
+        self.dpx_native_run(run, start, end, cur_x, y);
     }
 
     /// pdfTeX `pdf_set_rule`: close the text object, then draw inside a

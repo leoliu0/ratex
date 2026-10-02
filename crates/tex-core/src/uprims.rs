@@ -583,7 +583,7 @@ impl Engine {
             }
             UPrim::LateLua => {
                 let toks = self.scan_general_text_expanded();
-                let code = self.tokens_to_string(&toks).into_bytes();
+                let code = self.tokens_to_lua_text(&toks).into_bytes();
                 self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::LateLua { code, func: 0 }, self.eqtb.cur_attr));
             }
             UPrim::LateLuaFunction => {

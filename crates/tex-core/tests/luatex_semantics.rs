@@ -337,3 +337,73 @@ fn umath_stack_and_fraction_delimiter_parameters_follow_luatex() {
     assert!(errors[0].starts_with("Missing math style, treated as \\displaystyle"), "{errors:?}");
     assert_eq!(errors[1], "Undefined control sequence \\bogus");
 }
+
+#[test]
+fn lua_code_and_pattern_text_leave_par_out() {
+    // luababel.def keeps blank lines inside \directlua (issue #17)
+    let mut e = luatex_ini();
+    run(
+        &mut e,
+        r#"\directlua{texio.write_nl("[" .. [[a\par b]] .. "]")}
+\directlua{texio.write_nl("[" .. [[x
+
+y]] .. "]")}
+\language=5 \patterns{a1b
+
+b1c}
+\directlua{texio.write_nl("[" .. lang.patterns(lang.new(5)) .. "]")}"#,
+    );
+    assert_eq!(shown(&e), ["[ab]", "[x y]", "[a1b b1c ]"], "term: {}", e.term);
+    assert!(errors(&e).is_empty(), "{:?}", errors(&e));
+}
+
+#[test]
+fn patterns_load_after_the_format() {
+    // texlang.c `new_patterns` has no INITEX check: babel loads
+    // hyph-es.tex at run time under LuaLaTeX (issue #17)
+    let mut e = luatex_ini();
+    e.ini_mode = false;
+    run(
+        &mut e,
+        r#"\language=5 \patterns{a1b b1c}
+\directlua{texio.write_nl("[" .. lang.patterns(lang.new(5)) .. "]")}"#,
+    );
+    assert_eq!(shown(&e), ["[a1b b1c ]"], "term: {}", e.term);
+    assert!(errors(&e).is_empty(), "{:?}", errors(&e));
+}
+
+#[test]
+fn long_caret_notation_follows_luatex() {
+    // luababel.def spells characters as ^^^^XXXX (issue #17)
+    let mut e = luatex_ini();
+    run(
+        &mut e,
+        r#"\def\show#1{\immediate\write16{[#1]}}\catcode`\^=7
+\count255=`^^^^200d \show{\the\count255}
+\count255=`^^^^^^01f600 \show{\the\count255}
+\def\x^^^^0041{OK}\show{\meaning\xA}
+\catcode30=12 \edef\y{^^^abc}\show{\meaning\y}
+\edef\y{^^^^zz}\show{\meaning\y}"#,
+    );
+    assert_eq!(
+        shown(&e),
+        ["[8205]", "[128512]", "[macro:->OK]", "[macro:->^^^abc]", "[macro:->^^^^zz]"],
+        "term: {}",
+        e.term
+    );
+    assert_eq!(errors(&e), ["^^^^ needs four hex digits"]);
+}
+
+#[test]
+fn mathchardef_reads_umathcharnum_values_like_luatex() {
+    // spanish.ldf saves `\the\mathcode` with \mathchardef (issue #17)
+    let mut e = luatex_ini();
+    run(
+        &mut e,
+        r#"\def\show#1{\immediate\write16{[#1]}}
+\mathcode`\.="013A \mathchardef\m=\mathcode`\. \show{\the\mathcode`\.=\the\m}
+\mathchardef\n=16777274 \show{\the\n}"#,
+    );
+    assert_eq!(shown(&e), ["[16777274=314]", "[314]"], "term: {}", e.term);
+    assert!(errors(&e).is_empty(), "{:?}", errors(&e));
+}

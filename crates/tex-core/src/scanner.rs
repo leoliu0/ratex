@@ -567,7 +567,9 @@ impl Engine {
     /// begins `^^` notation, replace the notation by the character it
     /// denotes and close the gap. Returns false if no expanded code is there.
     fn reduce_expanded_code(&mut self, si: usize, k: usize, sup: u32) -> bool {
-        let unicode = self.engine_kind != EngineKind::PdfTeX;
+        if self.engine_kind != EngineKind::PdfTeX {
+            return self.reduce_unicode_expanded_code(si, k, sup);
+        }
         let Some(Source::File {
             line_buf: Some(buf),
             ..
@@ -578,23 +580,44 @@ impl Engine {
         let Some((value, width)) = sup_notation(buf, k, sup) else {
             return false;
         };
-        if unicode && value >= 0x80 {
-            // The denoted scalar is spelled in UTF-8 so the line still
-            // decodes (luatex stores `^^ad` as U+00AD, not a raw byte).
-            let mut encoded = [0u8; 4];
-            let bytes = char::from(value).encode_utf8(&mut encoded).as_bytes();
-            buf.splice(k - 1..k + width, bytes.iter().copied());
-            return true;
-        }
         buf[k - 1] = value;
         buf.drain(k..k + width);
         true
+    }
+
+    /// `reduce_expanded_code` of the Unicode engines: the longer forms, and
+    /// the denoted scalar spelled in UTF-8 so the line still decodes
+    /// (luatex stores `^^ad` as U+00AD, not a raw byte).
+    #[inline(never)]
+    fn reduce_unicode_expanded_code(&mut self, si: usize, k: usize, sup: u32) -> bool {
+        let kind = self.engine_kind;
+        let Some(Source::File {
+            line_buf: Some(buf),
+            ..
+        }) = self.input.stack.get_mut(si)
+        else {
+            return false;
+        };
+        let (notation, error) = unicode_sup_notation(buf, k, sup, kind);
+        if let Some((value, width)) = notation {
+            let character = char::from_u32(value).expect("unicode_sup_notation denotes scalars");
+            let mut encoded = [0u8; 4];
+            let bytes = character.encode_utf8(&mut encoded).as_bytes();
+            buf.splice(k - 1..k + width, bytes.iter().copied());
+        }
+        if let Some(message) = error {
+            self.error(message);
+        }
+        notation.is_some()
     }
 
     /// tex.web §352: a superscript character at `loc - 1` followed by the
     /// same character and a 7-bit code is `^^` notation. Consume it and
     /// return the character it denotes.
     fn expand_sup(&mut self, si: usize, sup: u32) -> Option<u32> {
+        if self.engine_kind != EngineKind::PdfTeX {
+            return self.expand_unicode_sup(si, sup);
+        }
         let Some(Source::File {
             line_buf: Some(buf),
             line_pos,
@@ -606,6 +629,29 @@ impl Engine {
         let (value, width) = sup_notation(buf, *line_pos, sup)?;
         *line_pos += width;
         Some(u32::from(value))
+    }
+
+    /// `expand_sup` of the Unicode engines (longer forms included).
+    #[inline(never)]
+    fn expand_unicode_sup(&mut self, si: usize, sup: u32) -> Option<u32> {
+        let Some(Source::File {
+            line_buf: Some(buf),
+            line_pos,
+            ..
+        }) = self.input.stack.get(si)
+        else {
+            return None;
+        };
+        let (notation, error) = unicode_sup_notation(buf, *line_pos, sup, self.engine_kind);
+        // luatex reports a malformed long form before reading the rest
+        if let Some(message) = error {
+            self.error(message);
+        }
+        let (value, width) = notation?;
+        if let Some(Source::File { line_pos, .. }) = self.input.stack.get_mut(si) {
+            *line_pos += width;
+        }
+        Some(value)
     }
 
     fn invalid_character_error(&mut self, si: usize, character: u32, byte_column: usize) {
@@ -705,6 +751,77 @@ fn sup_notation(buf: &[u8], k: usize, sup: u32) -> Option<(u8, usize)> {
         return Some((high * 16 + low, 3));
     }
     Some((c ^ 0x40, 2))
+}
+
+/// `sup_notation` of the Unicode engines, which read longer forms first.
+/// LuaTeX (textoken.c `process_sup_mark`) takes `^^^^XXXX` and
+/// `^^^^^^XXXXXX`; when the hex digits are missing it returns the error it
+/// reports and falls back to the two-character form. XeTeX (xetex.web
+/// §355) counts up to six superscript characters and reads as many hex
+/// digits, falls back silently, and leaves a value beyond U+10FFFF
+/// unexpanded. A surrogate code point is not a character here and is
+/// treated like that value.
+fn unicode_sup_notation(
+    buf: &[u8],
+    k: usize,
+    sup: u32,
+    kind: EngineKind,
+) -> (Option<(u32, usize)>, Option<&'static str>) {
+    let Some(sup) = u8::try_from(sup).ok().filter(u8::is_ascii) else {
+        return (None, None);
+    };
+    if buf.get(k) != Some(&sup) {
+        return (None, None);
+    }
+    let hex_value = |from: usize, digits: usize| {
+        buf.get(from..from + digits)?.iter().try_fold(0u32, |value, &digit| {
+            let nibble = match digit {
+                b'0'..=b'9' => digit - b'0',
+                b'a'..=b'f' => digit - b'a' + 10,
+                _ => return None,
+            };
+            Some(value * 16 + u32::from(nibble))
+        })
+    };
+    let mut error = None;
+    match kind {
+        EngineKind::LuaTeX if buf.get(k + 1) == Some(&sup) && buf.get(k + 2) == Some(&sup) => {
+            let six = buf.get(k + 3) == Some(&sup) && buf.get(k + 4) == Some(&sup);
+            let (from, digits) = if six { (k + 5, 6) } else { (k + 3, 4) };
+            if from + digits > buf.len() {
+                error = Some(if six {
+                    "^^^^^^ needs six hex digits, end of input"
+                } else {
+                    "^^^^ needs four hex digits, end of input"
+                });
+            } else if let Some(value) = hex_value(from, digits) {
+                if char::from_u32(value).is_some() {
+                    return (Some((value, from + digits - k)), None);
+                }
+            } else {
+                error = Some(if six {
+                    "^^^^^^ needs six hex digits"
+                } else {
+                    "^^^^ needs four hex digits"
+                });
+            }
+        }
+        EngineKind::XeTeX => {
+            let mut count = 2;
+            while count < 6 && k + 2 * count - 2 < buf.len() && buf.get(k + count - 1) == Some(&sup) {
+                count += 1;
+            }
+            if let Some(value) = hex_value(k + count - 1, count) {
+                if char::from_u32(value).is_none() {
+                    return (None, None);
+                }
+                return (Some((value, 2 * count - 1)), None);
+            }
+        }
+        _ => {}
+    }
+    let notation = sup_notation(buf, k, u32::from(sup)).map(|(value, width)| (u32::from(value), width));
+    (notation, error)
 }
 
 #[cfg(test)]

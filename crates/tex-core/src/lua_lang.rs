@@ -234,6 +234,43 @@ impl Engine {
         Some(out.into_bytes())
     }
 
+    /// texlang.c `new_patterns` / `new_hyph_exceptions`: `\patterns` and
+    /// `\hyphenation` expand their braced text (`scan_toks(false, true)`)
+    /// and load it as one string (`\par` left out), in INITEX and after a
+    /// format alike.
+    pub(crate) fn lua_hyphenation_words(&mut self, is_patterns: bool) {
+        self.skip_spaces_relax();
+        let toks = self.scan_general_text_expanded();
+        if self.stopped_on_error {
+            return;
+        }
+        let text = self.tokens_to_lua_text(&toks);
+        let language = self.eqtb.int_params[crate::prim::IntParam::Language.idx() as usize];
+        let language = u8::try_from(language).unwrap_or(0);
+        if !is_patterns {
+            self.lua_load_hyphenation(language, text.as_bytes());
+            return;
+        }
+        // luatex copies the \lccode's once, when the language comes into being
+        if self.eqtb.int_params[crate::prim::IntParam::SavingHyphCodes.idx() as usize] > 0
+            && !self.hyphen_codes.contains_key(&language)
+        {
+            let mut codes = Box::new([0; 256]);
+            codes.copy_from_slice(&self.eqtb.lc_code[..256]);
+            self.hyphen_codes.insert(language, codes);
+        }
+        self.lua_load_patterns(language, text.as_bytes());
+    }
+
+    /// texlang.c `load_patterns`: add the whitespace separated patterns of
+    /// `text` to `lang`.
+    pub(crate) fn lua_load_patterns(&mut self, lang: u8, text: &[u8]) {
+        let trie = self.trie_for_language_mut(lang);
+        for word in text.split(|b| b.is_ascii_whitespace()).filter(|w| !w.is_empty()) {
+            trie.add_pattern_bytes(word);
+        }
+    }
+
     /// llanglib `load_hyphenation`: add the whitespace separated exceptions
     /// of `text` to `lang`. A word with nothing but `-` hyphens joins the
     /// language's trie (and so the format); the others are kept as written.
@@ -332,12 +369,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
     reg!(lua, t, "patterns_add", |id: i64, text: LuaString| -> Result<(), String> {
         let id = language_id(id)?;
         let text = bytes_of(&text);
-        with_engine(|e| {
-            let trie = e.trie_for_language_mut(id);
-            for word in text.split(|b| b.is_ascii_whitespace()).filter(|w| !w.is_empty()) {
-                trie.add_pattern_bytes(word);
-            }
-        })
+        with_engine(|e| e.lua_load_patterns(id, &text))
     });
     reg!(lua, t, "patterns_get", |id: i64| -> Result<LuaBytes, String> {
         let id = language_id(id)?;

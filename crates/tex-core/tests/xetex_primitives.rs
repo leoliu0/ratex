@@ -8,6 +8,35 @@ fn boot_xetex() -> Engine {
     eng
 }
 
+/// xetex.web §355: up to six superscript characters take as many hex
+/// digits; a malformed form is read as `^^` plus the next character.
+/// Expectations from `xetex -ini` (TeX Live 2026).
+#[test]
+fn long_caret_notation_follows_xetex() {
+    let mut eng = boot_xetex();
+    let src = r#"\catcode`\{=1 \catcode`\}=2 \catcode`\#=6 \catcode`\^=7
+\def\show#1{\immediate\write16{[#1]}}
+\count255=`^^^abc \show{\the\count255}
+\count255=`^^^^200d \show{\the\count255}
+\count255=`^^^^^1f600 \show{\the\count255}
+\count255=`^^^^^^01f600 \show{\the\count255}
+\def\x^^^^0041{OK}\show{\meaning\xA}
+\catcode30=12 \edef\y{^^^^zz}\show{\meaning\y}
+\end
+"#;
+    eng.input.push_file("test.tex".into(), src.as_bytes().to_vec());
+    eng.run();
+
+    let shown: Vec<&str> = eng.term.lines().filter(|l| l.starts_with('[') && l.ends_with(']')).collect();
+    assert_eq!(
+        shown,
+        ["[2748]", "[8205]", "[128512]", "[128512]", "[macro:->OK]", "[macro:->^^^^zz]"],
+        "term: {}",
+        eng.term
+    );
+    assert_eq!(eng.error_count, 0, "errors: {:?}", eng.diagnostics);
+}
+
 #[test]
 fn test_xetex_version_and_revision() {
     let mut eng = boot_xetex();

@@ -1660,26 +1660,6 @@ impl Engine {
         }
     }
 
-    /// LuaTeX `\directlua [ <reg> ] { <lua-code> }`: execute Lua code and inject output.
-    fn do_directlua(&mut self) {
-        self.skip_spaces_relax();
-        let t = self.get_token();
-        if t.is_char() && t.chr() == u32::from(b'[') {
-            let _ = self.scan_int();
-            let close = self.get_token();
-            if !(close.is_char() && close.chr() == u32::from(b']')) {
-                self.push_token(close);
-            }
-        } else {
-            self.push_token(t);
-        }
-        let toks = self.scan_general_text_expanded();
-        let code = self.tokens_to_string(&toks);
-        if let Err(err) = self.execute_directlua(code.as_bytes()) {
-            self.lua_error("LuaTeX error: ", &err);
-        }
-    }
-
     // ---------- \pdfobj / \pdfxform / \pdfximage: object-number allocation
 
     /// Reserve the next PDF object number. The writer places each reserved

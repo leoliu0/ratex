@@ -1635,7 +1635,7 @@ impl Engine {
                     self.push_token(t);
                 }
                 let toks = self.scan_general_text_expanded();
-                let code = self.tokens_to_string(&toks);
+                let code = self.tokens_to_lua_text(&toks);
                 if let Err(err) = self.execute_directlua(code.as_bytes()) {
                     self.lua_error("LuaTeX error: ", &err);
                 }
@@ -3999,6 +3999,15 @@ impl Engine {
 
     pub fn tokens_to_string(&self, toks: &[Token]) -> String {
         String::from_utf8_lossy(&self.tokens_to_bytes(toks)).into_owned()
+    }
+
+    /// luatex `tokenlist_to_cstring(p, inhibit_par = 1, ..)`: the text that
+    /// `\directlua`, `\latelua`, `\patterns` and `\hyphenation` pass on.
+    /// Same as `tokens_to_string`, except that `\par` tokens (including
+    /// those from blank lines) are left out.
+    pub(crate) fn tokens_to_lua_text(&self, toks: &[Token]) -> String {
+        let kept: Vec<Token> = toks.iter().copied().filter(|t| !self.is_partoken(*t)).collect();
+        self.tokens_to_string(&kept)
     }
 
     /// `tokens_to_string` that keeps every byte (see `tex_bytes`).

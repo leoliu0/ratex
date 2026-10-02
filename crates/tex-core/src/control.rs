@@ -796,6 +796,22 @@ impl Engine {
                 self.clear_prefixes();
                 true
             }
+            MathCharDef if self.engine_kind == crate::engine::EngineKind::LuaTeX => {
+                let t = self.scan_definable_cs();
+                let g = self.take_global();
+                self.eqtb.assign(t, Equiv::Prim(Prim::Relax), g);
+                self.scan_optional_equals();
+                // maincontrol.c `math_char_def_code`: texmath.c
+                // `scan_mathchar(tex_mathcode)` reads a value above "8000 as a
+                // \Umathcharnum (LaTeX saves `\the\mathcode` this way) and the
+                // result is packed as "TFCC. A family above 15 or a character
+                // above 255 carries into the class digit; 16 bits are kept.
+                let (class, family, character) = self.scan_mathchar_lua(crate::uprims::MathExt::Tex);
+                let value = (class * 16 + family) * 256 + character;
+                self.eqtb.assign(t, Equiv::MathCharDef(value as u16), g);
+                self.clear_prefixes();
+                true
+            }
             MathCharDef => {
                 let t = self.scan_definable_cs();
                 let g = self.take_global();

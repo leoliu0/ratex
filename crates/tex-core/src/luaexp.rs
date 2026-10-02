@@ -69,7 +69,7 @@ pub fn expanded_width(w: i32, ex: i32) -> i32 {
 pub fn limits(eqtb: &Eqtb, f: FontId) -> (i32, i32, i32) {
     match eqtb.fonts.get(usize::from(f)).and_then(|font| font.lua.as_ref()) {
         Some(lf) => (lf.step, lf.stretch, lf.shrink),
-        None => (0, 0, 0),
+        None => eqtb.expand.get(usize::from(f)).map_or((0, 0, 0), |x| (x.lua_step, x.lua_stretch, x.lua_shrink)),
     }
 }
 
@@ -83,14 +83,14 @@ pub fn expandable(eqtb: &Eqtb, f: FontId) -> bool {
 
 /// `get_ef_code`.
 pub fn ef_code(eqtb: &Eqtb, f: FontId, c: u32) -> i32 {
-    let Some(font) = eqtb.fonts.get(usize::from(f)) else { return 1000 };
+    let Some(font) = eqtb.fonts.get(usize::from(f)) else { return 0 };
+    // luatex's null charinfo of a character the font lacks has no expansion
     if font.lua.is_some() {
-        // luatex's null charinfo of a character the font lacks has no expansion
         return font.lua_char(c).map_or(0, |ci| ci.expansion_factor);
     }
     match u8::try_from(c) {
-        Ok(c) => eqtb.expand.get(usize::from(f)).map_or(1000, |x| x.ef_code(c)),
-        Err(_) => 1000,
+        Ok(c) if font.char_present(c) => eqtb.expand.get(usize::from(f)).map_or(1000, |x| x.ef_code(c)),
+        _ => 0,
     }
 }
 
@@ -101,14 +101,16 @@ pub fn pw_code(eqtb: &Eqtb, f: FontId, c: u32, left: bool) -> i32 {
         return font.lua_char(c).map_or(0, |ci| if left { ci.left_protruding } else { ci.right_protruding });
     }
     match u8::try_from(c) {
-        Ok(c) => eqtb.expand.get(usize::from(f)).map_or(0, |x| if left { x.lp_code(c) } else { x.rp_code(c) }),
-        Err(_) => 0,
+        Ok(c) if font.char_present(c) => {
+            eqtb.expand.get(usize::from(f)).map_or(0, |x| if left { x.lp_code(c) } else { x.rp_code(c) })
+        }
+        _ => 0,
     }
 }
 
 /// luatex `quad(f)`: parameter 6, zero when the font has none.
 fn quad(eqtb: &Eqtb, f: FontId) -> i32 {
-    eqtb.fonts.get(usize::from(f)).map_or(0, |font| font.params.get(5).copied().unwrap_or(0))
+    eqtb.font_params.get(usize::from(f)).and_then(|p| p.get(5).copied()).unwrap_or(0)
 }
 
 /// `char_pw`: how far the glyph protrudes into the margin.
@@ -121,7 +123,14 @@ pub fn char_pw(eqtb: &Eqtb, g: GlyphRef, left: bool) -> i32 {
 }
 
 fn char_width(eqtb: &Eqtb, f: FontId, c: u32) -> i32 {
-    eqtb.fonts.get(usize::from(f)).and_then(|font| font.lua_char(c)).map_or(0, |ci| ci.width)
+    let Some(font) = eqtb.fonts.get(usize::from(f)) else { return 0 };
+    if font.lua.is_some() {
+        return font.lua_char(c).map_or(0, |ci| ci.width);
+    }
+    match u8::try_from(c) {
+        Ok(c) if font.char_present(c) => font.char_width(c),
+        _ => 0,
+    }
 }
 
 /// `calc_char_width(f, c, ex)`.
@@ -497,24 +506,75 @@ fn collect(eqtb: &Eqtb, list: &[Node], kerns: bool, stretch: &mut i64, shrink: &
     }
 }
 
+/// The glyph node a character or ligature node of a TFM font becomes once
+/// it is expanded: LuaTeX keeps one glyph node type whose `ex_glyph` holds
+/// the expansion (`ctx` is the hyphenation state the importer to Lua gives
+/// such a node as well).
+fn expanded_glyph(n: &Node, ex: i32, ctx: crate::lua_node_conv::LangCtx) -> Option<Node> {
+    use crate::lua_node::{GLYPH_CHARACTER, GLYPH_LEFT, GLYPH_LIGATURE, GLYPH_RIGHT};
+    let glyph = |c: u32, font: FontId, subtype: u16, components: NodeList, attr: Attr| {
+        Node::LuaGlyph(Box::new(crate::boxes::LuaGlyph {
+            c,
+            font,
+            lang: ctx.lang,
+            left: ctx.left,
+            right: ctx.right,
+            uchyph: ctx.uchyph,
+            xoffset: 0,
+            yoffset: 0,
+            expansion_factor: ex,
+            data: 0,
+            subtype: subtype as u8,
+            components,
+            attr,
+        }))
+    };
+    match n {
+        Node::Char { c, font, attr } => Some(glyph(u32::from(*c), *font, GLYPH_CHARACTER, Vec::new(), *attr)),
+        Node::Ligature { c, font, letters, n_letters, subtype, attr, .. } => {
+            let mut sub = GLYPH_LIGATURE;
+            if subtype & 2 != 0 {
+                sub |= GLYPH_LEFT;
+            }
+            if subtype & 1 != 0 {
+                sub |= GLYPH_RIGHT;
+            }
+            let components = letters[..usize::from(*n_letters).min(3)]
+                .iter()
+                .map(|&l| Node::Char { c: l, font: *font, attr: *attr })
+                .collect();
+            Some(glyph(u32::from(*c), *font, sub, components, *attr))
+        }
+        _ => None,
+    }
+}
+
+/// `do_subst_font` for one node of a list: a glyph takes its new
+/// `expansion_factor`, a character of a TFM font becomes a glyph node
+/// carrying it.
+fn subst_glyph(eqtb: &Eqtb, node: &mut Node, ratio: i32, ctx: crate::lua_node_conv::LangCtx) {
+    let Some(gr) = glyph_ref(node) else { return };
+    if let Node::LuaGlyph(g) = node {
+        g.expansion_factor = subst_font(eqtb, gr, ratio, g.expansion_factor);
+        return;
+    }
+    let ex = subst_font(eqtb, gr, ratio, 0);
+    if ex != 0 {
+        if let Some(g) = expanded_glyph(node, ex, ctx) {
+            *node = g;
+        }
+    }
+}
+
 /// `do_subst_font` over the glyphs of a list (packaging.c `hpack` with
 /// `m = subst_ex_font`); `kerns` as in [`collect`].
-fn substitute(eqtb: &Eqtb, list: &mut NodeList, ratio: i32, kerns: bool) {
+fn substitute(eqtb: &Eqtb, list: &mut NodeList, ratio: i32, kerns: bool, ctx: crate::lua_node_conv::LangCtx) {
     for i in 0..list.len() {
-        let glyph = glyph_ref(&list[i]);
         match &mut list[i] {
-            Node::LuaGlyph(g) => {
-                if let Some(gr) = glyph {
-                    g.expansion_factor = subst_font(eqtb, gr, ratio, g.expansion_factor);
-                }
-            }
             Node::Disc(dc) => {
                 for part in [&mut dc.pre_break, &mut dc.post_break, &mut dc.no_break] {
                     for n in part.iter_mut() {
-                        let gr = glyph_ref(n);
-                        if let (Node::LuaGlyph(g), Some(gr)) = (n, gr) {
-                            g.expansion_factor = subst_font(eqtb, gr, ratio, g.expansion_factor);
-                        }
+                        subst_glyph(eqtb, n, ratio, ctx);
                     }
                 }
                 substitute_kerns(eqtb, &mut dc.no_break, ratio, kerns);
@@ -524,7 +584,7 @@ fn substitute(eqtb: &Eqtb, list: &mut NodeList, ratio: i32, kerns: bool) {
                 *ex = subst_font(eqtb, gr, ratio, *ex);
                 *width = -char_pw(eqtb, gr, *side == 0);
             }
-            _ => {}
+            n => subst_glyph(eqtb, n, ratio, ctx),
         }
     }
     substitute_kerns(eqtb, list, ratio, kerns);
@@ -582,7 +642,8 @@ pub fn hpack_expand(eng: &mut crate::engine::Engine, mut list: NodeList, w: i32,
         }
     }
     if ratio != 0 {
-        substitute(&eng.eqtb, &mut list, ratio, kerns);
+        let ctx = eng.lang_ctx();
+        substitute(&eng.eqtb, &mut list, ratio, kerns, ctx);
     }
     crate::boxes::hpack(list, Some(w), kind, &eng.eqtb)
 }
@@ -592,12 +653,13 @@ pub fn hpack_expand(eng: &mut crate::engine::Engine, mut list: NodeList, w: i32,
 // ---------------------------------------------------------------------
 
 impl crate::engine::Engine {
-    /// The font code `p` (`\efcode`, `\lpcode` or `\rpcode`) of a Lua font:
-    /// scans the character (`scan_char_num`) and reads its record. `None`,
-    /// before anything is scanned, for other fonts and primitives.
+    /// The font code `p` (`\efcode`, `\lpcode` or `\rpcode`) of a font in
+    /// LuaTeX: scans the character (`scan_char_num`) and reads its record.
+    /// `None`, before anything is scanned, for other engines and
+    /// primitives.
     pub(crate) fn lua_font_code(&mut self, f: FontId, p: crate::prim::Prim) -> Option<i32> {
         use crate::prim::Prim;
-        if !matches!(p, Prim::EfCode | Prim::LpCode | Prim::RpCode) || !self.is_lua_font(f) {
+        if !matches!(p, Prim::EfCode | Prim::LpCode | Prim::RpCode) || !self.luatex_font_codes() {
             return None;
         }
         let c = self.scan_char_num_lua() as u32;
@@ -608,29 +670,48 @@ impl crate::engine::Engine {
         })
     }
 
-    /// Assign `\efcode`, `\lpcode` or `\rpcode` of a Lua font (texfont.c
-    /// `set_ef_code`: only characters the font has are changed). Returns
-    /// false, before anything is scanned, for other fonts and primitives.
+    /// Assign `\efcode`, `\lpcode` or `\rpcode` in LuaTeX (texfont.c
+    /// `set_ef_code`: only characters the font has are changed, the value
+    /// is stored as it is). Returns false, before anything is scanned, for
+    /// other engines and primitives.
     pub(crate) fn lua_font_code_assign(&mut self, f: FontId, p: crate::prim::Prim) -> bool {
         use crate::prim::Prim;
-        if !matches!(p, Prim::EfCode | Prim::LpCode | Prim::RpCode) || !self.is_lua_font(f) {
+        if !matches!(p, Prim::EfCode | Prim::LpCode | Prim::RpCode) || !self.luatex_font_codes() {
             return false;
         }
         let c = self.scan_char_num_lua() as u32;
         self.scan_optional_equals();
         let v = self.scan_int();
-        if let Some(ci) = self.lua_font_mut(f).and_then(|lf| lf.chars.get_mut(&c)) {
-            match p {
-                Prim::EfCode => ci.expansion_factor = v,
-                Prim::LpCode => ci.left_protruding = v,
-                _ => ci.right_protruding = v,
+        let lua = self.eqtb.fonts.get(usize::from(f)).is_some_and(|font| font.lua.is_some());
+        if lua {
+            if let Some(ci) = self.lua_font_mut(f).and_then(|lf| lf.chars.get_mut(&c)) {
+                match p {
+                    Prim::EfCode => ci.expansion_factor = v,
+                    Prim::LpCode => ci.left_protruding = v,
+                    _ => ci.right_protruding = v,
+                }
             }
+        } else if let Some(c) = u8::try_from(c).ok().filter(|&c| {
+            self.eqtb.fonts.get(usize::from(f)).is_some_and(|font| font.char_present(c))
+        }) {
+            if usize::from(f) >= self.eqtb.expand.len() {
+                self.eqtb.expand.resize_with(usize::from(f) + 1, Default::default);
+            }
+            let x = &mut self.eqtb.expand[usize::from(f)];
+            let (table, default) = match p {
+                Prim::EfCode => (&mut x.ef, 1000),
+                Prim::LpCode => (&mut x.lp, 0),
+                _ => (&mut x.rp, 0),
+            };
+            table.get_or_insert_with(|| std::rc::Rc::new(std::cell::RefCell::new([default; 256]))).borrow_mut()[usize::from(c)] = v;
         }
         true
     }
 
-    fn is_lua_font(&self, f: FontId) -> bool {
-        self.eqtb.fonts.get(usize::from(f)).is_some_and(|font| font.lua.is_some())
+    /// Whether the font codes follow luatex (a character record of the font
+    /// holds them) rather than pdfTeX.
+    fn luatex_font_codes(&self) -> bool {
+        self.engine_kind == crate::engine::EngineKind::LuaTeX
     }
 }
 
@@ -638,18 +719,22 @@ impl crate::engine::Engine {
     /// texfont.c `read_expand_font` (`\expandglyphsinfont`) for a Lua font:
     /// the limits are kept with the font, no expanded copies are made.
     pub(crate) fn lua_read_expand_font(&mut self, f: FontId) {
+        if f == 0 {
+            self.lua_res_error(None, "font expansion", "invalid font identifier");
+            return;
+        }
         self.scan_optional_equals();
         let mut stretch = self.scan_int().clamp(0, 1000);
         let mut shrink = self.scan_int().clamp(0, 500);
         let step = self.scan_int().clamp(0, 100);
         if step == 0 {
-            self.error("font expansion: invalid step");
+            self.lua_res_error(None, "font expansion", "invalid step");
             return;
         }
         stretch -= stretch % step;
         shrink -= shrink % step;
         if stretch == 0 && shrink == 0 {
-            self.error("font expansion: invalid limit(s)");
+            self.lua_res_error(None, "font expansion", "invalid limit(s)");
             return;
         }
         if self.scan_keyword(b"autoexpand") {
@@ -659,14 +744,15 @@ impl crate::engine::Engine {
         let (cur_step, cur_stretch, cur_shrink) = limits(&self.eqtb, f);
         if cur_step != 0 {
             if cur_step != step {
-                self.error("font expansion: font has been expanded with different expansion step");
+                self.lua_res_error(None, "font expansion", "font has been expanded with different expansion step");
             } else if (cur_stretch == 0 && stretch != 0) || (cur_stretch > 0 && cur_stretch != stretch) {
-                self.error("font expansion: font has been expanded with different stretch limit");
+                self.lua_res_error(None, "font expansion", "font has been expanded with different stretch limit");
             } else if (cur_shrink == 0 && shrink != 0) || (cur_shrink > 0 && cur_shrink != shrink) {
-                self.error("font expansion: font has been expanded with different shrink limit");
+                self.lua_res_error(None, "font expansion", "font has been expanded with different shrink limit");
             }
         } else {
-            if self.lua_fonts.used.contains(&f) {
+            let used = self.lua_fonts.used.contains(&f) || self.pdf_doc.font_chars.contains_key(&usize::from(f));
+            if used {
                 self.warning_at("luatex warning (font expansion): font should be expanded before its first use", None);
             }
             self.lua_set_expansion(f, stretch, shrink, step);

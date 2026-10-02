@@ -668,6 +668,12 @@ pub struct FontExpand {
     pub sh_bs: Option<Rc<std::cell::RefCell<[i32; 256]>>>,
     pub kn_bc: Option<Rc<std::cell::RefCell<[i32; 256]>>>,
     pub kn_ac: Option<Rc<std::cell::RefCell<[i32; 256]>>>,
+    /// LuaTeX: `\expandglyphsinfont` limits of a TFM font (texfont.c
+    /// `font_step`, `font_max_stretch`, `font_max_shrink`); LuaTeX keeps no
+    /// expanded copies, so the pdfTeX fields above stay unused in that engine
+    pub lua_step: i32,
+    pub lua_stretch: i32,
+    pub lua_shrink: i32,
 }
 
 impl Default for FontExpand {
@@ -688,6 +694,9 @@ impl Default for FontExpand {
             sh_bs: None,
             kn_bc: None,
             kn_ac: None,
+            lua_step: 0,
+            lua_stretch: 0,
+            lua_shrink: 0,
         }
     }
 }

@@ -2150,12 +2150,12 @@ impl Engine {
         self.clear_prefixes();
         self.skip_spaces_relax();
         let f = self.scan_font_id();
-        if f == 0 {
-            self.error("font expansion: invalid font identifier");
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            self.lua_read_expand_font(f);
             return;
         }
-        if self.eqtb.fonts[f as usize].lua.is_some() {
-            self.lua_read_expand_font(f);
+        if f == 0 {
+            self.error("font expansion: invalid font identifier");
             return;
         }
         if self.eqtb.expand[f as usize].blink != 0 {

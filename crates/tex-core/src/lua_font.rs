@@ -837,10 +837,14 @@ impl Engine {
 
     /// `font.setexpansion`: luatex `set_expand_params`.
     pub(crate) fn lua_set_expansion(&mut self, f: FontId, stretch: i32, shrink: i32, step: i32) {
-        if let Some(lf) = self.lua_font_mut(f) {
-            lf.stretch = stretch;
-            lf.shrink = shrink;
-            lf.step = step;
+        if self.eqtb.fonts.get(usize::from(f)).is_some_and(|font| font.lua.is_some()) {
+            if let Some(lf) = self.lua_font_mut(f) {
+                lf.stretch = stretch;
+                lf.shrink = shrink;
+                lf.step = step;
+            }
+        } else if let Some(x) = self.eqtb.expand.get_mut(usize::from(f)) {
+            (x.lua_stretch, x.lua_shrink, x.lua_step) = (stretch, shrink, step);
         }
     }
 }

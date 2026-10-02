@@ -746,8 +746,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
     });
     nat!(lua, n, "current_attr", || -> Result<Option<i64>, String> {
         with_engine(|e| {
-            let regs = e.lua_attribute_registers();
-            let l = e.lua_nodes.current_attr_list(&regs);
+            let l = e.lua_current_attr_handle();
             (l != 0).then_some(i64::from(l))
         })
     });
@@ -774,8 +773,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
             }
             let new = match kind {
                 Some(u32::MAX) => {
-                    let regs = e.lua_attribute_registers();
-                    e.lua_nodes.current_attr_list(&regs)
+                    e.lua_current_attr_handle()
                 }
                 Some(a) if e.lua_nodes.valid(a) => {
                     if e.lua_nodes.id(a) == ATTRIBUTE_LIST {

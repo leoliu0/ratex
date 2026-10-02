@@ -123,14 +123,14 @@ impl Engine {
             MSkip => {
                 let g = self.scan_glue(true);
                 if self.mode.is_m() {
-                    self.append_mlist_node(Node::MuGlue(g));
+                    self.append_mlist_node(Node::MuGlue(g, self.eqtb.cur_attr));
                 }
             }
             Kern => {
                 // tex.web §1061 append_kern: subtype explicit
                 let d = self.scan_dimen(false, false);
                 if self.mode.is_m() {
-                    self.append_mlist_node(Node::ExplicitKern(d));
+                    self.append_mlist_node(Node::ExplicitKern(d, self.eqtb.cur_attr));
                 } else if self.mode.is_v() {
                     self.append_v_kern(d);
                 } else {
@@ -140,7 +140,7 @@ impl Engine {
             MKern => {
                 let d = self.scan_dimen(true, false);
                 if self.mode.is_m() {
-                    self.append_mlist_node(Node::MathKern(d, 0));
+                    self.append_mlist_node(Node::MathKern(d, 0, self.eqtb.cur_attr));
                 }
             }
             // etex.ch `hmode+valign` with cur_chr>0; vmode+valign starts a
@@ -163,7 +163,7 @@ impl Engine {
                             BeginR => crate::boxes::BEGIN_R,
                             _ => crate::boxes::END_R,
                         };
-                        self.cur_list.push(Node::MathKern(0, kind));
+                        self.cur_list.push(Node::MathKern(0, kind, self.eqtb.cur_attr));
                         self.texxet_nodes = true;
                     } else {
                         // etex.ch eTeX_enabled: "Sorry, this optional e-TeX
@@ -243,7 +243,7 @@ impl Engine {
                 if self.mode.is_v() {
                     self.append_v_penalty(n);
                 } else if self.mode.is_m() {
-                    self.append_mlist_node(Node::Penalty(n));
+                    self.append_mlist_node(Node::Penalty(n, self.eqtb.cur_attr));
                 } else {
                     self.append_h_penalty(n);
                 }
@@ -572,13 +572,13 @@ impl Engine {
                         glue_order: 0,
                         glue_set: 0.0,
                         lr: 0,
-                        dir: 0,
+                        dir: 0, attr: self.eqtb.cur_attr,
                     });
                     self.page_append(Node::Glue(crate::boxes::Glue::fil(
                         crate::boxes::GLUE_FILL,
                         0,
-                    )));
-                    self.page_append(Node::Penalty(-0x4000_0000));
+                    ), self.eqtb.cur_attr));
+                    self.page_append(Node::Penalty(-0x4000_0000, self.eqtb.cur_attr));
                     self.lua_page_filter(crate::lua_callbacks::page_info::END, false);
                     self.build_page();
                     return;
@@ -792,7 +792,7 @@ impl Engine {
                     }
                     text
                 };
-                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::CjkText(text)));
+                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::CjkText(text), self.eqtb.cur_attr));
             }
             Accent => {
                 match self.mode {
@@ -832,7 +832,7 @@ impl Engine {
                     // tex.web §1113: a kern follows a character or ligature
                     // even when its italic correction is zero
                     let correction = match self.cur_list.last() {
-                        Some(Node::Char { c, font } | Node::Ligature { c, font, .. }) => Some(
+                        Some(Node::Char { c, font, .. } | Node::Ligature { c, font, .. }) => Some(
                             self.eqtb
                                 .fonts
                                 .get(*font as usize)
@@ -844,11 +844,11 @@ impl Engine {
                         _ => None,
                     };
                     if let Some(correction) = correction {
-                        self.cur_list.push(Node::ExplicitKern(correction));
+                        self.cur_list.push(Node::ExplicitKern(correction, self.eqtb.cur_attr));
                     }
                 }
                 // tex.web §1112: `mmode+ital_corr: tail_append(new_kern(0))`
-                Mode::Math | Mode::DisplayMath => self.append_mlist_node(Node::Kern(0)),
+                Mode::Math | Mode::DisplayMath => self.append_mlist_node(Node::Kern(0, self.eqtb.cur_attr)),
             },
             // math
             MathChar if self.engine_kind == crate::engine::EngineKind::LuaTeX => {
@@ -1043,7 +1043,7 @@ impl Engine {
                         large: (v.large_fam, v.large_char),
                         size: 3,
                         fence,
-                        origin,
+                        origin, attr: self.eqtb.cur_attr,
                     });
                     self.restart_math_left_group();
                 }
@@ -1075,7 +1075,7 @@ impl Engine {
                     if let Some(s) = self.math_style_stack.last_mut() {
                         *s = style;
                     }
-                    self.append_mlist_node(Node::Style(style));
+                    self.append_mlist_node(Node::Style(style, self.eqtb.cur_attr));
                 } else {
                     self.error("Missing $ inserted");
                 }
@@ -1143,27 +1143,27 @@ impl Engine {
                 self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfLiteral {
                     origin,
                     data,
-                }));
+                }, self.eqtb.cur_attr));
             }
             PdfSave => {
                 let source = self.current_token_source_mark();
-                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfSave { source }));
+                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfSave { source: source.map(std::boxed::Box::new) }, self.eqtb.cur_attr));
             }
             PdfRestore => {
                 let source = self.current_token_source_mark();
-                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfRestore { source }));
+                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfRestore { source: source.map(std::boxed::Box::new) }, self.eqtb.cur_attr));
             }
             PdfSetMatrix => {
                 let source = self.current_token_source_mark();
                 let matrix = self.scan_pdf_string();
                 self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfSetMatrix {
                     matrix,
-                    source,
-                }));
+                    source: source.map(std::boxed::Box::new),
+                }, self.eqtb.cur_attr));
             }
             PdfStartLink => self.do_pdfstartlink(),
             PdfEndLink => {
-                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfEndLink));
+                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfEndLink, self.eqtb.cur_attr));
             }
             PdfDest => self.do_pdfdest(),
             PdfOutline => self.do_pdfoutline(),
@@ -1217,7 +1217,7 @@ impl Engine {
                         };
                         self.append_whatsit(Node::Whatsit(
                             crate::boxes::WhatIt::PdfColorStack { stack, cmd, data },
-                        ));
+                        self.eqtb.cur_attr));
                     }
                     None => self.error(
                         "Color stack action is missing; expected set, push, pop, or current",
@@ -1226,7 +1226,7 @@ impl Engine {
             }
             PdfColorStackPrim => {}
             PdfSavePos => {
-                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::SavePos { obj: 0 }));
+                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::SavePos { obj: 0 }, self.eqtb.cur_attr));
             }
             PdfLastXPos | PdfLastYPos => {
                 let command = if p == PdfLastXPos {
@@ -1267,7 +1267,7 @@ impl Engine {
                     w,
                     h,
                     d,
-                }));
+                }, self.eqtb.cur_attr));
             }
             PdfRefXImage => {
                 let (id, source) = self.scan_int_with_source();
@@ -1289,7 +1289,7 @@ impl Engine {
                     w,
                     h,
                     d,
-                }));
+                }, self.eqtb.cur_attr));
             }
             PdfFontAttr => self.do_pdffontattr(),
             PdfNoBuiltinToUnicode => self.do_pdfnobuiltintounicode(),
@@ -1321,15 +1321,15 @@ impl Engine {
             PdfLastXImageColorDepth => {}
             PdfInterwordSpaceOn | PdfInterwordSpaceOff => self.append_whatsit(Node::Whatsit(
                 crate::boxes::WhatIt::PdfInterwordSpace(p == PdfInterwordSpaceOn),
-            )),
+            self.eqtb.cur_attr)),
             PdfFakeSpace => {
-                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfFakeSpace))
+                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfFakeSpace, self.eqtb.cur_attr))
             }
             PdfRunningLinkOn | PdfRunningLinkOff => self.append_whatsit(Node::Whatsit(
                 crate::boxes::WhatIt::PdfRunningLink(p == PdfRunningLinkOn),
-            )),
+            self.eqtb.cur_attr)),
             PdfSnapRefPoint => {
-                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfSnapRefPoint))
+                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfSnapRefPoint, self.eqtb.cur_attr))
             }
             PdfSnapY => {
                 // pdftex.web new_snap_node: negative snap glue is an error
@@ -1344,11 +1344,11 @@ impl Engine {
                     );
                     return;
                 }
-                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfSnapY(glue)));
+                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfSnapY(glue), self.eqtb.cur_attr));
             }
             PdfSnapYComp => {
                 let ratio = self.scan_int().clamp(0, 1000);
-                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfSnapYComp(ratio)));
+                self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::PdfSnapYComp(ratio), self.eqtb.cur_attr));
             }
             PdfUncompress | PdfTolerance | PdfThread | PdfStartThread
             | PdfEndThread => {
@@ -1653,9 +1653,9 @@ impl Engine {
             accent_node
         };
         let delta = ((w - a) as f64 / 2.0 + h as f64 * t_sl - x as f64 * s).round() as i32;
-        self.cur_list.push(Node::AccentKern(delta));
+        self.cur_list.push(Node::AccentKern(delta, self.eqtb.cur_attr));
         self.cur_list.push(accent_part);
-        self.cur_list.push(Node::AccentKern(-a - delta));
+        self.cur_list.push(Node::AccentKern(-a - delta, self.eqtb.cur_attr));
         self.cur_list.push(base_node);
         self.space_factor = 1000;
     }

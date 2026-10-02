@@ -944,7 +944,9 @@ impl crate::fontload::FontLoader {
                 (base != name).then(|| self.read_program_bytes(&base)).flatten()
             })
             .ok_or_else(|| format!("Font program file `{name}` of font `{}` not found", String::from_utf8_lossy(&lf.name)))?;
-        let face_index = u32::try_from(lf.subfont.max(0)).unwrap_or(0);
+        // The font table's `subfont` is the 1-based position in a collection (luaotfload-dvi
+        // writes `index=subfont-1`); 0 and 1 both name the first face of a plain font file.
+        let face_index = u32::try_from(lf.subfont.max(1) - 1).unwrap_or(0);
         self.load_program(data, face_index, Vec::new())
     }
 }

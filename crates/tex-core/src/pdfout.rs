@@ -188,6 +188,9 @@ pub struct PdfDoc {
     /// The `/PTEX.Fullbanner` key as `\pdfsuppressptexinfo` and
     /// `\pdfptexuseunderscore` leave it; `None` when bit 1 suppresses it.
     pub(crate) ptex_banner_key: Option<&'static str>,
+    /// /Producer and the /PTEX.Fullbanner text of the engine that writes the file.
+    pub(crate) producer: &'static str,
+    pub(crate) banner: &'static str,
     /// Output file name (`output_file_name`), the second part of the /ID.
     pub(crate) output_name: String,
     /// `\pdftrailerid` text (`pdf_trailer_id_toks`): its MD5 replaces the
@@ -447,6 +450,8 @@ impl PdfDoc {
             start_time: String::new(),
             info_omit_date: false,
             ptex_banner_key: Some("PTEX.Fullbanner"),
+            producer: crate::pdftex::PDFTEX_PRODUCER,
+            banner: crate::pdftex::PDFTEX_BANNER,
             output_name: String::new(),
             trailer_id_text: None,
             trailer_id_raw: Vec::new(),
@@ -818,7 +823,7 @@ impl Engine {
             wd,
             ht,
             dp,
-        }));
+        }, self.eqtb.cur_attr));
     }
 
     /// Destination identifier: `name {<string>}` or `num <n>` (pdfTeX
@@ -874,7 +879,7 @@ impl Engine {
             id,
             kind,
             params: vals,
-        });
+        }, self.eqtb.cur_attr);
         match self.mode {
             crate::engine::Mode::Vertical | crate::engine::Mode::InternalVertical => {
                 self.vlist_append(node)
@@ -909,7 +914,7 @@ impl Engine {
             }
         }
         let attr = self.scan_pdf_string();
-        self.append_whatsit(Node::Whatsit(WhatIt::PdfAnnot { attr, wd, ht, dp }));
+        self.append_whatsit(Node::Whatsit(WhatIt::PdfAnnot { attr, wd, ht, dp }, self.eqtb.cur_attr));
     }
 
     /// pdfTeX `scan_action`: `user {<dict>}` or

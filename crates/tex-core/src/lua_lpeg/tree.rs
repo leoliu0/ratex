@@ -41,8 +41,6 @@ pub const CSUBST: u8 = 11;
 pub const CFOLD: u8 = 12;
 pub const CRUNTIME: u8 = 13;
 pub const CGROUP: u8 = 14;
-/// `patt % f` (LPeg 1.1).
-pub const CACC: u8 = 15;
 
 pub const CHARSETSIZE: usize = 32;
 pub type Charset = [u8; CHARSETSIZE];

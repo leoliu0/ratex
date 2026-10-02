@@ -123,6 +123,12 @@ pub(crate) fn lual_error_bytes(l: &mut LuaState, msg: &[u8]) -> LuaError {
 
 /// `luaL_argerror`: `"bad argument #narg to 'name' (extramsg)"`.
 pub(crate) fn argerror(l: &mut LuaState, narg: usize, extramsg: &str) -> LuaError {
+    argerror_at(l, narg as i64, extramsg)
+}
+
+/// `luaL_argerror` for an argument index that may be negative (a stack
+/// index relative to the top, as LuaTeX's `mplib.new` reports).
+pub(crate) fn argerror_at(l: &mut LuaState, narg: i64, extramsg: &str) -> LuaError {
     let mut narg = narg;
     let name = match current_func_name_with_kind(l) {
         Some((kind, name)) => {

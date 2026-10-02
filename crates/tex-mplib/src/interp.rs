@@ -290,6 +290,14 @@ pub struct Interpreter {
     pub current_fig: Option<i32>,
     pub log: String,
     pub term: String,
+    /// Set once `end` or `bye` has been executed.
+    pub ended: bool,
+    /// Set when the run was aborted by an unreadable input file (mplib's
+    /// "fatal error" history).
+    pub fatal: bool,
+    /// Opens the file named by an `input` statement; `None` result means
+    /// that it cannot be opened.
+    pub input_resolver: Option<Box<dyn FnMut(&str) -> Option<String>>>,
     depth: usize,
     steps: usize,
 }
@@ -312,6 +320,9 @@ impl Interpreter {
             current_fig: None,
             log: String::new(),
             term: String::new(),
+            ended: false,
+            fatal: false,
+            input_resolver: None,
             depth: 0,
             steps: 0,
         };
@@ -363,7 +374,7 @@ impl Interpreter {
         self.depth = 0;
         self.steps = 0;
 
-        while pos < tokens.len() {
+        while pos < tokens.len() && !self.ended {
             self.parse_statement(&tokens, &mut pos)?;
         }
 
@@ -555,8 +566,19 @@ impl Interpreter {
                     return res;
                 }
                 "end" | "bye" => {
+                    self.ended = true;
                     *pos = tokens.len();
                     return Ok(());
+                }
+                "input" => {
+                    *pos += 1;
+                    let mut parts = Vec::new();
+                    while let Some(Token::Ident(part) | Token::String(part)) = tokens.get(*pos) {
+                        parts.push(part.clone());
+                        *pos += 1;
+                    }
+                    self.expect_semi(tokens, pos)?;
+                    return self.read_input_file(&parts.join("."));
                 }
                 n if n != "dir" && KEYWORDS.contains(&n) => {
                     Self::skip_statement(tokens, pos);
@@ -723,6 +745,52 @@ impl Interpreter {
     fn known_pair(&self, v: &Value) -> Option<Pair> {
         let (x, y) = self.pair_exprs(v)?;
         Some(Pair::new(x.as_known()?, y.as_known()?))
+    }
+
+    /// `input name;`: plain.mp is built in; any other file comes from the
+    /// input resolver.
+    fn read_input_file(&mut self, name: &str) -> Result<(), String> {
+        if name.strip_suffix(".mp").unwrap_or(name) == "plain" {
+            return Ok(());
+        }
+        let Some(text) = self.input_resolver.as_mut().and_then(|open| open(name)) else {
+            self.fatal = true;
+            return Err(format!("I can't open file `{name}'"));
+        };
+        self.enter()?;
+        let tokens = tokenize(&text)?;
+        let mut pos = 0;
+        let result = loop {
+            if pos >= tokens.len() || self.ended {
+                break Ok(());
+            }
+            if let Err(e) = self.parse_statement(&tokens, &mut pos) {
+                break Err(e);
+            }
+        };
+        self.depth -= 1;
+        result
+    }
+
+    /// The value of a numeric variable once known.
+    pub fn numeric_variable(&self, name: &str) -> Option<f64> {
+        self.known_numeric(self.vars.get(name)?)
+    }
+
+    /// The value of a string variable.
+    pub fn string_variable(&self, name: &str) -> Option<&str> {
+        match self.vars.get(name)? {
+            Value::String(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// The value of a path variable.
+    pub fn path_variable(&self, name: &str) -> Option<&Path> {
+        match self.vars.get(name)? {
+            Value::Path(p) => Some(p),
+            _ => None,
+        }
     }
 
     fn equate(&mut self, lhs: &Value, rhs: &Value) -> Result<(), String> {

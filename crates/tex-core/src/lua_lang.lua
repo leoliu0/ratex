@@ -69,3 +69,16 @@ param("hyphenationmin", "min")
 
 function lang.gethjcode(l, c) return L.hjcode_get(id_of(l, "gethjcode"), c) end
 function lang.sethjcode(l, c, v) L.hjcode_set(id_of(l, "sethjcode"), c, v == nil and c or v) end
+
+-- llanglib.c `luaopen_lang`: the "luatex.lang" metatable is its own __index
+-- and holds the object methods.
+do
+  local mt = L.lang_mt
+  mt.__index = mt
+  mt.__name = "luatex.lang"
+  for _, name in ipairs{ "clear_patterns", "clear_hyphenation", "patterns", "hyphenation", "prehyphenchar",
+                         "posthyphenchar", "preexhyphenchar", "postexhyphenchar", "hyphenationmin",
+                         "sethjcode", "gethjcode", "id" } do
+    mt[name] = lang[name]
+  end
+end

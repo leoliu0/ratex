@@ -239,8 +239,32 @@ fn math_modf(l: &mut LuaState) -> LuaResult<usize> {
     Ok(2)
 }
 
+/// Lua 5.3 `math.random` (lmathlib.c over POSIX `random()`).
+fn math_random53(l: &mut LuaState) -> LuaResult<usize> {
+    let rv = l.global_state_mut().libc_rng.next_rand();
+    let r = rv as f64 * (1.0 / (2147483647.0 + 1.0));
+    let (low, up) = match l.arg_count() {
+        0 => return push_float(l, r),
+        1 => (1, lauxlib::check_integer(l, 1)?),
+        2 => (lauxlib::check_integer(l, 1)?, lauxlib::check_integer(l, 2)?),
+        _ => return Err(lauxlib::lual_error(l, "wrong number of arguments")),
+    };
+    if low > up {
+        return Err(lauxlib::argerror(l, 1, "interval is empty"));
+    }
+    if !(low >= 0 || up <= i64::MAX + low) {
+        return Err(lauxlib::argerror(l, 1, "interval too large"));
+    }
+    let r = r * ((up as f64 - low as f64) + 1.0);
+    l.push_value(LuaValue::integer((r as i64).wrapping_add(low)))?;
+    Ok(1)
+}
+
 fn math_random(l: &mut LuaState) -> LuaResult<usize> {
     let lua53 = l.global_state().language() == crate::LuaLanguageLevel::Lua53;
+    if lua53 {
+        return math_random53(l);
+    }
     let rv = l.global_state_mut().rng.next_rand();
     let (low, up) = match l.arg_count() {
         0 => return push_float(l, LuaRng::to_float(rv)),
@@ -258,16 +282,8 @@ fn math_random(l: &mut LuaState) -> LuaResult<usize> {
     if low > up {
         return Err(lauxlib::argerror(l, 1, "interval is empty"));
     }
-    if lua53 && !(low >= 0 || up <= i64::MAX + low) {
-        return Err(lauxlib::argerror(l, 1, "interval too large"));
-    }
     let n = (up as u64).wrapping_sub(low as u64);
-    let offset = if lua53 {
-        let range = n.wrapping_add(1);
-        if range == 0 { rv } else { rv % range }
-    } else {
-        project(l, rv, n)
-    };
+    let offset = project(l, rv, n);
     l.push_value(LuaValue::integer((low as u64).wrapping_add(offset) as i64))?;
     Ok(1)
 }
@@ -292,9 +308,11 @@ fn project(l: &mut LuaState, mut ran: u64, n: u64) -> u64 {
 
 fn math_randomseed(l: &mut LuaState) -> LuaResult<usize> {
     if l.global_state().language() == crate::LuaLanguageLevel::Lua53 {
-        // Like l_srand((unsigned int)(lua_Integer)luaL_checknumber(L, 1)).
+        // l_srand((unsigned int)(lua_Integer)luaL_checknumber(L, 1)); l_rand().
         let seed = lauxlib::check_number(l, 1)?;
-        l.global_state_mut().rng = LuaRng::from_seed(seed as i64, 0);
+        let mut rng = crate::lua_vm::LibcRandom::from_seed(seed as i64 as u32);
+        rng.next_rand();
+        l.global_state_mut().libc_rng = rng;
         return Ok(0);
     }
     let (n1, n2) = if l.arg_count() == 0 {

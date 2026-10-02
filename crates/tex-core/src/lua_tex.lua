@@ -545,11 +545,10 @@ local math_param_index, math_style_index = {}, {}
 for i, n in ipairs(math_param_names) do math_param_index[n] = i - 1 end
 for i, n in ipairs(math_style_names) do math_style_index[n] = i - 1 end
 
--- luaL_argerror: the name is the one the caller used, else the global name
+-- luaL_argerror: luatex's `debug` has no getinfo, so the name is the global
+-- one (`pushglobalfuncname`), as when the function is called through pcall
 local function bad_arg(fname, i, msg)
-  local info = debug.getinfo(3, "n")
-  local name = info and info.name or ("tex." .. fname)
-  error("bad argument #" .. i .. " to '" .. name .. "' (" .. msg .. ")", 0)
+  error("bad argument #" .. i .. " to 'tex." .. fname .. "' (" .. msg .. ")", 0)
 end
 
 -- luaL_checkoption: index of the option, or an argument error
@@ -694,18 +693,20 @@ function tex.uniform_rand(x)
 end
 function tex.normal_rand() return T.normal_rand() end
 
--- lua_math_random: math.random's interface on top of the TeX generator
--- (ltexlib.c `lua_math_random`); lua_math_randomseed is init_rand.
+-- ltexlib.c: `lua_math_randomseed` is `init_rand`; `lua_math_random` is the
+-- Lua interface of `math.random` over the TeX generator.
+function tex.lua_math_randomseed(seed)
+  if type(seed) ~= "number" then error("argument must be a number", 2) end
+  T.rand_init(lua_int(seed))
+end
 do
-  local function num(v, i)
-    local n = tonumber(v)
-    if n == nil then
-      error("bad argument #" .. i .. " to 'tex.lua_math_random' (number expected, got " ..
-        (v == nil and "no value" or type(v)) .. ")", 3)
+  local function number_arg(i, v)
+    local x = tonumber(v)
+    if type(v) == "boolean" or x == nil or type(v) == "table" then
+      error("bad argument #" .. i .. " to 'tex.lua_math_random' (number expected, got " .. (v == nil and "no value" or type(v)) .. ")", 3)
     end
-    return n + 0.0
+    return x + 0.0
   end
-  tex.lua_math_randomseed = tex.init_rand
   function tex.lua_math_random(...)
     local max = 0x7fffffff
     local r = T.uniform_rand(max)
@@ -714,13 +715,14 @@ do
     local n = select("#", ...)
     if n == 0 then return r end
     if n == 1 then
-      local u = num((...), 1)
+      local u = number_arg(1, (...))
       if not (1.0 <= u) then error("bad argument #1 to 'tex.lua_math_random' (interval is empty)", 2) end
-      return floor(r * u) + 1.0
+      return math.floor(r * u) + 1.0
     elseif n == 2 then
-      local l, u = num((...), 1), num((select(2, ...)), 2)
+      local l, u = ...
+      l, u = number_arg(1, l), number_arg(2, u)
       if not (l <= u) then error("bad argument #2 to 'tex.lua_math_random' (interval is empty)", 2) end
-      return floor(r * (u - l + 1)) + l
+      return math.floor(r * (u - l + 1)) + l
     end
     error("wrong number of arguments", 2)
   end

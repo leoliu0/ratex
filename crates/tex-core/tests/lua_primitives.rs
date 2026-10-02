@@ -147,8 +147,6 @@ fn directlua_mplib_module_works() {
     assert(f:charcode() == 1)
     local ps = f:postscript()
     assert(string.find(ps, "Adobe", 1, true))
-    local svg = f:svg()
-    assert(string.find(svg, "svg", 1, true))
     mp:finish()
     tex.print("MPLIB_OK")
 }

@@ -99,7 +99,7 @@ use crate::stdlib::Stdlib;
 use crate::{RustCallback, lib_registry};
 pub(crate) use execute::arith::{lua_shiftl, luai_numpow};
 pub use execute::{get_metamethod_event, get_metatable};
-pub use lua_rng::LuaRng;
+pub use lua_rng::{LibcRandom, LuaRng};
 pub use opcode::{Instruction, OpCode};
 use std::future::Future;
 use std::pin::Pin;
@@ -316,6 +316,9 @@ pub struct GlobalState {
     /// Random number generator — xoshiro256** matching C Lua exactly
     pub(crate) rng: LuaRng,
 
+    /// Lua 5.3 `math.random` state (glibc `random()`).
+    pub(crate) libc_rng: lua_rng::LibcRandom,
+
     /// Start time for os.clock() where the process CPU clock is unavailable
     #[cfg(not(unix))]
     pub(crate) start_time: PlatformInstant,
@@ -380,6 +383,7 @@ impl GlobalState {
             closure_cache53: PtrMap::default(),
             // Initialize RNG with a deterministic seed for reproducibility
             rng: LuaRng::from_seed_time(time),
+            libc_rng: lua_rng::LibcRandom::from_seed(time as u32),
             #[cfg(not(unix))]
             start_time: PlatformInstant::now(),
             const_strings: cs,
@@ -422,7 +426,6 @@ impl GlobalState {
         inner.registry_seti(1, thread_value);
         inner.registry_seti(2, globals_value);
         inner.set_global("_G", globals_value).unwrap();
-        inner.set_global("_ENV", globals_value).unwrap();
 
         inner.gc.clear_temporary_memory_limit();
         inner

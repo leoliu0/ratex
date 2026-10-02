@@ -216,7 +216,6 @@ impl CapState<'_> {
             CNUM => self.numcap(),
             CQUERY => self.querycap(),
             CFOLD => self.foldcap(),
-            CACC => self.accumulatorcap(),
             kind => unreachable!("pushcapture: kind {kind}"),
         }
     }
@@ -265,24 +264,6 @@ impl CapState<'_> {
         let count = results.len();
         self.stack.extend(results);
         Ok(count)
-    }
-
-    /// `patt % f` (LPeg 1.1): `f` gets the value produced before `patt`, then
-    /// the values of `patt`; its first result replaces that value.
-    fn accumulatorcap(&mut self) -> LResult<usize> {
-        let f = self.luaval(self.caps[self.cap].idx);
-        if self.stack.is_empty() {
-            return Err(self.env.error("no previous value for accumulator capture".to_string()));
-        }
-        // the function goes below the previous value
-        let at = self.stack.len() - 1;
-        self.stack.insert(at, f);
-        let n = self.pushnestedvalues(false)?;
-        let args = self.stack.split_off(self.stack.len() - (n + 1));
-        let f = self.stack.pop().expect("function");
-        let result = self.env.call(&f, &args)?.into_iter().next().unwrap_or(V::Nil);
-        self.stack.push(result);
-        Ok(0)
     }
 
     fn numcap(&mut self) -> LResult<usize> {
@@ -385,7 +366,6 @@ impl CapState<'_> {
                 self.substcap(b)?;
                 Ok(1)
             }
-            CACC => Err(self.env.error("invalid context for an accumulator capture".to_string())),
             _ => {
                 let n = self.pushcapture()?;
                 if n > 0 {

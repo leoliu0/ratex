@@ -106,6 +106,10 @@ fn command_for(program: &[u8], args: &[Vec<u8>]) -> Command {
 }
 
 pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), String> {
+    // luainit.c puts a C locale into the environment and texmfmp.c names the engine.
+    for (key, value) in [("LC_CTYPE", "C"), ("LC_COLLATE", "C"), ("LC_NUMERIC", "C"), ("engine", "luatex")] {
+        std::env::set_var(key, value);
+    }
     sys_reg!(lua, s, "os_environ", || -> Vec<LuaBytes> {
         std::env::vars_os()
             .flat_map(|(k, v)| [LuaBytes(crate::lua_sys::os_bytes(&k)), LuaBytes(crate::lua_sys::os_bytes(&v))])

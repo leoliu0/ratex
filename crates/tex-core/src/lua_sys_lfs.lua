@@ -116,22 +116,22 @@ end
 -- directory iterators
 local dirmeta = { __name = "directory metatable" }
 local function dir_next(d)
-  if type(d) ~= "table" or getmetatable(d) ~= dirmeta then
+  if type(d) ~= "userdata" or getmetatable(d) ~= dirmeta then
     error(format("bad argument #1 to 'it' (directory metatable expected, got %s)", type(d) == "nil" and "nil" or type(d)), 2)
   end
-  local name = S.lfs_dir_next(d[1])
+  local name = S.lfs_dir_next(d.id)
   if name == nil then return end
   return name
 end
 local function dir_close(d)
-  if type(d) == "table" and getmetatable(d) == dirmeta then S.lfs_dir_close(d[1]) end
+  if type(d) == "userdata" and getmetatable(d) == dirmeta then S.lfs_dir_close(d.id) end
 end
 dirmeta.__index = { next = dir_next, close = dir_close }
 dirmeta.__gc = dir_close
 
 function lfs.dir(path)
   path = checkstring(path, 1, "dir")
-  local d = setmetatable({ S.lfs_dir_open(path) }, dirmeta)
+  local d = S.ud_new(S.lfs_dir_open(path), dirmeta)
   return dir_next, d
 end
 

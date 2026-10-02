@@ -551,7 +551,15 @@ fn lua_getmetatable(l: &mut LuaState) -> LuaResult<usize> {
         .get_arg(1)
         .ok_or_else(|| l.error("bad argument #1 to 'getmetatable' (value expected)".to_string()))?;
 
-    let mt = get_metatable(l, &value);
+    let mut mt = get_metatable(l, &value);
+    if mt.is_none() {
+        // luaL_setmetatable(L, tname) convention of host userdata: the
+        // metatable registered under the type name is reported.
+        if let Some(ud) = value.as_userdata_mut() {
+            let name = ud.type_name();
+            mt = l.global_state_mut().registry_get(name).ok().flatten().filter(|v| v.is_table());
+        }
+    }
     match mt {
         Some(mt_val) => {
             // Check for __metatable field - if present, return that instead
@@ -575,12 +583,12 @@ fn lua_getmetatable(l: &mut LuaState) -> LuaResult<usize> {
 
 /// setmetatable(table, metatable) - Set metatable
 fn lua_setmetatable(l: &mut LuaState) -> LuaResult<usize> {
-    let table = l
-        .get_arg(1)
-        .ok_or_else(|| l.error("bad argument #1 to 'setmetatable' (value expected)".to_string()))?;
-    let metatable = l
-        .get_arg(2)
-        .ok_or_else(|| l.error("bad argument #2 to 'setmetatable' (value expected)".to_string()))?;
+    let Some(table) = l.get_arg(1).filter(|v| v.as_table().is_some()) else {
+        return Err(lauxlib::typeerror(l, 1, "table"));
+    };
+    let Some(metatable) = l.get_arg(2).filter(|v| v.is_nil() || v.as_table().is_some()) else {
+        return Err(lauxlib::argerror(l, 2, "nil or table expected"));
+    };
 
     if let Some(table_ref) = table.as_table_mut() {
         // Check for __metatable protection on existing metatable
@@ -602,9 +610,7 @@ fn lua_setmetatable(l: &mut LuaState) -> LuaResult<usize> {
                 table_ref.set_metatable(Some(metatable));
             }
             _ => {
-                return Err(
-                    l.error("setmetatable() second argument must be a table or nil".to_string())
-                );
+                return Err(lauxlib::argerror(l, 2, "nil or table expected"));
             }
         }
 

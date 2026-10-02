@@ -132,10 +132,75 @@ pub(crate) fn safer_option() -> bool {
     SAFER.with(|s| s.get())
 }
 
+/// A userdata standing for a native resource slot (a directory iterator, a
+/// zlib stream): `h.id` is the slot, `nil` once the resource is closed. The
+/// Lua side attaches the type's metatable, as LuaTeX's C libraries do for
+/// their `lua_newuserdata` objects.
+struct HandleUd(Option<i64>);
+
+impl tex_lua::UserDataTrait for HandleUd {
+    fn type_name(&self) -> &'static str {
+        "userdata"
+    }
+
+    fn get_field(&self, key: &str) -> Option<tex_lua::UdValue> {
+        (key == "id").then(|| self.0.map_or(tex_lua::UdValue::Nil, tex_lua::UdValue::Integer))
+    }
+
+    fn set_field(&mut self, key: &str, value: tex_lua::UdValue) -> Option<Result<(), String>> {
+        if key != "id" {
+            return None;
+        }
+        Some(match value {
+            tex_lua::UdValue::Nil => {
+                self.0 = None;
+                Ok(())
+            }
+            tex_lua::UdValue::Integer(i) => {
+                self.0 = Some(i);
+                Ok(())
+            }
+            _ => Err("invalid resource slot".to_string()),
+        })
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+fn register_handles(lua: &mut Lua, sys: &LuaTable) -> Result<(), String> {
+    let ud_new = lua
+        .create_callback(|cb| {
+            let id: i64 = cb.arg(1)?;
+            let meta: LuaTable = cb.arg(2)?;
+            let ud = cb.create_userdata(HandleUd(Some(id)))?;
+            let value = cb.pack(&ud)?;
+            value.set_metatable(Some(&meta))?;
+            cb.push(value)
+        })
+        .map_err(|e| format!("{e:?}"))?;
+    sys.set("ud_new", ud_new).map_err(|e| format!("{e:?}"))?;
+    // the address `tostring` shows for a userdata (`%p`)
+    let address = lua
+        .create_callback(|cb| {
+            let value: tex_lua::Value = cb.arg(1)?;
+            let text = value.to_pointer().map_or_else(String::new, |p| format!("{:#x}", p as usize));
+            cb.push(text)
+        })
+        .map_err(|e| format!("{e:?}"))?;
+    sys.set("address", address).map_err(|e| format!("{e:?}"))
+}
+
 /// Install every system library into a Lua state whose standard libraries
 /// and TeX bridge are open.
 pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
     let sys: LuaTable = lua.create_table().map_err(|e| format!("{e:?}"))?;
+    register_handles(lua, &sys)?;
     crate::lua_sys_embedded::register(lua, &sys)?;
     crate::lua_sys_lfs::register(lua, &sys)?;
     crate::lua_sys_hash::register(lua, &sys)?;

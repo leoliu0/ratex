@@ -90,7 +90,7 @@ fn ud_get(n: u32, key: &str) -> Option<UdValue> {
 
 impl UserDataTrait for NodeUd {
     fn type_name(&self) -> &'static str {
-        "userdata"
+        "luatex.node"
     }
 
     fn get_field(&self, key: &str) -> Option<UdValue> {

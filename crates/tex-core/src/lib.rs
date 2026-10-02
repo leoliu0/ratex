@@ -52,6 +52,7 @@ pub mod uprim;
 mod uprims;
 mod lua_img;
 mod lua_lang;
+mod lua_mplib;
 mod lua_pdf;
 mod lua_tex;
 mod lua_texnodes;

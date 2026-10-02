@@ -357,7 +357,7 @@ setmetatable(tex, {
 
 local functions = {}
 function lua.get_functions_table() return functions end
-function __ratex_function(n)
+local function ratex_function(n)
   local f = functions[n]
   if type(f) == "function" then return f end
   return nil
@@ -375,31 +375,63 @@ lua.bytecode = setmetatable({}, {
     bytecode_shadow[k] = f
     return f
   end,
-  __newindex = function(_, k, f, strip)
-    if type(k) ~= "number" then error("bad argument") end
-    if k < 0 then error("negative values not allowed") end
-    if f ~= nil and type(f) ~= "function" then error("unsupported type") end
+  __newindex = function(_, k, f)
+    if type(k) ~= "number" then error("bad argument #-2 to '__newindex' (number expected, got " .. type(k) .. ")", 2) end
+    if k < 0 then error("negative values not allowed", 2) end
+    if f ~= nil and type(f) ~= "function" then error("unsupported type", 2) end
     bytecode_shadow[k] = nil
     B.bytecode_set(k, f and string.dump(f) or nil)
   end,
 })
-function lua.setbytecode(k, f, strip)
-  if type(k) ~= "number" or k < 0 then error("negative values not allowed") end
-  if f ~= nil and type(f) ~= "function" then error("unsupported type") end
+function lua.setbytecode(...)
+  local n = select("#", ...)
+  local strip = false
+  if n > 0 and type((select(n, ...))) == "boolean" then
+    strip = (select(n, ...))
+    n = n - 1
+  end
+  local k, f
+  if n >= 2 then k, f = select(n - 1, ...), (select(n, ...)) end
+  if type(k) ~= "number" then error("bad argument #-2 to 'setbytecode' (number expected, got " .. type(k) .. ")", 2) end
+  if k < 0 then error("negative values not allowed", 2) end
+  if f ~= nil and type(f) ~= "function" then error("unsupported type", 2) end
   bytecode_shadow[k] = nil
-  B.bytecode_set(k, f and string.dump(f, strip and true or false) or nil)
+  B.bytecode_set(k, f and string.dump(f, strip) or nil)
 end
 function lua.getbytecode(k) return lua.bytecode[k] end
+-- llualib.c `make_table`: the metatable is named "tex.name"; `__index` is
+-- `getluaname` and `__newindex` is `setluaname`, which are called with the
+-- table first, so `lua.name[k]` raises and `lua.name[k] = v` is a no-op.
 lua.name = setmetatable({}, {
-  __index = function(_, k) if type(k) == "number" then return B.name_get(k) end end,
-  __newindex = function(_, k, v)
-    if type(k) == "number" and k >= 0 and k <= 65535 then
-      B.name_set(k, v ~= nil and tostring(v) or nil)
-    end
+  __name = "tex.name",
+  __index = function(t, k)
+    error("bad argument #1 to '__index' (number expected, got tex.name)", 2)
   end,
+  __newindex = function() end,
 })
-function lua.setluaname(name, k) lua.name[k] = name end
-function lua.getluaname(k) return lua.name[k] end
+local function name_slot(k, fname)
+  local n = type(k) == "number" and math.tointeger(k) or nil
+  if n == nil and type(k) == "string" then n = math.tointeger(tonumber(k)) end
+  if n == nil then
+    if type(k) == "number" then
+      error("bad argument #1 to '" .. fname .. "' (number has no integer representation)", 3)
+    end
+    error("bad argument #1 to '" .. fname .. "' (number expected, got " .. (k == nil and "no value" or type(k)) .. ")", 3)
+  end
+  return n
+end
+function lua.setluaname(...)
+  if select("#", ...) == 2 then
+    local k, name = ...
+    k = name_slot(k, "setluaname")
+    if k >= 0 and k <= 65535 then B.name_set(k, type(name) == "string" and name or nil) end
+  end
+end
+function lua.getluaname(k)
+  k = name_slot(k, "getluaname")
+  if k < 0 or k > 65535 then return nil end
+  return B.name_get(k)
+end
 
 -- ------------------------------------------------------------- callback ---
 
@@ -428,24 +460,21 @@ local callback_ids = {}
 for i, name in ipairs(callback_names) do callback_ids[name] = i end
 local callbacks = {}
 callback = {}
--- lcallbacklib.c callback_register: a function, nil or any value that is
--- not nil/false (it is merely stored) or a boolean; a boolean switches the
--- built-in behaviour off, any other non-function value stores without
--- defining the callback.
 function callback.register(...)
   local n = select("#", ...)
   local name, f = ...
   if type(name) ~= "string" then
     return nil, "Invalid arguments to callback.register, first argument must be string."
   end
-  local tf = n >= 2 and type(f) or "none"
-  if tf ~= "function" and tf ~= "nil" and tf ~= "boolean" and (tf == "none" or not f) then
+  -- lcallbacklib.c: only an absent second argument is rejected.
+  if n < 2 then
     return nil, "Invalid arguments to callback.register."
   end
+  local t2 = type(f)
   local id = callback_ids[name]
   if not id then return nil, "No such callback exists." end
   callbacks[id] = f
-  B.callback_set(id - 1, tf == "function" and 1 or (tf == "boolean" and -1 or 0))
+  B.callback_set(id - 1, t2 == "function" and 1 or (t2 == "boolean" and -1 or 0))
   return id
 end
 function callback.find(name)
@@ -462,7 +491,7 @@ function callback.list()
   end
   return t
 end
-function __ratex_callback(name)
+local function ratex_callback(name)
   local f = callbacks[callback_ids[name]]
   if type(f) == "function" then return f end
   return nil
@@ -509,3 +538,4 @@ local function kpse_lua_searcher(name)
   return f
 end
 package.searchers = { preload_searcher, kpse_lua_searcher }
+return ratex_function, ratex_callback

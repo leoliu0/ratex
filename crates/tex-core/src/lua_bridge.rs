@@ -866,7 +866,7 @@ impl Engine {
     /// `kpse.find_file(name, format)`: a disk path from the TeX search
     /// path, else the path of an embedded file in the archive's virtual
     /// tree (readable by `io.open`, see `lua_sys_embedded.lua`).
-    fn lua_kpse_find(&mut self, name: &str, format: tex_kpse::Format) -> Option<String> {
+    pub(crate) fn lua_kpse_find(&mut self, name: &str, format: tex_kpse::Format) -> Option<String> {
         if let Some(path) = self.font_loader.kpse.find(name, format) {
             return Some(path.to_string_lossy().into_owned());
         }

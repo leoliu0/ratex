@@ -1654,6 +1654,13 @@ impl Engine {
         // from earlier \pdfsavepos nodes are visible.
 
         let lua = self.engine_kind == crate::engine::EngineKind::LuaTeX;
+        if lua {
+            // pdf_ship_out → ensure_output_file_open
+            self.lua_open_output();
+            if self.stopped_on_error {
+                return;
+            }
+        }
         let numbered = lua && self.lua_page_number_callback(crate::lua_callbacks::Cb::StartPageNumber);
         if !numbered && self.eqtb.int_params[IntParam::TracingPages.idx() as usize] > 0 {
             let page = self.eqtb.count[0] as i64 + 1;
@@ -1672,6 +1679,7 @@ impl Engine {
         self.pdf_doc.push_page(page);
         if lua {
             self.lua_finish_pdfpage(true);
+            self.lua_page_image_files();
             self.lua_page_order_index(self.pdf_doc.pages.len());
             self.lua_page_number_callback(crate::lua_callbacks::Cb::StopPageNumber);
         }

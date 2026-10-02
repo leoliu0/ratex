@@ -1480,6 +1480,9 @@ impl Engine {
         if self.engine_kind == crate::engine::EngineKind::LuaTeX && !self.stopped_on_error && !(self.ini_mode && self.format_done) {
             if !self.pdf_doc.pages.is_empty() {
                 self.lua_simple_callback(crate::lua_callbacks::Cb::FinishPdffile);
+                // the fonts are written next: encodings and programs come
+                // through the file callbacks
+                self.lua_resolve_font_resources();
             }
             self.lua_simple_callback(crate::lua_callbacks::Cb::StopRun);
             self.lua_simple_callback(crate::lua_callbacks::Cb::WrapupRun);

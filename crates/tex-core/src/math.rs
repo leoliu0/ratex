@@ -2159,6 +2159,20 @@ impl Engine {
                     class,
                     origin, attr: self.eqtb.cur_attr,
                 },
+                // xetex.web §1186: `\mathinner{{x\over y}}` -- the field is a
+                // lone unscripted ord noad, so its nucleus (the inner group)
+                // becomes the field and no second group box is made
+                Node::Scripts { nucleus, sup: None, sub: None, .. }
+                    if self.engine_kind == crate::engine::EngineKind::XeTeX
+                        && matches!(nucleus.first(), Some(Node::MathChar { fam: 255, class: CL_ORD, .. }))
+                        && nucleus.len() >= 2 =>
+                {
+                    let mut nuc = nucleus;
+                    if let Some(Node::MathChar { class: c, .. }) = nuc.first_mut() {
+                        *c = class;
+                    }
+                    Node::Scripts { nucleus: nuc, sup: None, sub: None, options: 0, attr: self.eqtb.cur_attr }
+                }
                 other => {
                     let nuc = vec![
                         Node::MathChar {
@@ -2222,7 +2236,9 @@ impl Engine {
         let rt = self.default_rule_thickness(g);
         let kern = 3 * rt;
         let rule = Node::Rule {
-            width: w,
+            // a running rule: the bar is as wide as the vlist (xetex.web
+            // overbar -- `new_rule` keeps its null width)
+            width: if self.engine_kind == crate::engine::EngineKind::XeTeX { crate::build::RULE_FILL } else { w },
             height: rt,
             depth: 0, subtype: crate::boxes::RULE_NORMAL, index: 0, attr: self.eqtb.cur_attr,
         };
@@ -3795,7 +3811,19 @@ impl Engine {
             }
             // boxed nucleus: initial shifts from its (shift-adjusted) dims
             _ => {
-                nuc = self.clean_math_box(nucleus, style);
+                let boxed = self.clean_math_box(nucleus, style);
+                // xetex.web §754: a sub_mlist nucleus (a brace group) becomes
+                // `hpack(mlist_to_hlist, natural)` even when the list converts
+                // to one box (a group nucleus carries the fam255 prefix); a
+                // sub_box (\hbox, \vcenter) is used as it stands
+                nuc = if self.engine_kind == crate::engine::EngineKind::XeTeX
+                    && matches!(boxed, Node::Box { shift: 0, .. })
+                    && matches!(nucleus, [Node::MathChar { fam: 255, .. }, n] if !matches!(n, Node::Box { .. } | Node::MathChar { .. }))
+                {
+                    hpack(vec![boxed], None, HBOX, &self.eqtb).node
+                } else {
+                    boxed
+                };
                 let drop_size = font_size(sup_style(style));
                 let (zh, zd) = box_dims_shifted(&nuc);
                 shift_up = zh - self.fparam_idx(drop_size, 2, 18);
@@ -4267,8 +4295,14 @@ impl Engine {
         style: GStyle,
         origin: &MathDiagnosticOrigin,
     ) -> NodeList {
-        let body_nodes = self.mlist_to_hlist_pen(body, style | 1, self.math_penalties.get());
-        let x = hpack(body_nodes, None, HBOX, &self.eqtb).node;
+        // xetex.web make_radical: `x:=clean_box(nucleus(q),cramped_style)`
+        // (no penalties; a lone unshifted box stays as it is)
+        let x = if self.engine_kind == crate::engine::EngineKind::XeTeX {
+            self.clean_math_box(body, style | 1)
+        } else {
+            let body_nodes = self.mlist_to_hlist_pen(body, style | 1, self.math_penalties.get());
+            hpack(body_nodes, None, HBOX, &self.eqtb).node
+        };
         let (xw, xh, xd) = box_dims(&x);
         // xetex.web make_radical: `f` is the small family font at this size
         let xe_f = self.xe_fam_fnt(style, delim.small_fam);

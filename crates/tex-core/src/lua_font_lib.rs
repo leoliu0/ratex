@@ -712,7 +712,7 @@ pub(crate) fn font_from_lua(eng: &mut Engine, f: FontId, t: &LuaTable) -> Result
                 if idx > 0 {
                     let idx = idx as usize;
                     if lf.math_params.len() < idx {
-                        lf.math_params.resize(idx, 0);
+                        lf.math_params.resize(idx, crate::eqtb::UNDEFINED_MATH_PARAMETER);
                     }
                     lf.math_params[idx - 1] = value;
                 }
@@ -1171,6 +1171,9 @@ pub(crate) fn font_to_lua(
     let mc = cx.create_table().map_err(|e| format!("{e:?}"))?;
     for (i, v) in lf.math_params.iter().enumerate() {
         let k = i + 1;
+        if *v == crate::eqtb::UNDEFINED_MATH_PARAMETER {
+            continue;
+        }
         if k <= MATH_PARAM_MAX {
             set_int(&mc, MATH_PARAM_NAMES[k], *v)?;
         } else {

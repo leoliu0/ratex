@@ -749,7 +749,13 @@ function tex.scantoks(...)
 end
 
 function tex.definefont(...)
-  local global, name, id = scoped(...)
+  local global, name, id
+  if select("#", ...) == 3 and type((...)) == "boolean" then
+    global, name, id = ...
+  else
+    name, id = ...
+    global = false
+  end
   if type(name) ~= "string" then error("argument must be a string", 2) end
   T.define_font(name, lua_int(id), global)
 end

@@ -28,6 +28,7 @@ pub mod language;
 pub mod linebreak;
 pub mod luatex;
 pub mod lua_font;
+pub mod luaexp;
 mod lua_font_hb;
 mod lua_font_lib;
 mod lua_font_vf;

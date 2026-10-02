@@ -29,7 +29,8 @@ fn glyph_text(lf: &LuaFont, tounicode: Option<&[u8]>, c: u32) -> String {
 impl RenderCtx<'_> {
     /// Output glyph `c` of the Lua font `f` with its origin at (`x`, `y`)
     /// (`y` is the baseline, downwards) displaced by (`xoff`, `yoff`), the
-    /// glyph being expanded by `ex` per mille. Returns the advance in sp.
+    /// glyph being expanded by `ex` millionths (the glyph's `ex_glyph`).
+    /// Returns the advance in sp.
     pub(crate) fn emit_lua_glyph(&mut self, f: u16, c: u32, x: i64, y: i64, xoff: i32, yoff: i32, ex: i32) -> i64 {
         let Some(font) = self.eng.eqtb.fonts.get(f as usize).cloned() else {
             return 0;
@@ -41,10 +42,10 @@ impl RenderCtx<'_> {
             self.eng.lua_glyph_not_found(f, c);
             return 0;
         };
-        let mut width = ci.width;
-        if ex != 0 && width != 0 {
-            width = round_xn(width, 1000 + ex, 1000);
-        }
+        // luatex `output_one_char`: the advance uses the full factor, the
+        // font setup and virtual commands its per-mille part
+        let width = crate::luaexp::expanded_width(ci.width, ex);
+        let ex = ex / 1000;
         let (px, py) = (x + i64::from(xoff), y - i64::from(yoff));
         if ci.commands.is_some() {
             self.lua_vf_packet(f, c, ex, px, py);

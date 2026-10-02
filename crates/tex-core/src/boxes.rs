@@ -765,8 +765,18 @@ pub enum Node {
     MarginKern {
         side: u8,
         width: i32,
-        c: u8,
+        c: u32,
         font: FontId,
+        /// `expansion_factor` of the marginal glyph (LuaTeX keeps a glyph
+        /// node in `margin_char`)
+        ex: i32,
+        attr: Attr,
+    },
+    /// LuaTeX font kern (kern subtype 0) that `hpack` stretched or shrank
+    /// with the font expansion: `ex_kern` is added to `width` on output.
+    ExKern {
+        width: i32,
+        ex: i32,
         attr: Attr,
     },
     Penalty(i32, Attr),
@@ -931,6 +941,7 @@ impl Node {
             Node::Char { attr, .. }
             | Node::Ligature { attr, .. }
             | Node::MarginKern { attr, .. }
+            | Node::ExKern { attr, .. }
             | Node::Rule { attr, .. }
             | Node::Leaders { attr, .. }
             | Node::Box { attr, .. }
@@ -970,6 +981,7 @@ impl Node {
             Node::Char { attr, .. }
             | Node::Ligature { attr, .. }
             | Node::MarginKern { attr, .. }
+            | Node::ExKern { attr, .. }
             | Node::Rule { attr, .. }
             | Node::Leaders { attr, .. }
             | Node::Box { attr, .. }
@@ -1031,7 +1043,9 @@ pub fn lua_glyph_whd(fonts: &[std::rc::Rc<crate::tfm::Font>], font: i32, c: i32,
 
 /// [`lua_glyph_whd`] of a glyph node.
 pub fn lua_glyph_dims(eqtb: &crate::eqtb::Eqtb, g: &LuaGlyph) -> (i32, i32, i32) {
-    lua_glyph_whd(&eqtb.fonts, i32::from(g.font), g.c as i32, g.yoffset)
+    let (w, h, d) = lua_glyph_whd(&eqtb.fonts, i32::from(g.font), g.c as i32, g.yoffset);
+    // luatex `pack_width`: an expanded glyph is `ex_glyph` millionths wider
+    (crate::luaexp::expanded_width(w, g.expansion_factor), h, d)
 }
 
 /// dimensions of a single node in a horizontal list
@@ -1055,6 +1069,7 @@ fn single_dims(n: &Node, eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
         // an unconverted \mkern (kind 0) has no width yet
         Node::MathKern(k, MATH_ON.., _) => (*k, 0, 0),
         Node::MarginKern { width, .. } => (*width, 0, 0),
+        Node::ExKern { width, ex, .. } => (*width + *ex, 0, 0),
         Node::Penalty(_, _) => (0, 0, 0),
         Node::Rule {
             width,
@@ -1168,6 +1183,10 @@ pub fn vlist_dims(list: &[Node], eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
             }
             Node::MarginKern { width, .. } => {
                 x += d + *width as i64;
+                d = 0;
+            }
+            Node::ExKern { width, ex, .. } => {
+                x += d + (*width + *ex) as i64;
                 d = 0;
             }
             Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) => {
@@ -1843,6 +1862,9 @@ pub fn hpack_expand(
 ) -> PackResult {
     if eng.eqtb.int_params[crate::prim::IntParam::PdfAdjustSpacing.idx() as usize] <= 0 {
         return hpack(list, Some(w), kind, &eng.eqtb);
+    }
+    if eng.engine_kind == crate::engine::EngineKind::LuaTeX {
+        return crate::luaexp::hpack_expand(eng, list, w, kind);
     }
     // ---- pass 1: cal_expand_ratio ----
     let (nat_w, _, _) = hlist_dims(&list, &eng.eqtb);

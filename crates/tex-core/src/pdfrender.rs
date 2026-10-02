@@ -184,6 +184,7 @@ fn get_vpos(nodes: &[Node], cur_v: i64, sign: u8, order: u8, set: f64) -> i64 {
             _) => (*h + *d) as i64,
             Node::Glue(g, _) | Node::Leaders { glue: g, .. } => glue_state.advance(g, sign, order, set),
             Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) => *k as i64,
+            Node::ExKern { width, ex, .. } => (*width + *ex) as i64,
             _ => 0,
         };
     }
@@ -1371,6 +1372,9 @@ impl<'a> RenderCtx<'a> {
                 | Node::MathKern(k, 1.., _) => {
                     cur_x += *k as i64;
                 }
+                Node::ExKern { width, ex, .. } => {
+                    cur_x += (*width + *ex) as i64;
+                }
                 Node::Penalty(_, _) => {}
                 Node::Rule {
                     width,
@@ -2182,13 +2186,18 @@ impl<'a> RenderCtx<'a> {
             .get(f as usize)
             .and_then(|ex| if ex.blink != 0 { Some(ex.blink) } else { None })
             .unwrap_or(f);
-        let advance = match self.pdf_char_width(f, c) {
+        let mut advance = match self.pdf_char_width(f, c) {
             Ok(width) => width,
             Err(error) => {
                 self.eng.error(&error);
                 return;
             }
         };
+        // a Lua font is never cloned: the glyph carries its expansion, and
+        // the advance the text matrix scales is that of the expanded glyph
+        if ratio != 0 && self.eng.eqtb.fonts.get(f as usize).is_some_and(|font| font.lua.is_some()) {
+            advance = round_xn_over_d(advance, 1000 + i64::from(ratio), 1000);
+        }
         self.eng.pdf_doc.record_font_char(base_f as usize, c);
         self.begin_string(x_sp, v_sp, f, crate::pdfout::FontBinding::RAW, ratio);
         push_pdf_char(&mut self.content, c);

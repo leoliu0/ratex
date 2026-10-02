@@ -2157,6 +2157,10 @@ impl Engine {
             self.error("font expansion: invalid font identifier");
             return;
         }
+        if self.eqtb.fonts[f as usize].lua.is_some() {
+            self.lua_read_expand_font(f);
+            return;
+        }
         if self.eqtb.expand[f as usize].blink != 0 {
             self.error("font expansion: \\pdffontexpand cannot be used this way (the base font has been expanded)");
             return;

@@ -656,6 +656,10 @@ impl Engine {
                         | Prim::KnAcCode),
                     ) => {
                         let f = self.scan_font_id() as usize;
+                        if let Some(code) = self.lua_font_code(f as u16, p) {
+                            v = i64::from(code);
+                            break 'scan_loop;
+                        }
                         let c = self.scan_character_code(font_character_code_primitive(p));
                         let ex = match self.eqtb.expand.get(f) {
                             Some(x) => x,
@@ -2322,20 +2326,24 @@ impl Engine {
                 | Prim::KnAcCode),
             ) => {
                 let f = self.scan_font_id() as usize;
-                let c = self.scan_character_code(font_character_code_primitive(p));
-                let v = match self.eqtb.expand.get(f) {
-                    Some(ex) => match p {
-                        Prim::EfCode => ex.ef_code(c),
-                        Prim::LpCode => ex.lp_code(c),
-                        Prim::RpCode => ex.rp_code(c),
-                        Prim::TagCode => self.get_tag_code(f as u16, c),
-                        Prim::KnBsCode => ex.kn_bs_code(c),
-                        Prim::StBsCode => ex.st_bs_code(c),
-                        Prim::ShBsCode => ex.sh_bs_code(c),
-                        Prim::KnBcCode => ex.kn_bc_code(c),
-                        _ => ex.kn_ac_code(c),
-                    },
-                    None => -1,
+                let v = if let Some(code) = self.lua_font_code(f as u16, p) {
+                    code
+                } else {
+                    let c = self.scan_character_code(font_character_code_primitive(p));
+                    match self.eqtb.expand.get(f) {
+                        Some(ex) => match p {
+                            Prim::EfCode => ex.ef_code(c),
+                            Prim::LpCode => ex.lp_code(c),
+                            Prim::RpCode => ex.rp_code(c),
+                            Prim::TagCode => self.get_tag_code(f as u16, c),
+                            Prim::KnBsCode => ex.kn_bs_code(c),
+                            Prim::StBsCode => ex.st_bs_code(c),
+                            Prim::ShBsCode => ex.sh_bs_code(c),
+                            Prim::KnBcCode => ex.kn_bc_code(c),
+                            _ => ex.kn_ac_code(c),
+                        },
+                        None => -1,
+                    }
                 };
                 emit_the!(v.to_string().as_bytes());
             }

@@ -2283,9 +2283,11 @@ impl Engine {
             _ => -1,
         }
     }
-    pub fn margin_kern_width(&self, n: u16, left: bool) -> i32 {
+    /// The width of the margin kern at the left or right end of box `n`;
+    /// `None` when the box has none.
+    pub fn margin_kern_width(&self, n: u16, left: bool) -> Option<i32> {
         let Some(Some(Node::Box { list, .. })) = self.eqtb.boxed.get(n as usize) else {
-            return 0;
+            return None;
         };
         let nodes: Vec<&Node> = if left {
             list.iter().collect()
@@ -2294,7 +2296,7 @@ impl Engine {
         };
         for node in nodes {
             match node {
-                Node::MarginKern { width, .. } => return *width,
+                Node::MarginKern { width, .. } => return Some(*width),
                 Node::Glue(_, _)
                 | Node::Kern(_, _)
                 | Node::ExplicitKern(_, _)
@@ -2305,7 +2307,7 @@ impl Engine {
                 _ => break,
             }
         }
-        0
+        None
     }
 
     /// tex.web §1117 append_discretionary: a disc node joins the list and

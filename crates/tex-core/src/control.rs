@@ -1011,6 +1011,10 @@ impl Engine {
             p @ (EfCode | LpCode | RpCode | TagCode | KnBsCode | StBsCode | ShBsCode | KnBcCode
             | KnAcCode) => {
                 let f = self.scan_font_id();
+                if self.lua_font_code_assign(f, p) {
+                    self.clear_prefixes();
+                    return true;
+                }
                 let command = match p {
                     EfCode => "\\efcode",
                     LpCode => "\\lpcode",

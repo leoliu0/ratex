@@ -913,3 +913,69 @@ fn find_format_file_maps_results_like_luatex() {
         assert_eq!(e.lua_find_format_file("fm1.fmt"), expect.map(|o| o.map(String::from)), "{code}");
     }
 }
+
+/// `write_fontdescriptors` asks `font_descriptor_objnum_provider` for each
+/// Type 1 descriptor in the order of the font file names, before the
+/// program is looked for.
+#[test]
+fn font_descriptor_provider_runs_per_descriptor_before_its_program() {
+    let r = run(true, r##"\directlua{FIND('type1', 'type1 fonts') READ('type1', 'type1 fonts') PAGES()
+callback.register('font_descriptor_objnum_provider', function(n) LOG('font_descriptor_objnum_provider', n) return nil end)}
+\pdfextension mapfile{+lm.map} \font\a=cmr10 \font\b=ec-lmr10 \setbox0\hbox{}
+\shipout\hbox{\b abc\a abc}"##);
+    assert_eq!(
+        r.events,
+        [
+            r##"CB start_page"##,
+            r##"CB stop_page"##,
+            r##"CB finish_pdffile"##,
+            r##"CB font_descriptor_objnum_provider CMR10"##,
+            r##"CB find_type1_file cmr10.pfb"##,
+            r##"CB find_type1_file DIR/cmr10.pfb"##,
+            r##"CB read_type1_file DIR/cmr10.pfb"##,
+            r##"CB font_descriptor_objnum_provider LMRoman10-Regular"##,
+            r##"CB find_type1_file lmr10.pfb"##,
+            r##"CB find_type1_file DIR/lmr10.pfb"##,
+            r##"CB read_type1_file DIR/lmr10.pfb"##,
+        ],
+        "{}",
+        r.e.term
+    );
+    assert_eq!(r.e.error_count, 0, "{:?}\n{}", r.e.diagnostics, r.e.term);
+}
+
+/// The provider alone (no resource callback) is asked too; the number it
+/// returns is the object the descriptor is written as. A float counts when
+/// it holds an integer.
+#[test]
+fn font_descriptor_provider_number_is_the_descriptor_object() {
+    let r = run(true, r##"\directlua{
+callback.register('font_descriptor_objnum_provider', function(n) LOG('font_descriptor_objnum_provider', n) if n == 'LMRoman10-Regular' then return 77 end if n == 'CMR10' then return 8.0 end return 0 end)}
+\pdfextension mapfile{+lm.map} \font\a=cmr10 \font\b=ec-lmr10 \setbox0\hbox{}
+\shipout\hbox{\b abc\a abc}"##);
+    assert_eq!(
+        r.events,
+        [r##"CB font_descriptor_objnum_provider CMR10"##, r##"CB font_descriptor_objnum_provider LMRoman10-Regular"##],
+        "{}",
+        r.e.term
+    );
+    let pdf = r.pdf_flat();
+    for number in ["77", "8"] {
+        assert!(pdf.contains(&format!("/FontDescriptor{number}0R")), "{pdf}");
+        assert!(pdf.contains(&format!("{number}0obj<</Type/FontDescriptor/FontName/")), "{pdf}");
+    }
+}
+
+/// A result that is not an integer (string, boolean, fractional float) is
+/// reported and the descriptor is numbered by the writer.
+#[test]
+fn font_descriptor_provider_wrong_results_are_ignored() {
+    let r = run(true, r##"\directlua{
+callback.register('font_descriptor_objnum_provider', function(n) LOG('font_descriptor_objnum_provider', n) if n == 'CMR10' then return '5' end if n == 'LMRoman10-Regular' then return 7.9 end end)}
+\pdfextension mapfile{+lm.map} \font\a=cmr10 \font\b=ec-lmr10 \setbox0\hbox{}
+\shipout\hbox{\b abc\a abc}"##);
+    assert_eq!(r.e.error_count, 0, "{:?}\n{}", r.e.diagnostics, r.e.term);
+    let plain = run(true, r##"\pdfextension mapfile{+lm.map} \font\a=cmr10 \font\b=ec-lmr10 \setbox0\hbox{}
+\shipout\hbox{\b abc\a abc}"##);
+    assert_eq!(r.pdf_flat(), plain.pdf_flat());
+}

@@ -87,6 +87,9 @@ pub(crate) struct LuaResources {
     pub(crate) vf_override: Option<Vec<u8>>,
     /// The map file being scanned (luatex `cur_file_name`).
     pub(crate) map_file: Option<String>,
+    /// `fd_objnum` that `font_descriptor_objnum_provider` chose for the
+    /// descriptor of each font.
+    pub(crate) descriptor_objnums: crate::FxHashMap<u16, i32>,
 }
 
 /// `do_vf` on a font table of unknown type: the name to look for.
@@ -632,52 +635,118 @@ impl Engine {
     /// of every PDF font are read through the callbacks, font by font.
     /// Their bytes replace what the loaders would find.
     pub(crate) fn lua_resolve_font_resources(&mut self) -> bool {
-        if !self.lua_res_mode() || self.stopped_on_error {
+        let resources = self.lua_res_mode();
+        let provider = self.engine_kind == EngineKind::LuaTeX && self.cb_defined(Cb::FontDescriptorObjnumProvider);
+        if !(resources || provider) || self.stopped_on_error {
             return true;
         }
         let used = self.lua_embedded_fonts();
         if used.is_empty() {
             return true;
         }
-        for &fid in &used {
-            self.lua_res_init_font(fid);
+        if resources {
+            for &fid in &used {
+                self.lua_res_init_font(fid);
+            }
         }
         // do_pdf_font: the encoding of each font, and the program of every
-        // font that is not a Type 1 font
-        let mut type1_jobs: Vec<(String, bool)> = Vec::new();
+        // font that is not a Type 1 font; their descriptors are written
+        // right away
+        let mut type1_jobs: Vec<(String, bool, u16)> = Vec::new();
+        let mut type1_fonts: crate::FxHashMap<String, Vec<u16>> = crate::FxHashMap::default();
         for &fid in &used {
             let Some(font) = self.eqtb.fonts.get(usize::from(fid)).cloned() else {
                 continue;
             };
-            if let Some(enc_name) = font.enc_name.clone() {
-                let Some(enc) = self.lua_load_enc(&enc_name) else {
-                    return false;
-                };
-                Rc::make_mut(&mut self.eqtb.fonts[usize::from(fid)]).encoding = Some(enc);
+            if resources {
+                if let Some(enc_name) = font.enc_name.clone() {
+                    let Some(enc) = self.lua_load_enc(&enc_name) else {
+                        return false;
+                    };
+                    Rc::make_mut(&mut self.eqtb.fonts[usize::from(fid)]).encoding = Some(enc);
+                }
             }
-            let Some((name, program, subset)) = self.lua_font_program_job(&font) else {
+            let job = self.lua_font_program_job(&font);
+            if let Some((name, Program::Type1, subset)) = &job {
+                type1_fonts.entry(name.clone()).or_default().push(fid);
+                if self.lua_res.programs.insert(name.clone()) {
+                    type1_jobs.push((name.clone(), *subset, fid));
+                }
+                continue;
+            }
+            if job.is_some() || font.map_fontname.is_some() {
+                // writefont.c `create_fontdictionary`: a font file of another
+                // kind, or no file at all (a built-in font)
+                self.lua_descriptor_objnum(fid, &font);
+            }
+            let Some((name, program, subset)) = job else {
                 continue;
             };
-            if !self.lua_res.programs.insert(name.clone()) {
-                continue;
-            }
-            if program == Program::Type1 {
-                type1_jobs.push((name, subset));
-            } else {
+            if resources && self.lua_res.programs.insert(name.clone()) {
                 self.lua_load_program(&name, program, subset);
                 if self.stopped_on_error {
                     return false;
                 }
             }
         }
-        // write_fontdescriptors: the Type 1 programs, in creation order
-        for (name, subset) in type1_jobs {
-            self.lua_load_program(&name, Program::Type1, subset);
-            if self.stopped_on_error {
-                return false;
+        // write_fontdescriptors: the Type 1 programs, by the name of the
+        // font file (the `fd_tree` order)
+        type1_jobs.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+        for (name, subset, fid) in type1_jobs {
+            if let Some(font) = self.eqtb.fonts.get(usize::from(fid)).cloned() {
+                let number = self.lua_descriptor_objnum(fid, &font);
+                if number != 0 {
+                    for &other in &type1_fonts[&name] {
+                        self.lua_res.descriptor_objnums.insert(other, number);
+                    }
+                }
+            }
+            if resources {
+                self.lua_load_program(&name, Program::Type1, subset);
+                if self.stopped_on_error {
+                    return false;
+                }
             }
         }
         true
+    }
+
+    /// writefont.c `write_fontdescriptor`: `font_descriptor_objnum_provider`
+    /// (`"S->d"`) is asked for the object number of the descriptor of a
+    /// font, named like `preset_fontname` does. A number is the object the
+    /// descriptor is written as (the callback's own responsibility); a
+    /// result of another type is reported and, like 0, leaves the number to
+    /// luatex.
+    fn lua_descriptor_objnum(&mut self, fid: u16, font: &Font) -> i32 {
+        if self.engine_kind != EngineKind::LuaTeX || !self.cb_defined(Cb::FontDescriptorObjnumProvider) {
+            return 0;
+        }
+        let name = match (&font.map_fontname, font.lua.as_ref().and_then(|lua| lua.fullname.as_ref())) {
+            (Some(ps), _) => ps.clone().into_bytes(),
+            (None, Some(full)) => full.clone(),
+            (None, None) => font.tfm_name.clone().into_bytes(),
+        };
+        let rets = self.lua_cb_call(
+            Cb::FontDescriptorObjnumProvider,
+            "font_descriptor_objnum_provider",
+            vec![crate::lua_callbacks::CbArg::Str(name)],
+        );
+        let number = match rets.as_deref().map(|r| r.first()) {
+            Some(Some(crate::lua_callbacks::CbRet::Int(n))) => *n as i32,
+            // lua_tointeger: a float is a number only when it holds an integer
+            Some(Some(crate::lua_callbacks::CbRet::Num(n))) => {
+                if n.fract() == 0.0 && n.abs() < f64::from(i32::MAX) { *n as i32 } else { 0 }
+            }
+            Some(other) => {
+                eprintln!("callback should return a number, not: {}", other.map_or("nil", |r| r.type_name()));
+                0
+            }
+            None => 0,
+        };
+        if number != 0 {
+            self.lua_res.descriptor_objnums.insert(fid, number);
+        }
+        number
     }
 
     // ---- data files, images, the output file, formats -------------------

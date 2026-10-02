@@ -1212,7 +1212,11 @@ pub fn load_format_bytes_into(data: &[u8], eng: &mut Engine) -> Result<(), Strin
     // \interactionmode reflects the caller's runtime mode, not the dump's
     eng.eqtb.set_runtime_interaction_mode(eng.interaction_mode.number());
     eng.engine_kind = scratch.engine_kind;
-    eng.lua = scratch.lua;
+    // luatex keeps the Lua state of the `--lua` script (and the callbacks it
+    // registered) across the format load.
+    if eng.lua.is_none() {
+        eng.lua = scratch.lua;
+    }
     Ok(())
 }
 

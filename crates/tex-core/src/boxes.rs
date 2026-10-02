@@ -177,6 +177,10 @@ pub mod noad_option {
     pub const NO_SUPER_SCRIPT: u16 = 0x22 + 0x08;
     pub const NO_SCRIPT: u16 = 0x23 + 0x08;
     pub const NO_RULE: u16 = 0x24 + 0x08;
+    /// not a luatex option: a fraction scanned with `withdelims` (its two
+    /// delimiters exist even when they are the null delimiter, which typesets
+    /// as an unshifted empty box; without them the box is axis-shifted)
+    pub const FRAC_DELIMITED: u16 = 0x4000;
 
     /// `(options & bit) == bit`
     pub fn has(options: u16, bit: u16) -> bool {

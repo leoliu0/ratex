@@ -290,7 +290,7 @@ impl Engine {
                 f[4] = r as i32;
                 f[5] = m as i32;
                 f[6] = i32::from(*fam);
-                f[7] = i32::from(*options);
+                f[7] = i32::from(*options & !crate::boxes::noad_option::FRAC_DELIMITED);
                 n
             }
             Node::Radical { body, delim, subtype, width, options, degree, .. } => {
@@ -702,7 +702,8 @@ impl Engine {
                     left: left.unwrap_or_default(),
                     right: right.unwrap_or_default(),
                     middle: middle.unwrap_or_default(),
-                    options: f[7] as u16,
+                    options: f[7] as u16
+                        | if f[3] != 0 || f[4] != 0 { crate::boxes::noad_option::FRAC_DELIMITED } else { 0 },
                     fam: f[6] as i16,
                     origin: origin(), attr: crate::boxes::Attr::NONE,
                 });

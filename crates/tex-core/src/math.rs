@@ -2345,7 +2345,7 @@ impl Engine {
             left: ld,
             right: rd,
             middle: middle.unwrap_or_default(),
-            options,
+            options: if delimited && self.engine_kind == crate::engine::EngineKind::LuaTeX { options | noad_option::FRAC_DELIMITED } else { options },
             fam: -1,
             origin, attr: self.eqtb.cur_attr,
         });
@@ -3334,10 +3334,10 @@ impl Engine {
                         num,
                         den,
                         *thickness,
-                        (!left.is_null()).then_some(left),
-                        (!right.is_null()).then_some(right),
+                        noad_option::has(*options, noad_option::FRAC_DELIMITED).then_some(left),
+                        noad_option::has(*options, noad_option::FRAC_DELIMITED).then_some(right),
                         (!middle.is_null()).then_some(middle),
-                        *options,
+                        *options & !noad_option::FRAC_DELIMITED,
                         i32::from(*fam),
                         style,
                     )]

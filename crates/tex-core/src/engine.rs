@@ -429,6 +429,9 @@ pub struct Engine {
     /// pdfTeX `warn_pdfpagebox` cleared: the obsolete page-box option
     /// warning was given.
     pub pdf_warned_pagebox: bool,
+    /// PDF documents `pdfe.new(stream, length, id)` registered, by the
+    /// `data:application/pdf,` name it returned.
+    pub pdfe_memstreams: std::collections::HashMap<String, Vec<u8>>,
     /// \pdfxform objects whose /ProcSet is inserted when pdfTeX would write
     /// them (it depends on \pdfomitprocset at that time).
     pub pdf_form_procsets: crate::FxHashMap<i32, FormProcset>,
@@ -1065,6 +1068,7 @@ impl Engine {
             transparent_page_group: 0,
             transparent_page_group_written: false,
             pdf_warned_pagebox: false,
+            pdfe_memstreams: Default::default(),
             pdf_form_procsets: crate::FxHashMap::default(),
             pdf_snap_refpos: (0, 0),
             pdf_xforms: crate::FxHashMap::default(),

@@ -594,7 +594,7 @@ impl<'a> BoxDisplay<'a> {
             self.print_int(i64::from(spec.fraction));
             self.print(" ");
         }
-        let mut fc = |d: &mut Self, a: Option<(u8, u32)>| {
+        let fc = |d: &mut Self, a: Option<(u8, u32)>| {
             let (fam, c) = a.unwrap_or((0, 0));
             d.print_fam_and_char(fam, c);
         };

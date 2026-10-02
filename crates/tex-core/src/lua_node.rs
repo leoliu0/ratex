@@ -757,7 +757,7 @@ impl NodeStore {
     }
 
     /// `copy_node_list`
-    pub fn copy_list(&mut self, mut p: u32) -> u32 {
+    pub fn copy_list(&mut self, p: u32) -> u32 {
         self.copy_range(p, 0)
     }
 

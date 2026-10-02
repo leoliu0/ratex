@@ -74,6 +74,9 @@ pub(crate) struct BoxDisplay<'a> {
     glyphs: Vec<GlyphSlot>,
     /// the horizontal list being displayed is still being built
     fresh_glyphs: bool,
+    /// `\showstream` output: with the selector on a `\write` file, tex.web's
+    /// `print_nl` starts a new line every time.
+    always_nl: bool,
 }
 
 /// Ratex-internal bookkeeping nodes that tex.web lists do not contain.
@@ -101,6 +104,7 @@ impl<'a> BoxDisplay<'a> {
                 && e.cb_state(crate::lua_callbacks::Cb::GlyphInfo) != 0,
             glyphs: Vec::new(),
             fresh_glyphs: false,
+            always_nl: e.show_stream_nl,
         }
     }
 
@@ -136,7 +140,7 @@ impl<'a> BoxDisplay<'a> {
 
     /// tex.web print_nl relative to this display's own text.
     pub(crate) fn print_nl(&mut self, s: &str) {
-        if self.out.last().is_some_and(|&b| b != b'\n') {
+        if self.always_nl || self.out.last().is_some_and(|&b| b != b'\n') {
             self.print_ln();
         }
         self.print(s);
@@ -1223,6 +1227,25 @@ impl Engine {
         }
         let out = d.take_text();
         self.emit_box_diagnostic(out);
+    }
+
+    /// `\showbox` with `\showstream` on an open `\write` stream (XeTeX).
+    pub(crate) fn show_box_register_stream(&mut self, stream: usize, register: u16) {
+        self.show_stream_nl = true;
+        let text = {
+            let mut d = BoxDisplay::new(self);
+            d.print_nl("> ");
+            d.print_esc("box");
+            d.print_int(register as i64);
+            d.out.push(b'=');
+            match self.eqtb.boxed[register as usize].as_ref() {
+                None => d.print("void"),
+                Some(b) => d.show_box(std::slice::from_ref(b)),
+            }
+            d.take_text().bytes
+        };
+        self.show_stream_nl = false;
+        self.show_stream_display(stream, false, &text);
     }
 
     /// tex.web §638 `\tracingoutput`: the shipped box, after the

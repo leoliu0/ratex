@@ -19,6 +19,7 @@ mod xetex_input;
 pub mod xemath_prims;
 pub(crate) mod xetex_pic;
 mod dpx_obj;
+mod xetex_trace;
 pub mod eqtb;
 pub mod expand;
 pub mod font_program;

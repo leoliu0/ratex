@@ -1338,8 +1338,8 @@ impl Engine {
             } else {
                 format!("cc{}:{:#x}", t.cc(), t.chr())
             };
-            self.error(&format!("Missing {{ inserted (got {})", got));
             self.push_token(t);
+            self.error(&format!("Missing {{ inserted (got {})", got));
             self.push_token(Token::char(1, b'{' as u32));
         }
         let shift = match self.pending_box_shift.take() {
@@ -2493,8 +2493,8 @@ impl Engine {
         self.skip_spaces_relax();
         let t = self.get_x_raw();
         if !self.token_is_left_brace(t) {
-            self.error("Missing { inserted");
             self.push_token(t);
+            self.error("Missing { inserted");
         }
         self.saved_lists.push((
             self.mode,
@@ -2745,8 +2745,8 @@ impl Engine {
         self.skip_spaces_relax();
         let t = self.get_x_raw();
         if !self.token_is_left_brace(t) {
-            self.error("Missing { inserted");
             self.push_token(t);
+            self.error("Missing { inserted");
             self.push_token(Token::char(1, b'{' as u32));
         }
         self.normal_paragraph();
@@ -3149,7 +3149,7 @@ impl Engine {
     fn run_everypar(&mut self) {
         let toks = (*self.eqtb.tok_params[crate::prim::ToksParam::EveryPar.idx() as usize]).clone();
         if !toks.is_empty() {
-            self.push_tokens(toks);
+            self.push_tokens_named(toks, "<everypar>");
         }
     }
 

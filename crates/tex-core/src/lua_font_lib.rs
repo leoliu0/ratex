@@ -1582,7 +1582,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
             }
             let warnings = characters_from_lua(e, id as FontId, &t)?;
             for message in warnings {
-                e.warning_at(&format!("luatex warning (font): {message}"), None);
+                e.lua_warning("font", &message);
             }
             Ok(())
         })

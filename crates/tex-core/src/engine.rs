@@ -361,6 +361,10 @@ pub struct Engine {
     pub if_stack: Vec<IfState>,
     pub(crate) pending_if_depth: Option<usize>,
     pub pushed: Vec<Token>, // lookahead pushback
+    /// The input stacks (with their pushback) that a private input hides, such as the one of a `\write` expansion, innermost last; `show_context` looks through them.
+    /// The last backed-up token read, with the input position it was read at: TeX keeps its list as `<recently read>` until something else is read.
+    pub(crate) recent_pushed: Option<(Token, (usize, usize))>,
+    pub(crate) parked_inputs: Vec<(Vec<crate::input::Source>, Vec<Token>)>,
     /// fill order of the last scan_dimen unit (0=normal, 1=fil, 2=fill, 3=filll)
     pub cur_fill_order: u8,
     /// delimiter text collected before the first # of a \def param text
@@ -1160,6 +1164,8 @@ impl Engine {
             if_stack: Vec::new(),
             pending_if_depth: None,
             pushed: Vec::new(),
+            parked_inputs: Vec::new(),
+            recent_pushed: None,
             token_vec_pool: Vec::with_capacity(512),
             spare_line_buf: Vec::new(),
             cs_name_scratch: Vec::new(),

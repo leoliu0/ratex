@@ -973,6 +973,9 @@ impl Engine {
                     return true;
                 }
                 let v = self.recover_linebreak_int_parameter(ip, v, value_source);
+                if self.engine_kind == crate::engine::EngineKind::LuaTeX && self.assign_obsolete_math_mode_with(ip, v, g) {
+                    return true;
+                }
                 if ip == crate::prim::IntParam::PrevGraf {
                     *self.prev_graf_mut() = v;
                 }
@@ -1071,6 +1074,49 @@ impl Engine {
         }
     }
 
+    /// maincontrol.c: the obsolete math modes only take a value after
+    /// `tex.permitmathobsolete(true)` and warn when it changes them. Returns
+    /// whether `ip` is one of them (the assignment is then done).
+    fn assign_obsolete_math_mode(&mut self, ip: IntParam, v: i32) -> bool {
+        if !Self::is_obsolete_math_mode(ip) {
+            return false;
+        }
+        let g = self.take_global();
+        self.assign_obsolete_math_mode_with(ip, v, g)
+    }
+
+    fn is_obsolete_math_mode(ip: IntParam) -> bool {
+        matches!(
+            ip,
+            IntParam::MathItalicsMode
+                | IntParam::MathNoLimitsMode
+                | IntParam::MathScriptCharMode
+                | IntParam::MathScriptBoxMode
+                | IntParam::MathDefaultsMode
+                | IntParam::MathDelimitersMode
+        )
+    }
+
+    fn assign_obsolete_math_mode_with(&mut self, ip: IntParam, v: i32, global: bool) -> bool {
+        let name = match ip {
+            IntParam::MathItalicsMode => "mathitalicsmode",
+            IntParam::MathNoLimitsMode => "mathnolimitssmode",
+            IntParam::MathScriptCharMode => "mathscriptcharmode",
+            IntParam::MathScriptBoxMode => "mathscriptboxmode",
+            IntParam::MathDefaultsMode => "mathdefaultsmode",
+            IntParam::MathDelimitersMode => "mathdelimitersmode",
+            _ => return false,
+        };
+        if self.lua_tex.permit_math_obsolete {
+            if self.eqtb.int_params[ip.idx() as usize] != v {
+                self.lua_warning("math", &format!("\\{name} is obsolete"));
+            }
+            self.eqtb.assign_int_param(ip, v, global);
+        }
+        self.clear_prefixes();
+        true
+    }
+
     /// cs-bound value/parameter assignment: \foo=... where foo is a register
     /// alias or a parameter primitive
     pub(crate) fn cs_assign(&mut self, id: CsId) -> bool {
@@ -1092,28 +1138,8 @@ impl Engine {
                     (self.scan_int(), None)
                 };
                 let v = self.recover_linebreak_int_parameter(ip, v, value_source);
-                if self.engine_kind == crate::engine::EngineKind::LuaTeX {
-                    // maincontrol.c: the obsolete math modes only take a
-                    // value after tex.permitmathobsolete(true)
-                    let obsolete = match ip {
-                        IntParam::MathItalicsMode => Some("mathitalicsmode"),
-                        IntParam::MathNoLimitsMode => Some("mathnolimitssmode"),
-                        IntParam::MathScriptCharMode => Some("mathscriptcharmode"),
-                        IntParam::MathScriptBoxMode => Some("mathscriptboxmode"),
-                        IntParam::MathDefaultsMode => Some("mathdefaultsmode"),
-                        IntParam::MathDelimitersMode => Some("mathdelimitersmode"),
-                        _ => None,
-                    };
-                    if let Some(name) = obsolete {
-                        let g = self.take_global();
-                        if self.lua_tex.permit_math_obsolete {
-                            if self.eqtb.int_params[ip.idx() as usize] != v {
-                                self.warning_at(&format!("(math): \\{name} is obsolete"), None);
-                            }
-                            self.eqtb.assign_int_param(ip, v, g);
-                        }
-                        return true;
-                    }
+                if self.engine_kind == crate::engine::EngineKind::LuaTeX && self.assign_obsolete_math_mode(ip, v) {
+                    return true;
                 }
                 let g = self.take_global();
                 if ip == crate::prim::IntParam::PrevGraf {
@@ -1942,8 +1968,8 @@ impl Engine {
             let scan = crate::expand::OuterScan::Text;
             return self.with_outer_scan(scan, owner, |e| e.scan_balanced_raw(true).to_vec());
         }
-        self.error("Missing { inserted (token list)");
         self.push_token(t);
+        self.error("Missing { inserted (token list)");
         Vec::new()
     }
 

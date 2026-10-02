@@ -462,7 +462,7 @@ impl Engine {
     pub(crate) fn lua_install_font(&mut self, f: FontId, parsed: crate::lua_font_lib::ParsedFont) {
         let crate::lua_font_lib::ParsedFont { lua, params, hyphen_char, skew_char, warnings } = parsed;
         for message in warnings {
-            self.warning_at(&format!("luatex warning (font): {message}"), None);
+            self.lua_warning("font", &message);
         }
         let name = String::from_utf8_lossy(&lua.name).into_owned();
         if lua.used {

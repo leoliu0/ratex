@@ -889,7 +889,7 @@ pub(crate) fn install(lua: &mut Lua, t: &LuaTable) -> Result<(), String> {
     reg!(lua, t, "permit_math_obsolete", |on: bool| -> Result<(), String> {
         with_engine(|e| {
             e.lua_tex.permit_math_obsolete = on;
-            e.warning_at(&format!("(math): obsolete commands are {}", if on { "permitted" } else { "blocked" }), None);
+            e.lua_warning("math", &format!("obsolete commands are {}", if on { "permitted" } else { "blocked" }));
         })
     });
 

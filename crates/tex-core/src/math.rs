@@ -596,7 +596,7 @@ impl Engine {
             let toks = (*self.eqtb.tok_params[crate::prim::ToksParam::EveryDisplay.idx() as usize])
                 .clone();
             if !toks.is_empty() {
-                self.push_tokens(toks);
+                self.push_tokens_named(toks, "<everydisplay>");
             }
             // tex.web §1145: the interrupted paragraph reaches the outer page
             // builder before the display material exists. This online ordering
@@ -668,7 +668,7 @@ impl Engine {
         let toks =
             (*self.eqtb.tok_params[crate::prim::ToksParam::EveryMath.idx() as usize]).clone();
         if !toks.is_empty() {
-            self.push_tokens(toks);
+            self.push_tokens_named(toks, "<everymath>");
         }
     }
 
@@ -738,8 +738,8 @@ impl Engine {
                 // check_second_math_shift
                 let t2 = self.get_x_raw();
                 if t2 != crate::input::EOF_MARKER && !(t2.is_char() && t2.cc() == 3) {
-                    self.error("Display math should end with $$");
                     self.push_token(t2);
+                    self.error("Display math should end with $$");
                 }
             } else if self.eqtb.int_params[IntParam::SuppressMathParError.idx() as usize] != 0
                 && t.is_cs()
@@ -801,8 +801,8 @@ impl Engine {
                     None => {
                         let t = self.get_token();
                         if t != crate::input::EOF_MARKER && !(t.is_char() && t.cc() == 3) {
-                            self.error("Display math should end with $$");
                             self.push_token(t);
+                            self.error("Display math should end with $$");
                         }
                     }
                     // texmath.c check_display_math_end
@@ -2261,14 +2261,14 @@ impl Engine {
                 return code;
             }
         }
-        self.error_at(
-            "Missing delimiter (. inserted)",
-            token_source.map(|mark| mark.to_context()),
-        );
         // back_error: the offending token is read again
         if t != crate::input::EOF_MARKER {
             self.push_token(t);
         }
+        self.error_at(
+            "Missing delimiter (. inserted)",
+            token_source.map(|mark| mark.to_context()),
+        );
         0
     }
 
@@ -2574,8 +2574,8 @@ impl Engine {
             self.skip_spaces_relax();
             let t = self.get_x_raw();
             if !self.token_is_left_brace(t) {
-                self.error("Missing { inserted");
                 self.push_token(t);
+                self.error("Missing { inserted");
             }
             // each branch is scanned in its own style (`\mathstyle`)
             self.math_style_stack.push(math_style_of(branch * 2));
@@ -2594,8 +2594,8 @@ impl Engine {
         self.skip_spaces_relax();
         let t = self.get_token();
         if !(t.is_char() && t.cc() == 1) {
-            self.error("Missing { inserted");
             self.push_token(t);
+            self.error("Missing { inserted");
         }
         let g = gstyle_of(self.cur_math_style());
         self.math_style_stack.push(math_style_of(num_style(g)));

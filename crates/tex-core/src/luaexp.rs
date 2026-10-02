@@ -738,7 +738,7 @@ impl crate::engine::Engine {
             return;
         }
         if self.scan_keyword(b"autoexpand") {
-            self.warning_at("luatex warning (font expansion): autoexpand not supported", None);
+            self.lua_warning("font expansion", "autoexpand not supported");
             self.scan_optional_space();
         }
         let (cur_step, cur_stretch, cur_shrink) = limits(&self.eqtb, f);
@@ -753,7 +753,7 @@ impl crate::engine::Engine {
         } else {
             let used = self.lua_fonts.used.contains(&f) || self.pdf_doc.font_chars.contains_key(&usize::from(f));
             if used {
-                self.warning_at("luatex warning (font expansion): font should be expanded before its first use", None);
+                self.lua_warning("font expansion", "font should be expanded before its first use");
             }
             self.lua_set_expansion(f, stretch, shrink, step);
         }

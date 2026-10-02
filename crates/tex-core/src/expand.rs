@@ -259,6 +259,9 @@ impl Engine {
             {
                 if let Some(t) = self.pushed.pop() {
                     self.retain_diagnostic_sources_for(t);
+                    if self.lua_cb[crate::lua_callbacks::Cb::ShowErrorHook as usize] > 0 {
+                        self.recent_pushed = Some((t, self.input.signature()));
+                    }
                     break 'fetch t;
                 }
             }
@@ -2462,7 +2465,7 @@ impl Engine {
                 None
             }
             DviVariable => {
-                self.warning_at("(dvi backend): unexpected use of \\dvivariable", None);
+                self.lua_warning("dvi backend", "unexpected use of \\dvivariable");
                 None
             }
             DviFeedback => {
@@ -3090,7 +3093,11 @@ impl Engine {
             }
             args.finish_arg();
         }
-        if selector.is_some_and(|index| index <= m.num_params as usize) {
+        // A `show_error_hook` shows the macro level and its `<argument>`
+        // like TeX, so the shortcut that drops the macro level is not taken.
+        if selector.is_some_and(|index| index <= m.num_params as usize)
+            && !self.cb_defined(crate::lua_callbacks::Cb::ShowErrorHook)
+        {
             // Only the selected argument was retained in the buffer.
             let mut selected = args.into_buffer();
             if selected.len() == 1 {
@@ -3987,7 +3994,7 @@ impl Engine {
                 }
             })
             .collect();
-        self.push_tokens(toks);
+        self.push_tokens_named(toks, "<inserted>");
     }
 
     pub fn tokens_to_string(&self, toks: &[Token]) -> String {

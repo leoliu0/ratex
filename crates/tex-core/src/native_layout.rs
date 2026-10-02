@@ -457,7 +457,7 @@ pub fn measure_native_word(nf: &NativeFont, text: &str, use_glyph_metrics: bool)
                 cluster_end: ce,
                 x_advance: next_x - placed[i].x,
                 y_advance: 0,
-                x_offset: 0,
+                x_offset: if i == 0 { placed[0].x } else { 0 },
                 y_offset: -placed[i].y,
             }
         })

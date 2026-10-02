@@ -2403,9 +2403,10 @@ impl<'a> RenderCtx<'a> {
             0
         } else if let Some(program) = self
             .eng
-            .font_loader
-            .native_fonts
-            .get(&fid)
+            .eqtb
+            .fonts
+            .get(fid as usize)
+            .and_then(|f| f.native.as_ref())
             .map(|native| native.program.clone())
             .or_else(|| self.eng.lua_font_program(fid))
         {

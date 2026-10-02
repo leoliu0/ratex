@@ -24,8 +24,7 @@ pub(crate) enum XeParam {
     TracingLostChars,
 }
 
-pub const CHAR_CLASS_BOUNDARY: u16 = 4095;
-pub const CHAR_CLASS_IGNORED: u16 = 4096;
+pub use crate::eqtb::{CHAR_CLASS_BOUNDARY, CHAR_CLASS_IGNORED};
 
 /// Build a native word node of `text` in `font` (`new_native_word_node` +
 /// `set_native_metrics`). The font must be a native font.
@@ -98,7 +97,7 @@ fn string_of(units: &[u16]) -> String {
 /// a word followed by further fragments of the same font (possibly with
 /// empty discretionaries between) becomes one word, re-shaped as a whole.
 pub fn merge_native_fragments(list: &mut NodeList, eqtb: &Eqtb) {
-    let ugm = eqtb.xe_use_glyph_metrics;
+    let ugm = eqtb.int_params[crate::prim::IntParam::XeTeXUseGlyphMetrics.idx() as usize] != 0;
     let is_word = |n: &Node, font: Option<FontId>| match n.native_word() {
         Some((f, _, _)) => font.is_none_or(|ff| ff == f),
         None => false,
@@ -138,26 +137,27 @@ pub fn merge_native_fragments(list: &mut NodeList, eqtb: &Eqtb) {
 impl Engine {
     // ---- parameters (XeCore's eqtb entries) ----
 
-    // ADAPTERS: reads of XeCore's parameters and class storage.
     pub(crate) fn xe_int(&self, p: XeParam) -> i32 {
-        match p {
-            XeParam::UseGlyphMetrics => i32::from(self.eqtb.xe_use_glyph_metrics),
-            XeParam::GenerateActualText => self.xetex_generate_actual_text,
-            XeParam::DashBreakState => self.xetex_dash_break_state,
-            XeParam::InterCharTokenState => self.xetex_interchartokenstate,
-            XeParam::TracingFonts => 0,
-            XeParam::InterwordSpaceShaping => 0,
-            XeParam::LinebreakPenalty => 0,
-            XeParam::TracingLostChars => self.eqtb.int_params[crate::prim::IntParam::TracingLostChars.idx() as usize],
-        }
+        use crate::prim::IntParam as I;
+        let q = match p {
+            XeParam::UseGlyphMetrics => I::XeTeXUseGlyphMetrics,
+            XeParam::GenerateActualText => I::XeTeXGenerateActualText,
+            XeParam::DashBreakState => I::XeTeXDashBreakState,
+            XeParam::InterCharTokenState => I::XeTeXInterCharTokenState,
+            XeParam::TracingFonts => I::XeTeXTracingFonts,
+            XeParam::InterwordSpaceShaping => I::XeTeXInterwordSpaceShaping,
+            XeParam::LinebreakPenalty => I::XeTeXLinebreakPenalty,
+            XeParam::TracingLostChars => I::TracingLostChars,
+        };
+        self.eqtb.int_params[q.idx() as usize]
     }
 
     fn xe_char_class(&self, c: u32) -> u16 {
-        u16::from(self.xetex_char_classes.get(&c).copied().unwrap_or(0))
+        self.eqtb.char_class(c)
     }
 
     fn xe_linebreak_skip(&self) -> crate::boxes::Glue {
-        crate::boxes::Glue::zero()
+        self.eqtb.glue_params[crate::prim::GlueParam::XeTeXLinebreakSkip.idx() as usize].clone()
     }
 
     pub(crate) fn xe_tracing_fonts(&self) -> i32 {
@@ -183,7 +183,7 @@ impl Engine {
 
     /// `\XeTeXinterchartoks` for class pair, if non-empty.
     fn xe_interchar_toks(&self, c1: u16, c2: u16) -> Option<Vec<crate::token::Token>> {
-        self.xetex_interchar_toks.get(&(c1 as u8, c2 as u8)).filter(|t| !t.is_empty()).cloned()
+        self.eqtb.inter_char_toks(c1, c2).map(|t| t.as_ref().clone())
     }
 
     // ---- public node constructors (used by hyphenation and math) ----

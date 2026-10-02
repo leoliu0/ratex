@@ -652,8 +652,6 @@ pub struct Eqtb {
     pub fonts: Vec<Rc<Font>>,
     /// A native (XeTeX) font was loaded: gates the native-word work in `hpack`.
     pub has_native_fonts: bool,
-    /// ADAPTER for `\XeTeXuseglyphmetrics` (read where only the eqtb is at hand).
-    pub xe_use_glyph_metrics: bool,
     /// mutable copy of font params (\fontdimen), per font
     pub font_params: Vec<Vec<i32>>,
     pub font_param_levels: Vec<Vec<u16>>,
@@ -967,7 +965,6 @@ impl Eqtb {
             style_font_levels: [[LEVEL_ONE; 256]; 3],
             fonts: Vec::new(),
             has_native_fonts: false,
-            xe_use_glyph_metrics: false,
             font_params: Vec::new(),
             font_param_levels: Vec::new(),
             hyphen_char: Vec::new(),

@@ -1189,6 +1189,7 @@ impl Engine {
                 | Prim::XeTeXGlyphName
                 | Prim::XeTeXFeatureName
                 | Prim::XeTeXVariationName
+                | Prim::XeTeXQuery(crate::xetex_query::XeQuery::SelectorName)
                 | Prim::LuaTeXRevision
                 | Prim::LuaTeXBanner
                 | PdfVariable
@@ -2425,6 +2426,10 @@ impl Engine {
             }
             Prim::XeTeXRevision | Prim::XeTeXGlyphName | Prim::XeTeXFeatureName | Prim::XeTeXVariationName => {
                 self.expand_xetex_query(p);
+                None
+            }
+            Prim::XeTeXQuery(crate::xetex_query::XeQuery::SelectorName) => {
+                self.expand_xetex_selector_name();
                 None
             }
             Prim::LuaTeXRevision => {

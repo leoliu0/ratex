@@ -1351,7 +1351,7 @@ impl Engine {
             // `\XeTeXversion` is an integer quantity, never a command
             XeTeXVersion => self.report_illegal_case(id),
             XeTeXGlyph => {
-                self.do_xetex_glyph();
+                self.do_xetex_glyph(id);
             }
             XeTeXLinebreakLocale => {
                 self.reject_assignment_prefixes("\\XeTeXlinebreaklocale");

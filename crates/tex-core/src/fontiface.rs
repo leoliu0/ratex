@@ -443,41 +443,6 @@ impl Engine {
         shape_opentype_to_nodes_full(font_bytes, 0, &[], None, None, &[], font_id, text, at_size)
     }
 
-    /// Shape text using the font's OpenType data if available, lowering into a `DisplayItem::NativeGlyphRun`.
-    pub fn shape_text_to_glyph_run(
-        &self,
-        font_id: FontId,
-        text: &str,
-        x_bp: f64,
-        y_bp: f64,
-    ) -> Result<crate::boxes::DisplayItem, String> {
-        let native_font = self
-            .eqtb
-            .fonts
-            .get(font_id as usize)
-            .and_then(|f| f.native.clone())
-            .ok_or_else(|| format!("Font {font_id} is not a registered native font"))?;
-        let at_size = self
-            .eqtb
-            .fonts
-            .get(font_id as usize)
-            .map(|f| f.at_size)
-            .unwrap_or(655360);
-        let upem = native_font.program.units_per_em;
-        let glyphs = shape_opentype_text(
-            &native_font.program.data,
-            native_font.program.face_index,
-            &native_font.program.variations,
-            native_font.script,
-            native_font.language.clone(),
-            &native_font.features,
-            text,
-        )?;
-        Ok(shaped_glyphs_to_native_display_item(
-            font_id, &glyphs, text, at_size, upem, x_bp, y_bp,
-        ))
-    }
-
     /// Shape text using explicitly provided font bytes, lowering into a `DisplayItem::NativeGlyphRun`.
     pub fn shape_text_to_glyph_run_with_bytes(
         &self,

@@ -86,6 +86,7 @@ pub mod native_layout;
 pub mod teckit;
 pub mod xetex_font;
 pub mod xetex_fontmgr;
+pub mod xetex_query;
 pub mod xetex_text;
 pub mod page;
 mod pdf_encodings;

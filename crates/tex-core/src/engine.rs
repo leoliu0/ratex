@@ -502,9 +502,6 @@ pub struct Engine {
     pub xetex_last_char_class: Option<u16>,
     /// `\XeTeXdefaultencoding` (xetex.web `XeTeX_default_input_mode`).
     pub xetex_default_encoding: crate::xetex_input::EncSpec,
-    /// `\XeTeXlinebreaklocale` (xetex.web `XeTeX_linebreak_locale`); `None`
-    /// when unset. Not part of a format.
-    pub xetex_linebreak_locale: Option<String>,
     pub asset_fingerprint: u64,
     pub job_ended_by_end: bool,
     pub align_preamble: Vec<crate::align::ColSpec>,
@@ -1243,7 +1240,6 @@ impl Engine {
             job_ended_by_end: false,
             xetex_last_char_class: None,
             xetex_default_encoding: crate::xetex_input::EncSpec::Auto,
-            xetex_linebreak_locale: None,
             asset_fingerprint: 0,
             align_preamble: Vec::new(),
             align_tabskip_0: crate::boxes::Glue::zero(),

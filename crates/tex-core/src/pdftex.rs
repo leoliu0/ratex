@@ -119,8 +119,16 @@ impl Engine {
         self.pdf_doc.info_omit_date = self.pdf_int(IntParam::PdfInfoOmitDate) != 0;
         let underscore = self.pdf_int(IntParam::PdfPtexUseUnderscore) > 0
             || self.pdf_doc.major_version >= 2;
-        self.pdf_doc.ptex_banner_key = (self.pdf_int(IntParam::PdfSuppressPtexInfo) % 2 == 0)
-            .then_some(if underscore { "PTEX_Fullbanner" } else { "PTEX.Fullbanner" });
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            // luatex's pdf_print_info always writes /Producer and the
+            // /PTEX.FullBanner key (suppressptexinfo and ptexuseunderscore are pdfTeX's).
+            self.pdf_doc.producer = crate::pdftex::LUATEX_PRODUCER;
+            self.pdf_doc.banner = crate::pdftex::LUATEX_BANNER;
+            self.pdf_doc.ptex_banner_key = Some("PTEX.FullBanner");
+        } else {
+            self.pdf_doc.ptex_banner_key = (self.pdf_int(IntParam::PdfSuppressPtexInfo) % 2 == 0)
+                .then_some(if underscore { "PTEX_Fullbanner" } else { "PTEX.Fullbanner" });
+        }
         self.pdf_doc.start_time = self
             .pdf_creation_date
             .get_or_insert_with(crate::expand::pdf_creation_date)
@@ -664,6 +672,10 @@ pub(crate) const PDFTEX_BANNER: &str = "This is pdfTeX, Version 3.141592653-2.6-
 /// pdftex.web "Print the Producer key": `pdfTeX-` and the version/revision
 /// that `\pdftexversion` and `\pdftexrevision` report.
 pub(crate) const PDFTEX_PRODUCER: &str = "pdfTeX-1.40.29";
+
+/// luatex's /Producer (`luatex_version_string`) and /PTEX.FullBanner (the LuaTeX banner).
+pub(crate) const LUATEX_PRODUCER: &str = "LuaTeX-1.24.0";
+pub(crate) const LUATEX_BANNER: &str = "This is LuaTeX, Version 1.24.0 (TeX Live 2026/Arch Linux)";
 
 /// Backend bookkeeping behind the PDF-object primitives. Object numbers are
 /// drawn from the engine's `pdf_next_obj`, like `\pdfobj`, and the writer

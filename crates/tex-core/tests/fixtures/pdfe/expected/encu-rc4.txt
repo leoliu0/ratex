@@ -1,0 +1,96 @@
+=====	encu-rc4.pdf
+open	1	UD[pdfe]
+type	1	string:pdfe
+ts	1	string:<pdfe PTR>
+version	2	i1 | i5
+size	1	i1442
+status	1	i-2
+nofobjects	1	i9
+nofpages	1	i0
+memusage	2	string:integer | string:integer
+catalog	0	
+trailer	1	UD[pdfe.dictionary]
+info	0	
+idx	9	nil:nil | nil:nil | nil:nil | nil:nil | UD[pdfe.dictionary] | UD[pdfe.dictionary] | {} | {} | nil:nil
+getpages	2	i0 | nil:nil
+getpage-1	0	
+getpage0	0	
+getpage1	0	
+getbox page dict	0	
+getbox nostr	0	
+pagestotable	1	string:
+trailer len	1	i5
+trailer fd1	4	string:Info | i10 | UD[pdfe.reference] | i2
+trailer fd2	4	string:Root | i10 | UD[pdfe.reference] | i1
+trailer fd3	3	string:Size | i3 | i10
+trailer fd4	4	string:ID | i7 | UD[pdfe.array] | i2
+trailer fd5	4	string:Encrypt | i10 | UD[pdfe.reference] | i9
+trailer d2t	1	{Encrypt={1=i10,2=UD[pdfe.reference],3=i9},ID={1=i7,2=UD[pdfe.array],3=i2},Info={1=i10,2=UD[pdfe.reference],3=i2},Root={1=i10,2=UD[pdfe.reference],3=i1},Size={1=i3,2=i10}}
+trailer d2t flat	1	{Encrypt={1=i10,2=UD[pdfe.reference],3=i9},ID={1=i7,2=UD[pdfe.array],3=i2},Info={1=i10,2=UD[pdfe.reference],3=i2},Root={1=i10,2=UD[pdfe.reference],3=i1},Size=i10}
+trailer idx[Info]	1	nil:nil
+trailer gs	0	
+trailer gs1	0	
+trailer gs2	0	
+trailer gi	0	
+trailer gn	0	
+trailer gb	0	
+trailer gname	0	
+trailer gd	0	
+trailer ga	0	
+trailer gst	0	
+trailer idx[Root]	1	nil:nil
+trailer gs	0	
+trailer gs1	0	
+trailer gs2	0	
+trailer gi	0	
+trailer gn	0	
+trailer gb	0	
+trailer gname	0	
+trailer gd	0	
+trailer ga	0	
+trailer gst	0	
+trailer idx[Size]	1	i10
+trailer gs	0	
+trailer gs1	0	
+trailer gs2	0	
+trailer gi	1	i10
+trailer gn	1	f10
+trailer gb	0	
+trailer gname	0	
+trailer gd	0	
+trailer ga	0	
+trailer gst	0	
+trailer idx[ID]	1	UD[pdfe.array]
+trailer gs	0	
+trailer gs1	0	
+trailer gs2	0	
+trailer gi	0	
+trailer gn	0	
+trailer gb	0	
+trailer gname	0	
+trailer gd	0	
+trailer ga	1	UD[pdfe.array]
+trailer gst	0	
+trailer idx[Encrypt]	1	UD[pdfe.dictionary]
+trailer gs	0	
+trailer gs1	0	
+trailer gs2	0	
+trailer gi	0	
+trailer gn	0	
+trailer gb	0	
+trailer gname	0	
+trailer gd	1	UD[pdfe.dictionary]
+trailer ga	0	
+trailer gst	0	
+trailer idxnum	1	i2
+trailer idxbad	2	nil:nil | nil:nil
+trailer walk	0	
+catalog walk	0	
+info walk	0	
+unencrypt	1	i-1
+unencrypt2	1	i-2
+unencrypt3	1	i1
+unencrypt4	1	i1
+getstatus	1	i1
+close	0	
+close2	0	

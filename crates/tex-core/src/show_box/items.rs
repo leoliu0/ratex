@@ -378,8 +378,8 @@ fn view_node<'a>(node: &'a Node, out: &mut Vec<Item<'a>>) {
             ..
         } => out.push(Item::Frac(Box::new(FracItem {
             thickness: *thickness,
-            left: left.unwrap_or_default(),
-            right: right.unwrap_or_default(),
+            left: *left,
+            right: *right,
             num: Field::List(view_list(num)),
             den: Field::List(view_list(den)),
         }))),

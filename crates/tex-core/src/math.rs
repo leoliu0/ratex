@@ -2275,15 +2275,13 @@ impl Engine {
         self.set_pending_fraction(thickness, ld, rd);
         let den = self.scan_math_rest_of_group();
         let num = self.take_pending_numerator();
-        let left = (!ld.is_null()).then_some(ld);
-        let right = (!rd.is_null()).then_some(rd);
         self.append_mlist_node(Node::Frac {
             num,
             den,
             thickness,
-            left,
-            right,
-            middle,
+            left: ld,
+            right: rd,
+            middle: middle.unwrap_or_default(),
             options,
             origin, attr: self.eqtb.cur_attr,
         });
@@ -3255,7 +3253,10 @@ impl Engine {
                 right,
                 origin,
                 ..
-            } => self.make_fraction(num, den, *thickness, (*left, *right), style, origin),
+            } => {
+                let opt = |d: &Delim| (!d.is_null()).then_some(*d);
+                self.make_fraction(num, den, *thickness, (opt(left), opt(right)), style, origin)
+            }
             Node::Radical {
                 body, delim, origin, ..
             } => self.make_radical(body, *delim, style, origin),

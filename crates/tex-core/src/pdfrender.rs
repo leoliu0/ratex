@@ -2662,7 +2662,12 @@ impl<'a> RenderCtx<'a> {
         let (width, height, depth, subtype, index) = node;
         let lua = self.eng.engine_kind == crate::engine::EngineKind::LuaTeX;
         if self.eng.engine_kind == crate::engine::EngineKind::XeTeX {
-            self.dpx_track_box(x_sp, v_down_sp, w_sp, h_sp, 0);
+            // dvi_rule: only rules with both dimensions positive are set
+            if w_sp > 0 && h_sp > 0 && subtype != RULE_EMPTY {
+                self.dpx_track_box(x_sp, v_down_sp, w_sp, h_sp, 0);
+                self.dpx_rule(x_sp, v_down_sp, w_sp, h_sp);
+            }
+            return;
         }
         let callback = self.process_rule_cb != 0;
         let mut s = subtype;

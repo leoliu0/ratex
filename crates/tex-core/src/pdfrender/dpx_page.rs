@@ -179,16 +179,12 @@ impl Engine {
         self.pdf_page_group_val = 0;
         let h_offset = i64::from(self.eqtb.dim_params[DimParam::HOffset.idx() as usize]);
         let v_offset = i64::from(self.eqtb.dim_params[DimParam::VOffset.idx() as usize]);
-        let x0 = i64::from(bp_to_sp(geo.x_offset)) + h_offset;
-        let y0 = i64::from(bp_to_sp(geo.y_offset)) + v_offset;
-        let mut ctx = self.new_ctx(i64::from(height_sp));
-        ctx.dpx_begin_page();
-        if mag != 1000 {
-            super::push_decimal(&mut ctx.content, i64::from(mag), 3);
-            ctx.content.push_str(" 0 0 ");
-            super::push_decimal(&mut ctx.content, i64::from(mag), 3);
-            ctx.content.push_str(" 0 0 cm\n");
-        }
+        let x0 = h_offset;
+        let y0 = v_offset;
+        // positions are DVI coordinates: x to the right, y = -v (the page
+        // origin is installed by the `cm` that starts the content)
+        let mut ctx = self.new_ctx(0);
+        ctx.dpx_begin_page(f64::from(mag) / 1000.0, geo.x_offset, geo.height - geo.y_offset);
         if let Node::Box { w, h, d, lr, .. } = page_box {
             (ctx.box_w_sp, ctx.box_h_sp, ctx.box_d_sp) = (i64::from(*w), i64::from(*h), i64::from(*d));
             ctx.box_lr = *lr;

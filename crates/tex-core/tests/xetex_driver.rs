@@ -95,3 +95,32 @@ fn docinfo_overrides_creator_and_metadata_matches_xdvipdfmx() {
     assert!(text.contains("/Producer (xdvipdfmx \\(20260113\\))"));
     assert!(!text.contains("/Trapped") && !text.contains("PTEX"));
 }
+
+fn ship(src: &str) -> (Engine, String) {
+    let mut eng = Engine::new_with_kind(EngineKind::XeTeX, true);
+    eng.init_primitives();
+    eng.add_nullfont();
+    eng.set_interaction_mode(InteractionMode::Nonstop);
+    eng.input.push_file("test.tex".into(), src.as_bytes().to_vec());
+    eng.run();
+    assert_eq!(eng.error_count, 0, "errors: {:?}, term: {}", eng.diagnostics, eng.term);
+    let content = String::from_utf8_lossy(&eng.pdf_doc.pages[0].content).split_whitespace().collect::<Vec<_>>().join(" ");
+    (eng, content)
+}
+
+#[test]
+fn page_content_starts_at_the_dvi_origin_and_background_precedes_it() {
+    let (_, content) = ship(
+        r#"\catcode`\{=1 \catcode`\}=2
+\pdfpagewidth=612bp \pdfpageheight=792bp
+\shipout\vbox{\special{background rgb 1 1 0.94}\hrule width 10pt height 5pt}
+\end
+"#,
+    );
+    // xdvipdfmx: background stream first, then q + origin cm
+    assert!(
+        content.starts_with("q 1 1 0.94 rg q n 0 0 612 792 re f Q Q q 1 0 0 1 72 720 cm 0 G 0 g"),
+        "{content}"
+    );
+    assert!(content.trim_end().ends_with('Q'));
+}

@@ -1471,9 +1471,15 @@ impl Engine {
             return list;
         }
         let (head, tail) = self.lua_list_with_head(list);
+        self.lua_text_passes_on(head, tail);
+        self.lua_list_from_head(head)
+    }
+
+    /// The passes on a list that lives in Lua behind the `temp` node `head`
+    /// whose last node is `tail`.
+    pub(crate) fn lua_text_passes_on(&mut self, head: u32, tail: u32) {
         self.lk_new_hyphenation(head, tail);
         let tail = self.lua_nodes.tail_of(head);
         self.lk_new_ligkern(head, tail);
-        self.lua_list_from_head(head)
     }
 }

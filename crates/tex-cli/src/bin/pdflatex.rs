@@ -1639,6 +1639,44 @@ fn required_value<'a>(
     Some(args.get(*i).map_or("", String::as_str))
 }
 
+/// luatex `open_fmt_file`/`zopen_w_input`: with a `find_format_file`
+/// callback the format file is whatever the callback names (opened as is,
+/// no search). `&NAME` is asked for first; when that gives no file the
+/// default format name is. `None`: no callback is registered. A callback
+/// that finds no file ends the run.
+fn lua_locate_format(
+    eng: &mut Engine,
+    ampersand: bool,
+    default_name: &str,
+    interaction_mode: InteractionMode,
+) -> Option<std::path::PathBuf> {
+    let with_ext = |name: &str| {
+        if name.ends_with(".fmt") {
+            name.to_string()
+        } else {
+            format!("{name}.fmt")
+        }
+    };
+    let default = with_ext(default_name);
+    let ask = |eng: &mut Engine, name: &str| match eng.lua_find_format_file(name) {
+        None => None,
+        Some(found) => Some(found.map(std::path::PathBuf::from).filter(|p| std::fs::File::open(p).is_ok())),
+    };
+    let mut result = ask(eng, &default)?;
+    if ampersand && result.is_none() {
+        emit_cli_message(
+            interaction_mode,
+            format_args!("Sorry, I can't find the format `{default}'; will try `{default}'."),
+        );
+        result = ask(eng, &default)?;
+    }
+    if result.is_none() {
+        emit_cli_message(interaction_mode, format_args!("I can't find the format file `{default}'!"));
+        std::process::exit(1);
+    }
+    result
+}
+
 /// The format a job loads.
 enum SelectedFormat {
     /// This program's built-in format (or its `pdflatex.fmt` override).
@@ -2142,12 +2180,14 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     // web2c format selection: `-fmt`/`&FMT`, then a `%&FMT` first line
     // (`-parse-first-line`, on by default for pdfTeX), then `-progname`.
     let mut format_option: Option<String> = None;
+    let mut format_ampersand = false;
     let mut parse_first_line = true;
     let mut translate_file: Option<String> = None;
     let mut eight_bit = false;
     let mut progname: Option<String> = None;
     let mut cnf_lines: Vec<String> = Vec::new();
     let mut kpathsea_debug = 0u32;
+    let mut lua_init_file: Option<String> = None;
     let mut i = 1;
     while i < args.len() {
         // Like web2c's getopt_long_only, every long option may be spelled
@@ -2201,6 +2241,12 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
                 usage_error(&program, "--cache-directory requires a non-empty directory");
             }
             requested_cache_dir = Some(std::path::PathBuf::from(dir));
+        } else if let Some(path) = opt.strip_prefix("-lua=") {
+            // LuaTeX: run this Lua initialization script before the job.
+            if path.is_empty() {
+                usage_error(&program, "-lua requires a file name");
+            }
+            lua_init_file = Some(path.to_string());
         } else if opt == "-jobname" || opt.starts_with("-jobname=") {
             let name = match opt.strip_prefix("-jobname=") {
                 Some(name) => name,
@@ -2378,6 +2424,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
                 usage_error(&program, "-fmt requires a format name");
             }
             format_option = Some(name.to_string());
+            format_ampersand = args[i].starts_with('&');
         } else if matches!(opt, "-v" | "-version") {
             let version = env!("CARGO_PKG_VERSION");
             if program == "xelatex" {
@@ -2419,22 +2466,32 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             std::env::set_var("TEXDEBUG", flags);
         }
     }
+    // luatex runs the `--lua` script before it looks for the format, whose
+    // `find_format_file` callback may name one the plain search cannot find.
+    let lua_init = program == "lualatex" && lua_init_file.is_some();
+    let mut missing_format: Option<String> = None;
     let format = if plain || ini {
         SelectedFormat::BuiltIn
     } else {
-        select_format(
+        match select_format(
             &program,
             format_option.as_deref(),
             parse_first_line.then_some(file.as_str()),
             progname.as_deref(),
-        )
-        .unwrap_or_else(|name| {
-            emit_cli_message(
-                interaction_mode,
-                format_args!("I can't find the format file `{name}.fmt'!"),
-            );
-            std::process::exit(1);
-        })
+        ) {
+            Ok(selected) => selected,
+            Err(name) if lua_init => {
+                missing_format = Some(name);
+                SelectedFormat::BuiltIn
+            }
+            Err(name) => {
+                emit_cli_message(
+                    interaction_mode,
+                    format_args!("I can't find the format file `{name}.fmt'!"),
+                );
+                std::process::exit(1);
+            }
+        }
     };
     let synctex_mode = SynctexMode::from_option(synctex_option);
 
@@ -2496,6 +2553,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     .filter(|path| !path.is_file())
     .collect();
     if !plain && !ini {
+        // a `--lua` script has effects of its own: the job always runs
         if let Some((pdf_size, pages)) = check_depcache(
             &private_cache,
             &file,
@@ -2503,7 +2561,9 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             &expected_log,
             expected_synctex.as_deref(),
             published_outputs.as_ref(),
-        ) {
+        )
+        .filter(|_| !lua_init)
+        {
             report_texmk_cache_hit(&cache_root);
             maybe_touch_depcache(&private_cache);
             if let Some(directory) = private_cache.parent() {
@@ -2544,6 +2604,18 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
         }
     }
     eng.job_name = job.clone();
+    // luatex: the `--lua` script runs, then `start_run` (the banner), before
+    // the format is looked for; the script's Lua state and callbacks stay.
+    let mut banner_replaced = false;
+    if program == "lualatex" {
+        if let Some(path) = &lua_init_file {
+            if let Err(error) = eng.run_lua_init_file(path) {
+                eprintln!("{program}: {error}");
+                std::process::exit(1);
+            }
+        }
+        banner_replaced = eng.lua_start_run();
+    }
     if !plain && !ini {
         let fmt_file_name = match program.as_str() {
             "lualatex" => "lualatex.fmt",
@@ -2552,10 +2624,28 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
         let exe_fmt = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|d| d.join(fmt_file_name)));
-        let custom_format = match &format {
+        let mut custom_format = match &format {
             SelectedFormat::File(path) => Some(path.clone()),
             SelectedFormat::BuiltIn => None,
         };
+        if lua_init {
+            let default_name = format_option
+                .as_deref()
+                .or(progname.as_deref())
+                .unwrap_or(program.as_str());
+            match lua_locate_format(&mut eng, format_ampersand, default_name, interaction_mode) {
+                Some(path) => custom_format = Some(path),
+                None => {
+                    if let Some(name) = &missing_format {
+                        emit_cli_message(
+                            interaction_mode,
+                            format_args!("I can't find the format file `{name}.fmt'!"),
+                        );
+                        std::process::exit(1);
+                    }
+                }
+            }
+        }
         let cand_paths = match &custom_format {
             Some(path) => [Some(path.clone()), None],
             None => [Some(std::path::PathBuf::from(fmt_file_name)), exe_fmt.clone()],
@@ -2772,7 +2862,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
         ),
     };
     eng.log.push_str(&engine_banner);
-    if interaction_mode != InteractionMode::Batch {
+    if interaction_mode != InteractionMode::Batch && !banner_replaced {
         eng.term.push_str(&engine_banner);
     }
     phase_timer.mark("format");
@@ -2885,7 +2975,11 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             }
         };
         phase_timer.mark("pdf_serialize");
-        let out = format!("{}{}.pdf", eng.out_dir, job);
+        // a LuaTeX `find_output_file` callback may name the PDF file
+        let out = match eng.pdf_output_file_override() {
+            Some(name) => name.to_string(),
+            None => format!("{}{}.pdf", eng.out_dir, job),
+        };
         if !eng.out_dir.is_empty() {
             let _ = std::fs::create_dir_all(&eng.out_dir);
         }

@@ -591,6 +591,10 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
             let id = e.cs.intern(&name);
             let global = e.lua_tex_global(global);
             e.eqtb.assign(id, Equiv::FontRef(f), global);
+            // luatex: the font is shown under the name it was last given
+            if let Some(slot) = e.eqtb.font_cs.get_mut(usize::from(f)) {
+                *slot = id;
+            }
             Ok(())
         })?
     });

@@ -18,6 +18,11 @@ pub const MAX_RETAINED_DIAGNOSTICS: usize = 128;
 const OMITTED_DIAGNOSTICS_MESSAGE: &str =
     "Earlier diagnostics omitted from the retained diagnostic list; consult the transcript";
 
+/// `Diagnostic::hidden` bits: a LuaTeX callback replaced the message line /
+/// the source context of the display.
+pub(crate) const HIDE_MESSAGE: u8 = 1;
+pub(crate) const HIDE_CONTEXT: u8 = 2;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DiagnosticSeverity {
     Error,
@@ -47,6 +52,9 @@ pub struct Diagnostic {
     pub included_from: Vec<SourceContext>,
     pub help: Option<String>,
     pub note: Option<String>,
+    /// What a LuaTeX `show_error_message` / `show_error_hook` callback took
+    /// over from the display: `HIDE_MESSAGE`, `HIDE_CONTEXT`.
+    pub hidden: u8,
 }
 
 /// A bounded, slice-like collection of diagnostics retained for library
@@ -110,6 +118,7 @@ impl DiagnosticStore {
                 included_from: Vec::new(),
                 help: None,
                 note: None,
+                hidden: 0,
             });
             self.entries.push(diagnostic);
             self.overflowed = true;
@@ -245,6 +254,10 @@ impl Diagnostic {
             out.push('\n');
         }
 
+        if self.hidden & HIDE_MESSAGE != 0 {
+            out.clear();
+        }
+        let context_start = out.len();
         let same_line_single_window = match (&self.primary, &self.related) {
             (Some(p), Some(r)) => {
                 if p.name == r.source.name
@@ -415,6 +428,10 @@ impl Diagnostic {
             }
         }
 
+        if self.hidden & HIDE_CONTEXT != 0 {
+            out.truncate(context_start);
+        }
+
         if let Some(note) = &self.note {
             if color {
                 out.push_str("  \x1b[1;36m= note:\x1b[0m ");
@@ -437,7 +454,7 @@ impl Diagnostic {
             out.push('\n');
         }
 
-        if !self.expansion.is_empty() {
+        if !self.expansion.is_empty() && self.hidden & HIDE_CONTEXT == 0 {
             if color {
                 out.push_str("  \x1b[1;34m= while expanding:\x1b[0m ");
             } else {
@@ -454,7 +471,7 @@ impl Diagnostic {
             out.push('\n');
         }
 
-        for parent in &self.included_from {
+        for parent in self.included_from.iter().filter(|_| self.hidden & HIDE_CONTEXT == 0) {
             if color {
                 out.push_str(&format!(
                     "  \x1b[1;34m= included from:\x1b[0m {}:{}:{}\n",
@@ -968,6 +985,7 @@ impl Engine {
             included_from,
             help: None,
             note: None,
+            hidden: 0,
         };
 
         let cause_level = if severity == DiagnosticSeverity::Error {
@@ -1364,9 +1382,10 @@ impl Engine {
             return;
         }
 
-        let (diagnostic, cause_level) = self.make_error_diagnostic(msg);
+        let (mut diagnostic, cause_level) = self.make_error_diagnostic(msg);
         self.diagnostics.push(diagnostic.clone());
         self.error_count += 1;
+        self.lua_error_hooks(msg, &mut diagnostic);
 
         if self.interaction_mode == crate::engine::InteractionMode::Batch {
             self.emit_diagnostic(&diagnostic, false);
@@ -1461,6 +1480,9 @@ impl Engine {
         if self.engine_kind == crate::engine::EngineKind::LuaTeX && !self.stopped_on_error && !(self.ini_mode && self.format_done) {
             if !self.pdf_doc.pages.is_empty() {
                 self.lua_simple_callback(crate::lua_callbacks::Cb::FinishPdffile);
+                // the fonts are written next: encodings and programs come
+                // through the file callbacks
+                self.lua_resolve_font_resources();
             }
             self.lua_simple_callback(crate::lua_callbacks::Cb::StopRun);
             self.lua_simple_callback(crate::lua_callbacks::Cb::WrapupRun);
@@ -1755,6 +1777,7 @@ fn unlocated_diagnostic(
             .map(|text| bounded_text(text.trim(), MAX_HELP_BYTES))
             .or_else(|| default_help(message)),
         note: None,
+        hidden: 0,
     }
 }
 

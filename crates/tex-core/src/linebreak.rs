@@ -210,6 +210,8 @@ fn list_font_expansion<F>(
     nodes: &[Node],
     mut prev: Option<(FontId, u8)>,
     trailing: Option<&Node>,
+    lua_kerns: bool,
+    lua_mode: bool,
     record_expansion: &mut F,
 ) -> (i64, i64, Option<(FontId, u8)>)
 where
@@ -219,11 +221,25 @@ where
     let mut shrink = 0i64;
     for (i, node) in nodes.iter().enumerate() {
         match node {
+            // luatex: every character is a glyph node, TFM fonts included
+            Node::Char { .. } | Node::Ligature { .. } | Node::LuaGlyph(_) if lua_mode => {
+                if let Some(gr) = crate::luaexp::glyph_ref(node).filter(|gr| crate::luaexp::expandable(eqtb, gr.font)) {
+                    record_expansion(gr.font);
+                    stretch += crate::luaexp::char_stretch(eqtb, gr) as i64;
+                    shrink += crate::luaexp::char_shrink(eqtb, gr) as i64;
+                }
+            }
             Node::Char { c, font, .. } | Node::Ligature { c, font, .. } => {
                 record_expansion(*font);
                 stretch += crate::boxes::char_stretch(eqtb, *font, *c) as i64;
                 shrink += crate::boxes::char_shrink(eqtb, *font, *c) as i64;
                 prev = Some((*font, *c));
+            }
+            Node::LuaGlyph(g) if crate::luaexp::expandable(eqtb, g.font) => {
+                record_expansion(g.font);
+                let gr = crate::luaexp::GlyphRef { font: g.font, c: g.c };
+                stretch += crate::luaexp::char_stretch(eqtb, gr) as i64;
+                shrink += crate::luaexp::char_shrink(eqtb, gr) as i64;
             }
             Node::Kern(k, _) => {
                 let next = if i + 1 < nodes.len() {
@@ -231,6 +247,15 @@ where
                 } else {
                     trailing
                 };
+                if lua_kerns && lua_mode {
+                    let left = i.checked_sub(1).and_then(|j| crate::luaexp::glyph_ref(&nodes[j]));
+                    if let (Some(lr), Some(rr)) = (left, next.and_then(crate::luaexp::glyph_ref)) {
+                        if crate::luaexp::expandable(eqtb, lr.font) {
+                            stretch += crate::luaexp::kern_stretch(eqtb, *k, lr, rr) as i64;
+                            shrink += crate::luaexp::kern_shrink(eqtb, *k, lr, rr) as i64;
+                        }
+                    }
+                }
                 if let (
                     Some((font, left)),
                     Some(Node::Char { c: right, .. } | Node::Ligature { c: right, .. }),
@@ -1031,6 +1056,12 @@ impl Engine {
         let n = list.len();
         let pdf_adjust =
             self.eqtb.int_params[crate::prim::IntParam::PdfAdjustSpacing.idx() as usize];
+        // luatex: the nodes a discretionary replaces are not part of the list.
+        // line_break runs try_break::<true> exactly in LuaTeX mode, so the
+        // pdfTeX instantiation folds every LuaTeX branch away.
+        let lua_mode = LUA;
+        let lb_dead_mask = if lua_mode { crate::luaexp::dead_mask(list) } else { Vec::new() };
+        let lb_dead = |i: usize| lb_dead_mask.get(i).copied().unwrap_or(false);
         // cumulative measurements; discs contribute their no_break text and
         let mut cum_w = vec![0i64; n + 1];
         let mut cum_st = vec![[0i64; 4]; n + 1];
@@ -1046,6 +1077,15 @@ impl Engine {
 
             let mut record_expansion = |font: u16| {
                 if pdf_adjust >= 2 && (stretch_steps == 0 || shrink_steps == 0) {
+                    let (lua_step, lua_stretch, lua_shrink) = crate::luaexp::limits(&self.eqtb, font);
+                    if lua_step > 0 {
+                        if stretch_steps == 0 && lua_stretch > 0 {
+                            stretch_steps = i64::from(lua_stretch / lua_step);
+                        }
+                        if shrink_steps == 0 && lua_shrink > 0 {
+                            shrink_steps = i64::from(lua_shrink / lua_step);
+                        }
+                    }
                     let ex = &self.eqtb.expand[font as usize];
                     if ex.step > 0 {
                         if stretch_steps == 0 && ex.stretch != 0 {
@@ -1063,6 +1103,23 @@ impl Engine {
             let mut prev_exp_char: Option<(FontId, u8)> = None;
             while i < n {
                 let (w, st, sh, fst, fsh) = match &list[i] {
+                    Node::Char { .. } | Node::Ligature { .. } | Node::LuaGlyph(_) if lua_mode => {
+                        prev_exp_char = None;
+                        let (mut fst, mut fsh) = (0i64, 0i64);
+                        let gr = crate::luaexp::glyph_ref(&list[i]);
+                        if let Some(gr) = gr.filter(|gr| pdf_adjust >= 2 && crate::luaexp::expandable(&self.eqtb, gr.font)) {
+                            record_expansion(gr.font);
+                            fst = i64::from(crate::luaexp::char_stretch(&self.eqtb, gr));
+                            fsh = i64::from(crate::luaexp::char_shrink(&self.eqtb, gr));
+                        }
+                        let wd = match &list[i] {
+                            Node::Char { c, font, .. } => fonts.char_width(*font, *c),
+                            Node::Ligature { lig_width, .. } => *lig_width,
+                            Node::LuaGlyph(g) => crate::boxes::lua_glyph_dims(&self.eqtb, g).0,
+                            _ => 0,
+                        };
+                        (i64::from(wd), [0; 4], [0; 4], fst, fsh)
+                    }
                     Node::Char { c, font, .. } => {
                         record_expansion(*font);
                         prev_exp_char = Some((*font, *c));
@@ -1080,7 +1137,14 @@ impl Engine {
                     }
                     Node::LuaGlyph(g) => {
                         prev_exp_char = None;
-                        (crate::boxes::lua_glyph_dims(&self.eqtb, g).0 as i64, [0; 4], [0; 4], 0, 0)
+                        let (mut fst, mut fsh) = (0i64, 0i64);
+                        if pdf_adjust >= 2 && crate::luaexp::expandable(&self.eqtb, g.font) {
+                            record_expansion(g.font);
+                            let gr = crate::luaexp::GlyphRef { font: g.font, c: g.c };
+                            fst = i64::from(crate::luaexp::char_stretch(&self.eqtb, gr));
+                            fsh = i64::from(crate::luaexp::char_shrink(&self.eqtb, gr));
+                        }
+                        (crate::boxes::lua_glyph_dims(&self.eqtb, g).0 as i64, [0; 4], [0; 4], fst, fsh)
                     }
                     Node::Ligature {
                         c, font, lig_width, ..
@@ -1113,7 +1177,22 @@ impl Engine {
                             }
                             _ => None,
                         };
-                        let (fst, fsh) = if pdf_adjust >= 2 {
+                        let lua_kern = if pdf_adjust == 2 && i > 0 && !lb_dead(i - 1) {
+                            match (crate::luaexp::glyph_ref(&list[i - 1]), list.get(i + 1).and_then(crate::luaexp::glyph_ref)) {
+                                (Some(lr), Some(rr)) if lua_mode && crate::luaexp::expandable(&self.eqtb, lr.font) => {
+                                    Some((
+                                        i64::from(crate::luaexp::kern_stretch(&self.eqtb, *k, lr, rr)),
+                                        i64::from(crate::luaexp::kern_shrink(&self.eqtb, *k, lr, rr)),
+                                    ))
+                                }
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        };
+                        let (fst, fsh) = if let Some(lua_kern) = lua_kern {
+                            lua_kern
+                        } else if pdf_adjust >= 2 {
                             match (prev_exp_char, next) {
                                 (Some((font, left)), Some((_, right))) => (
                                     crate::boxes::kern_stretch(&self.eqtb, font, left, right, *k)
@@ -1131,6 +1210,7 @@ impl Engine {
                     Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) => {
                         (*k as i64, [0; 4], [0; 4], 0, 0)
                     }
+                    Node::ExKern { width, ex, .. } => ((*width + *ex) as i64, [0; 4], [0; 4], 0, 0),
                     Node::Disc(dc) => {
                         let mut fst = 0i64;
                         let mut fsh = 0i64;
@@ -1140,6 +1220,8 @@ impl Engine {
                                 &dc.pre_break,
                                 prev_exp_char,
                                 None,
+                                pdf_adjust == 2,
+                                lua_mode,
                                 &mut record_expansion,
                             );
                             disc_pre_fst[i] = pre_fst;
@@ -1150,6 +1232,8 @@ impl Engine {
                                 &dc.no_break,
                                 prev_exp_char,
                                 trailing,
+                                pdf_adjust == 2,
+                                lua_mode,
                                 &mut record_expansion,
                             );
                             fst = no_fst;
@@ -1208,7 +1292,15 @@ impl Engine {
 
         let protrude_chars =
             self.eqtb.int_params[crate::prim::IntParam::PdfProtrudeChars.idx() as usize];
-        let start_left_prot = find_protchar_left(list, &self.eqtb, protrude_chars);
+        let start_left_prot = if lua_mode {
+            if protrude_chars > 1 {
+                crate::luaexp::break_left_pw(&self.eqtb, list, 0, &lb_dead_mask)
+            } else {
+                0
+            }
+        } else {
+            find_protchar_left(list, &self.eqtb, protrude_chars)
+        };
         // luatex `local_par` nodes: the state in force at each candidate
         // (`internal_left_box_width` etc. when `try_break` is called)
         let lua_lp = LUA
@@ -1303,7 +1395,13 @@ impl Engine {
                     let font_sh = (cum_fsh[cand] - a.start_fsh + pre_fsh).max(0);
                     dst[0] += extra_stretch as i64; // emergency-pass background
                     let target = line_metrics(params, a.line + 1).1 as i64;
-                    let right_prot = if protrude_chars > 0 && cand < n {
+                    let right_prot = if lua_mode {
+                        if protrude_chars > 1 && cand < n {
+                            crate::luaexp::break_right_pw(&self.eqtb, list, a.pos, cand, $is_disc, &lb_dead_mask)
+                        } else {
+                            0
+                        }
+                    } else if protrude_chars > 0 && cand < n {
                         if $is_disc {
                             if let Some(Node::Disc(dc)) = list.get(cand) {
                                 dc.pre_break
@@ -1579,7 +1677,13 @@ impl Engine {
                         &cum_fst,
                         &cum_fsh,
                     );
-                    let left_prot = if protrude_chars >= 2 {
+                    let left_prot = if lua_mode {
+                        if protrude_chars > 1 {
+                            crate::luaexp::break_left_pw(&self.eqtb, list, cand, &lb_dead_mask)
+                        } else {
+                            0
+                        }
+                    } else if protrude_chars >= 2 {
                         let start_idx = after_prune(cand);
                         list.get(start_idx..)
                             .map(|slice| find_protchar_left(slice, &self.eqtb, protrude_chars))
@@ -1938,9 +2042,17 @@ impl Engine {
                         );
                         // tex.web §882: the (now empty) disc node stays in the
                         // line, followed by the transplanted pre-break list
-                        seg.push(Node::Disc(crate::boxes::DiscNode::new(Vec::new(), Vec::new(), Vec::new(), 0)));
+                        // (luatex puts the transplanted pre-break list in
+                        // front of the node)
+                        let lua_order = self.engine_kind == crate::engine::EngineKind::LuaTeX;
+                        if !lua_order {
+                            seg.push(Node::Disc(crate::boxes::DiscNode::new(Vec::new(), Vec::new(), Vec::new(), 0)));
+                        }
                         for nn in std::mem::take(&mut dc.pre_break) {
                             push_dims(&self.eqtb, nn, &mut seg, &mut nat_w);
+                        }
+                        if lua_order {
+                            seg.push(Node::Disc(crate::boxes::DiscNode::new(Vec::new(), Vec::new(), Vec::new(), 0)));
                         }
                         if dc.post_break.is_empty() {
                             // post_line_break prunes the next line start
@@ -2019,7 +2131,31 @@ impl Engine {
             }
             let protrude_chars =
                 self.eqtb.int_params[crate::prim::IntParam::PdfProtrudeChars.idx() as usize];
-            if protrude_chars > 0 {
+            if protrude_chars > 0 && self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                // luatex post_line_break: the right margin kern goes before
+                // the break glue (before \parfillskip on the last line), the
+                // left one in front of the first node of the line
+                let ins = if (last && matches!(seg.last(), Some(Node::Glue(..)))) || broke_at_disc {
+                    seg.len() - 1
+                } else {
+                    seg.len()
+                };
+                if ins > 0 {
+                    if let Some((g, attr)) = crate::luaexp::find_protchar_right(&seg, 0, ins - 1, &[]) {
+                        let pw = crate::luaexp::char_pw(&self.eqtb, g, false);
+                        if pw != 0 {
+                            seg.insert(ins, Node::MarginKern { side: 1, width: -pw, c: g.c, font: g.font, ex: 0, attr });
+                        }
+                    }
+                }
+                if let Some((g, _)) = crate::luaexp::find_protchar_left(&seg, 0, false, &[]) {
+                    let pw = crate::luaexp::char_pw(&self.eqtb, g, true);
+                    if pw != 0 {
+                        let attr = seg[0].attr();
+                        seg.insert(0, Node::MarginKern { side: 0, width: -pw, c: g.c, font: g.font, ex: 0, attr });
+                    }
+                }
+            } else if protrude_chars > 0 {
                 let left_cand = seg.iter().find_map(|n| match n {
                     Node::Char { font, c, attr } | Node::Ligature { font, c, attr, .. } => Some((*font, *c, *attr)),
                     Node::Glue(_, _)
@@ -2050,7 +2186,8 @@ impl Engine {
                                     side: 0,
                                     width: -pw,
                                     font: f,
-                                    c, attr: lattr,
+                                    c: u32::from(c),
+                                    ex: 0, attr: lattr,
                                 },
                             );
                         }
@@ -2066,7 +2203,8 @@ impl Engine {
                             side: 1,
                             width: -pw,
                             font: f,
-                            c, attr: rattr,
+                            c: u32::from(c),
+                            ex: 0, attr: rattr,
                         });
                     }
                 }
@@ -2763,6 +2901,7 @@ fn push_dims(eqtb: &crate::eqtb::Eqtb, n: Node, seg: &mut NodeList, w: &mut i64)
         Node::Ligature { lig_width, .. } => *lig_width,
         Node::Glue(g, _) => g.width,
         Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) => *k,
+        Node::ExKern { width, ex, .. } => *width + *ex,
         Node::Box { w: bw, .. } => *bw,
         Node::Rule { width, .. } => *width,
         Node::NativeGlyphRun { width, .. } => *width,

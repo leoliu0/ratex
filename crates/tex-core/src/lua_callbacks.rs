@@ -245,8 +245,8 @@ impl Engine {
     }
 
     pub(crate) fn lua_callback_failed(&mut self, what: &str, err: &str) {
-        self.warning_at(&format!("({what}): error: {err}"), None);
-        self.error(err);
+        self.lua_warning(what, &format!("error: {err}"));
+        self.lua_error("", err);
     }
 
     /// luatex `lua_node_filter_s`: a callback that only gets a string.
@@ -328,6 +328,24 @@ impl Engine {
             return list;
         }
         let first = self.lua_nodes_from_engine(list) as u32;
+        let first = self.lua_pack_filter_list(cb, what, group, size, exactly, max_depth, dir, first);
+        self.lua_nodes_to_engine(i64::from(first))
+    }
+
+    /// `lua_pack_filter` on a list that already lives in Lua (`first`, never
+    /// 0): the first node of what the callback leaves (0 when it returned
+    /// `false` or nil, which empties the list).
+    pub(crate) fn lua_pack_filter_list(
+        &mut self,
+        cb: Cb,
+        what: &str,
+        group: &str,
+        size: i32,
+        exactly: bool,
+        max_depth: Option<i32>,
+        dir: Option<&str>,
+        first: u32,
+    ) -> u32 {
         let mut args = vec![
             CbArg::Node(first),
             CbArg::str(group),
@@ -341,18 +359,18 @@ impl Engine {
         args.push(CbArg::Nil);
         let rets = self.lua_cb_call(cb, what, args);
         match rets.as_deref().and_then(|r| r.first()) {
-            None | Some(CbRet::Bool(true)) => self.lua_nodes_to_engine(i64::from(first)),
+            None | Some(CbRet::Bool(true)) => first,
             Some(CbRet::Bool(false)) | Some(CbRet::Nil) => {
                 if matches!(rets.as_deref().and_then(|r| r.first()), Some(CbRet::Bool(false))) {
                     self.lua_nodes.flush_list(first);
                 }
-                Vec::new()
+                0
             }
-            Some(CbRet::Node(h)) => self.lua_nodes_to_engine(i64::from(*h)),
+            Some(CbRet::Node(h)) => *h,
             Some(other) => {
                 let msg = format!("bad argument #1 (node expected, got {})", other.type_name());
                 self.lua_callback_failed(what, &msg);
-                self.lua_nodes_to_engine(i64::from(first))
+                first
             }
         }
     }
@@ -747,4 +765,163 @@ impl Engine {
             let _ = self.lua_cb_call(cb, what, Vec::new());
         }
     }
+
+    /// luatex `--lua=FILE`: run the Lua initialization script before the job
+    /// starts (callbacks such as `start_run` can only be registered here).
+    pub fn run_lua_init_file(&mut self, path: &str) -> Result<(), String> {
+        let code = std::fs::read(path).map_err(|e| format!("cannot read lua initialization file {path}: {e}"))?;
+        let name = format!("@{path}");
+        self.lua_run(|lua| lua.execute(&code, &name))
+    }
+
+    /// luatex `print_banner`: with a `start_run` callback (even one
+    /// registered as `false`) the callback, not the built-in banner, goes to
+    /// the terminal. Returns whether the built-in banner is replaced.
+    pub fn lua_start_run(&mut self) -> bool {
+        match self.cb_state(Cb::StartRun) {
+            0 => false,
+            s => {
+                if s > 0 {
+                    let _ = self.lua_cb_call(Cb::StartRun, "start_run", Vec::new());
+                }
+                true
+            }
+        }
+    }
+
+    /// luatex `page_order_index` (`"d->d"`): the location the page just
+    /// written takes in the page tree, recorded for page number
+    /// `total_pages`. A result that is not a number is reported and counts
+    /// as 0.
+    pub(crate) fn lua_page_order_index(&mut self, total_pages: usize) {
+        if !self.cb_defined(Cb::PageOrderIndex) {
+            return;
+        }
+        let rets = self.lua_cb_call(Cb::PageOrderIndex, "page order index", vec![CbArg::Int(total_pages as i64)]);
+        let location = match rets.as_deref().map(|r| r.first()) {
+            Some(Some(CbRet::Int(n))) => *n as i32,
+            Some(Some(CbRet::Num(n))) => *n as i32,
+            Some(other) => {
+                eprintln!("callback should return a number, not: {}", other.map_or("nil", CbRet::type_name));
+                0
+            }
+            None => 0,
+        };
+        if location != 0 {
+            let pages = self.pdf_doc.pages.len();
+            self.pdf_doc.page_order.resize(pages, 0);
+            self.pdf_doc.page_order[pages - 1] = location;
+        }
+    }
+
+    /// luatex `normal_warning(tag, text)`: with a `show_warning_message`
+    /// callback the callback (reading `status.lastwarningtag` and
+    /// `status.lastwarningstring`) replaces the printed warning.
+    pub(crate) fn lua_warning(&mut self, tag: &str, text: &str) {
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX && self.cb_defined(Cb::ShowWarningMessage) {
+            self.lua_msgs.last_warning_tag = Some(tag.to_string());
+            self.lua_msgs.last_warning = Some(text.to_string());
+            let _ = self.lua_cb_call(Cb::ShowWarningMessage, "show_warning_message", Vec::new());
+            return;
+        }
+        self.warning_at(&format!("({tag}): {text}"), None);
+    }
+
+    /// luatex `normal_warning("lua", ...)` / `luatex_error`: an error raised
+    /// by Lua code. `status.lastluaerrorstring` keeps `err`; a
+    /// `show_lua_error_hook` callback prints it instead of TeX.
+    pub(crate) fn lua_error(&mut self, prefix: &str, err: &str) {
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            self.lua_msgs.last_lua_error = Some(err.strip_prefix("Lua error: ").unwrap_or(err).to_string());
+            self.lua_msgs.lua_error_pending = true;
+        }
+        self.error(&format!("{prefix}{err}"));
+        self.lua_msgs.lua_error_pending = false;
+    }
+
+    /// luatex `error()` with the message and context callbacks: the
+    /// callbacks take over the corresponding parts of `d`, which is what
+    /// `Engine::error` displays. `msg` is the raw error message.
+    pub(crate) fn lua_error_hooks(&mut self, msg: &str, d: &mut crate::diagnostics::Diagnostic) {
+        use crate::diagnostics::{HIDE_CONTEXT, HIDE_MESSAGE};
+        if self.engine_kind != crate::engine::EngineKind::LuaTeX || self.lua_msgs.in_hook {
+            return;
+        }
+        let lua_error = self.lua_msgs.lua_error_pending;
+        let message_hook = if lua_error { Cb::ShowLuaErrorHook } else { Cb::ShowErrorMessage };
+        let context_hook = self.cb_defined(Cb::ShowErrorHook);
+        if !self.cb_defined(message_hook) && !context_hook {
+            return;
+        }
+        self.lua_msgs.in_hook = true;
+        if self.cb_defined(message_hook) {
+            if !lua_error {
+                self.lua_msgs.last_error = Some(format!("! {msg}"));
+            }
+            let _ = self.lua_cb_call(message_hook, CALLBACK_NAMES[message_hook as usize], Vec::new());
+            d.hidden |= HIDE_MESSAGE;
+        }
+        if context_hook {
+            self.lua_msgs.last_error_context = Some(tex_error_context(d));
+            let _ = self.lua_cb_call(Cb::ShowErrorHook, "show_error_hook", Vec::new());
+            d.hidden |= HIDE_CONTEXT;
+        }
+        self.lua_msgs.in_hook = false;
+    }
+}
+
+/// What the callbacks of the messages left behind for `status`
+/// (`last_error`, `last_error_context`, `last_lua_error`, `last_warning_tag`,
+/// `last_warning_str` of `errors.c`).
+#[derive(Default)]
+pub(crate) struct LuaMessages {
+    pub last_error: Option<String>,
+    pub last_error_context: Option<String>,
+    pub last_lua_error: Option<String>,
+    pub last_warning_tag: Option<String>,
+    pub last_warning: Option<String>,
+    /// an error raised by Lua code is being reported
+    pub lua_error_pending: bool,
+    /// a message callback is running (errors in it are not hooked again)
+    pub in_hook: bool,
+}
+
+/// TeX's `show_context` (tex.web 311-318) for the file line an error was
+/// found on, as `status.lasterrorcontext` holds it: a newline, `l.<line> `
+/// and the text read so far, a newline, and blanks followed by the rest of the
+/// line, both cut to `half_error_line` / `error_line` (50 / 79). Macro and
+/// token list levels of the input stack are not part of it.
+fn tex_error_context(d: &crate::diagnostics::Diagnostic) -> String {
+    const ERROR_LINE: usize = 79;
+    const HALF_ERROR_LINE: usize = 50;
+    let Some(p) = &d.primary else {
+        return String::new();
+    };
+    let text = p.text.as_bytes();
+    let pos = (p.display_column.saturating_sub(1) + d.highlight_len.max(1)).min(text.len());
+    let (first, rest) = text.split_at(pos);
+    let prefix = format!("l.{} ", p.line);
+    // tex.web counts `l.<line>` only; the blank belongs to the text printed
+    let l = prefix.len() - 1;
+    let (skip, n) = if l + first.len() <= HALF_ERROR_LINE {
+        (0, l + first.len())
+    } else {
+        (l + first.len() - HALF_ERROR_LINE + 3, HALF_ERROR_LINE)
+    };
+    let mut out = Vec::new();
+    out.push(b'\n');
+    out.extend_from_slice(prefix.as_bytes());
+    if skip > 0 {
+        out.extend_from_slice(b"...");
+    }
+    out.extend_from_slice(&first[skip.min(first.len())..]);
+    out.push(b'\n');
+    out.extend(std::iter::repeat(b' ').take(n));
+    if rest.len() + n <= ERROR_LINE {
+        out.extend_from_slice(rest);
+    } else {
+        out.extend_from_slice(&rest[..ERROR_LINE - n - 3]);
+        out.extend_from_slice(b"...");
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }

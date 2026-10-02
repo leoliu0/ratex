@@ -1634,7 +1634,7 @@ impl Engine {
                 let toks = self.scan_general_text_expanded();
                 let code = self.tokens_to_string(&toks);
                 if let Err(err) = self.execute_directlua(code.as_bytes()) {
-                    self.error(&format!("LuaTeX error: {err}"));
+                    self.lua_error("LuaTeX error: ", &err);
                 }
                 None
             }
@@ -1745,8 +1745,12 @@ impl Engine {
                 // width (0 if the line box has none).
                 let left = p == LeftMarginKern;
                 let n = self.scan_reg_num();
-                let width = self.margin_kern_width(n, left);
-                let s = self.scaled_to_string(width);
+                let width = if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                    self.lua_margin_kern_width(n, left)
+                } else {
+                    self.margin_kern_width(n, left)
+                };
+                let s = width.map_or_else(|| "0pt".to_string(), |w| self.scaled_to_string(w));
                 self.exp_string(s.as_bytes());
                 None
             }

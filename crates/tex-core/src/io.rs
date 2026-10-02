@@ -2431,7 +2431,7 @@ impl Engine {
             }
             Node::Glue(g, _) => out.push_str(&format!("glue {}\n", self.glue_to_string(g))),
             Node::MuGlue(g, _) => out.push_str(&format!("math glue {}\n", self.mu_glue_to_string(g))),
-            Node::Kern(k, _) => out.push_str(&format!("kern {}\n", self.scaled_to_string(*k))),
+            Node::Kern(k, _) | Node::ExKern { width: k, .. } => out.push_str(&format!("kern {}\n", self.scaled_to_string(*k))),
             // tex.web §4416: an explicit kern is shown with a space after
             // the escape (`\kern 1.0`), an implicit one without (`\kern1.0`)
             Node::ExplicitKern(k, _) => out.push_str(&format!("kern {}\n", self.scaled_to_string(*k))),

@@ -121,6 +121,9 @@ pub struct PdfDoc {
     compression_worker: Option<crate::pdfcompress::Worker>,
     page_compression: Vec<Option<crate::pdfcompress::Pending>>,
     pub pages: Vec<PdfPage>,
+    /// LuaTeX `page_order_index` location per page (pages missing here sort
+    /// at 0): the `/Kids` of the page tree are ordered by it.
+    pub page_order: Vec<i32>,
     /// raw user objects from \pdfobj
     pub objects: Vec<(i32, Vec<u8>)>,
     /// Reserved font dictionaries for forms, with the same font-index
@@ -370,6 +373,9 @@ pub struct EmbedFont {
     pub t1_keys: std::rc::Rc<crate::pdf_fonts::Type1Keys>,
     /// `pdf_init_font` order of the engine font.
     pub init_order: usize,
+    /// The object number `font_descriptor_objnum_provider` chose for the
+    /// descriptor (0: the writer numbers it).
+    pub desc_obj: i32,
     /// pdfTeX's dictionary of an engine font's own code space (None for
     /// remapped code spaces, which have no pdfTeX counterpart).
     pub pdftex: Option<PdfTexFont>,
@@ -423,6 +429,7 @@ impl PdfDoc {
             compression_worker: None,
             page_compression: Vec::new(),
             pages: Vec::new(),
+            page_order: Vec::new(),
             objects: Vec::new(),
             form_fonts: Vec::new(),
             imported_base14_fonts: std::collections::BTreeMap::new(),

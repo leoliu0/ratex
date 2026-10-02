@@ -475,9 +475,17 @@ impl Engine {
                 self.lua_nodes.node_mut(n).f[0] = *k;
                 n
             }
-            Node::MarginKern { side, width, c, font, .. } => {
+            Node::ExKern { width, ex, .. } => {
+                let n = self.lua_new_node(KERN, FONT_KERN);
+                let f = &mut self.lua_nodes.node_mut(n).f;
+                f[0] = *width;
+                f[1] = *ex;
+                n
+            }
+            Node::MarginKern { side, width, c, font, ex, .. } => {
                 let n = self.lua_new_node(MARGIN_KERN, u16::from(*side));
-                let g = self.import_glyph_node(u32::from(*c), *font, ctx, GLYPH_CHARACTER);
+                let g = self.import_glyph_node(*c, *font, ctx, GLYPH_CHARACTER);
+                self.lua_nodes.node_mut(g).f[sl::C_EXPAN] = *ex;
                 let f = &mut self.lua_nodes.node_mut(n).f;
                 f[sl::M_WIDTH] = *width;
                 f[sl::M_GLYPH] = g as i32;
@@ -728,18 +736,19 @@ impl Engine {
                     EXPLICIT_KERN => Node::ExplicitKern(k, crate::boxes::Attr::NONE),
                     ITALIC_KERN => Node::ItalicKern(k, crate::boxes::Attr::NONE),
                     ACCENT_KERN => Node::AccentKern(k, crate::boxes::Attr::NONE),
+                    _ if f[1] != 0 => Node::ExKern { width: k, ex: f[1], attr: crate::boxes::Attr::NONE },
                     _ => Node::Kern(k, crate::boxes::Attr::NONE),
                 });
             }
             MARGIN_KERN => {
                 let g = f[sl::M_GLYPH] as u32;
-                let (c, font) = if self.lua_nodes.valid(g) {
+                let (c, font, ex) = if self.lua_nodes.valid(g) {
                     let gf = self.lua_nodes.node(g).f;
-                    (gf[sl::C_CHAR] as u32, gf[sl::C_FONT] as FontId)
+                    (gf[sl::C_CHAR] as u32, gf[sl::C_FONT] as FontId, gf[sl::C_EXPAN])
                 } else {
-                    (0, 0)
+                    (0, 0, 0)
                 };
-                out.push(Node::MarginKern { side: sub as u8, width: f[sl::M_WIDTH], c: c as u8, font, attr: crate::boxes::Attr::NONE });
+                out.push(Node::MarginKern { side: sub as u8, width: f[sl::M_WIDTH], c, font, ex, attr: crate::boxes::Attr::NONE });
             }
             PENALTY => out.push(Node::Penalty(f[0], crate::boxes::Attr::NONE)),
             RULE => {

@@ -438,8 +438,10 @@ impl Session {
                 "auxiliary files did not converge after {MAX_PASSES} TeX passes\n"
             ));
         }
+        let mut output_override = None;
         if result.status == Status::Success {
             if let Some(mut engine) = final_engine {
+                output_override = engine.pdf_output_file_override().map(std::path::PathBuf::from);
                 if engine.pdf_doc.pages.is_empty() {
                     result.status = Status::CompilationError;
                     result
@@ -458,7 +460,8 @@ impl Session {
         }
         let _ = fs::write(aux_dir.join(format!("{job}.log")), result.log_bytes().as_ref());
         if result.status == Status::Success {
-            let _ = fs::write(output_dir.join(format!("{job}.pdf")), &result.pdf);
+            let target = output_override.unwrap_or_else(|| output_dir.join(format!("{job}.pdf")));
+            let _ = fs::write(target, &result.pdf);
         }
         result.files = memory.outputs();
         result

@@ -579,6 +579,10 @@ impl Engine {
         }
         if lua.pdf_kind() == LuaPdfKind::Legacy {
             match &lua.filename {
+                None if self.lua_res_mode() => {
+                    // pdf_init_font → getfontmap
+                    self.lua_res.pending_map.insert(f);
+                }
                 None => {
                     self.font_loader.apply_map_entry(&mut font, &name);
                 }
@@ -630,6 +634,7 @@ impl Engine {
             return match value {
                 Some(v) => {
                     if let Some(t) = v.as_table() {
+                        self.lua_do_vf_table(&t);
                         match crate::lua_font_lib::font_from_lua(self, f, &t) {
                             Ok(mut parsed) => {
                                 let cache = crate::lua_font_lib::cache_allowed(&t);
@@ -671,7 +676,10 @@ impl Engine {
             };
         }
         let base = String::from_utf8_lossy(name).into_owned();
-        let loaded = if s >= 0 || s == -1000 {
+        let resource_mode = self.lua_res_mode();
+        let loaded = if resource_mode {
+            self.lua_define_tfm(&base, s)
+        } else if s >= 0 || s == -1000 {
             self.font_loader.load_tfm(&base, if s >= 0 { s } else { 0 })
         } else {
             let dsize = self.font_loader.load_tfm(&base, 0).map(|font| font.dsize);
@@ -685,7 +693,7 @@ impl Engine {
         // classic registration (virtual font bases, expansion tables).
         self.lua_delete_font(f);
         let cs = self.cs.intern(format!("FONT{}", self.eqtb.fonts.len()).as_bytes());
-        Some(self.push_engine_font(font, cs))
+        Some(if resource_mode { self.lua_push_tfm_font(font, cs) } else { self.push_engine_font(font, cs) })
     }
 
     /// Remember `t` as the table `font.getfont(f)` returns.
@@ -744,6 +752,9 @@ impl Engine {
     /// The checksum word of a TFM file.
     pub(crate) fn tfm_checksum(&mut self, name: &str) -> Option<u32> {
         let stem = name.strip_suffix(".tfm").unwrap_or(name);
+        if let Some(&checksum) = self.lua_res.checksums.get(stem) {
+            return Some(checksum);
+        }
         let data = self
             .font_loader
             .read_dependency(stem, tex_kpse::Format::Tfm)
@@ -756,6 +767,17 @@ impl Engine {
     /// `\fontdimen` list.
     pub(crate) fn lua_read_tfm(&mut self, name: &[u8], size: i32) -> Option<(LuaFont, Vec<i32>)> {
         let given = String::from_utf8_lossy(name).into_owned();
+        if self.lua_res_mode() {
+            // read_tfm_info: the callbacks, no map and no virtual font
+            let (font, base, _) = self.lua_tfm_parse(&given, size)?;
+            let mut lf = crate::lua_font_lib::lua_font_from_tfm(&font, base.as_bytes());
+            lf.checksum = self.lua_res.checksums.get(&base).copied().unwrap_or(0);
+            let mut params = font.params.clone();
+            if params.len() < 7 {
+                params.resize(7, 0);
+            }
+            return Some((lf, params));
+        }
         let base = {
             let b = given.rsplit('/').next().unwrap_or(&given);
             b.strip_suffix(".tfm").or_else(|| b.strip_suffix(".ofm")).unwrap_or(b).to_string()
@@ -792,6 +814,12 @@ impl Engine {
     /// The bytes of the virtual font `name`.
     pub(crate) fn lua_read_vf_bytes(&mut self, name: &[u8]) -> Option<Vec<u8>> {
         let given = String::from_utf8_lossy(name).into_owned();
+        if let Some(data) = self.lua_res.vf_override.take() {
+            return Some(data);
+        }
+        if self.lua_res_mode() {
+            return self.lua_vf_data(&given);
+        }
         let stem = given.strip_suffix(".vf").unwrap_or(&given).to_string();
         self.font_loader.read_dependency(&stem, tex_kpse::Format::Vf)
     }
@@ -809,10 +837,14 @@ impl Engine {
 
     /// `font.setexpansion`: luatex `set_expand_params`.
     pub(crate) fn lua_set_expansion(&mut self, f: FontId, stretch: i32, shrink: i32, step: i32) {
-        if let Some(lf) = self.lua_font_mut(f) {
-            lf.stretch = stretch;
-            lf.shrink = shrink;
-            lf.step = step;
+        if self.eqtb.fonts.get(usize::from(f)).is_some_and(|font| font.lua.is_some()) {
+            if let Some(lf) = self.lua_font_mut(f) {
+                lf.stretch = stretch;
+                lf.shrink = shrink;
+                lf.step = step;
+            }
+        } else if let Some(x) = self.eqtb.expand.get_mut(usize::from(f)) {
+            (x.lua_stretch, x.lua_shrink, x.lua_step) = (stretch, shrink, step);
         }
     }
 }

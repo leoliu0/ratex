@@ -209,6 +209,8 @@ pub struct Engine {
     /// LuaTeX `callback_set`: per callback `0` (none), `1` (a function is
     /// registered) or `-1` (registered as `false`); see `lua_callbacks`.
     pub(crate) lua_cb: [i8; crate::lua_callbacks::N_CALLBACKS],
+    /// `status.last*` strings and error-callback state
+    pub(crate) lua_msgs: crate::lua_callbacks::LuaMessages,
     /// The luatex group code (index into `lua_callbacks::GROUP_NAMES`) the
     /// paragraph being ended belongs to: what `line_break_context` carries.
     pub(crate) lua_par_group: u8,
@@ -336,6 +338,8 @@ pub struct Engine {
     pub font_loader: crate::fontload::FontLoader,
     /// Lua-defined fonts: free ids, touched/used flags.
     pub lua_fonts: crate::lua_font::LuaFontState,
+    /// State of the file/resource callbacks (`lua_cb_resources.rs`).
+    pub(crate) lua_res: crate::lua_cb_resources::LuaResources,
     pub native_text: crate::native_layout::NativeTextState,
     pub(crate) native_utf8_bytes: [u8; 4],
     pub(crate) native_utf8_len: usize,
@@ -1069,6 +1073,7 @@ impl Engine {
             cur_list: Vec::new(),
             lua_nodes: crate::lua_node::NodeStore::new(),
             lua_cb: [0; crate::lua_callbacks::N_CALLBACKS],
+            lua_msgs: Default::default(),
             lua_par_group: 0,
             text_dirs: vec![(crate::eqtb::LEVEL_ONE, 0)],
             text_dir_saves: Vec::new(),
@@ -1138,6 +1143,7 @@ impl Engine {
             out_file: None,
             font_loader: crate::fontload::FontLoader::new(),
             lua_fonts: Default::default(),
+            lua_res: Default::default(),
             native_text: crate::native_layout::NativeTextState::default(),
             native_utf8_bytes: [0; 4],
             native_utf8_len: 0,

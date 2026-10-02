@@ -123,7 +123,7 @@ pub struct FontLoader {
     pub dependency_tracking_complete: bool,
 }
 
-fn dependency_content_hash(bytes: &[u8]) -> u64 {
+pub(crate) fn dependency_content_hash(bytes: &[u8]) -> u64 {
     let mut h1: u64 = 0xcbf2_9ce4_8422_2325;
     let mut h2: u64 = 0x9e37_79b9_7f4a_7c15;
     for (index, byte) in bytes.iter().enumerate() {
@@ -259,6 +259,13 @@ impl FontLoader {
         }
     }
 
+    /// The Lua file callbacks read the maps from now on: forget the map the
+    /// classic loader may have read and keep it from reading again.
+    pub(crate) fn reset_map_for_callbacks(&mut self) {
+        self.map = crate::fontmap::FontMap::default();
+        self.map_loaded = true;
+    }
+
     /// Record that an explicit map operation took over (e.g. \pdfmapfile
     /// `=`-replace cleared `map`): suppresses the deferred default load.
     pub fn mark_map_loaded(&mut self) {
@@ -363,18 +370,8 @@ impl FontLoader {
             Some(_) => false,
         };
         if !has_pfb {
-            if let Some(vf) = self
-                .read_dependency(resolved_name, tex_kpse::Format::Vf)
-                .and_then(|d| self.parse_vf(&d, font.at_size))
-            {
-                font.map_fontname = None;
-                font.type1_path = None;
-                font.enc_name = None;
-                font.encoding = None;
-                self.vf_fonts
-                    .insert((name.to_string(), font.at_size), vf.clone());
-                self.vf_fonts
-                    .insert((resolved_name.to_string(), font.at_size), vf);
+            if let Some(vf_data) = self.read_dependency(resolved_name, tex_kpse::Format::Vf) {
+                self.adopt_vf(&mut font, name, resolved_name, &vf_data);
             }
         }
         let rc = Rc::new(font);
@@ -1023,7 +1020,7 @@ fn strip_ps_comments(text: &str) -> String {
 
 /// Glyph names from an encoding vector: `/Name [ /glyph1 /glyph2 ... ] def`.
 /// PostScript comments and blank lines are ignored.
-fn parse_enc_names(text: &str) -> Option<Vec<String>> {
+pub(crate) fn parse_enc_names(text: &str) -> Option<Vec<String>> {
     let text = strip_ps_comments(text);
     let start = text.find('[')?;
     let end = start + text[start..].find(']')?;
@@ -1856,8 +1853,8 @@ impl Engine {
             });
             let base_id = if let Some(existing) = existing {
                 existing as u16
-            } else if let Some(font) = self.font_loader.load_tfm(&base.tfm_name, base.at_size) {
-                self.push_engine_font(font, 0)
+            } else if let Some(font) = self.lua_load_tfm_at(&base.tfm_name, base.at_size) {
+                self.lua_push_tfm_font(font, 0)
             } else {
                 u16::MAX
             };
@@ -2153,6 +2150,10 @@ impl Engine {
         self.clear_prefixes();
         self.skip_spaces_relax();
         let f = self.scan_font_id();
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            self.lua_read_expand_font(f);
+            return;
+        }
         if f == 0 {
             self.error("font expansion: invalid font identifier");
             return;

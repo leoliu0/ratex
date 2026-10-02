@@ -15,8 +15,17 @@ pub(crate) mod filetype {
     pub const TEX: i64 = 1;
     pub const MAP: i64 = 2;
     pub const IMAGE: i64 = 3;
-    pub const FONT: i64 = 4;
-    pub const SUBSET: i64 = 5;
+    /// a subsetted font program
+    pub const SUBSET: i64 = 4;
+    /// a font program embedded in full
+    pub const FONT: i64 = 5;
+}
+
+/// What a `read_*_file` callback delivered.
+pub(crate) enum ReadFile {
+    Data(Vec<u8>),
+    NotOpened,
+    Empty,
 }
 
 /// The reader object of an `open_read_file` callback, by number.
@@ -66,49 +75,64 @@ impl Engine {
         Some(rets.and_then(|r| Self::cb_result_string(&r)))
     }
 
-    /// The `read_*_file` callbacks (`"S->bSd"`): the file contents when the
-    /// callback opened the file and delivered data. `None`: no function is
-    /// registered; `Some(None)`: unusable.
-    pub(crate) fn lua_read_file(&mut self, cb: Cb, name: &[u8]) -> Option<Option<Vec<u8>>> {
+    /// The outcome of a `read_*_file` callback (`"S->bSd"`).
+    ///
+    /// `NotOpened`: the callback returned `false` (or a result of the wrong
+    /// type before the flag); `Empty`: it opened the file but delivered no
+    /// data. luatex tells the two apart (`file_opened`, `size > 0`).
+    pub(crate) fn lua_read_file_ex(&mut self, cb: Cb, name: &[u8]) -> Option<ReadFile> {
         if !self.cb_defined(cb) {
             return None;
         }
         let rets = self.lua_cb_call(cb, CALLBACK_NAMES[cb as usize], vec![CbArg::Str(name.to_vec())]);
         let Some(rets) = rets else {
-            return Some(None);
+            return Some(ReadFile::NotOpened);
         };
         let opened = match rets.first() {
             Some(CbRet::Bool(b)) => *b,
             None | Some(CbRet::Nil) => false,
             Some(other) => {
                 eprintln!("callback should return a boolean, not: {}", other.type_name());
-                return Some(None);
+                return Some(ReadFile::NotOpened);
             }
         };
         let data = match rets.get(1) {
             Some(CbRet::Str(s)) => s.clone(),
             other => {
-                let t = other.map_or("no value", CbRet::type_name);
+                let t = other.map_or("nil", CbRet::type_name);
                 eprintln!("callback should return a string, not: {t}");
-                return Some(None);
+                return Some(if opened { ReadFile::Empty } else { ReadFile::NotOpened });
             }
         };
         let size = match rets.get(2) {
             Some(CbRet::Int(n)) => *n,
             Some(CbRet::Num(n)) => *n as i64,
             other => {
-                let t = other.map_or("no value", CbRet::type_name);
+                let t = other.map_or("nil", CbRet::type_name);
                 eprintln!("callback should return a number, not: {t}");
-                return Some(None);
+                return Some(if opened { ReadFile::Empty } else { ReadFile::NotOpened });
             }
         };
-        if !opened || size <= 0 {
-            return Some(None);
+        if !opened {
+            return Some(ReadFile::NotOpened);
+        }
+        if size <= 0 {
+            return Some(ReadFile::Empty);
         }
         let size = usize::try_from(size).unwrap_or(0).min(data.len());
         let mut data = data;
         data.truncate(size);
-        Some(Some(data))
+        Some(ReadFile::Data(data))
+    }
+
+    /// The `read_*_file` callbacks (`"S->bSd"`): the file contents when the
+    /// callback opened the file and delivered data. `None`: no function is
+    /// registered; `Some(None)`: unusable.
+    pub(crate) fn lua_read_file(&mut self, cb: Cb, name: &[u8]) -> Option<Option<Vec<u8>>> {
+        match self.lua_read_file_ex(cb, name)? {
+            ReadFile::Data(data) => Some(Some(data)),
+            ReadFile::NotOpened | ReadFile::Empty => Some(None),
+        }
     }
 
     /// luatex `report_start_file(category, name)`: with a `start_file`

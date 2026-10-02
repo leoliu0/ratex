@@ -45,7 +45,10 @@ impl Engine {
         } else {
             rest
         };
-        if flush_default {
+        let callbacks = self.lua_res_mode();
+        if callbacks {
+            self.lua_res_map_item(flush_default);
+        } else if flush_default {
             self.font_loader.mark_map_loaded();
         } else {
             self.font_loader.ensure_map();
@@ -53,7 +56,13 @@ impl Engine {
         if rest.is_empty() {
             return;
         }
-        let text = if is_file {
+        let text = if is_file && callbacks {
+            // find_map_file/read_map_file; nothing found is not a warning
+            match self.lua_map_text(rest) {
+                Some(text) => text,
+                None => return,
+            }
+        } else if is_file {
             match self.font_loader.read_map_file(rest) {
                 Some(text) => text,
                 None => {
@@ -77,17 +86,28 @@ impl Engine {
             > 0;
         if !suppress {
             for name in &report.duplicates {
+                if callbacks {
+                    self.lua_map_warning(&format!("entry for '{name}' already exists, duplicates ignored"));
+                } else {
+                    self.warning_at(
+                        &format!("fontmap entry for `{name}' already exists, duplicates ignored"),
+                        None,
+                    );
+                }
+            }
+        }
+        for name in &report.in_use {
+            if callbacks {
+                self.lua_map_warning(&format!("entry for '{name}' has been used, replace/delete not allowed"));
+            } else {
                 self.warning_at(
-                    &format!("fontmap entry for `{name}' already exists, duplicates ignored"),
+                    &format!("fontmap entry for `{name}' has been used, replace/delete not allowed"),
                     None,
                 );
             }
         }
-        for name in &report.in_use {
-            self.warning_at(
-                &format!("fontmap entry for `{name}' has been used, replace/delete not allowed"),
-                None,
-            );
+        if is_file && callbacks {
+            self.lua_map_text_done();
         }
     }
 
@@ -105,6 +125,11 @@ impl Engine {
     /// End-of-job: embed every engine font referenced by a shipped page
     /// and rewrite page/form font-binding references to document font indices.
     pub fn embed_used_fonts(&mut self) -> Result<(), String> {
+        // the callbacks give the encodings and font programs (luatex reads
+        // them once `finish_pdffile` has run)
+        if !self.lua_resolve_font_resources() {
+            return Err("a font file callback failed".to_string());
+        }
         // Writing the first PDF object freezes the version (pdfTeX
         // `check_pdfversion`); a shipout normally did that already.
         if self.pdf_fixed.is_none() {
@@ -483,6 +508,7 @@ impl Engine {
                                 t1_preset: Default::default(),
                                 t1_keys: Default::default(),
                                 init_order: 0,
+                                desc_obj: 0,
                                 pdftex: None,
                             };
                             self.pdf_doc.fonts.push(ef);
@@ -627,6 +653,7 @@ impl Engine {
                                 t1_preset: Default::default(),
                                 t1_keys: Default::default(),
                                 init_order: 0,
+                                desc_obj: 0,
                                 pdftex: None,
                             };
                             let document_index = self.pdf_doc.fonts.len();
@@ -643,6 +670,16 @@ impl Engine {
         for (fid, tfm_name) in raw_group_members {
             if let Some(&document_index) = raw_group_index.get(&tfm_name) {
                 remap.insert(crate::pdfout::FontBinding::RAW.resource_key(fid), document_index);
+            }
+        }
+        // font_descriptor_objnum_provider: the object a descriptor is written as
+        if !self.lua_res.descriptor_objnums.is_empty() {
+            let mut bindings: Vec<(usize, usize)> = remap.iter().map(|(&k, &v)| (k, v)).collect();
+            bindings.sort_unstable();
+            for (key, index) in bindings {
+                if let Some(&number) = self.lua_res.descriptor_objnums.get(&(key as u16)) {
+                    self.pdf_doc.fonts[index].desc_obj = number;
+                }
             }
         }
         for fonts in self
@@ -769,6 +806,8 @@ impl Engine {
     /// identification and the pdfTeX banner; its CRC-32 is written as six
     /// base-62 digits, least significant first.
     pub(crate) fn init_pdf_output(&mut self) {
+        // ensure_output_file_open
+        self.lua_open_output();
         if std::mem::replace(&mut self.pdf_backend.output_initialized, true) {
             return;
         }
@@ -865,6 +904,10 @@ impl Engine {
     pub(crate) fn pdf_init_font(&mut self, f: u16) -> u16 {
         if let Some(&ff) = self.pdf_backend.font_ff.get(&f) {
             return ff;
+        }
+        if self.lua_res_mode() {
+            // getfontmap: the callbacks read the map and the font's entry
+            self.lua_res_init_font(f);
         }
         let blink = self
             .eqtb

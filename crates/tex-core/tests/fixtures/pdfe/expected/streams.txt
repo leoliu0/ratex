@@ -1,0 +1,789 @@
+=====	streams.pdf
+open	1	UD[pdfe]
+type	1	string:pdfe
+ts	1	string:<pdfe PTR>
+version	2	i1 | i4
+size	1	i2676
+status	1	i0
+nofobjects	1	i12
+nofpages	1	i1
+memusage	2	string:integer | string:integer
+catalog	1	UD[pdfe.dictionary]
+trailer	1	UD[pdfe.dictionary]
+info	0	
+idx	9	UD[pdfe.dictionary] | UD[pdfe.dictionary] | nil:nil | nil:nil | UD[pdfe.dictionary] | UD[pdfe.dictionary] | {1=UD[pdfe.dictionary]} | {1=UD[pdfe.dictionary]} | nil:nil
+getpages	2	i1 | UD[pdfe.dictionary]
+getpage-1	0	
+getpage0	0	
+getpage1	1	UD[pdfe.dictionary]
+getpage2	0	
+getbox1MediaBox	0	
+getbox1CropBox	0	
+getbox1BleedBox	0	
+getbox1TrimBox	0	
+getbox1ArtBox	0	
+getbox1Foo	0	
+getbox page dict	1	{1=f0,2=f0,3=f10,4=f10}
+getbox nostr	0	
+pagestotable	1	string:{1=UD[pdfe.dictionary],2=i4,3=i3}
+trailer len	1	i2
+trailer fd1	3	string:Size | i3 | i13
+trailer fd2	4	string:Root | i10 | UD[pdfe.reference] | i1
+trailer d2t	1	{Root={1=i10,2=UD[pdfe.reference],3=i1},Size={1=i3,2=i13}}
+trailer d2t flat	1	{Root={1=i10,2=UD[pdfe.reference],3=i1},Size=i13}
+trailer idx[Size]	1	i13
+trailer gs	0	
+trailer gs1	0	
+trailer gs2	0	
+trailer gi	1	i13
+trailer gn	1	f13
+trailer gb	0	
+trailer gname	0	
+trailer gd	0	
+trailer ga	0	
+trailer gst	0	
+trailer idx[Root]	1	UD[pdfe.dictionary]
+trailer gs	0	
+trailer gs1	0	
+trailer gs2	0	
+trailer gi	0	
+trailer gn	0	
+trailer gb	0	
+trailer gname	0	
+trailer gd	1	UD[pdfe.dictionary]
+trailer ga	0	
+trailer gst	0	
+trailer/Root len	1	i2
+trailer/Root fd1	3	string:Type | i5 | string:Catalog
+trailer/Root fd2	4	string:Pages | i10 | UD[pdfe.reference] | i2
+trailer/Root d2t	1	{Pages={1=i10,2=UD[pdfe.reference],3=i2},Type={1=i5,2=string:Catalog}}
+trailer/Root d2t flat	1	{Pages={1=i10,2=UD[pdfe.reference],3=i2},Type=string:Catalog}
+trailer/Root idx[Type]	1	string:Catalog
+trailer/Root gs	0	
+trailer/Root gs1	0	
+trailer/Root gs2	0	
+trailer/Root gi	0	
+trailer/Root gn	0	
+trailer/Root gb	0	
+trailer/Root gname	1	string:Catalog
+trailer/Root gd	0	
+trailer/Root ga	0	
+trailer/Root gst	0	
+trailer/Root idx[Pages]	1	UD[pdfe.dictionary]
+trailer/Root gs	0	
+trailer/Root gs1	0	
+trailer/Root gs2	0	
+trailer/Root gi	0	
+trailer/Root gn	0	
+trailer/Root gb	0	
+trailer/Root gname	0	
+trailer/Root gd	1	UD[pdfe.dictionary]
+trailer/Root ga	0	
+trailer/Root gst	0	
+trailer/Root/Pages len	1	i3
+trailer/Root/Pages fd1	3	string:Type | i5 | string:Pages
+trailer/Root/Pages fd2	4	string:Kids | i7 | UD[pdfe.array] | i1
+trailer/Root/Pages fd3	3	string:Count | i3 | i1
+trailer/Root/Pages d2t	1	{Count={1=i3,2=i1},Kids={1=i7,2=UD[pdfe.array],3=i1},Type={1=i5,2=string:Pages}}
+trailer/Root/Pages d2t flat	1	{Count=i1,Kids={1=i7,2=UD[pdfe.array],3=i1},Type=string:Pages}
+trailer/Root/Pages idx[Type]	1	string:Pages
+trailer/Root/Pages gs	0	
+trailer/Root/Pages gs1	0	
+trailer/Root/Pages gs2	0	
+trailer/Root/Pages gi	0	
+trailer/Root/Pages gn	0	
+trailer/Root/Pages gb	0	
+trailer/Root/Pages gname	1	string:Pages
+trailer/Root/Pages gd	0	
+trailer/Root/Pages ga	0	
+trailer/Root/Pages gst	0	
+trailer/Root/Pages idx[Kids]	1	UD[pdfe.array]
+trailer/Root/Pages gs	0	
+trailer/Root/Pages gs1	0	
+trailer/Root/Pages gs2	0	
+trailer/Root/Pages gi	0	
+trailer/Root/Pages gn	0	
+trailer/Root/Pages gb	0	
+trailer/Root/Pages gname	0	
+trailer/Root/Pages gd	0	
+trailer/Root/Pages ga	1	UD[pdfe.array]
+trailer/Root/Pages gst	0	
+trailer/Root/Pages idx[Count]	1	i1
+trailer/Root/Pages gs	0	
+trailer/Root/Pages gs1	0	
+trailer/Root/Pages gs2	0	
+trailer/Root/Pages gi	1	i1
+trailer/Root/Pages gn	1	f1
+trailer/Root/Pages gb	0	
+trailer/Root/Pages gname	0	
+trailer/Root/Pages gd	0	
+trailer/Root/Pages ga	0	
+trailer/Root/Pages gst	0	
+trailer/Root/Pages idxnum	1	string:Pages
+trailer/Root/Pages idxbad	2	nil:nil | nil:nil
+trailer/Root idxnum	1	string:Catalog
+trailer/Root idxbad	2	nil:nil | nil:nil
+trailer idxnum	1	i13
+trailer idxbad	2	nil:nil | nil:nil
+trailer walk	0	
+catalog len	1	i2
+catalog fd1	3	string:Type | i5 | string:Catalog
+catalog fd2	4	string:Pages | i10 | UD[pdfe.reference] | i2
+catalog d2t	1	{Pages={1=i10,2=UD[pdfe.reference],3=i2},Type={1=i5,2=string:Catalog}}
+catalog d2t flat	1	{Pages={1=i10,2=UD[pdfe.reference],3=i2},Type=string:Catalog}
+catalog idx[Type]	1	string:Catalog
+catalog gs	0	
+catalog gs1	0	
+catalog gs2	0	
+catalog gi	0	
+catalog gn	0	
+catalog gb	0	
+catalog gname	1	string:Catalog
+catalog gd	0	
+catalog ga	0	
+catalog gst	0	
+catalog idx[Pages]	1	UD[pdfe.dictionary]
+catalog gs	0	
+catalog gs1	0	
+catalog gs2	0	
+catalog gi	0	
+catalog gn	0	
+catalog gb	0	
+catalog gname	0	
+catalog gd	1	UD[pdfe.dictionary]
+catalog ga	0	
+catalog gst	0	
+catalog/Pages len	1	i3
+catalog/Pages fd1	3	string:Type | i5 | string:Pages
+catalog/Pages fd2	4	string:Kids | i7 | UD[pdfe.array] | i1
+catalog/Pages fd3	3	string:Count | i3 | i1
+catalog/Pages d2t	1	{Count={1=i3,2=i1},Kids={1=i7,2=UD[pdfe.array],3=i1},Type={1=i5,2=string:Pages}}
+catalog/Pages d2t flat	1	{Count=i1,Kids={1=i7,2=UD[pdfe.array],3=i1},Type=string:Pages}
+catalog/Pages idx[Type]	1	string:Pages
+catalog/Pages gs	0	
+catalog/Pages gs1	0	
+catalog/Pages gs2	0	
+catalog/Pages gi	0	
+catalog/Pages gn	0	
+catalog/Pages gb	0	
+catalog/Pages gname	1	string:Pages
+catalog/Pages gd	0	
+catalog/Pages ga	0	
+catalog/Pages gst	0	
+catalog/Pages idx[Kids]	1	UD[pdfe.array]
+catalog/Pages gs	0	
+catalog/Pages gs1	0	
+catalog/Pages gs2	0	
+catalog/Pages gi	0	
+catalog/Pages gn	0	
+catalog/Pages gb	0	
+catalog/Pages gname	0	
+catalog/Pages gd	0	
+catalog/Pages ga	1	UD[pdfe.array]
+catalog/Pages gst	0	
+catalog/Pages/Kids len	1	i1
+catalog/Pages/Kids a2t	1	{1={1=i10,2=UD[pdfe.reference],3=i3}}
+catalog/Pages/Kids a2t flat	1	{1={1=i10,2=UD[pdfe.reference],3=i3}}
+catalog/Pages/Kids fa0	0	
+catalog/Pages/Kids idx0	1	nil:nil
+catalog/Pages/Kids gs	0	
+catalog/Pages/Kids gs1	0	
+catalog/Pages/Kids gs2	0	
+catalog/Pages/Kids gi	0	
+catalog/Pages/Kids gn	0	
+catalog/Pages/Kids gb	0	
+catalog/Pages/Kids gname	0	
+catalog/Pages/Kids gd	1	UD[pdfe.dictionary]
+catalog/Pages/Kids ga	0	
+catalog/Pages/Kids gst	0	
+catalog/Pages/Kids fa1	3	i10 | UD[pdfe.reference] | i3
+catalog/Pages/Kids idx1	1	UD[pdfe.dictionary]
+catalog/Pages/Kids gs	0	
+catalog/Pages/Kids gs1	0	
+catalog/Pages/Kids gs2	0	
+catalog/Pages/Kids gi	0	
+catalog/Pages/Kids gn	0	
+catalog/Pages/Kids gb	0	
+catalog/Pages/Kids gname	0	
+catalog/Pages/Kids gd	0	
+catalog/Pages/Kids ga	0	
+catalog/Pages/Kids gst	0	
+catalog/Pages/Kids fa2	0	
+catalog/Pages/Kids idx2	1	nil:nil
+catalog/Pages/Kids gs	0	
+catalog/Pages/Kids gs1	0	
+catalog/Pages/Kids gs2	0	
+catalog/Pages/Kids gi	0	
+catalog/Pages/Kids gn	0	
+catalog/Pages/Kids gb	0	
+catalog/Pages/Kids gname	0	
+catalog/Pages/Kids gd	0	
+catalog/Pages/Kids ga	0	
+catalog/Pages/Kids gst	0	
+catalog/Pages idx[Count]	1	i1
+catalog/Pages gs	0	
+catalog/Pages gs1	0	
+catalog/Pages gs2	0	
+catalog/Pages gi	1	i1
+catalog/Pages gn	1	f1
+catalog/Pages gb	0	
+catalog/Pages gname	0	
+catalog/Pages gd	0	
+catalog/Pages ga	0	
+catalog/Pages gst	0	
+catalog/Pages idxnum	1	string:Pages
+catalog/Pages idxbad	2	nil:nil | nil:nil
+catalog idxnum	1	string:Catalog
+catalog idxbad	2	nil:nil | nil:nil
+catalog walk	0	
+info walk	0	
+page1 len	1	i4
+page1 fd1	3	string:Type | i5 | string:Page
+page1 fd2	4	string:Parent | i10 | UD[pdfe.reference] | i2
+page1 fd3	4	string:MediaBox | i7 | UD[pdfe.array] | i4
+page1 fd4	4	string:Contents | i7 | UD[pdfe.array] | i9
+page1 d2t	1	{Contents={1=i7,2=UD[pdfe.array],3=i9},MediaBox={1=i7,2=UD[pdfe.array],3=i4},Parent={1=i10,2=UD[pdfe.reference],3=i2},Type={1=i5,2=string:Page}}
+page1 d2t flat	1	{Contents={1=i7,2=UD[pdfe.array],3=i9},MediaBox={1=i7,2=UD[pdfe.array],3=i4},Parent={1=i10,2=UD[pdfe.reference],3=i2},Type=string:Page}
+page1 idx[Type]	1	string:Page
+page1 gs	0	
+page1 gs1	0	
+page1 gs2	0	
+page1 gi	0	
+page1 gn	0	
+page1 gb	0	
+page1 gname	1	string:Page
+page1 gd	0	
+page1 ga	0	
+page1 gst	0	
+page1 idx[Parent]	1	UD[pdfe.dictionary]
+page1 gs	0	
+page1 gs1	0	
+page1 gs2	0	
+page1 gi	0	
+page1 gn	0	
+page1 gb	0	
+page1 gname	0	
+page1 gd	1	UD[pdfe.dictionary]
+page1 ga	0	
+page1 gst	0	
+page1/Parent len	1	i3
+page1/Parent fd1	3	string:Type | i5 | string:Pages
+page1/Parent fd2	4	string:Kids | i7 | UD[pdfe.array] | i1
+page1/Parent fd3	3	string:Count | i3 | i1
+page1/Parent d2t	1	{Count={1=i3,2=i1},Kids={1=i7,2=UD[pdfe.array],3=i1},Type={1=i5,2=string:Pages}}
+page1/Parent d2t flat	1	{Count=i1,Kids={1=i7,2=UD[pdfe.array],3=i1},Type=string:Pages}
+page1/Parent idx[Type]	1	string:Pages
+page1/Parent gs	0	
+page1/Parent gs1	0	
+page1/Parent gs2	0	
+page1/Parent gi	0	
+page1/Parent gn	0	
+page1/Parent gb	0	
+page1/Parent gname	1	string:Pages
+page1/Parent gd	0	
+page1/Parent ga	0	
+page1/Parent gst	0	
+page1/Parent idx[Kids]	1	UD[pdfe.array]
+page1/Parent gs	0	
+page1/Parent gs1	0	
+page1/Parent gs2	0	
+page1/Parent gi	0	
+page1/Parent gn	0	
+page1/Parent gb	0	
+page1/Parent gname	0	
+page1/Parent gd	0	
+page1/Parent ga	1	UD[pdfe.array]
+page1/Parent gst	0	
+page1/Parent/Kids len	1	i1
+page1/Parent/Kids a2t	1	{1={1=i10,2=UD[pdfe.reference],3=i3}}
+page1/Parent/Kids a2t flat	1	{1={1=i10,2=UD[pdfe.reference],3=i3}}
+page1/Parent/Kids fa0	0	
+page1/Parent/Kids idx0	1	nil:nil
+page1/Parent/Kids gs	0	
+page1/Parent/Kids gs1	0	
+page1/Parent/Kids gs2	0	
+page1/Parent/Kids gi	0	
+page1/Parent/Kids gn	0	
+page1/Parent/Kids gb	0	
+page1/Parent/Kids gname	0	
+page1/Parent/Kids gd	1	UD[pdfe.dictionary]
+page1/Parent/Kids ga	0	
+page1/Parent/Kids gst	0	
+page1/Parent/Kids fa1	3	i10 | UD[pdfe.reference] | i3
+page1/Parent/Kids idx1	1	UD[pdfe.dictionary]
+page1/Parent/Kids gs	0	
+page1/Parent/Kids gs1	0	
+page1/Parent/Kids gs2	0	
+page1/Parent/Kids gi	0	
+page1/Parent/Kids gn	0	
+page1/Parent/Kids gb	0	
+page1/Parent/Kids gname	0	
+page1/Parent/Kids gd	0	
+page1/Parent/Kids ga	0	
+page1/Parent/Kids gst	0	
+page1/Parent/Kids fa2	0	
+page1/Parent/Kids idx2	1	nil:nil
+page1/Parent/Kids gs	0	
+page1/Parent/Kids gs1	0	
+page1/Parent/Kids gs2	0	
+page1/Parent/Kids gi	0	
+page1/Parent/Kids gn	0	
+page1/Parent/Kids gb	0	
+page1/Parent/Kids gname	0	
+page1/Parent/Kids gd	0	
+page1/Parent/Kids ga	0	
+page1/Parent/Kids gst	0	
+page1/Parent idx[Count]	1	i1
+page1/Parent gs	0	
+page1/Parent gs1	0	
+page1/Parent gs2	0	
+page1/Parent gi	1	i1
+page1/Parent gn	1	f1
+page1/Parent gb	0	
+page1/Parent gname	0	
+page1/Parent gd	0	
+page1/Parent ga	0	
+page1/Parent gst	0	
+page1/Parent idxnum	1	string:Pages
+page1/Parent idxbad	2	nil:nil | nil:nil
+page1 idx[MediaBox]	1	UD[pdfe.array]
+page1 gs	0	
+page1 gs1	0	
+page1 gs2	0	
+page1 gi	0	
+page1 gn	0	
+page1 gb	0	
+page1 gname	0	
+page1 gd	0	
+page1 ga	1	UD[pdfe.array]
+page1 gst	0	
+page1/MediaBox len	1	i4
+page1/MediaBox a2t	1	{1={1=i3,2=i0},2={1=i3,2=i0},3={1=i3,2=i10},4={1=i3,2=i10}}
+page1/MediaBox a2t flat	1	{1=i0,2=i0,3=i10,4=i10}
+page1/MediaBox fa0	0	
+page1/MediaBox idx0	1	nil:nil
+page1/MediaBox gs	0	
+page1/MediaBox gs1	0	
+page1/MediaBox gs2	0	
+page1/MediaBox gi	1	i0
+page1/MediaBox gn	1	f0
+page1/MediaBox gb	0	
+page1/MediaBox gname	0	
+page1/MediaBox gd	0	
+page1/MediaBox ga	0	
+page1/MediaBox gst	0	
+page1/MediaBox fa1	2	i3 | i0
+page1/MediaBox idx1	1	i0
+page1/MediaBox gs	0	
+page1/MediaBox gs1	0	
+page1/MediaBox gs2	0	
+page1/MediaBox gi	1	i0
+page1/MediaBox gn	1	f0
+page1/MediaBox gb	0	
+page1/MediaBox gname	0	
+page1/MediaBox gd	0	
+page1/MediaBox ga	0	
+page1/MediaBox gst	0	
+page1/MediaBox fa2	2	i3 | i0
+page1/MediaBox idx2	1	i0
+page1/MediaBox gs	0	
+page1/MediaBox gs1	0	
+page1/MediaBox gs2	0	
+page1/MediaBox gi	1	i10
+page1/MediaBox gn	1	f10
+page1/MediaBox gb	0	
+page1/MediaBox gname	0	
+page1/MediaBox gd	0	
+page1/MediaBox ga	0	
+page1/MediaBox gst	0	
+page1/MediaBox fa3	2	i3 | i10
+page1/MediaBox idx3	1	i10
+page1/MediaBox gs	0	
+page1/MediaBox gs1	0	
+page1/MediaBox gs2	0	
+page1/MediaBox gi	1	i10
+page1/MediaBox gn	1	f10
+page1/MediaBox gb	0	
+page1/MediaBox gname	0	
+page1/MediaBox gd	0	
+page1/MediaBox ga	0	
+page1/MediaBox gst	0	
+page1/MediaBox fa4	2	i3 | i10
+page1/MediaBox idx4	1	i10
+page1/MediaBox gs	0	
+page1/MediaBox gs1	0	
+page1/MediaBox gs2	0	
+page1/MediaBox gi	0	
+page1/MediaBox gn	0	
+page1/MediaBox gb	0	
+page1/MediaBox gname	0	
+page1/MediaBox gd	0	
+page1/MediaBox ga	0	
+page1/MediaBox gst	0	
+page1/MediaBox fa5	0	
+page1/MediaBox idx5	1	nil:nil
+page1/MediaBox gs	0	
+page1/MediaBox gs1	0	
+page1/MediaBox gs2	0	
+page1/MediaBox gi	0	
+page1/MediaBox gn	0	
+page1/MediaBox gb	0	
+page1/MediaBox gname	0	
+page1/MediaBox gd	0	
+page1/MediaBox ga	0	
+page1/MediaBox gst	0	
+page1 idx[Contents]	1	UD[pdfe.array]
+page1 gs	0	
+page1 gs1	0	
+page1 gs2	0	
+page1 gi	0	
+page1 gn	0	
+page1 gb	0	
+page1 gname	0	
+page1 gd	0	
+page1 ga	1	UD[pdfe.array]
+page1 gst	0	
+page1/Contents len	1	i9
+page1/Contents a2t	1	{1={1=i10,2=UD[pdfe.reference],3=i4},2={1=i10,2=UD[pdfe.reference],3=i5},3={1=i10,2=UD[pdfe.reference],3=i6},4={1=i10,2=UD[pdfe.reference],3=i7},5={1=i10,2=UD[pdfe.reference],3=i8},6={1=i10,2=UD[pdfe.reference],3=i9},7={1=i10,2=UD[pdfe.reference],3=i10},8={1=i10,2=UD[pdfe.reference],3=i11},9={1=i10,2=UD[pdfe.reference],3=i12}}
+page1/Contents a2t flat	1	{1={1=i10,2=UD[pdfe.reference],3=i4},2={1=i10,2=UD[pdfe.reference],3=i5},3={1=i10,2=UD[pdfe.reference],3=i6},4={1=i10,2=UD[pdfe.reference],3=i7},5={1=i10,2=UD[pdfe.reference],3=i8},6={1=i10,2=UD[pdfe.reference],3=i9},7={1=i10,2=UD[pdfe.reference],3=i10},8={1=i10,2=UD[pdfe.reference],3=i11},9={1=i10,2=UD[pdfe.reference],3=i12}}
+page1/Contents fa0	0	
+page1/Contents idx0	1	nil:nil
+page1/Contents gs	0	
+page1/Contents gs1	0	
+page1/Contents gs2	0	
+page1/Contents gi	0	
+page1/Contents gn	0	
+page1/Contents gb	0	
+page1/Contents gname	0	
+page1/Contents gd	0	
+page1/Contents ga	0	
+page1/Contents gst	2	UD[pdfe.stream] | UD[pdfe.dictionary]
+page1/Contents fa1	3	i10 | UD[pdfe.reference] | i4
+page1/Contents idx1	1	UD[pdfe.stream]
+page1/Contents gs	0	
+page1/Contents gs1	0	
+page1/Contents gs2	0	
+page1/Contents gi	0	
+page1/Contents gn	0	
+page1/Contents gb	0	
+page1/Contents gname	0	
+page1/Contents gd	0	
+page1/Contents ga	0	
+page1/Contents gst	2	UD[pdfe.stream] | UD[pdfe.dictionary]
+page1/Contents/1 len	1	i1
+page1/Contents/1 fs1	3	string:Length | i3 | i18
+page1/Contents/1 fs name	2	i3 | i18
+page1/Contents/1 rws	2	string:plain stream data
+ | i18
+page1/Contents/1 rws1	2	string:plain stream data
+ | i18
+page1/Contents/1 rws2	2	string:plain stream data
+ | i18
+page1/Contents/1 call	2	string:plain stream data
+ | i18
+page1/Contents/1 call1	2	string:plain stream data
+ | i18
+page1/Contents/1 readfrom(unopened)	0	
+page1/Contents/1 open	1	boolean:true
+page1/Contents/1 read1	2	string:plain stream data
+ | i18
+page1/Contents/1 read2	2	string: | i0
+page1/Contents/1 close	0	
+page1/Contents/1 open dec	1	boolean:true
+page1/Contents/1 readdec	2	string:plain stream data
+ | i18
+page1/Contents/1 close	0	
+page1/Contents/1 read after close	0	
+page1/Contents/1 idx1	1	i18
+page1/Contents/1 idx Length	2	i18 | nil:nil
+page1/Contents fa2	3	i10 | UD[pdfe.reference] | i5
+page1/Contents idx2	1	UD[pdfe.stream]
+page1/Contents gs	0	
+page1/Contents gs1	0	
+page1/Contents gs2	0	
+page1/Contents gi	0	
+page1/Contents gn	0	
+page1/Contents gb	0	
+page1/Contents gname	0	
+page1/Contents gd	0	
+page1/Contents ga	0	
+page1/Contents gst	2	UD[pdfe.stream] | UD[pdfe.dictionary]
+page1/Contents/2 len	1	i2
+page1/Contents/2 fs1	3	string:Length | i3 | i1166
+page1/Contents/2 fs2	3	string:Filter | i5 | string:FlateDecode
+page1/Contents/2 fs name	2	i3 | i1166
+page1/Contents/2 rws	2	string<len=1166,hash=742979496> | i1166
+page1/Contents/2 rws1	2	string<len=460000,hash=807585106> | i460000
+page1/Contents/2 rws2	2	string<len=1166,hash=742979496> | i1166
+page1/Contents/2 call	2	string<len=1166,hash=742979496> | i1166
+page1/Contents/2 call1	2	string<len=460000,hash=807585106> | i460000
+page1/Contents/2 readfrom(unopened)	0	
+page1/Contents/2 open	1	boolean:true
+page1/Contents/2 read1	2	string<len=1166,hash=742979496> | i1166
+page1/Contents/2 read2	2	string: | i0
+page1/Contents/2 close	0	
+page1/Contents/2 open dec	1	boolean:true
+page1/Contents/2 readdec	2	string<len=262144,hash=2144649> | i262144
+page1/Contents/2 close	0	
+page1/Contents/2 read after close	0	
+page1/Contents/2 idx1	1	i1166
+page1/Contents/2 idx2	1	string:FlateDecode
+page1/Contents/2 idx Length	2	i1166 | string:FlateDecode
+page1/Contents fa3	3	i10 | UD[pdfe.reference] | i6
+page1/Contents idx3	1	UD[pdfe.stream]
+page1/Contents gs	0	
+page1/Contents gs1	0	
+page1/Contents gs2	0	
+page1/Contents gi	0	
+page1/Contents gn	0	
+page1/Contents gb	0	
+page1/Contents gname	0	
+page1/Contents gd	0	
+page1/Contents ga	0	
+page1/Contents gst	2	UD[pdfe.stream] | UD[pdfe.dictionary]
+page1/Contents/3 len	1	i2
+page1/Contents/3 fs1	3	string:Length | i3 | i47
+page1/Contents/3 fs2	4	string:Filter | i7 | UD[pdfe.array] | i1
+page1/Contents/3 fs name	2	i3 | i47
+page1/Contents/3 rws	2	string:87cURD]h>E6V0j/2'?s^Eb/Zr+WtW?Eb-A8AU&;>BOu3q~> | i47
+page1/Contents/3 rws1	2	string:Hello ASCII85 stream! more text here | i36
+page1/Contents/3 rws2	2	string:87cURD]h>E6V0j/2'?s^Eb/Zr+WtW?Eb-A8AU&;>BOu3q~> | i47
+page1/Contents/3 call	2	string:87cURD]h>E6V0j/2'?s^Eb/Zr+WtW?Eb-A8AU&;>BOu3q~> | i47
+page1/Contents/3 call1	2	string:Hello ASCII85 stream! more text here | i36
+page1/Contents/3 readfrom(unopened)	0	
+page1/Contents/3 open	1	boolean:true
+page1/Contents/3 read1	2	string:87cURD]h>E6V0j/2'?s^Eb/Zr+WtW?Eb-A8AU&;>BOu3q~> | i47
+page1/Contents/3 read2	2	string: | i0
+page1/Contents/3 close	0	
+page1/Contents/3 open dec	1	boolean:true
+page1/Contents/3 readdec	2	string:Hello ASCII85 stream! more text here | i36
+page1/Contents/3 close	0	
+page1/Contents/3 read after close	0	
+page1/Contents/3 idx1	1	i47
+page1/Contents/3 idx2	1	UD[pdfe.array]
+page1/Contents/3 idx Length	2	i47 | UD[pdfe.array]
+page1/Contents fa4	3	i10 | UD[pdfe.reference] | i7
+page1/Contents idx4	1	UD[pdfe.stream]
+page1/Contents gs	0	
+page1/Contents gs1	0	
+page1/Contents gs2	0	
+page1/Contents gi	0	
+page1/Contents gn	0	
+page1/Contents gb	0	
+page1/Contents gname	0	
+page1/Contents gd	0	
+page1/Contents ga	0	
+page1/Contents gst	2	UD[pdfe.stream] | UD[pdfe.dictionary]
+page1/Contents/4 len	1	i2
+page1/Contents/4 fs1	3	string:Length | i3 | i19
+page1/Contents/4 fs2	3	string:Filter | i5 | string:ASCIIHexDecode
+page1/Contents/4 fs name	2	i3 | i19
+page1/Contents/4 rws	2	string:48656c6c6f20686578> | i19
+page1/Contents/4 rws1	2	string:Hello hex | i9
+page1/Contents/4 rws2	2	string:48656c6c6f20686578> | i19
+page1/Contents/4 call	2	string:48656c6c6f20686578> | i19
+page1/Contents/4 call1	2	string:Hello hex | i9
+page1/Contents/4 readfrom(unopened)	0	
+page1/Contents/4 open	1	boolean:true
+page1/Contents/4 read1	2	string:48656c6c6f20686578> | i19
+page1/Contents/4 read2	2	string: | i0
+page1/Contents/4 close	0	
+page1/Contents/4 open dec	1	boolean:true
+page1/Contents/4 readdec	2	string:Hello hex | i9
+page1/Contents/4 close	0	
+page1/Contents/4 read after close	0	
+page1/Contents/4 idx1	1	i19
+page1/Contents/4 idx2	1	string:ASCIIHexDecode
+page1/Contents/4 idx Length	2	i19 | string:ASCIIHexDecode
+page1/Contents fa5	3	i10 | UD[pdfe.reference] | i8
+page1/Contents idx5	1	UD[pdfe.stream]
+page1/Contents gs	0	
+page1/Contents gs1	0	
+page1/Contents gs2	0	
+page1/Contents gi	0	
+page1/Contents gn	0	
+page1/Contents gb	0	
+page1/Contents gname	0	
+page1/Contents gd	0	
+page1/Contents ga	0	
+page1/Contents gst	2	UD[pdfe.stream] | UD[pdfe.dictionary]
+page1/Contents/5 len	1	i2
+page1/Contents/5 fs1	3	string:Length | i3 | i7
+page1/Contents/5 fs2	3	string:Filter | i5 | string:RunLengthDecode
+page1/Contents/5 fs name	2	i3 | i7
+page1/Contents/5 rws	2	string:abcþx€ | i7
+page1/Contents/5 rws1	2	string:abcxxx | i6
+page1/Contents/5 rws2	2	string:abcþx€ | i7
+page1/Contents/5 call	2	string:abcþx€ | i7
+page1/Contents/5 call1	2	string:abcxxx | i6
+page1/Contents/5 readfrom(unopened)	0	
+page1/Contents/5 open	1	boolean:true
+page1/Contents/5 read1	2	string:abcþx€ | i7
+page1/Contents/5 read2	2	string: | i0
+page1/Contents/5 close	0	
+page1/Contents/5 open dec	1	boolean:true
+page1/Contents/5 readdec	2	string:abcxxx | i6
+page1/Contents/5 close	0	
+page1/Contents/5 read after close	0	
+page1/Contents/5 idx1	1	i7
+page1/Contents/5 idx2	1	string:RunLengthDecode
+page1/Contents/5 idx Length	2	i7 | string:RunLengthDecode
+page1/Contents fa6	3	i10 | UD[pdfe.reference] | i9
+page1/Contents idx6	1	UD[pdfe.stream]
+page1/Contents gs	0	
+page1/Contents gs1	0	
+page1/Contents gs2	0	
+page1/Contents gi	0	
+page1/Contents gn	0	
+page1/Contents gb	0	
+page1/Contents gname	0	
+page1/Contents gd	0	
+page1/Contents ga	0	
+page1/Contents gst	2	UD[pdfe.stream] | UD[pdfe.dictionary]
+page1/Contents/6 len	1	i3
+page1/Contents/6 fs1	3	string:Length | i3 | i59
+page1/Contents/6 fs2	3	string:Filter | i5 | string:FlateDecode
+page1/Contents/6 fs3	4	string:DecodeParms | i8 | UD[pdfe.dictionary] | i3
+page1/Contents/6 fs name	2	i3 | i59
+page1/Contents/6 rws	2	string:xœcb`dbfaecçàäâf“<¼|ü‚BL`RXDTL\B’	LJIËÈÊÉ+0IE%eU5u hÝ | i59
+page1/Contents/6 rws1	2	string: 	
+	!$'*-036*.26:>BFJNRVFKPUZ_dinsx} | i60
+page1/Contents/6 rws2	2	string:xœcb`dbfaecçàäâf“<¼|ü‚BL`RXDTL\B’	LJIËÈÊÉ+0IE%eU5u hÝ | i59
+page1/Contents/6 call	2	string:xœcb`dbfaecçàäâf“<¼|ü‚BL`RXDTL\B’	LJIËÈÊÉ+0IE%eU5u hÝ | i59
+page1/Contents/6 call1	2	string: 	
+	!$'*-036*.26:>BFJNRVFKPUZ_dinsx} | i60
+page1/Contents/6 readfrom(unopened)	0	
+page1/Contents/6 open	1	boolean:true
+page1/Contents/6 read1	2	string:xœcb`dbfaecçàäâf“<¼|ü‚BL`RXDTL\B’	LJIËÈÊÉ+0IE%eU5u hÝ | i59
+page1/Contents/6 read2	2	string: | i0
+page1/Contents/6 close	0	
+page1/Contents/6 open dec	1	boolean:true
+page1/Contents/6 readdec	2	string: 	
+	!$'*-036*.26:>BFJNRVFKPUZ_dinsx} | i60
+page1/Contents/6 close	0	
+page1/Contents/6 read after close	0	
+page1/Contents/6 idx1	1	i59
+page1/Contents/6 idx2	1	string:FlateDecode
+page1/Contents/6 idx3	1	UD[pdfe.dictionary]
+page1/Contents/6 idx Length	2	i59 | string:FlateDecode
+page1/Contents fa7	3	i10 | UD[pdfe.reference] | i10
+page1/Contents idx7	1	UD[pdfe.stream]
+page1/Contents gs	0	
+page1/Contents gs1	0	
+page1/Contents gs2	0	
+page1/Contents gi	0	
+page1/Contents gn	0	
+page1/Contents gb	0	
+page1/Contents gname	0	
+page1/Contents gd	0	
+page1/Contents ga	0	
+page1/Contents gst	2	UD[pdfe.stream] | UD[pdfe.dictionary]
+page1/Contents/7 len	1	i2
+page1/Contents/7 fs1	3	string:Length | i3 | i37
+page1/Contents/7 fs2	4	string:Filter | i7 | UD[pdfe.array] | i2
+page1/Contents/7 fs name	2	i3 | i37
+page1/Contents/7 rws	2	string:789c4bce48cccc5328492d2e0100150403e4> | i37
+page1/Contents/7 rws1	2	string:chain test | i10
+page1/Contents/7 rws2	2	string:789c4bce48cccc5328492d2e0100150403e4> | i37
+page1/Contents/7 call	2	string:789c4bce48cccc5328492d2e0100150403e4> | i37
+page1/Contents/7 call1	2	string:chain test | i10
+page1/Contents/7 readfrom(unopened)	0	
+page1/Contents/7 open	1	boolean:true
+page1/Contents/7 read1	2	string:789c4bce48cccc5328492d2e0100150403e4> | i37
+page1/Contents/7 read2	2	string: | i0
+page1/Contents/7 close	0	
+page1/Contents/7 open dec	1	boolean:true
+page1/Contents/7 readdec	2	string:chain test | i10
+page1/Contents/7 close	0	
+page1/Contents/7 read after close	0	
+page1/Contents/7 idx1	1	i37
+page1/Contents/7 idx2	1	UD[pdfe.array]
+page1/Contents/7 idx Length	2	i37 | UD[pdfe.array]
+page1/Contents fa8	3	i10 | UD[pdfe.reference] | i11
+page1/Contents idx8	1	UD[pdfe.stream]
+page1/Contents gs	0	
+page1/Contents gs1	0	
+page1/Contents gs2	0	
+page1/Contents gi	0	
+page1/Contents gn	0	
+page1/Contents gb	0	
+page1/Contents gname	0	
+page1/Contents gd	0	
+page1/Contents ga	0	
+page1/Contents gst	2	UD[pdfe.stream] | UD[pdfe.dictionary]
+page1/Contents/8 len	1	i2
+page1/Contents/8 fs1	3	string:Length | i3 | i11
+page1/Contents/8 fs2	3	string:Filter | i5 | string:DCTDecode
+page1/Contents/8 fs name	2	i3 | i11
+page1/Contents/8 rws	2	string:ÿØjpegbytes | i11
+page1/Contents/8 rws1	2	string:ÿØjpegbytes | i11
+page1/Contents/8 rws2	2	string:ÿØjpegbytes | i11
+page1/Contents/8 call	2	string:ÿØjpegbytes | i11
+page1/Contents/8 call1	2	string:ÿØjpegbytes | i11
+page1/Contents/8 readfrom(unopened)	0	
+page1/Contents/8 open	1	boolean:true
+page1/Contents/8 read1	2	string:ÿØjpegbytes | i11
+page1/Contents/8 read2	2	string: | i0
+page1/Contents/8 close	0	
+page1/Contents/8 open dec	1	boolean:true
+page1/Contents/8 readdec	2	string:ÿØjpegbytes | i11
+page1/Contents/8 close	0	
+page1/Contents/8 read after close	0	
+page1/Contents/8 idx1	1	i11
+page1/Contents/8 idx2	1	string:DCTDecode
+page1/Contents/8 idx Length	2	i11 | string:DCTDecode
+page1/Contents fa9	3	i10 | UD[pdfe.reference] | i12
+page1/Contents idx9	1	UD[pdfe.stream]
+page1/Contents gs	0	
+page1/Contents gs1	0	
+page1/Contents gs2	0	
+page1/Contents gi	0	
+page1/Contents gn	0	
+page1/Contents gb	0	
+page1/Contents gname	0	
+page1/Contents gd	0	
+page1/Contents ga	0	
+page1/Contents gst	0	
+page1/Contents/9 len	1	i2
+page1/Contents/9 fs1	3	string:Length | i3 | i16
+page1/Contents/9 fs2	4	string:Filter | i7 | UD[pdfe.array] | i2
+page1/Contents/9 fs name	2	i3 | i16
+page1/Contents/9 rws	2	string:xœ+ÉHÍSHI. ê | i16
+page1/Contents/9 rws1	2	string:then dct | i8
+page1/Contents/9 rws2	2	string:xœ+ÉHÍSHI. ê | i16
+page1/Contents/9 call	2	string:xœ+ÉHÍSHI. ê | i16
+page1/Contents/9 call1	2	string:then dct | i8
+page1/Contents/9 readfrom(unopened)	0	
+page1/Contents/9 open	1	boolean:true
+page1/Contents/9 read1	2	string:xœ+ÉHÍSHI. ê | i16
+page1/Contents/9 read2	2	string: | i0
+page1/Contents/9 close	0	
+page1/Contents/9 open dec	1	boolean:true
+page1/Contents/9 readdec	2	string:then dct | i8
+page1/Contents/9 close	0	
+page1/Contents/9 read after close	0	
+page1/Contents/9 idx1	1	i16
+page1/Contents/9 idx2	1	UD[pdfe.array]
+page1/Contents/9 idx Length	2	i16 | UD[pdfe.array]
+page1/Contents fa10	0	
+page1/Contents idx10	1	nil:nil
+page1/Contents gs	0	
+page1/Contents gs1	0	
+page1/Contents gs2	0	
+page1/Contents gi	0	
+page1/Contents gn	0	
+page1/Contents gb	0	
+page1/Contents gname	0	
+page1/Contents gd	0	
+page1/Contents ga	0	
+page1/Contents gst	0	
+page1 idxnum	1	string:Page
+page1 idxbad	2	nil:nil | nil:nil
+page walk	0	
+unencrypt	1	i-1
+unencrypt2	1	i0
+unencrypt3	1	i0
+unencrypt4	1	i0
+getstatus	1	i0
+close	0	
+close2	0	

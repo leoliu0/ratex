@@ -1085,7 +1085,7 @@ impl Engine {
 
     /// Width, height and depth of character `c` of font `f`.
     pub(crate) fn glyph_whd(&self, f: u16, c: u32) -> (i32, i32, i32) {
-        crate::boxes::lua_glyph_whd(&self.eqtb.fonts, i32::from(f), c as i32, 0)
+        crate::boxes::lua_glyph_whd(&self.eqtb.fonts, i32::from(f), c as i32, 0, 0)
     }
 
 
@@ -1121,7 +1121,7 @@ impl Engine {
         (width, height, depth)
     }
 
-    pub fn make_rule(&mut self, horizontal: bool) {
+    pub fn make_rule(&mut self, horizontal: bool, subtype: u8) {
         let (mut width, height, depth) = self.scan_rule_dims(horizontal);
         if horizontal {
             // tex.web: an \hrule with null width keeps a RUNNING width in the
@@ -1133,6 +1133,8 @@ impl Engine {
                 width,
                 height,
                 depth,
+                subtype,
+                index: 0,
             });
             return;
         }
@@ -1143,6 +1145,8 @@ impl Engine {
             width,
             height,
             depth,
+            subtype,
+            index: 0,
         };
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => {
@@ -1701,6 +1705,7 @@ impl Engine {
                     | Prim::LastBox
                     | Prim::HRule
                     | Prim::VRule
+                    | Prim::U(crate::uprim::UPrim::NoHRule | crate::uprim::UPrim::NoVRule)
             ) {
                 return Some(*p);
             }
@@ -1780,25 +1785,21 @@ impl Engine {
                     self.finish_leaders(kind, LeaderBody::Box(Box::new(b)));
                 }
             }
-            Some(Prim::HRule) => {
-                let (w, h, d) = self.scan_rule_dims(true);
+            Some(
+                p @ (Prim::HRule
+                | Prim::VRule
+                | Prim::U(crate::uprim::UPrim::NoHRule | crate::uprim::UPrim::NoVRule)),
+            ) => {
+                let horizontal = matches!(p, Prim::HRule | Prim::U(crate::uprim::UPrim::NoHRule));
+                let empty = matches!(p, Prim::U(_));
+                let (w, h, d) = self.scan_rule_dims(horizontal);
                 self.finish_leaders(
                     kind,
                     LeaderBody::Rule {
                         width: w,
                         height: h,
                         depth: d,
-                    },
-                );
-            }
-            Some(Prim::VRule) => {
-                let (w, h, d) = self.scan_rule_dims(false);
-                self.finish_leaders(
-                    kind,
-                    LeaderBody::Rule {
-                        width: w,
-                        height: h,
-                        depth: d,
+                        subtype: if empty { boxes::RULE_EMPTY } else { boxes::RULE_NORMAL },
                     },
                 );
             }

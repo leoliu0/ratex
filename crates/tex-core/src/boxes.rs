@@ -487,11 +487,22 @@ pub enum WhatIt {
 pub const LEADERS_A: u8 = 0;
 pub const LEADERS_C: u8 = 1;
 pub const LEADERS_X: u8 = 2;
+/// luatex `\gleaders` (`g_leaders`): aligned to the page, not to the box
+pub const LEADERS_G: u8 = 3;
+
+/// luatex rule subtypes (`texnodes.h` `rule_subtypes`)
+pub const RULE_NORMAL: u8 = 0;
+pub const RULE_BOX: u8 = 1;
+pub const RULE_IMAGE: u8 = 2;
+/// `\nohrule`, `\novrule`: takes space, draws nothing
+pub const RULE_EMPTY: u8 = 3;
+pub const RULE_USER: u8 = 4;
 
 /// the repeated object of a leader node: a rule or a packed box
 #[derive(Clone, Debug)]
 pub enum LeaderBody {
-    Rule { width: i32, height: i32, depth: i32 },
+    /// `subtype` is the rule subtype ([`RULE_NORMAL`], [`RULE_EMPTY`])
+    Rule { width: i32, height: i32, depth: i32, subtype: u8 },
     Box(Box<Node>),
 }
 
@@ -502,6 +513,7 @@ pub fn leader_dims(body: &LeaderBody) -> (i32, i32, i32) {
             width,
             height,
             depth,
+            ..
         } => (*width, *height, *depth),
         LeaderBody::Box(b) => match &**b {
             Node::Box { w, h, d, .. } => (*w, *h, *d),
@@ -509,6 +521,7 @@ pub fn leader_dims(body: &LeaderBody) -> (i32, i32, i32) {
                 width,
                 height,
                 depth,
+                ..
             } => (*width, *height, *depth),
             _ => (0, 0, 0),
         },
@@ -749,6 +762,10 @@ pub enum Node {
         width: i32,
         height: i32,
         depth: i32,
+        /// luatex rule subtype ([`RULE_NORMAL`] ...)
+        subtype: u8,
+        /// luatex `rule_index` (math size of a math rule, xform/image object)
+        index: i32,
     },
     Leaders {
         glue: Glue,
@@ -887,10 +904,12 @@ pub type NodeList = Vec<Node>;
 
 /// (width, height, depth) of a glyph of a Lua font as hpack counts them
 /// (texnodes.c `glyph_width`, `glyph_height`, `glyph_depth` with
-/// `\glyphdimensionsmode` 0): the character record's metrics, the height
-/// raised and the depth lowered by the vertical offset `y`. Zero when the
-/// font lacks the character.
-pub fn lua_glyph_whd(fonts: &[std::rc::Rc<crate::tfm::Font>], font: i32, c: i32, y: i32) -> (i32, i32, i32) {
+/// `\glyphdimensionsmode`): the character record's metrics with the height
+/// raised and the depth lowered by the vertical offset `y` as `mode` says
+/// (0: height always, depth only for `y > 0`; 1: both always; 2: height for
+/// `y > 0`, depth for `y < 0`; otherwise neither). Zero when the font lacks
+/// the character.
+pub fn lua_glyph_whd(fonts: &[std::rc::Rc<crate::tfm::Font>], font: i32, c: i32, y: i32, mode: i32) -> (i32, i32, i32) {
     let Some(f) = usize::try_from(font).ok().and_then(|f| fonts.get(f)) else {
         return (0, 0, 0);
     };
@@ -905,12 +924,20 @@ pub fn lua_glyph_whd(fonts: &[std::rc::Rc<crate::tfm::Font>], font: i32, c: i32,
     } else {
         return (0, 0, 0);
     };
-    (w, (h + y).max(0), if y > 0 { d - y } else { d }.max(0))
+    let raise = matches!(mode, 0 | 1) || (mode == 2 && y > 0);
+    let lower = (mode == 0 && y > 0) || mode == 1 || (mode == 2 && y < 0);
+    (w, if raise { h + y } else { h }.max(0), if lower { d - y } else { d }.max(0))
 }
 
 /// [`lua_glyph_whd`] of a glyph node.
 pub fn lua_glyph_dims(eqtb: &crate::eqtb::Eqtb, g: &LuaGlyph) -> (i32, i32, i32) {
-    lua_glyph_whd(&eqtb.fonts, i32::from(g.font), g.c as i32, g.yoffset)
+    lua_glyph_whd(
+        &eqtb.fonts,
+        i32::from(g.font),
+        g.c as i32,
+        g.yoffset,
+        eqtb.int_params[crate::prim::IntParam::GlyphDimensionsMode.idx() as usize],
+    )
 }
 
 /// dimensions of a single node in a horizontal list
@@ -939,6 +966,7 @@ fn single_dims(n: &Node, eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
             width,
             height,
             depth,
+            ..
         } => (*width, *height, *depth),
         Node::Box { w, h, d, shift, .. } => (*w, (*h - *shift).max(0), (*d + *shift).max(0)),
         Node::Mark { .. }
@@ -1038,6 +1066,7 @@ pub fn vlist_dims(list: &[Node], eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
                 height,
                 depth,
                 width,
+                ..
             } => {
                 x += d + *height as i64;
                 d = *depth as i64;
@@ -1226,6 +1255,8 @@ fn finish_glue(
                         // tex.web §666: new_rule keeps running height and
                         // depth, so the marker spans the whole line
                         list.push(Node::Rule {
+                            subtype: RULE_NORMAL,
+                            index: 0,
                             width: rule_w as i32,
                             height: crate::build::RULE_FILL,
                             depth: crate::build::RULE_FILL,

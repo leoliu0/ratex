@@ -439,7 +439,9 @@ impl<'a> BoxDisplay<'a> {
                 width,
                 height,
                 depth,
-            } => self.display_rule(*width, *height, *depth),
+                subtype,
+                ..
+            } => self.display_rule(*width, *height, *depth, *subtype),
             Node::Ins {
                 num,
                 height,
@@ -487,6 +489,7 @@ impl<'a> BoxDisplay<'a> {
                 match *kind {
                     crate::boxes::LEADERS_C => self.out.push(b'c'),
                     crate::boxes::LEADERS_X => self.out.push(b'x'),
+                    crate::boxes::LEADERS_G => self.out.push(b'g'),
                     _ => {}
                 }
                 self.print("leaders ");
@@ -497,11 +500,14 @@ impl<'a> BoxDisplay<'a> {
                         width,
                         height,
                         depth,
+                        subtype,
                     } => {
                         let rule = Node::Rule {
                             width: *width,
                             height: *height,
                             depth: *depth,
+                            subtype: *subtype,
+                            index: 0,
                         };
                         self.node_list_display(std::slice::from_ref(&rule));
                     }
@@ -679,8 +685,15 @@ impl<'a> BoxDisplay<'a> {
         }
     }
 
-    fn display_rule(&mut self, width: i32, height: i32, depth: i32) {
-        self.print_esc("rule(");
+    fn display_rule(&mut self, width: i32, height: i32, depth: i32, subtype: u8) {
+        // texnodes.c `node_list_display`, rule_node
+        self.print_esc(match subtype {
+            crate::boxes::RULE_EMPTY => "norule(",
+            crate::boxes::RULE_USER => "userrule(",
+            crate::boxes::RULE_BOX => "box(",
+            crate::boxes::RULE_IMAGE => "image(",
+            _ => "rule(",
+        });
         self.print_rule_dimen(height);
         self.out.push(b'+');
         self.print_rule_dimen(depth);
@@ -1336,7 +1349,8 @@ impl Engine {
                         -1 => "shipout",
                         0 => "leaders",
                         1 => "cleaders",
-                        _ => "xleaders",
+                        2 => "xleaders",
+                        _ => "gleaders",
                     });
                 }
             }

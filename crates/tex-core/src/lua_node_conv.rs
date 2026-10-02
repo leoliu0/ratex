@@ -402,8 +402,8 @@ impl Engine {
             Node::Leaders { glue, kind, body } => {
                 let n = self.import_glue(glue, A_LEADERS + u16::from(*kind));
                 let leader = match body {
-                    LeaderBody::Rule { width, height, depth } => {
-                        let r = self.lua_new_node(RULE, 0);
+                    LeaderBody::Rule { width, height, depth, subtype } => {
+                        let r = self.lua_new_node(RULE, u16::from(*subtype));
                         let f = &mut self.lua_nodes.node_mut(r).f;
                         f[sl::R_WIDTH] = rule_to_lua(*width);
                         f[sl::R_HEIGHT] = rule_to_lua(*height);
@@ -443,12 +443,13 @@ impl Engine {
                 self.lua_nodes.node_mut(n).f[0] = *p;
                 n
             }
-            Node::Rule { width, height, depth } => {
-                let n = self.lua_new_node(RULE, 0);
+            Node::Rule { width, height, depth, subtype, index } => {
+                let n = self.lua_new_node(RULE, u16::from(*subtype));
                 let f = &mut self.lua_nodes.node_mut(n).f;
                 f[sl::R_WIDTH] = rule_to_lua(*width);
                 f[sl::R_HEIGHT] = rule_to_lua(*height);
                 f[sl::R_DEPTH] = rule_to_lua(*depth);
+                f[sl::R_INDEX] = *index;
                 n
             }
             Node::Disc(dc) => {
@@ -612,6 +613,7 @@ impl Engine {
                                     width: rule_from_lua(lf[sl::R_WIDTH]),
                                     height: rule_from_lua(lf[sl::R_HEIGHT]),
                                     depth: rule_from_lua(lf[sl::R_DEPTH]),
+                                    subtype: self.lua_nodes.subtype(leader) as u8,
                                 })
                             }
                             HLIST | VLIST => {
@@ -632,7 +634,8 @@ impl Engine {
                             let kind = match sub {
                                 A_LEADERS => boxes::LEADERS_A,
                                 C_LEADERS => boxes::LEADERS_C,
-                                _ => boxes::LEADERS_X,
+                                X_LEADERS => boxes::LEADERS_X,
+                                _ => boxes::LEADERS_G,
                             };
                             out.push(Node::Leaders { glue, kind, body });
                         }
@@ -678,6 +681,8 @@ impl Engine {
                         width: rule_from_lua(w),
                         height: rule_from_lua(h),
                         depth: rule_from_lua(d),
+                        subtype: sub as u8,
+                        index: f[sl::R_INDEX],
                     }),
                 }
             }

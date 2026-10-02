@@ -1643,7 +1643,7 @@ impl Engine {
                     // §811: running dimensions of top-level rules extend to
                     // the alignment's boundaries
                     rows.extend(list.into_iter().map(|mut n| {
-                        if let Node::Rule { width, height, depth } = &mut n {
+                        if let Node::Rule { width, height, depth, .. } = &mut n {
                             if valign {
                                 if *height == crate::build::RULE_FILL {
                                     *height = p_size;

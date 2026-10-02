@@ -478,6 +478,29 @@ impl Engine {
         }
     }
 
+    /// `\hrule`, `\vrule` and luatex's `\nohrule`/`\novrule` (`subtype`
+    /// [`RULE_EMPTY`](crate::boxes::RULE_EMPTY)) in main control.
+    pub(crate) fn rule_command(&mut self, id: CsId, horizontal: bool, subtype: u8) {
+        if horizontal {
+            if self.mode == Mode::Horizontal {
+                self.push_token(Token::from_cs(id));
+                self.push_token(Token::from_cs(self.ids.par));
+                return;
+            }
+            if self.mode == Mode::RestrictedHorizontal {
+                // tex.web head_for_vmode: only leaders may hold a rule in
+                // restricted horizontal mode
+                self.error("You can't use `\\hrule' here except with leaders");
+                return;
+            }
+        } else if self.mode.is_v() {
+            self.push_token(Token::from_cs(id));
+            self.start_paragraph(true);
+            return;
+        }
+        self.make_rule(horizontal, subtype);
+    }
+
     /// LuaTeX-only primitives that main control executes (neither
     /// assignments nor expandable).
     pub(crate) fn uprim_command(&mut self, u: UPrim, id: CsId) {
@@ -573,13 +596,10 @@ impl Engine {
             }
             UPrim::AutomaticDiscretionary => self.main_dispatch(Prim::HyphenDisc, id),
             UPrim::EndLocalControl => self.end_local_control(),
-            UPrim::GLeaders
-            | UPrim::LeftGhost
-            | UPrim::RightGhost
-            | UPrim::LocalLeftBox
-            | UPrim::LocalRightBox
-            | UPrim::NoHRule
-            | UPrim::NoVRule => {
+            UPrim::GLeaders => self.begin_leaders(crate::boxes::LEADERS_G),
+            UPrim::NoHRule => self.rule_command(id, true, crate::boxes::RULE_EMPTY),
+            UPrim::NoVRule => self.rule_command(id, false, crate::boxes::RULE_EMPTY),
+            UPrim::LeftGhost | UPrim::RightGhost | UPrim::LocalLeftBox | UPrim::LocalRightBox => {
                 let name = String::from_utf8_lossy(self.cs.name(id)).into_owned();
                 self.error(&format!("\\{name} is not supported: the engine's node model has no counterpart (see the LuaTeX-only primitive notes)"));
             }

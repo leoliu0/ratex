@@ -1,6 +1,6 @@
 # Maintainer: Leo Liu <leoliu0@users.noreply.github.com>
 pkgname=ratex-bin
-pkgver=0.4.6
+pkgver=0.4.7
 pkgrel=1
 pkgdesc="Ultra-fast, pure-Rust TeX engine and complete self-contained typesetting suite"
 arch=('x86_64')
@@ -24,7 +24,7 @@ provides=('ratex')
 conflicts=('ratex')
 options=('!strip' '!debug')
 source_x86_64=("${pkgname}-${pkgver}.tar.gz::https://github.com/leoliu0/ratex/releases/download/v${pkgver}/tex-suite-v${pkgver}-linux-x86_64.tar.gz")
-sha256sums_x86_64=('fa445cb0cce9f5d21f0cef384c4416a592672ad0b0ca6fd8da40c138e97dd438')
+sha256sums_x86_64=('91cd0b06bd8e1ec5e80e63d244a93b62f87a47445d4c7732d6af30493439e03d')
 
 package() {
     cd "$srcdir/tex-suite-linux-x86_64"

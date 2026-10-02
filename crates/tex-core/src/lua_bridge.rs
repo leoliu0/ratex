@@ -164,7 +164,7 @@ impl Engine {
             return;
         }
         if let Err(err) = self.lua_run_with_output(|lua| lua.call_function_slot(slot)) {
-            self.error(&format!("LuaTeX error {err}"));
+            self.lua_error("LuaTeX error ", &err);
         }
     }
 
@@ -176,7 +176,7 @@ impl Engine {
             return;
         };
         if let Err(err) = self.lua_run_with_output(|lua| lua.call_bytecode(slot, &bytes)) {
-            self.error(&format!("LuaTeX error {err}"));
+            self.lua_error("LuaTeX error ", &err);
         }
     }
 
@@ -187,7 +187,7 @@ impl Engine {
             return;
         }
         if let Err(err) = self.lua_run_with_output(|lua| lua.call_callback(name, None).map(drop)) {
-            self.error(&format!("LuaTeX error {err}"));
+            self.lua_error("LuaTeX error ", &err);
         }
     }
 

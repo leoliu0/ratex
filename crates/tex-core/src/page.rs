@@ -1435,6 +1435,13 @@ impl Engine {
         // (its under/overfull reports are suppressed: vbadness := inf_bad).
         let exact = (pack_goal < 0x3FFF_FFFF)
             .then_some(pack_goal.clamp(i32::MIN as i64, i32::MAX as i64) as i32);
+        // luatex fire_up: `filtered_vpackage(..., output_group)` hands the
+        // page to `pre_output_filter` first
+        let page_mat = if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            self.lua_vpack_filter(crate::lua_callbacks::GROUP_OUTPUT, exact.unwrap_or(0), exact.is_some(), md, page_mat)
+        } else {
+            page_mat
+        };
         let r = crate::boxes::vpack_add_md(page_mat, exact, false, VBOX, &self.eqtb, md);
         self.last_badness = r.badness;
         self.eqtb.set_box_untraced(out_box as u16, Some(r.node));
@@ -1665,6 +1672,7 @@ impl Engine {
         self.pdf_doc.push_page(page);
         if lua {
             self.lua_finish_pdfpage(true);
+            self.lua_page_order_index(self.pdf_doc.pages.len());
             self.lua_page_number_callback(crate::lua_callbacks::Cb::StopPageNumber);
         }
     }

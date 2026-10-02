@@ -209,6 +209,8 @@ pub struct Engine {
     /// LuaTeX `callback_set`: per callback `0` (none), `1` (a function is
     /// registered) or `-1` (registered as `false`); see `lua_callbacks`.
     pub(crate) lua_cb: [i8; crate::lua_callbacks::N_CALLBACKS],
+    /// `status.last*` strings and error-callback state
+    pub(crate) lua_msgs: crate::lua_callbacks::LuaMessages,
     /// The luatex group code (index into `lua_callbacks::GROUP_NAMES`) the
     /// paragraph being ended belongs to: what `line_break_context` carries.
     pub(crate) lua_par_group: u8,
@@ -1059,6 +1061,7 @@ impl Engine {
             cur_list: Vec::new(),
             lua_nodes: crate::lua_node::NodeStore::new(),
             lua_cb: [0; crate::lua_callbacks::N_CALLBACKS],
+            lua_msgs: Default::default(),
             lua_par_group: 0,
             lua_par_lines: Default::default(),
             prev_depth: -1000 * 65536,

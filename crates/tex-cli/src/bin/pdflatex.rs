@@ -2148,6 +2148,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     let mut progname: Option<String> = None;
     let mut cnf_lines: Vec<String> = Vec::new();
     let mut kpathsea_debug = 0u32;
+    let mut lua_init_file: Option<String> = None;
     let mut i = 1;
     while i < args.len() {
         // Like web2c's getopt_long_only, every long option may be spelled
@@ -2201,6 +2202,12 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
                 usage_error(&program, "--cache-directory requires a non-empty directory");
             }
             requested_cache_dir = Some(std::path::PathBuf::from(dir));
+        } else if let Some(path) = opt.strip_prefix("-lua=") {
+            // LuaTeX: run this Lua initialization script before the job.
+            if path.is_empty() {
+                usage_error(&program, "-lua requires a file name");
+            }
+            lua_init_file = Some(path.to_string());
         } else if opt == "-jobname" || opt.starts_with("-jobname=") {
             let name = match opt.strip_prefix("-jobname=") {
                 Some(name) => name,
@@ -2772,7 +2779,17 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
         ),
     };
     eng.log.push_str(&engine_banner);
-    if interaction_mode != InteractionMode::Batch {
+    let mut banner_replaced = false;
+    if program == "lualatex" {
+        if let Some(path) = &lua_init_file {
+            if let Err(error) = eng.run_lua_init_file(path) {
+                eprintln!("{program}: {error}");
+                std::process::exit(1);
+            }
+        }
+        banner_replaced = eng.lua_start_run();
+    }
+    if interaction_mode != InteractionMode::Batch && !banner_replaced {
         eng.term.push_str(&engine_banner);
     }
     phase_timer.mark("format");

@@ -119,6 +119,9 @@ pub struct PdfDoc {
     compression_worker: Option<crate::pdfcompress::Worker>,
     page_compression: Vec<Option<crate::pdfcompress::Pending>>,
     pub pages: Vec<PdfPage>,
+    /// LuaTeX `page_order_index` location per page (pages missing here sort
+    /// at 0): the `/Kids` of the page tree are ordered by it.
+    pub page_order: Vec<i32>,
     /// raw user objects from \pdfobj
     pub objects: Vec<(i32, Vec<u8>)>,
     /// Reserved font dictionaries for forms, with the same font-index
@@ -418,6 +421,7 @@ impl PdfDoc {
             compression_worker: None,
             page_compression: Vec::new(),
             pages: Vec::new(),
+            page_order: Vec::new(),
             objects: Vec::new(),
             form_fonts: Vec::new(),
             imported_base14_fonts: std::collections::BTreeMap::new(),

@@ -2058,9 +2058,14 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
     }
 
     // ---- emit the page tree node
-    let kids: Vec<String> = page_objs
+    // LuaTeX `page_order_index`: pages sort by their location, stably
+    let mut kid_order: Vec<usize> = (0..page_objs.len()).collect();
+    if doc.page_order.iter().any(|&location| location != 0) {
+        kid_order.sort_by_key(|&i| doc.page_order.get(i).copied().unwrap_or(0));
+    }
+    let kids: Vec<String> = kid_order
         .iter()
-        .map(|(_, p, _)| format!("{} 0 R", p))
+        .map(|&i| format!("{} 0 R", page_objs[i].1))
         .collect();
     let pages_attr = String::from_utf8_lossy(&doc.pages_attr);
     b.set(

@@ -1634,7 +1634,7 @@ impl Engine {
                 let toks = self.scan_general_text_expanded();
                 let code = self.tokens_to_string(&toks);
                 if let Err(err) = self.execute_directlua(code.as_bytes()) {
-                    self.error(&format!("LuaTeX error: {err}"));
+                    self.lua_error("LuaTeX error: ", &err);
                 }
                 None
             }

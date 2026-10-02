@@ -69,6 +69,20 @@ pub struct Cell {
     pub packed: Option<Node>,
     /// grid columns covered beyond the first (preamble + row \span)
     pub span: u16,
+    /// LuaTeX's `append_to_vlist_filter` decision for the row, kept on the
+    /// row's first cell
+    pub ctl: RowCtl,
+}
+
+/// What `append_to_vlist_filter` decided for a finished row (see
+/// `lua_align.rs`): `handled` means the callback ran, so TeX adds no
+/// interline glue; `keep` whether the row joins the list; `depth` the
+/// `prev_depth` the callback asked for.
+#[derive(Clone, Copy, Default)]
+pub struct RowCtl {
+    pub handled: bool,
+    pub keep: bool,
+    pub depth: Option<i32>,
 }
 
 /// span sentinel marking a one-cell row holding a \noalign box
@@ -1262,6 +1276,7 @@ impl Engine {
         self.align_cur_row[col] = Cell {
             packed: Some(packed),
             span,
+            ctl: RowCtl::default(),
         };
         self.align_state = PH_IDLE;
         self.align_brace_depth = 1_000_000;
@@ -1318,6 +1333,7 @@ impl Engine {
             self.align_rows.push(vec![Cell {
                 packed: Some(node),
                 span: NOALIGN_SPAN,
+                ctl: RowCtl::default(),
             }]);
             self.align_row_adjust
                 .push(std::mem::take(&mut self.align_adjust));
@@ -1331,10 +1347,40 @@ impl Engine {
         self.align_row_inspect();
     }
 
+    /// The tabskip glue that precedes the first column.
+    pub(crate) fn align_col_tabskip_start(&self) -> Glue {
+        self.align_t0.param(crate::boxes::glue_subtype::TAB_SKIP)
+    }
+
+    /// The tabskip glue following grid column `col` (tex.web
+    /// `new_param_glue(tab_skip_code)`; the preamble's loop supplies the
+    /// glue for columns beyond it).
+    pub(crate) fn align_col_tabskip(&self, col: usize) -> Glue {
+        let t0 = self.align_col_tabskip_start();
+        let pre = &self.align_preamble;
+        if pre.is_empty() {
+            return t0;
+        }
+        let g = if col < pre.len() {
+            pre[col].tabskip
+        } else {
+            match self.align_loop_start {
+                Some(ls) if pre.len() > ls => pre[ls + (col - ls) % (pre.len() - ls)].tabskip,
+                _ => return t0,
+            }
+        };
+        g.param(crate::boxes::glue_subtype::TAB_SKIP)
+    }
+
     /// pack up the finished row and inspect what follows it
     fn align_finish_row(&mut self) {
-        let row = std::mem::take(&mut self.align_cur_row);
+        let mut row = std::mem::take(&mut self.align_cur_row);
         if !row.is_empty() {
+            // luatex fin_row: the text passes, `hpack_filter` and
+            // `append_to_vlist_filter` see the finished unset row
+            if !self.align_is_valign {
+                row[0].ctl = self.lua_fin_row(&row);
+            }
             // tex.web fin_row: after the row's unset box joins the
             // alignment vlist, the collected adjustment material is spliced
             // in raw right behind it (init_row later rewinds cur_tail to
@@ -1458,25 +1504,7 @@ impl Engine {
         let ncols = self.align_preamble.len().max(max_row_cols);
         let t0 = self.align_t0.param(crate::boxes::glue_subtype::TAB_SKIP);
         // tabskip glue following each column (tex.web new_param_glue(tab_skip_code))
-        let mut tabs: Vec<Glue> = (0..ncols)
-            .map(|col| {
-                let pre = &self.align_preamble;
-                if pre.is_empty() {
-                    return t0;
-                }
-                let g = if col < pre.len() {
-                    pre[col].tabskip
-                } else {
-                    match self.align_loop_start {
-                        Some(ls) if pre.len() > ls => {
-                            pre[ls + (col - ls) % (pre.len() - ls)].tabskip
-                        }
-                        _ => return t0,
-                    }
-                };
-                g.param(crate::boxes::glue_subtype::TAB_SKIP)
-            })
-            .collect();
+        let mut tabs: Vec<Glue> = (0..ncols).map(|col| self.align_col_tabskip(col)).collect();
         let size = |n: &Node| match n {
             Node::Box { w, h, .. } => {
                 if valign {
@@ -1632,6 +1660,10 @@ impl Engine {
         } else {
             None
         };
+        // luatex: with `append_to_vlist_filter` registered the callback, not
+        // `append_to_vlist`, decides about glue and `prev_depth`
+        let any_handled = rows_in.iter().any(|r| r.first().is_some_and(|c| c.ctl.handled));
+        let mut cb_depth: Option<i32> = None;
         for (row, adj) in rows_in.into_iter().zip(row_adj) {
             if row.len() == 1 && row[0].span == NOALIGN_SPAN {
                 if let Some(Node::Box { list, shift: end_pd, .. }) =
@@ -1639,6 +1671,9 @@ impl Engine {
                 {
                     if !valign {
                         prev = (end_pd > self.ignore_depth()).then_some(end_pd);
+                        if any_handled {
+                            cb_depth = Some(end_pd);
+                        }
                     }
                     // §811: running dimensions of top-level rules extend to
                     // the alignment's boundaries
@@ -1669,6 +1704,7 @@ impl Engine {
                 }
                 continue;
             }
+            let ctl = row.first().map_or_else(RowCtl::default, |c| c.ctl);
             // the unset row's other dimensions: fin_row's natural pack
             let (row_a, row_b) = row.iter().fold((0, 0), |(a, b), c| match &c.packed {
                 Some(Node::Box { w, h, d, .. }) => {
@@ -1718,7 +1754,11 @@ impl Engine {
             // the vertical list in front of the row (and its interline glue)
             let (pre_adj, adj) = split_pre_adjust(adj);
             rows.extend(pre_adj);
-            if !valign {
+            if ctl.handled {
+                if ctl.depth.is_some() {
+                    cb_depth = ctl.depth;
+                }
+            } else if !valign {
                 // tex.web append_to_vlist at fin_row time
                 if let Some(pd) = prev {
                     let gap = bs.width as i64 - pd as i64 - row_a as i64;
@@ -1734,7 +1774,9 @@ impl Engine {
                 }
                 prev = Some(row_b);
             }
-            rows.push(row_box);
+            if !ctl.handled || ctl.keep {
+                rows.push(row_box);
+            }
             // tex.web fin_row §15724-5: the row's migrated \vadjust
             // material follows the row box raw (no interline glue before
             // it; prev_depth keeps the row box's depth).
@@ -1783,7 +1825,11 @@ impl Engine {
             Mode::Vertical => {
                 // tex.web fin_align: the rows join the contribution list
                 // individually and the page builder runs
-                if let Some(d) = prev {
+                if any_handled {
+                    if let Some(d) = cb_depth {
+                        self.prev_depth = d;
+                    }
+                } else if let Some(d) = prev {
                     self.prev_depth = d;
                 } else if !rows.is_empty() {
                     self.prev_depth = self.ignore_depth();
@@ -1793,7 +1839,11 @@ impl Engine {
                 self.build_page();
             }
             Mode::InternalVertical => {
-                if let Some(d) = prev {
+                if any_handled {
+                    if let Some(d) = cb_depth {
+                        self.prev_depth = d;
+                    }
+                } else if let Some(d) = prev {
                     self.prev_depth = d;
                 } else if !rows.is_empty() {
                     self.prev_depth = self.ignore_depth();
@@ -1806,7 +1856,7 @@ impl Engine {
                 // outer vlist's prev_depth) plus \noalign material join the
                 // display vlist raw. prev_depth := the align level's final
                 // prev_depth (last row's depth), tracked by `prev`.
-                let final_pd = prev.unwrap_or(self.prev_depth);
+                let final_pd = if any_handled { cb_depth } else { prev }.unwrap_or(self.prev_depth);
                 self.prev_depth = final_pd;
                 self.display_halign = Some((rows, final_pd));
             }

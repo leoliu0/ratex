@@ -79,6 +79,11 @@ fn diagnostic_message(severity: crate::diagnostics::DiagnosticSeverity) -> Field
     .unwrap_or(Field::Nil)
 }
 
+/// A message string the callbacks of `Engine::error` / `lua_warning` left.
+fn message_field(pick: fn(&crate::lua_callbacks::LuaMessages) -> &Option<String>) -> Option<Field> {
+    with_engine(|e| pick(&e.lua_msgs).clone()).ok().flatten().map(Field::Str)
+}
+
 fn field(name: &str) -> Option<Field> {
     use crate::diagnostics::DiagnosticSeverity::{Error, Warning};
     let engine = |f: fn(&mut crate::engine::Engine) -> i64| Field::Int(with_engine(|e| f(e)).unwrap_or(0));
@@ -88,9 +93,11 @@ fn field(name: &str) -> Option<Field> {
         "filename" => Field::Str(with_engine(|e| e.input.current_file_name()).unwrap_or_default()),
         "inputid" => engine(|e| e.input.stack.len() as i64),
         "linenumber" => engine(|e| i64::from(e.input.current_file_line())),
-        "lasterrorstring" => diagnostic_message(Error),
-        "lastluaerrorstring" | "lastwarningtag" | "lasterrorcontext" => Field::Nil,
-        "lastwarningstring" => diagnostic_message(Warning),
+        "lasterrorstring" => message_field(|m| &m.last_error).unwrap_or_else(|| diagnostic_message(Error)),
+        "lastluaerrorstring" => message_field(|m| &m.last_lua_error).unwrap_or(Field::Nil),
+        "lastwarningtag" => message_field(|m| &m.last_warning_tag).unwrap_or(Field::Nil),
+        "lasterrorcontext" => message_field(|m| &m.last_error_context).unwrap_or(Field::Nil),
+        "lastwarningstring" => message_field(|m| &m.last_warning).unwrap_or_else(|| diagnostic_message(Warning)),
         "pdf_gone" | "pdf_ptr" | "dvi_gone" | "dvi_ptr" | "total_pages" | "obj_ptr" | "obj_tab_size" | "pdf_os_cntr"
         | "pdf_os_objidx" | "pdf_dest_names_ptr" | "dest_names_size" | "pdf_mem_ptr" | "pdf_mem_size" => Field::Int(0),
         "output_file_name" => Field::Nil,
@@ -170,7 +177,11 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
         }
     });
     sys_reg!(lua, s, "status_resetmessages", || {
-        let at = with_engine(|e| e.diagnostics.len()).unwrap_or(0);
+        let at = with_engine(|e| {
+            e.lua_msgs = Default::default();
+            e.diagnostics.len()
+        })
+        .unwrap_or(0);
         RESET_AT.with(|r| r.set(at));
     });
     sys_reg!(lua, s, "status_setexitcode", |code: i64| {

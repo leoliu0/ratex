@@ -2791,7 +2791,7 @@ mod plural_penalty_tests {
         let rule = || Node::Rule {
             width: 65_536,
             height: 0,
-            depth: 0, attr: crate::boxes::Attr::NONE,
+            depth: 0, subtype: crate::boxes::RULE_NORMAL, index: 0, attr: crate::boxes::Attr::NONE,
         };
         let list = vec![
             rule(),
@@ -2826,7 +2826,7 @@ mod plural_penalty_tests {
         let rule = || Node::Rule {
             width: 65_536,
             height: 0,
-            depth: 0, attr: crate::boxes::Attr::NONE,
+            depth: 0, subtype: crate::boxes::RULE_NORMAL, index: 0, attr: crate::boxes::Attr::NONE,
         };
         let list = vec![
             rule(),

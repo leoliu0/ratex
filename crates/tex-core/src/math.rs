@@ -2129,7 +2129,7 @@ impl Engine {
         let rule = Node::Rule {
             width: w,
             height: rt,
-            depth: 0, attr: self.eqtb.cur_attr,
+            depth: 0, subtype: crate::boxes::RULE_NORMAL, index: 0, attr: self.eqtb.cur_attr,
         };
         let mut vlist = Vec::new();
         if under {
@@ -3991,7 +3991,7 @@ impl Engine {
                 Node::Rule {
                     width: w,
                     height: r,
-                    depth: 0, attr: self.eqtb.cur_attr,
+                    depth: 0, subtype: crate::boxes::RULE_NORMAL, index: 0, attr: self.eqtb.cur_attr,
                 },
                 Node::Kern((axis - dr) - (dh - sd), self.eqtb.cur_attr),
                 den_c,
@@ -4069,7 +4069,7 @@ impl Engine {
             Node::Rule {
                 width: xw,
                 height: dh,
-                depth: 0, attr: self.eqtb.cur_attr,
+                depth: 0, subtype: crate::boxes::RULE_NORMAL, index: 0, attr: self.eqtb.cur_attr,
             },
             Node::Kern(clr, self.eqtb.cur_attr),
             x,
@@ -5470,7 +5470,7 @@ mod tests {
                 Node::Rule {
                     width: su(1.0),
                     height: su(0.4),
-                    depth: 0, attr: crate::boxes::Attr::NONE,
+                    depth: 0, subtype: crate::boxes::RULE_NORMAL, index: 0, attr: crate::boxes::Attr::NONE,
                 },
                 Node::Kern(su(0.5), crate::boxes::Attr::NONE),
                 Node::Char { c: b'A', font: cmr, attr: crate::boxes::Attr::NONE },
@@ -5547,12 +5547,13 @@ mod tests {
                 Node::Rule {
                     width: su(1.0),
                     height: 0,
-                    depth: 0, attr: crate::boxes::Attr::NONE,
+                    depth: 0, subtype: crate::boxes::RULE_NORMAL, index: 0, attr: crate::boxes::Attr::NONE,
                 },
                 Node::Leaders {
                     glue: Glue::spec(su(2.0), su(1.0), 2, 0, 0),
                     kind: 0,
                     body: crate::boxes::LeaderBody::Rule {
+                        subtype: crate::boxes::RULE_NORMAL,
                         width: su(2.0),
                         height: 0,
                         depth: 0,
@@ -5572,12 +5573,13 @@ mod tests {
                 Node::Rule {
                     width: su(1.0),
                     height: 0,
-                    depth: 0, attr: crate::boxes::Attr::NONE,
+                    depth: 0, subtype: crate::boxes::RULE_NORMAL, index: 0, attr: crate::boxes::Attr::NONE,
                 },
                 Node::Leaders {
                     glue: Glue::spec(su(2.0), su(1.0), 2, 0, 0),
                     kind: 0,
                     body: crate::boxes::LeaderBody::Rule {
+                        subtype: crate::boxes::RULE_NORMAL,
                         width: su(2.0),
                         height: 0,
                         depth: 0,

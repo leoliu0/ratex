@@ -2410,7 +2410,9 @@ impl Engine {
             Node::Rule {
                 width,
                 height,
-                depth, .. } => out.push_str(&format!(
+                depth,
+                ..
+            } => out.push_str(&format!(
                 "rule({}+{}x{})\n",
                 self.scaled_to_string(*width),
                 self.scaled_to_string(*height),

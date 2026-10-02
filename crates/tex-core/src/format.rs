@@ -2119,7 +2119,7 @@ mod tests {
             Some(crate::boxes::Node::Rule {
                 width: 10,
                 height: 2,
-                depth: 1, attr: crate::boxes::Attr::NONE,
+                depth: 1, subtype: crate::boxes::RULE_NORMAL, index: 0, attr: crate::boxes::Attr::NONE,
             }),
             true,
         );

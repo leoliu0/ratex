@@ -213,7 +213,7 @@ impl Engine {
                     self.push_token(Token::from_cs(id));
                     self.start_paragraph(true);
                 } else if p == HyphenDisc {
-                    self.append_hyphen_discretionary();
+                    self.append_hyphen_discretionary(false);
                 } else {
                     self.do_discretionary();
                 }

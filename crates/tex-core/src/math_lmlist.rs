@@ -274,7 +274,7 @@ impl Engine {
             }
         }
         let mut noad = match nucleus {
-            [] => Noad::new(CL_ORD, Nuc::None),
+            [] => Noad::new(CL_ORD, Nuc::Mlist(Vec::new())),
             [Node::MathChar { fam: 255, c, class, .. }, rest @ ..] => {
                 let mut n = Noad::new(*class, Nuc::Mlist(rest.to_vec()));
                 if *class == CL_OP {

@@ -354,17 +354,38 @@ fn is_lr_close(n: &Node) -> bool {
     }
 }
 
+
+/// tex.web `scripts_allowed(#)`: the mlist node is a noad scripts can attach to
+/// (everything but style, choice, glue, kern, penalty, rule, whatsit... nodes).
+fn scripts_allowed(n: &Node) -> bool {
+    matches!(
+        n,
+        Node::MathChar { .. }
+            | Node::DelimBox { .. }
+            | Node::Frac { .. }
+            | Node::Radical { .. }
+            | Node::Accent { .. }
+            | Node::Overline { .. }
+            | Node::VCenter { .. }
+            | Node::Box { .. }
+            | Node::Scripts { .. }
+            | Node::OpLimits { .. }
+            | Node::Choice
+            | Node::ChoiceAlt { .. }
+    )
+}
+
+/// `None` when the list holds no choice.
+pub(crate) fn splice_choices_pub(list: &[Node], start: GStyle) -> Option<NodeList> {
+    splice_choices(list, start)
+}
+
 /// tex.web §731: each `\mathchoice` is replaced in place by the mlist for
 /// the style current at that point (pass 1 style: a `\middle` resets it to
 /// the group's starting style, a `\left...\right` group keeps its style
 /// changes local), so the chosen atoms take part in the surrounding
 /// spacing. The choice node itself becomes a style node; a fam-255 marker
 /// keeps that separating, output-free role (no cramped-style loss).
-/// `None` when the list holds no choice.
-pub(crate) fn splice_choices_pub(list: &[Node], start: GStyle) -> Option<NodeList> {
-    splice_choices(list, start)
-}
-
 fn splice_choices(list: &[Node], start: GStyle) -> Option<NodeList> {
     if !list.iter().any(|n| matches!(n, Node::Choice)) {
         return None;
@@ -1579,6 +1600,12 @@ impl Engine {
         };
 
         let top = match popped {
+            // tex.web `scripts_allowed(tail)`: a style, glue, kern, penalty... node
+            // stays in the list and the script goes on a new empty noad
+            Some(node) if !scripts_allowed(&node) => {
+                self.append_mlist_node(node);
+                Node::Scripts { nucleus: Vec::new(), sup: None, sub: None, options: 0 }
+            }
             Some(node) => node,
             None => Node::Scripts {
                 nucleus: Vec::new(),
@@ -1749,7 +1776,11 @@ impl Engine {
                         nucleus: vec![atom],
                         sup: sup_g,
                         sub: sub_g,
-                        options: 0,
+                        options: match (no_script, sup) {
+                            (false, _) => 0,
+                            (true, true) => crate::boxes::noad_option::NO_SUPER_SCRIPT,
+                            (true, false) => crate::boxes::noad_option::NO_SUB_SCRIPT,
+                        },
                     });
                 }
             }

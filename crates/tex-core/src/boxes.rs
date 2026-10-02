@@ -393,14 +393,14 @@ pub enum WhatIt {
     /// source bookmark so any delayed diagnostic still names the command
     /// that created the node.
     PdfSave {
-        source: Option<crate::input::SourceMark>,
+        source: Option<Box<crate::input::SourceMark>>,
     },
     PdfRestore {
-        source: Option<crate::input::SourceMark>,
+        source: Option<Box<crate::input::SourceMark>>,
     },
     PdfSetMatrix {
         matrix: String,
-        source: Option<crate::input::SourceMark>,
+        source: Option<Box<crate::input::SourceMark>>,
     },
     Write {
         stream: u16,
@@ -709,7 +709,13 @@ impl Attr {
     pub const NONE: Attr = Attr(0);
 }
 
+/// `repr(u8)` keeps the discriminant a plain leading byte. Without it rustc
+/// folds the tag into the capacity niche of the widest variant's `Vec`, and
+/// every `match` on a node decodes that tag with extra arithmetic (about 5%
+/// slower character appending); variants must stay within 104 bytes so the
+/// enum does too.
 #[derive(Clone, Debug)]
+#[repr(u8)]
 pub enum Node {
     Char {
         c: u8,
@@ -834,18 +840,19 @@ pub enum Node {
         attr: Attr,
     },
     Frac {
-        num: NodeList,
-        den: NodeList,
-        thickness: i32,
-        left: Option<Delim>,
-        right: Option<Delim>,
-        /// `\Uskewed` / `\Uskewedwithdelims`: the delimiter between the
-        /// numerator and the denominator (texmath.c `middle_delimiter`)
-        middle: Option<Delim>,
         /// luatex `fractionoptions` (`noad_option_*`, see [`noad_option`])
         options: u16,
-        origin: MathDiagnosticOrigin,
         attr: Attr,
+        thickness: i32,
+        /// a null delimiter stands for none
+        left: Delim,
+        right: Delim,
+        /// `\Uskewed` / `\Uskewedwithdelims`: the delimiter between the
+        /// numerator and the denominator (texmath.c `middle_delimiter`)
+        middle: Delim,
+        origin: MathDiagnosticOrigin,
+        num: NodeList,
+        den: NodeList,
     },
     /// luatex `radical_noad`: `\radical` (`subtype` 0), `\Uradical` (1),
     /// `\Uroot` (2), `\Uunderdelimiter` (3), `\Uoverdelimiter` (4),

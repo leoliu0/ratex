@@ -2338,18 +2338,13 @@ impl Engine {
         self.set_pending_fraction(thickness, ld, rd);
         let den = self.scan_math_rest_of_group();
         let num = self.take_pending_numerator();
-        // luatex scans a delimiter node for `withdelims` (a null one is
-        // typeset as an unshifted empty box); plain fractions have none
-        let lua_mode = self.engine_kind == crate::engine::EngineKind::LuaTeX;
-        let left = if lua_mode { delimited.then_some(ld) } else { (!ld.is_null()).then_some(ld) };
-        let right = if lua_mode { delimited.then_some(rd) } else { (!rd.is_null()).then_some(rd) };
         self.append_mlist_node(Node::Frac {
             num,
             den,
             thickness,
-            left,
-            right,
-            middle,
+            left: ld,
+            right: rd,
+            middle: middle.unwrap_or_default(),
             options,
             fam: -1,
             origin, attr: self.eqtb.cur_attr,
@@ -3339,15 +3334,16 @@ impl Engine {
                         num,
                         den,
                         *thickness,
-                        left.as_ref(),
-                        right.as_ref(),
-                        middle.as_ref(),
+                        (!left.is_null()).then_some(left),
+                        (!right.is_null()).then_some(right),
+                        (!middle.is_null()).then_some(middle),
                         *options,
-                        *fam,
+                        i32::from(*fam),
                         style,
                     )]
                 } else {
-                    self.make_fraction(num, den, *thickness, (*left, *right), style, origin)
+                    let opt = |d: &Delim| (!d.is_null()).then_some(*d);
+                    self.make_fraction(num, den, *thickness, (opt(left), opt(right)), style, origin)
                 }
             }
             Node::Radical {

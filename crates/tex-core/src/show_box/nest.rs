@@ -413,8 +413,8 @@ impl Engine {
                             items: view_list(den),
                             incompleat: Some(Item::Frac(Box::new(FracItem {
                                 thickness: *thickness,
-                                left: left.unwrap_or_default(),
-                                right: right.unwrap_or_default(),
+                                left: *left,
+                                right: *right,
                                 num: Field::List(view_list(num)),
                                 den: Field::Empty,
                             }))),

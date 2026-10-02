@@ -2721,7 +2721,7 @@ impl<'a> RenderCtx<'a> {
                     );
                     self.eng.fatal_error_at(
                         &message,
-                        source.as_ref().map(crate::input::SourceMark::to_context),
+                        source.as_deref().map(crate::input::SourceMark::to_context),
                     );
                     return;
                 };
@@ -2772,7 +2772,7 @@ impl<'a> RenderCtx<'a> {
                     pos_h: cur_h,
                     pos_v: cur_v,
                     matrix_depth: self.matrix_stack.len(),
-                    source: source.clone(),
+                    source: source.as_deref().cloned(),
                 });
                 self.end_text();
                 self.set_origin(cur_h, cur_v);
@@ -2787,7 +2787,7 @@ impl<'a> RenderCtx<'a> {
                 if self.pos_stack.last().is_none() {
                     self.eng.warning_at(
                         "Unmatched \\pdfrestore: no preceding \\pdfsave exists in this shipped box",
-                        source.as_ref().map(crate::input::SourceMark::to_context),
+                        source.as_deref().map(crate::input::SourceMark::to_context),
                     );
                     return;
                 }
@@ -2799,7 +2799,7 @@ impl<'a> RenderCtx<'a> {
                             "Misplaced \\pdfrestore: position changed by ({diff_h}sp, {diff_v}sp) since the matching \\pdfsave"
                         ),
                         source
-                            .as_ref()
+                            .as_deref()
                             .map(crate::input::SourceMark::to_context),
                     );
                 }

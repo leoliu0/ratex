@@ -279,9 +279,9 @@ impl Engine {
                 let n = self.lua_new_node(FRACTION, 0);
                 let nu = self.import_math_sub_mlist(num, ctx);
                 let de = self.import_math_sub_mlist(den, ctx);
-                let l = left.as_ref().map_or(0, |d| self.import_delim(d));
-                let r = right.as_ref().map_or(0, |d| self.import_delim(d));
-                let m = middle.as_ref().map_or(0, |d| self.import_delim(d));
+                let l = if left.is_null() { 0 } else { self.import_delim(left) };
+                let r = if right.is_null() { 0 } else { self.import_delim(right) };
+                let m = if middle.is_null() { 0 } else { self.import_delim(middle) };
                 let f = &mut self.lua_nodes.node_mut(n).f;
                 f[0] = *thickness;
                 f[1] = nu as i32;
@@ -289,7 +289,7 @@ impl Engine {
                 f[3] = l as i32;
                 f[4] = r as i32;
                 f[5] = m as i32;
-                f[6] = *fam;
+                f[6] = i32::from(*fam);
                 f[7] = i32::from(*options);
                 n
             }
@@ -699,11 +699,11 @@ impl Engine {
                     num,
                     den,
                     thickness: f[0],
-                    left,
-                    right,
-                    middle,
+                    left: left.unwrap_or_default(),
+                    right: right.unwrap_or_default(),
+                    middle: middle.unwrap_or_default(),
                     options: f[7] as u16,
-                    fam: f[6],
+                    fam: f[6] as i16,
                     origin: origin(), attr: crate::boxes::Attr::NONE,
                 });
             }

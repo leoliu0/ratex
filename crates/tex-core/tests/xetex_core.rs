@@ -683,3 +683,71 @@ prevdepth ignored
     // 16, -1 and the closed stream 3
     assert_eq!(eng.error_count, 4, "{}", eng.term);
 }
+
+
+/// Characters print as xetex.web's `print_char` does (checked against
+/// TeX Live's `xetex -ini`): `^^` notation below 32, for 127 and for
+/// 128..=159, UTF-8 from 160 up. The text of TFM characters, `\string`,
+/// `\meaning`, `\write`, the `Missing character` lines and macro traces
+/// all go through it.
+#[test]
+fn characters_above_127_print_as_unicode_scalars() {
+    let path = std::path::PathBuf::from(format!("xetex_core_print_{}.txt", std::process::id()));
+    let eng = run(&r####"\catcode`\{=1 \catcode`\}=2 \catcode`\#=6 \catcode`\^=7
+\immediate\write16{}
+\tracingonline=1 \showboxbreadth=100 \showboxdepth=100
+\font\x=ec-lmr10 \x
+\setbox0\hbox{\char"E9 \char"F1 \char"80 \char"FF ab\char"1F \char"7F \char"A0 \char"9F}
+\showbox0
+\message{[\string^^e9][\string^^f1][\string^^80][\string^^a0][\string^^9f][\meaning^^e9][\meaning^^80][\detokenize{^^e9^^80^^a0}]}
+\def\a{^^e9^^80^^a0\Uchar"1F600 \Uchar"4E2D}\message{\meaning\a}
+\expandafter\def\csname ^^e9\endcsname{u}\expandafter\message\expandafter{\expandafter\meaning\csname ^^e9\endcsname}
+\message{\expandafter\string\csname ^^e9\endcsname}
+\tracinglostchars=2
+\font\y=cmr10 \y
+\setbox0\hbox{\char"E9 \char"80 \char"A0 \char"1F00 \char"FFFF \char"1F600}
+\immediate\openout3=OUTFILE
+\immediate\write3{^^e9^^80^^a0^^1f \string^^e9 \Uchar"1F600 \Uchar"4E2D}
+\immediate\closeout3
+\immediate\write16{^^e9^^80^^a0^^1f \string^^e9 \Uchar"1F600 \Uchar"4E2D}
+\def\q#1{[#1]}\tracingmacros=2 \q{^^e9^^80}
+\end
+"####.replace("OUTFILE", &path.display().to_string()));
+    let written = std::fs::read(&path).expect("write file");
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(written, "é^^80\u{a0}^^_ é \u{1F600}\u{4E2D}\n".as_bytes());
+    let lines: Vec<&str> = eng.term.lines().collect();
+    let at = lines.iter().position(|l| *l == "> \\box0=").expect("box display");
+    assert_eq!(
+        &lines[at + 2..at + 12],
+        [".\\x é",
+        ".\\x ñ",
+        ".\\x ^^80",
+        ".\\x ÿ",
+        ".\\x a",
+        ".\\x b",
+        ".\\x ^^_",
+        ".\\x ^^?",
+        ".\\x \u{a0}",
+        ".\\x ^^9f"],
+        "{}",
+        eng.term
+    );
+    let has = |line: &str| assert!(lines.contains(&line), "missing {line:?} in\n{}", eng.term);
+    has("[é][ñ][^^80][\u{a0}][^^9f][the character é][the character ^^80][é^^80\u{a0}]");
+    has("macro:->é^^80\u{a0}\\Uchar \"1F600 \\Uchar \"4E2D macro:->u \\é");
+    for line in ["Missing character: There is no é (\"E9) in font cmr10!",
+        "Missing character: There is no ^^80 (\"80) in font cmr10!",
+        "Missing character: There is no \u{a0} (\"A0) in font cmr10!",
+        "Missing character: There is no ἀ (\"1F00) in font cmr10!",
+        "Missing character: There is no  (\"FFFF) in font cmr10!",
+        "Missing character: There is no 😀 (\"1F600) in font cmr10!",
+        "Missing character: There is no é (\"E9) in font cmr10!",
+        "Missing character: There is no ^^80 (\"80) in font cmr10!"] {
+        has(line);
+    }
+    has("é^^80\u{a0}^^_ é 😀中");
+    for line in ["\\q #1->[#1]", "#1<-é^^80"] {
+        has(line);
+    }
+}

@@ -31,6 +31,11 @@ impl Engine {
     /// `print` of a character code as the `Missing character` message does:
     /// printable characters as UTF-8, the rest in `^^` notation.
     fn xe_printed_char(&self, c: u32) -> String {
+        // `print_ASCII` is `print`, which takes `biggest_char` (U+FFFF) for a
+        // string number and prints nothing
+        if c == 0xFFFF {
+            return String::new();
+        }
         if c < 128 {
             if (32..127).contains(&c) {
                 return (c as u8 as char).to_string();

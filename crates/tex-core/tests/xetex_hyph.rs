@@ -132,6 +132,71 @@ fn patterns_outside_initex_are_rejected() {
     assert_eq!(error_messages(&eng.log), ["Patterns can be loaded only by INITEX"]);
 }
 
+/// A format keeps the patterns, the exceptions and the `\savinghyphcodes`
+/// tables of XeTeX; in the run that loads it `\patterns` is rejected and the
+/// saved codes, not the live `\lccode`s, decide which letters words consist of.
+#[test]
+fn format_keeps_patterns_exceptions_and_saved_codes() {
+    let mut eng = boot();
+    run(&mut eng, FORMAT_BUILD_SRC);
+    assert_eq!(eng.error_count, 0, "{:?}", eng.diagnostics);
+    let path = std::env::temp_dir().join(format!("ratex-xetex-hyph-{}.fmt", std::process::id()));
+    tex_core::format::save_format(&eng, &path).unwrap();
+    let mut loaded = tex_core::format::load_format(&path).unwrap();
+    std::fs::remove_file(&path).ok();
+    loaded.set_interaction_mode(InteractionMode::Nonstop);
+    run(&mut loaded, FORMAT_USE_SRC);
+    assert_eq!(underfull_reports(&loaded.log), FORMAT_EXPECTED);
+    assert_eq!(error_messages(&loaded.log), FORMAT_ERRORS);
+}
+
+const FORMAT_BUILD_SRC: &str = r####"\catcode`\{=1 \catcode`\}=2 \catcode`\#=6
+\lccode`\a=`\a \lccode`\b=`\b \lccode`\c=`\c \lccode`\d=`\d \lccode`\o=`\o \lccode`\x=`\x \lccode`\z=`\z
+\lccode`\A=`\a \lccode`\B=`\b \lccode"E4="E4 \lccode"C4="E4 \lccode"F6="F6 \lccode"D6="F6 \lccode"3B1="3B1 \lccode"3B2="3B2
+\savinghyphcodes=1
+\language=5
+\patterns{a1b 2c. .d3 ä1ö o1ä \string α1β}
+\language=6
+\patterns{x1z}
+\hyphenation{foo-bar ba-zä-ö}
+\language=5
+\hyphenation{ab-cd Ab-Ba o-xo-x ä-ö-z}
+"####;
+
+const FORMAT_USE_SRC: &str = r####"\lccode`\b=0 \lccode"E4=0 \lccode"F6=0
+\font\x=ec-lmr10 \x \hyphenchar\x=`\- \uchyph=1 \showboxdepth=0 \showboxbreadth=1000
+\def\sh#1#2{\setbox0\vbox{\parfillskip=0pt \hsize=16383pt \pretolerance=-1 \tolerance=-1 \hbadness=0 \language=#1 \lefthyphenmin=1 \righthyphenmin=1 \x\ #2}}
+\scrollmode
+\sh5{ababcd}\sh5{aböäxo}\sh5{Abba}\sh5{oxox}\sh5{äöz}\sh5{Äöz}\sh6{xzxz}\sh5{xzxz}\sh6{foobar}\sh5{foobar}\sh6{bazäö}\sh5{abcd}
+\hyphenation{ab-ba}
+\sh5{abba}
+\patterns{b1c}
+\hyphenation{ä-b}
+\sh5{äb}
+\end
+"####;
+
+const FORMAT_EXPECTED: [&str; 14] = [
+        r####"[] \x a-ba-bcd"####,
+        r####"[] \x a-böäxo"####,
+        r####"[] \x Ab-ba"####,
+        r####"[] \x o-xo-x"####,
+        r####"[] \x ä-ö-z"####,
+        r####"[] \x Ä-ö-z"####,
+        r####"[] \x x-zx-z"####,
+        r####"[] \x xzxz"####,
+        r####"[] \x foo-bar"####,
+        r####"[] \x foobar"####,
+        r####"[] \x ba-zä-ö"####,
+        r####"[] \x ab-cd"####,
+        r####"[] \x ab-ba"####,
+        r####"[] \x ä-b"####,
+    ];
+
+const FORMAT_ERRORS: [&str; 1] = [
+        r####"Patterns can be loaded only by INITEX"####,
+    ];
+
 const TFM_SRC: &str = r####"\catcode`\{=1 \catcode`\}=2 \catcode`\#=6 \catcode`\^=7 \def\empty{}\let\bgroup={ \let\egroup=}
 \def\lcrange#1#2#3{\ifnum#1>#2 \else \lccode#1=\numexpr#1+#3\relax \expandafter\lcrange\expandafter{\number\numexpr#1+1\relax}{#2}{#3}\fi}
 \lcrange{"C0}{"D6}{32} \lcrange{"D8}{"DE}{32} \lcrange{"DF}{"DF}{0} \lcrange{"E0}{"F6}{0} \lcrange{"F8}{"FF}{0}

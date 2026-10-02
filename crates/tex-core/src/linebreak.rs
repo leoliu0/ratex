@@ -585,7 +585,7 @@ impl Engine {
     /// tex.web §891-§918 (second pass, "Try to hyphenate the following
     /// word"): after every glue node outside math, find the word, insert
     /// its discretionary hyphens and reconstitute ligatures and kerns
-    /// around them. Native-font words follow `hyphenate_native_words`.
+    /// around them. XeTeX has its own version, see `xetex_hyph`.
     /// The language starts as new_graf recorded it for the paragraph and
     /// follows the `\setlanguage` whatsits (`adv_past`).
     fn hyphenate_list(&mut self, list: &mut NodeList) {
@@ -624,11 +624,6 @@ impl Engine {
         }
         for (start, end, nodes) in edits.into_iter().rev() {
             list.splice(start..end, nodes);
-        }
-        if list.iter().any(|n| matches!(n, Node::NativeGlyphRun { .. })) {
-            if let Some(ctx) = self.hyph_ctx(start) {
-                self.hyphenate_native_words(list, &ctx);
-            }
         }
     }
 
@@ -906,174 +901,6 @@ impl Engine {
         (start, hb + 1, nodes)
     }
 
-    /// XeTeX native-font words: a hyphen point splits the glyph run, with
-    /// pre/post texts reshaped.
-    fn hyphenate_native_words(&self, list: &mut NodeList, ctx: &HyphCtx) {
-        let mut word: Vec<u8> = Vec::new();
-        // per letter: (node index, byte slot inside the run)
-        let mut word_positions: Vec<(usize, u8)> = Vec::new();
-        // tex.web §26160-26224: `hf`, the font of the word's first letter,
-        // owns the hyphen character — NOT the font current at paragraph end
-        let mut word_font: u16 = 0;
-        let mut prev_ok = false;
-        let mut can_start_word = false;
-        let mut edits: Vec<(usize, Node)> = Vec::new();
-        for i in 0..list.len() {
-            let mut node_letters: Vec<u8> = Vec::new();
-            let mut node_font: u16 = 0;
-            if let Node::NativeGlyphRun {
-                run, start, end, ..
-            } = &list[i]
-            {
-                let mut is_ascii_letters = true;
-                let mut letters = Vec::new();
-                for g in &run.glyphs[*start..*end] {
-                    let text_slice = &run.text[g.cluster_start as usize..g.cluster_end as usize];
-                    for b in text_slice.bytes() {
-                        let lc = if b.is_ascii_alphabetic() { ctx.lc(b) } else { 0 };
-                        if lc == 0 {
-                            is_ascii_letters = false;
-                            break;
-                        }
-                        letters.push(lc);
-                    }
-                    if !is_ascii_letters {
-                        break;
-                    }
-                }
-                if is_ascii_letters && !letters.is_empty() {
-                    node_letters = letters;
-                    node_font = run.font;
-                }
-            }
-            if !node_letters.is_empty() {
-                if word.is_empty() {
-                    word_font = node_font;
-                    word_positions.clear();
-                    // tex.web §894: only glue starts the lookahead for a
-                    // hyphenatable word
-                    prev_ok = can_start_word;
-                    can_start_word = false;
-                } else if node_font != word_font {
-                    self.flush_native_word(
-                        list,
-                        i,
-                        &word,
-                        &word_positions,
-                        prev_ok,
-                        ctx,
-                        word_font,
-                        &mut edits,
-                    );
-                    word.clear();
-                    word_positions.clear();
-                    word_font = node_font;
-                    prev_ok = false;
-                }
-                for (j, lc) in node_letters.iter().enumerate() {
-                    word.push(*lc);
-                    word_positions.push((i, j as u8));
-                }
-            } else if !word.is_empty() {
-                self.flush_native_word(
-                    list,
-                    i,
-                    &word,
-                    &word_positions,
-                    prev_ok,
-                    ctx,
-                    word_font,
-                    &mut edits,
-                );
-                word.clear();
-            }
-            if word.is_empty() {
-                match &list[i] {
-                    Node::Glue(_, _) => can_start_word = true,
-                    Node::Char { .. } | Node::Ligature { .. } | Node::Whatsit(_, _) => {}
-                    _ => can_start_word = false,
-                }
-            }
-        }
-        edits.sort_by(|a, b| a.0.cmp(&b.0));
-        for (offset, (pos, node)) in edits.into_iter().enumerate() {
-            list.insert(pos + offset, node);
-        }
-    }
-
-    /// hyphenate one completed native-font word: the hyphen character
-    /// comes from the word's own font `wf`
-    #[allow(clippy::too_many_arguments)]
-    fn flush_native_word(
-        &self,
-        list: &[Node],
-        end: usize,
-        word: &[u8],
-        word_positions: &[(usize, u8)],
-        prev_ok: bool,
-        ctx: &HyphCtx,
-        wf: u16,
-        edits: &mut Vec<(usize, Node)>,
-    ) {
-        let Some(hyphen_c) = self
-            .eqtb
-            .hyphen_char
-            .get(wf as usize)
-            .and_then(|&h| u8::try_from(h).ok())
-        else {
-            return;
-        };
-        // a word closed by an explicit hyphen gets no internal points
-        let closed_by_hyphen = matches!(&list[end], Node::Char { c, .. } if *c == hyphen_c)
-            || matches!(&list[end], Node::Disc(_));
-        if closed_by_hyphen || !prev_ok || word.len() < ctx.lh + ctx.rh || word.len() < ctx.min_len {
-            return;
-        }
-        let hyphen_str = (hyphen_c as char).to_string();
-        let mut disc_at_node: Option<usize> = None;
-        for k in ctx.trie.hyphenate(word, ctx.lh, ctx.rh) {
-            if k == 0 || k >= word_positions.len() {
-                continue;
-            }
-            // point k = break before letter k
-            let (pos, slot) = word_positions[k];
-            if disc_at_node == Some(pos) {
-                continue; // one disc per node
-            }
-            let Node::NativeGlyphRun {
-                run, start, end, ..
-            } = &list[pos]
-            else {
-                continue;
-            };
-            let disc = if slot > 0 {
-                let slice_start_byte = run.glyphs[*start].cluster_start as usize;
-                let slice_end_byte = run.glyphs[*end - 1].cluster_end as usize;
-                let split_byte = slice_start_byte + slot as usize;
-                if split_byte > slice_end_byte {
-                    continue;
-                }
-                let pre_str = format!("{}{hyphen_str}", &run.text[slice_start_byte..split_byte]);
-                let post_str = &run.text[split_byte..slice_end_byte];
-                let (Ok(pre_break), Ok(post_break)) = (
-                    self.shape_native_slice(run.font, &pre_str),
-                    self.shape_native_slice(run.font, post_str),
-                ) else {
-                    continue;
-                };
-                crate::boxes::DiscNode::new(pre_break, post_break, vec![list[pos].clone()], 1)
-            } else {
-                crate::boxes::DiscNode::new(
-                    self.shape_native_slice(run.font, &hyphen_str).unwrap_or_default(),
-                    Vec::new(),
-                    Vec::new(),
-                    0,
-                )
-            };
-            disc_at_node = Some(pos);
-            edits.push((pos, Node::Disc(disc)));
-        }
-    }
 
     /// one Knuth-Plass pass; returns the final breakpoint chain on success
     #[allow(clippy::too_many_arguments)]

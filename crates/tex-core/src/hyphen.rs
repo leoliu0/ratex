@@ -691,8 +691,8 @@ enum HyphToken {
 impl Engine {
     /// `max_hyphenatable_length`: `\XeTeXhyphenatablelength`, at most 4095.
     pub(crate) fn xe_max_hyphenatable_length(&self) -> usize {
-        // TEMPORARY(XeHyph): read IntParam::XeTeXHyphenatableLength once xetex/core lands
-        63
+        let v = self.eqtb.int_params[crate::prim::IntParam::XeTeXHyphenatableLength.idx() as usize];
+        v.clamp(0, 4095) as usize
     }
 
     /// xetex.web `set_cur_lang`.

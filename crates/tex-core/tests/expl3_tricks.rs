@@ -2788,7 +2788,7 @@ fn empty_box_paragraph_updates_prevdepth_for_following_box() {
         list.windows(2).any(|pair| matches!(
             pair,
             [
-                tex_core::boxes::Node::Glue(g),
+                tex_core::boxes::Node::Glue(g, _),
                 tex_core::boxes::Node::Box { h, .. }
             ] if g.width == 65_536 && *h == 24 * 65_536
         )),

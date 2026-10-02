@@ -659,6 +659,18 @@ pub fn save_format_with_encoding(
         w.u8(language);
         w.bytes(eng.hyphen_codes[&language].as_slice());
     }
+    if eng.engine_kind == crate::engine::EngineKind::XeTeX {
+        // xetex.web hyph_start/hyph_index: the `\savinghyphcodes` tables
+        let mut languages: Vec<u8> = eng.xe_hyph.codes.keys().copied().collect();
+        languages.sort_unstable();
+        w.u32(languages.len() as u32);
+        for language in languages {
+            w.u8(language);
+            for &code in eng.xe_hyph.codes[&language].iter() {
+                w.u16(code);
+            }
+        }
+    }
     // LuaTeX bytecode registers and chunk names (llualib.c
     // dump_luac_registers)
     w.u32(eng.lua_bytecodes.len() as u32);
@@ -1202,6 +1214,7 @@ pub fn load_format_bytes_into(data: &[u8], eng: &mut Engine) -> Result<(), Strin
     eng.primitive_names = scratch.primitive_names;
     eng.eqtb = scratch.eqtb;
     eng.hyphen_trie = scratch.hyphen_trie;
+    eng.xe_hyph = scratch.xe_hyph;
     eng.hyphen_tries = scratch.hyphen_tries;
     eng.hyphen_codes = scratch.hyphen_codes;
     eng.pdf_backend.glyph_unicode = scratch.pdf_backend.glyph_unicode;
@@ -1433,6 +1446,28 @@ fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
         if eng.hyphen_codes.insert(language, Box::new(codes)).is_some() {
             return Err(bad("duplicate hyphenation code language"));
         }
+    }
+    if eng.engine_kind == crate::engine::EngineKind::XeTeX {
+        let n_codes = r.count()?;
+        if n_codes > 256 {
+            return Err(bad("too many hyphenation code tables"));
+        }
+        for _ in 0..n_codes {
+            let language = r.u8()?;
+            let mut codes = Box::new([0u16; 256]);
+            for slot in codes.iter_mut() {
+                *slot = r.u16()?;
+            }
+            if eng.xe_hyph.codes.insert(language, codes).is_some() {
+                return Err(bad("duplicate hyphenation code language"));
+            }
+        }
+        // `max_hyph_char` is derived from the patterns themselves
+        eng.xe_hyph.max_pattern_char = std::iter::once(&eng.hyphen_trie)
+            .chain(eng.hyphen_tries.values())
+            .map(|trie| trie.xe_max_pattern_char())
+            .max()
+            .unwrap_or(256);
     }
     let n_bytecodes = r.count()?;
     for _ in 0..n_bytecodes {

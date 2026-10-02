@@ -10,6 +10,8 @@ use crate::prim::{DimParam, GlueParam, IntParam};
 use crate::scaled::{badness, EJECT_PENALTY, INF_BAD, INF_PENALTY};
 use crate::tfm::FontId;
 use std::collections::HashMap;
+
+mod xetex_hyph;
 use std::rc::Rc;
 
 /// fitness classes with tex.web's numbering (adj-demerits fires when the
@@ -587,6 +589,10 @@ impl Engine {
     /// The language starts as new_graf recorded it for the paragraph and
     /// follows the `\setlanguage` whatsits (`adv_past`).
     fn hyphenate_list(&mut self, list: &mut NodeList) {
+        if self.engine_kind == crate::engine::EngineKind::XeTeX {
+            self.xetex_hyphenate_list(list);
+            return;
+        }
         let start = self.paragraph_language();
         let mut lang = start;
         // (first replaced index, end index, replacement)
@@ -816,10 +822,41 @@ impl Engine {
         if !hyf.contains(&1) {
             return None;
         }
-        // §903: hu[0] is the punctuation char or ligature before the word
-        // (reconstituted along with it), or the left boundary
+        Some(Self::replace_hyphenated_word(
+            list,
+            ha,
+            hb,
+            hf,
+            &font,
+            hu.to_vec(),
+            hyf.to_vec(),
+            hn,
+            hyf_bchar,
+            hyf_char,
+            first_attr,
+        ))
+    }
+
+    /// tex.web §903: nodes `ha+1..=hb` of `list` (the word hu[1..=hn]) become
+    /// the reconstituted word with its discretionaries. hu[0] is the
+    /// punctuation character or ligature before the word (reconstituted
+    /// along with it) or the left boundary.
+    #[allow(clippy::too_many_arguments)]
+    fn replace_hyphenated_word(
+        list: &[Node],
+        ha: usize,
+        hb: usize,
+        hf: FontId,
+        font: &crate::tfm::Font,
+        hu: Vec<u16>,
+        hyf: Vec<u8>,
+        hn: usize,
+        hyf_bchar: Option<u8>,
+        hyf_char: u8,
+        first_attr: crate::boxes::Attr,
+    ) -> (usize, usize, NodeList) {
         let mut rc = Reconstitute {
-            font: &font,
+            font,
             hf,
             hu,
             hyf,
@@ -866,7 +903,7 @@ impl Engine {
             },
         };
         let nodes = rc.hyphenated_word(j0, hn, hyf_bchar, hyf_char);
-        Some((start, hb + 1, nodes))
+        (start, hb + 1, nodes)
     }
 
     /// XeTeX native-font words: a hyphen point splits the glyph run, with
@@ -2590,8 +2627,8 @@ fn hu_char(v: u16) -> Option<u8> {
 struct Reconstitute<'a> {
     font: &'a crate::tfm::Font,
     hf: FontId,
-    hu: [u16; 66],
-    hyf: [u8; 65],
+    hu: Vec<u16>,
+    hyf: Vec<u8>,
     /// components of hu[0] (`init_list`), a ligature if `init_lig`
     init_list: [u8; 3],
     init_len: usize,

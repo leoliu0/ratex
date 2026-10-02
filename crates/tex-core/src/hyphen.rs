@@ -435,6 +435,214 @@ impl Trie {
     }
 }
 
+/// What xetex.web keeps for hyphenation besides the per-language tries.
+#[derive(Debug)]
+pub struct XeHyph {
+    /// `\savinghyphcodes`: the `\lccode`s 0..255 captured when a language's
+    /// patterns were read, which stand in for the live `\lccode`s of
+    /// characters up to 255 (`hyph_index`, §34318); the values are
+    /// quarterwords (16 bits).
+    pub(crate) codes: crate::FxHashMap<u8, Box<[u16; 256]>>,
+    /// `not trie_not_ready`: the first paragraph that needed hyphenation
+    /// packed the trie, after which `\patterns` is "Too late".
+    pub(crate) trie_packed: bool,
+    /// `max_hyph_char` less its final increment: the largest character any
+    /// pattern holds (at least 256); a TFM letter with a larger `\lccode`
+    /// ends the word.
+    pub(crate) max_pattern_char: u32,
+}
+
+impl Default for XeHyph {
+    fn default() -> Self {
+        XeHyph {
+            codes: crate::FxHashMap::default(),
+            trie_packed: false,
+            max_pattern_char: 256,
+        }
+    }
+}
+
+/// xetex.web keeps hyphenation characters as Unicode scalars (`hc`); the
+/// patterns trie of a XeTeX engine stores each one as the bytes of its
+/// generalized UTF-8 form (surrogate code units of native words included),
+/// and the word boundary `.` (character 0) as the byte 0, which no letter
+/// can have since `\lccode` 0 means "not a letter".
+pub(crate) fn xe_push_key(out: &mut Vec<u8>, c: u32) {
+    match c {
+        0..=0x7F => out.push(c as u8),
+        0x80..=0x7FF => out.extend_from_slice(&[0xC0 | (c >> 6) as u8, 0x80 | (c & 0x3F) as u8]),
+        0x800..=0xFFFF => out.extend_from_slice(&[
+            0xE0 | (c >> 12) as u8,
+            0x80 | ((c >> 6) & 0x3F) as u8,
+            0x80 | (c & 0x3F) as u8,
+        ]),
+        _ => out.extend_from_slice(&[
+            0xF0 | ((c >> 18) & 0x07) as u8,
+            0x80 | ((c >> 12) & 0x3F) as u8,
+            0x80 | ((c >> 6) & 0x3F) as u8,
+            0x80 | (c & 0x3F) as u8,
+        ]),
+    }
+}
+
+/// Inverse of [`xe_push_key`] over a whole key: the characters it encodes.
+fn xe_key_chars(key: &[u8]) -> impl Iterator<Item = u32> + '_ {
+    let mut i = 0;
+    std::iter::from_fn(move || {
+        let b = *key.get(i)?;
+        let (len, init) = match b {
+            0..=0x7F => (1, u32::from(b)),
+            0xC0..=0xDF => (2, u32::from(b & 0x1F)),
+            0xE0..=0xEF => (3, u32::from(b & 0x0F)),
+            _ => (4, u32::from(b & 0x07)),
+        };
+        let mut c = init;
+        for k in 1..len {
+            c = (c << 6) | u32::from(key.get(i + k).copied().unwrap_or(0x80) & 0x3F);
+        }
+        i += len;
+        Some(c)
+    })
+}
+
+impl Trie {
+    /// xetex.web `new_patterns` §960 "Insert a new pattern into the linked
+    /// trie": `hc` holds the pattern's characters (0 = word boundary) and
+    /// `hyf[0..=hc.len()]` its digits (`hyf[l]` is the level between the
+    /// `l`-th and `(l+1)`-th character). A pattern with the same letters
+    /// replaces the old one; the result tells whether it did, which TeX
+    /// reports as "Duplicate pattern".
+    pub(crate) fn xe_insert_pattern(&mut self, hc: &[u32], hyf: &[u8]) -> bool {
+        debug_assert_eq!(hyf.len(), hc.len() + 1);
+        let mut key: Vec<u8> = Vec::with_capacity(hc.len() * 2);
+        let mut gap_at: Vec<u32> = Vec::with_capacity(hc.len() + 1);
+        gap_at.push(0);
+        for &c in hc {
+            xe_push_key(&mut key, c);
+            gap_at.push(key.len() as u32);
+        }
+        let mut node = 0u32;
+        for &b in &key {
+            node = match self.child(node, b) {
+                Some(next) => next,
+                None => {
+                    let next = self.nodes.len() as u32;
+                    let parent = &mut self.nodes[node as usize];
+                    let sibling = std::mem::replace(&mut parent.child, next);
+                    self.nodes.push(TrieNode {
+                        byte: b,
+                        child: NO_LINK,
+                        sibling,
+                        value: NO_LINK,
+                    });
+                    if node == 0 {
+                        self.root[b as usize] = next;
+                    }
+                    next
+                }
+            };
+        }
+        let duplicate = self.nodes[node as usize].value != NO_LINK;
+        let mut head = NO_LINK;
+        for (l, &level) in hyf.iter().enumerate().rev() {
+            if level != 0 {
+                self.values.push(TrieValue {
+                    pos: gap_at[l],
+                    value: level,
+                    next: head,
+                });
+                head = self.values.len() as u32 - 1;
+            }
+        }
+        self.nodes[node as usize].value = head;
+        duplicate
+    }
+
+    /// xetex.web `hyphenate` §923 over the pattern trie: `hyf[j]` (for
+    /// `0 <= j <= hc.len()`) is the maximum pattern level at the gap after
+    /// the `j`-th of the characters `hc`, which are scalars or UTF-16 code
+    /// units and never 0.
+    pub(crate) fn xe_gap_values(&self, hc: &[u32], hyf: &mut [u8]) {
+        let mut text: Vec<u8> = Vec::with_capacity(hc.len() * 2 + 2);
+        let mut gap_at: Vec<usize> = Vec::with_capacity(hc.len() + 1);
+        text.push(0);
+        for &c in hc {
+            gap_at.push(text.len());
+            xe_push_key(&mut text, c);
+        }
+        gap_at.push(text.len());
+        text.push(0);
+        let mut vals = vec![0u8; text.len() + 1];
+        for start in 0..text.len() {
+            if text[start] & 0xC0 == 0x80 {
+                continue;
+            }
+            let mut node = 0u32;
+            for &byte in &text[start..] {
+                let Some(next) = self.child(node, byte) else {
+                    break;
+                };
+                node = next;
+                let mut link = self.nodes[node as usize].value;
+                while link != NO_LINK {
+                    let entry = self.values[link as usize];
+                    let slot = &mut vals[start + entry.pos as usize];
+                    *slot = (*slot).max(entry.value);
+                    link = entry.next;
+                }
+            }
+        }
+        for (j, &at) in gap_at.iter().enumerate() {
+            hyf[j] = vals[at];
+        }
+    }
+
+    /// xetex.web `new_hyph_exceptions` §934: the word `hc` (code units) with
+    /// a hyphen after each of the `points` letters. A later entry for the
+    /// same word replaces the earlier one.
+    pub(crate) fn xe_add_exception(&mut self, hc: &[u32], points: Vec<usize>) {
+        let mut key: Vec<u8> = Vec::with_capacity(hc.len() * 2);
+        for &c in hc {
+            xe_push_key(&mut key, c);
+        }
+        self.exceptions.insert(key, points);
+    }
+
+    /// The break points (code units before the hyphen) of the exception
+    /// word `hc`, when it is one.
+    pub(crate) fn xe_exception(&self, hc: &[u32]) -> Option<&Vec<usize>> {
+        if self.exceptions.is_empty() {
+            return None;
+        }
+        let mut key: Vec<u8> = Vec::with_capacity(hc.len() * 2);
+        for &c in hc {
+            xe_push_key(&mut key, c);
+        }
+        self.exceptions.get(&key)
+    }
+
+    /// xetex.web `max_hyph_char` less its final increment: the largest
+    /// character any pattern of this language contains (at least 256, TeX's
+    /// initial value).
+    pub(crate) fn xe_max_pattern_char(&self) -> u32 {
+        let mut max = 256u32;
+        let mut stack: Vec<(u32, Vec<u8>)> = vec![(0, Vec::new())];
+        while let Some((node, key)) = stack.pop() {
+            if let Some(c) = xe_key_chars(&key).max() {
+                max = max.max(c);
+            }
+            let mut child = self.nodes[node as usize].child;
+            while child != NO_LINK {
+                let mut next_key = key.clone();
+                next_key.push(self.nodes[child as usize].byte);
+                stack.push((child, next_key));
+                child = self.nodes[child as usize].sibling;
+            }
+        }
+        max
+    }
+}
+
 use crate::engine::Engine;
 
 impl Engine {
@@ -461,6 +669,230 @@ impl Engine {
             &mut self.hyphen_trie
         } else {
             self.hyphen_tries.entry(lang).or_insert_with(Trie::new)
+        }
+    }
+}
+
+/// How xetex.web's `get_x_token` shows a token to `new_patterns` and
+/// `new_hyph_exceptions`: its `cur_cmd`/`cur_chr`.
+enum HyphToken {
+    /// `letter` or `other_char`
+    Letter(u32),
+    /// a `\chardef` name
+    Given(u32),
+    /// `\char`
+    CharNum,
+    Space,
+    RightBrace,
+    Other,
+    Eof,
+}
+
+impl Engine {
+    /// `max_hyphenatable_length`: `\XeTeXhyphenatablelength`, at most 4095.
+    pub(crate) fn xe_max_hyphenatable_length(&self) -> usize {
+        // TEMPORARY(XeHyph): read IntParam::XeTeXHyphenatableLength once xetex/core lands
+        63
+    }
+
+    /// xetex.web `set_cur_lang`.
+    pub(crate) fn xe_cur_lang(&self) -> u8 {
+        let v = self.eqtb.int_params[crate::prim::IntParam::Language.idx() as usize];
+        if (1..=255).contains(&v) {
+            v as u8
+        } else {
+            0
+        }
+    }
+
+    /// xetex.web `set_lc_code(c)`: the hyphenation code of `c` for a
+    /// language whose saved table is `codes` (`hyph_index`), else `\lccode`.
+    pub(crate) fn xe_lc_code(&self, codes: Option<&[u16; 256]>, c: u32) -> u32 {
+        match codes {
+            Some(table) if c <= 255 => u32::from(table[c as usize]),
+            _ => self.eqtb.case_code(c, false),
+        }
+    }
+
+    /// The saved `\savinghyphcodes` table that `set_hyph_index` selects for
+    /// `lang` once the trie is packed, which is always the case outside
+    /// INITEX and in INITEX after the first paragraph needed hyphenation.
+    pub(crate) fn xe_hyph_codes(&self, lang: u8) -> Option<&[u16; 256]> {
+        if self.ini_mode && !self.xe_hyph.trie_packed {
+            return None;
+        }
+        self.xe_hyph.codes.get(&lang).map(Box::as_ref)
+    }
+
+    fn xe_hyph_token(&mut self) -> HyphToken {
+        fn classify(token: crate::token::Token) -> HyphToken {
+            match token.cc() {
+                11 | 12 => HyphToken::Letter(token.chr()),
+                10 => HyphToken::Space,
+                2 => HyphToken::RightBrace,
+                _ => HyphToken::Other,
+            }
+        }
+        let token = self.get_x_raw();
+        if token == crate::input::EOF_MARKER {
+            return HyphToken::Eof;
+        }
+        if token.is_char() {
+            return classify(token);
+        }
+        match self.eqtb.resolve(token.cs_id()) {
+            Some(crate::eqtb::Equiv::CharTok(raw)) => classify(crate::token::Token(*raw)),
+            Some(crate::eqtb::Equiv::CharDef(v)) => HyphToken::Given(*v),
+            Some(crate::eqtb::Equiv::Prim(crate::prim::Prim::Char)) => HyphToken::CharNum,
+            _ => HyphToken::Other,
+        }
+    }
+
+    /// xetex.web §1252 `\patterns` / `\hyphenation` outside LuaTeX:
+    /// `new_patterns` (§960) and `new_hyph_exceptions` (§934).
+    pub(crate) fn xetex_hyphenation_words(&mut self, is_patterns: bool) {
+        if is_patterns {
+            if !self.ini_mode {
+                self.error("Patterns can be loaded only by INITEX");
+                // repeat get_token until cur_cmd=right_brace
+                loop {
+                    let t = self.get_token();
+                    if t == crate::input::EOF_MARKER || (t.is_char() && t.cc() == 2) || self.stopped_on_error {
+                        return;
+                    }
+                }
+            }
+            if self.xe_hyph.trie_packed {
+                self.error("Too late for \\patterns");
+                let _ = self.scan_general_text();
+                return;
+            }
+        }
+        let lang = self.xe_cur_lang();
+        self.skip_spaces_relax();
+        if !self.scan_left_brace() {
+            return;
+        }
+        let origin = self.current_token_source_mark();
+        let max_len = self.xe_max_hyphenatable_length();
+        // new_patterns: hc[1..=k], hyf[0..=k]; new_hyph_exceptions: hc[1..=n]
+        let mut hc: Vec<u32> = Vec::new();
+        let mut hyf: Vec<u8> = vec![0];
+        let mut digit_sensed = false;
+        let mut points: Vec<usize> = Vec::new();
+        // exceptions look letters up in the language's saved table once the
+        // trie is packed (`set_hyph_index`)
+        let codes = if is_patterns {
+            None
+        } else {
+            self.xe_hyph_codes(lang).cloned()
+        };
+        loop {
+            let mut tok = self.xe_hyph_token();
+            if self.stopped_on_error {
+                return;
+            }
+            if matches!(tok, HyphToken::CharNum) && !is_patterns {
+                let c = self.scan_profile_character_code("\\char");
+                tok = HyphToken::Given(c);
+            }
+            match tok {
+                HyphToken::Eof => {
+                    self.fatal_error_at(
+                        "File ended while scanning hyphenation patterns or exceptions",
+                        origin.as_ref().map(crate::input::SourceMark::to_context),
+                    );
+                    return;
+                }
+                HyphToken::Letter(c) if is_patterns => {
+                    if digit_sensed || !(u32::from(b'0')..=u32::from(b'9')).contains(&c) {
+                        let mut code = c;
+                        if c == u32::from(b'.') {
+                            code = 0;
+                        } else {
+                            code = self.eqtb.case_code(code, false);
+                            if code == 0 {
+                                self.error("Nonletter");
+                            }
+                        }
+                        self.xe_hyph.max_pattern_char = self.xe_hyph.max_pattern_char.max(code);
+                        if hc.len() < max_len {
+                            hc.push(code);
+                            hyf.push(0);
+                            digit_sensed = false;
+                        }
+                    } else if hc.len() < max_len {
+                        *hyf.last_mut().expect("hyf[0]") = (c - u32::from(b'0')) as u8;
+                        digit_sensed = true;
+                    }
+                }
+                HyphToken::Space | HyphToken::RightBrace if is_patterns => {
+                    if !hc.is_empty() {
+                        // §963: a boundary at either end carries no level
+                        if hc[0] == 0 {
+                            hyf[0] = 0;
+                        }
+                        if hc[hc.len() - 1] == 0 {
+                            *hyf.last_mut().expect("hyf[k]") = 0;
+                        }
+                        if self.trie_for_language_mut(lang).xe_insert_pattern(&hc, &hyf) {
+                            self.error("Duplicate pattern");
+                        }
+                    }
+                    if matches!(tok, HyphToken::RightBrace) {
+                        if self.eqtb.int_params[crate::prim::IntParam::SavingHyphCodes.idx() as usize] > 0 {
+                            let mut table = Box::new([0u16; 256]);
+                            for (c, slot) in table.iter_mut().enumerate() {
+                                *slot = self.eqtb.case_code(c as u32, false) as u16;
+                            }
+                            self.xe_hyph.codes.insert(lang, table);
+                        }
+                        return;
+                    }
+                    hc.clear();
+                    hyf.clear();
+                    hyf.push(0);
+                    digit_sensed = false;
+                }
+                HyphToken::Letter(c) | HyphToken::Given(c) if !is_patterns => {
+                    if c == u32::from(b'-') {
+                        if hc.len() < max_len {
+                            points.push(hc.len());
+                        }
+                    } else {
+                        let code = self.xe_lc_code(codes.as_ref(), c);
+                        if code == 0 {
+                            self.error("Not a letter");
+                        } else if hc.len() < max_len {
+                            if code < 0x10000 {
+                                hc.push(code);
+                            } else {
+                                hc.push((code - 0x10000) / 0x400 + 0xD800);
+                                hc.push(code % 0x400 + 0xDC00);
+                            }
+                        }
+                    }
+                }
+                HyphToken::Space | HyphToken::RightBrace => {
+                    if hc.len() > 1 {
+                        let word = std::mem::take(&mut hc);
+                        self.trie_for_language_mut(lang)
+                            .xe_add_exception(&word, std::mem::take(&mut points));
+                    }
+                    if matches!(tok, HyphToken::RightBrace) {
+                        return;
+                    }
+                    hc.clear();
+                    points.clear();
+                }
+                _ => {
+                    self.error(if is_patterns {
+                        "Bad \\patterns"
+                    } else {
+                        "Improper \\hyphenation will be flushed"
+                    });
+                }
+            }
         }
     }
 }

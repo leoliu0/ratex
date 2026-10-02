@@ -194,3 +194,13 @@ fn lines_keep_their_break_nodes_like_tex() {
         e.log
     );
 }
+
+#[test]
+fn moveleft_raise_aliases_keep_their_direction() {
+    let e = run(concat!(
+        "\\catcode`\\{=1 \\catcode`\\}=2 \\let\\x\\moveright \\let\\y\\raise \\let\\z\\moveleft \\let\\w\\lower\n",
+        "\\setbox1\\vbox{\\x 5pt\\hbox{}\\z 5pt\\hbox{}}\\setbox2\\hbox{\\y 5pt\\hbox{}\\w 5pt\\hbox{}}\n",
+        "\\message{[\\the\\wd1,\\the\\ht2,\\the\\dp2|\\meaning\\x\\meaning\\z\\meaning\\y\\meaning\\w]}\\end\n"
+    ));
+    assert!(e.term.contains("[5.0pt,5.0pt,5.0pt|\\moveright\\moveleft\\raise\\lower]"), "{}", e.term);
+}

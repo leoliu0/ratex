@@ -169,6 +169,12 @@ pub struct Engine {
     /// Original control-sequence name of each primitive. Unlike an eqtb
     /// reverse lookup, this survives formats redefining (for example) \input.
     pub(crate) primitive_names: crate::FxHashMap<u16, &'static [u8]>,
+    /// LuaTeX's primitive table (`crate::luatex`); empty for other engines.
+    pub(crate) lua_primitives: Vec<crate::luatex::LuaPrimitive>,
+    /// State of the Lua `tex`, `pdf`, `img` and `lang` libraries.
+    pub(crate) lua_tex: crate::lua_tex::TexState,
+    /// LuaTeX `\deferred` was read before the pending extension command.
+    pub(crate) lua_deferred: bool,
     /// pdftex.web `prim_lookup`: primitive meaning of each primitive name,
     /// fixed at initialization (redefinitions do not change it).
     pub(crate) primitive_table: crate::FxHashMap<Box<[u8]>, Prim>,
@@ -197,9 +203,17 @@ pub struct Engine {
     pub mode: Mode,
     pub mode_level: u16, // nesting of box modes
     pub cur_list: Vec<crate::boxes::Node>,
-    /// Stable, generation-checked ownership for nodes exposed across
-    /// subsystem boundaries (notably the Lua node API).
-    pub node_arena: crate::node_arena::NodeArena,
+    /// The LuaTeX node store behind `node.*` / `node.direct.*` (see
+    /// `lua_node`).
+    pub(crate) lua_nodes: crate::lua_node::NodeStore,
+    /// LuaTeX `callback_set`: per callback `0` (none), `1` (a function is
+    /// registered) or `-1` (registered as `false`); see `lua_callbacks`.
+    pub(crate) lua_cb: [i8; crate::lua_callbacks::N_CALLBACKS],
+    /// The luatex group code (index into `lua_callbacks::GROUP_NAMES`) the
+    /// paragraph being ended belongs to: what `line_break_context` carries.
+    pub(crate) lua_par_group: u8,
+    /// `hpack_quality` calls of the lines of the paragraph being broken
+    pub(crate) lua_par_lines: crate::lua_callbacks::ParLineState,
     pub prev_depth: i32, // special marker: -1000pt means unset
     pub space_factor: i32,
     pub prev_graf: i32,
@@ -211,11 +225,25 @@ pub struct Engine {
     /// Semantic profile for this job. It is immutable after construction.
     pub engine_kind: EngineKind,
     pub(crate) lua: Option<Box<crate::engine_lua::LuaEngine>>,
+    /// LuaTeX bytecode registers (`lua.bytecode[n]`, dumped functions) and
+    /// chunk names (`lua.name[n]`); both are part of the format.
+    /// What the running Lua code printed with `tex.print` & co.; read as a
+    /// pseudo file when the Lua call returns.
+    pub(crate) lua_print_queue: Vec<crate::engine_lua::LuaLine>,
+    pub(crate) lua_bytecodes: std::collections::BTreeMap<u32, Vec<u8>>,
+    pub(crate) lua_names: std::collections::BTreeMap<u16, String>,
+    /// luatex `local_level`: how many `local_control` loops are active
+    pub(crate) local_level: i32,
+    /// `tex.runtoks(f)` entered `local_level` before running `f`; the
+    /// following local control loop must not count that level again.
+    pub(crate) lua_local_entered: bool,
     pub ini_mode: bool, // -ini: format-building mode
     /// tex.web `format_ident`: ` (INITEX)` until a `\dump` builds a format,
     /// ` (preloaded format=<job> <year>.<month>.<day>)` in a loaded one. It
     /// seeds pdfTeX's job id and so the `\pdfuniqueresname` prefix.
     pub format_ident: String,
+    /// LuaTeX `\formatname`: the stem of the loaded format file.
+    pub format_name: String,
     pub job_name: String,
     pub halt_on_error: bool,
     pub interaction_mode: InteractionMode,
@@ -300,6 +328,8 @@ pub struct Engine {
     pub pdf_fixed: Option<PdfFixedParams>,
     pub out_file: Option<tex_kpse::fs::File>,
     pub font_loader: crate::fontload::FontLoader,
+    /// Lua-defined fonts: free ids, touched/used flags.
+    pub lua_fonts: crate::lua_font::LuaFontState,
     pub native_text: crate::native_layout::NativeTextState,
     pub(crate) native_utf8_bytes: [u8; 4],
     pub(crate) native_utf8_len: usize,
@@ -363,7 +393,7 @@ pub struct Engine {
     pub pdf_pages_attr_toks: Vec<Token>,
     pub pdf_page_resources: Vec<u8>,
     pub pdf_page_resources_toks: Vec<Token>,
-    pub right_delim: Option<i32>,
+    pub right_delim: Option<crate::boxes::Delim>,
     pub math_limits: Option<u8>,
     pub last_delim: Option<i32>,
     pub pending_the_string: Option<String>,
@@ -399,6 +429,9 @@ pub struct Engine {
     /// pdfTeX `warn_pdfpagebox` cleared: the obsolete page-box option
     /// warning was given.
     pub pdf_warned_pagebox: bool,
+    /// PDF documents `pdfe.new(stream, length, id)` registered, by the
+    /// `data:application/pdf,` name it returned.
+    pub pdfe_memstreams: std::collections::HashMap<String, Vec<u8>>,
     /// \pdfxform objects whose /ProcSet is inserted when pdfTeX would write
     /// them (it depends on \pdfomitprocset at that time).
     pub pdf_form_procsets: crate::FxHashMap<i32, FormProcset>,
@@ -419,6 +452,8 @@ pub struct Engine {
     pub last_pack: Option<crate::boxes::PackRecord>,
     pub read_eof: Vec<bool>, // (amount, is_hmove)
     pub read_files: Vec<Option<Box<dyn std::io::BufRead>>>,
+    /// `open_read_file` objects of the `\openin` streams (0: none)
+    pub(crate) read_readers: Vec<u32>,
     pub loaded_files: Vec<std::path::PathBuf>,
     /// Content identities captured when TeX actually read a disk input.
     /// Unlike end-of-job metadata, these remain correct if TeX rewrites the
@@ -455,9 +490,6 @@ pub struct Engine {
     pub xetex_input_normalization: i32,
     pub xetex_dash_break_state: i32,
     pub asset_fingerprint: u64,
-    pub cur_catcode_table: i32,
-    pub catcode_tables: crate::FxHashMap<i32, (Vec<u8>, crate::FxHashMap<u32, (u8, u16)>)>,
-    pub saved_catcode_tables: Vec<(u16, i32, Vec<u8>, crate::FxHashMap<u32, (u8, u16)>)>,
     pub job_ended_by_end: bool,
     pub align_preamble: Vec<crate::align::ColSpec>,
     pub align_tabskip_0: crate::boxes::Glue,
@@ -570,6 +602,8 @@ pub struct Engine {
     /// input after its source stack frame has closed.
     pub(crate) math_diagnostic_sources: Vec<Option<crate::input::SourceMark>>,
     pub(crate) math_diagnostic_depth: usize,
+    /// luatex `cur_f`/`cur_c` of `fetch` (LuaTeX math conversion)
+    pub(crate) lm_cur_f: crate::tfm::FontId,
     pub(crate) reported_missing_math_atoms: crate::FxHashSet<(u64, u16, u8)>,
     pub(crate) token_vec_pool: Vec<Vec<crate::token::Token>>,
     /// The previous line buffer of a file source, reused for the next line.
@@ -733,33 +767,6 @@ pub struct Engine {
 }
 
 impl Engine {
-    pub fn execute_directlua(&mut self, code: &str) -> Result<(), String> {
-        if self.lua.is_none() {
-            let lua_engine = crate::engine_lua::LuaEngine::new()?;
-            self.lua = Some(Box::new(lua_engine));
-        }
-        let mut lua = self.lua.take().unwrap();
-        lua.sync_from_engine(self);
-        let result = lua.execute(code);
-        lua.sync_to_engine(self);
-        self.lua = Some(lua);
-
-        let output_items = result?;
-        if !output_items.is_empty() {
-            let mut combined = String::new();
-            for item in output_items {
-                combined.push_str(&item.text);
-                if item.newline {
-                    combined.push('\n');
-                }
-            }
-            if self.ensure_input_stack_room(1) {
-                self.input.push_file("<directlua>".to_string(), combined.into_bytes());
-            }
-        }
-        Ok(())
-    }
-
     pub(crate) fn append_transcript_bounded(buffer: &mut String, text: &str) {
         const MARKER: &str = "\n! Transcript truncated at the 32 MiB safety limit.\n";
         if text.is_empty() || (buffer.len() >= MAX_TERM_BYTES && buffer.ends_with(MARKER)) {
@@ -1029,6 +1036,9 @@ impl Engine {
             cs,
             eqtb: Eqtb::new(ini_mode),
             primitive_names: crate::FxHashMap::default(),
+            lua_primitives: Vec::new(),
+            lua_tex: Default::default(),
+            lua_deferred: false,
             primitive_table: crate::FxHashMap::default(),
             pdf_retval: 0,
             clang: 0,
@@ -1047,7 +1057,10 @@ impl Engine {
             mode: Mode::Vertical,
             mode_level: 0,
             cur_list: Vec::new(),
-            node_arena: crate::node_arena::NodeArena::new(),
+            lua_nodes: crate::lua_node::NodeStore::new(),
+            lua_cb: [0; crate::lua_callbacks::N_CALLBACKS],
+            lua_par_group: 0,
+            lua_par_lines: Default::default(),
             prev_depth: -1000 * 65536,
             space_factor: 1000,
             pdf_images: crate::FxHashMap::default(),
@@ -1055,6 +1068,7 @@ impl Engine {
             transparent_page_group: 0,
             transparent_page_group_written: false,
             pdf_warned_pagebox: false,
+            pdfe_memstreams: Default::default(),
             pdf_form_procsets: crate::FxHashMap::default(),
             pdf_snap_refpos: (0, 0),
             pdf_xforms: crate::FxHashMap::default(),
@@ -1065,8 +1079,14 @@ impl Engine {
             definable_cs_recovery_count: 0,
             engine_kind,
             lua: None,
+            lua_print_queue: Vec::new(),
+            lua_bytecodes: Default::default(),
+            lua_names: Default::default(),
+            local_level: 0,
+            lua_local_entered: false,
             ini_mode,
             format_ident: " (INITEX)".to_string(),
+            format_name: String::new(),
             job_name: String::new(),
             halt_on_error: false,
             interaction_mode: InteractionMode::ErrorStop,
@@ -1105,6 +1125,7 @@ impl Engine {
             pdf_fixed: None,
             out_file: None,
             font_loader: crate::fontload::FontLoader::new(),
+            lua_fonts: Default::default(),
             native_text: crate::native_layout::NativeTextState::default(),
             native_utf8_bytes: [0; 4],
             native_utf8_len: 0,
@@ -1187,6 +1208,7 @@ impl Engine {
             last_pack: None,
             read_eof: Vec::new(),
             read_files: Vec::new(),
+            read_readers: Vec::new(),
             loaded_files: Vec::new(),
             loaded_file_digests: Vec::new(),
             loaded_file_sizes: Vec::new(),
@@ -1206,9 +1228,6 @@ impl Engine {
             xetex_input_normalization: 0,
             xetex_dash_break_state: 0,
             asset_fingerprint: 0,
-            cur_catcode_table: 0,
-            catcode_tables: crate::FxHashMap::default(),
-            saved_catcode_tables: Vec::new(),
             align_preamble: Vec::new(),
             align_tabskip_0: crate::boxes::Glue::zero(),
             align_loop_start: None,
@@ -1267,6 +1286,7 @@ impl Engine {
             math_penalties: std::cell::Cell::new(false),
             math_diagnostic_sources: Vec::new(),
             math_diagnostic_depth: 0,
+            lm_cur_f: 0,
             reported_missing_math_atoms: crate::FxHashSet::default(),
             pre_display_size: -0x3FFF_FFFF,
             pre_display_l: 0,
@@ -1711,9 +1731,9 @@ impl Engine {
         d!(eng, b"kern", Kern);
         d!(eng, b"/", ItalicCorrection);
         d!(eng, b"mkern", MKern);
-        d!(eng, b"moveleft", HMove);
+        d!(eng, b"moveleft", HMoveLeft);
         d!(eng, b"moveright", HMove);
-        d!(eng, b"raise", VMove);
+        d!(eng, b"raise", VRaise);
         d!(eng, b"lower", VMove);
         d!(eng, b"hbox", HBox);
         d!(eng, b"vbox", VBox);
@@ -1909,8 +1929,6 @@ impl Engine {
         d!(eng, b"pdfnormaldeviate", PdfNormalDeviate);
         d!(eng, b"pdfrandomseed", PdfRandomSeed);
         d!(eng, b"pdfsetrandomseed", PdfSetRandomSeed);
-        d!(eng, b"randomseed", PdfRandomSeed);
-        d!(eng, b"setrandomseed", PdfSetRandomSeed);
         d!(eng, b"pdfpageref", PdfPageRef);
         d!(eng, b"pdffontname", PdfFontName);
         d!(eng, b"pdffontobjnum", PdfFontObjNum);
@@ -2050,8 +2068,8 @@ impl Engine {
         eng.eqtb.dim_params[DimParam::PdfPageWidth.idx() as usize] = 0;
         eng.eqtb.dim_params[DimParam::PdfPageHeight.idx() as usize] = 0;
         eng.init_xetex_primitives();
-        eng.init_luatex_primitives();
-        // pdfTeX / e-TeX engine primitives (prim codes 400-413).
+        // pdfTeX / e-TeX engine primitives (prim codes 400-413). Only the
+        // ones with implemented semantics are registered.
         d!(eng, b"ifpdfabsnum", IfPdfAbsNum);
         d!(eng, b"ifpdfabsdim", IfPdfAbsDim);
         d!(eng, b"quitvmode", QuitVMode);
@@ -2105,6 +2123,7 @@ impl Engine {
             }
         }
         eng.primitive_table = table;
+        eng.init_luatex_primitives();
     }
     /// SyncTeX records are taken while `\synctex` is nonzero (synctex.c
     /// `SYNCTEX_VALUE`).
@@ -2159,17 +2178,6 @@ impl Engine {
         }
         for t in ag {
             self.push_token(t);
-        }
-        while let Some(&(lvl, _, _, _)) = self.saved_catcode_tables.last() {
-            if lvl >= closing_level {
-                let (_, table, cat, ucat) = self.saved_catcode_tables.pop().unwrap();
-                self.cur_catcode_table = table;
-                self.eqtb.cat = cat;
-                self.eqtb.cat_levels.fill(crate::eqtb::LEVEL_ONE);
-                self.eqtb.unicode_cat_codes = ucat;
-            } else {
-                break;
-            }
         }
         self.forget_group_opening(closing_level);
         ty

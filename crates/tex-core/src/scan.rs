@@ -213,6 +213,14 @@ impl Engine {
         }
     }
 
+    /// LuaTeX `\gluestretchorder`/`\glueshrinkorder`: LuaTeX counts a
+    /// `fi` order below `fil`, so every infinite order is one higher than
+    /// e-TeX's.
+    fn scan_lua_glue_order(&mut self, p: Prim) -> i32 {
+        let order = self.scan_etex_glue_field(if p == Prim::LuaGlueStretchOrder { 2 } else { 3 });
+        if order > 0 { order + 1 } else { 0 }
+    }
+
     /// tex.web @<Scan an optional space@>: one expanding fetch; consume a
     /// space, otherwise back it up. After an alphabetic constant this is
     /// what drives expl3 f-expansion (`\romannumeral`^^@\foo` expands `\foo`).
@@ -465,9 +473,14 @@ impl Engine {
             }
             if t.is_cs() {
                 match self.cur_prim {
-                    Some(Prim::Count | Prim::Attribute) => {
+                    Some(Prim::Count) => {
                         let idx = self.scan_reg_num();
                         v = self.eqtb.count[idx as usize] as i64;
+                        break 'scan_loop;
+                    }
+                    Some(Prim::Attribute) => {
+                        let n = self.scan_attribute_num();
+                        v = i64::from(self.eqtb.attribute(n));
                         break 'scan_loop;
                     }
                     // tex.web §413: `\parshape` used as an integer is the
@@ -493,12 +506,20 @@ impl Engine {
                     }
                     Some(Prim::MathCode) => {
                         let c = self.scan_profile_character_code("\\mathcode");
-                        v = i64::from(self.eqtb.math_code_for(c));
+                        v = if self.engine_kind == EngineKind::LuaTeX {
+                            i64::from(self.eqtb.lua_math_code_num(c))
+                        } else {
+                            i64::from(self.eqtb.math_code_for(c))
+                        };
                         break 'scan_loop;
                     }
                     Some(Prim::DelCode) => {
                         let c = self.scan_profile_character_code("\\delcode");
-                        v = self.eqtb.delimiter_code_for(c);
+                        v = if self.engine_kind == EngineKind::LuaTeX {
+                            i64::from(self.eqtb.lua_del_code_num(c))
+                        } else {
+                            self.eqtb.delimiter_code_for(c)
+                        };
                         break 'scan_loop;
                     }
                     Some(Prim::LcCodeP) => {
@@ -586,6 +607,14 @@ impl Engine {
                     }
                     Some(Prim::GlueShrinkOrder) => {
                         v = self.scan_etex_glue_field(3) as i64;
+                        break 'scan_loop;
+                    }
+                    Some(p @ (Prim::LuaGlueStretchOrder | Prim::LuaGlueShrinkOrder)) => {
+                        v = self.scan_lua_glue_order(p) as i64;
+                        break 'scan_loop;
+                    }
+                    Some(Prim::EtxMinorVersion) => {
+                        v = 2;
                         break 'scan_loop;
                     }
                     Some(Prim::DimExpr) => {
@@ -728,12 +757,8 @@ impl Engine {
                         v = 124;
                         break 'scan_loop;
                     }
-                    Some(Prim::OutputMode) => {
-                        v = 1;
-                        break 'scan_loop;
-                    }
                     Some(Prim::CatCodeTable) => {
-                        v = self.cur_catcode_table as i64;
+                        v = self.eqtb.cat_table as i64;
                         break 'scan_loop;
                     }
                     Some(Prim::Skip) => {
@@ -748,6 +773,10 @@ impl Engine {
                     _ => match self.eqtb.resolve(t.cs_id()).cloned() {
                         Some(Equiv::CountReg(i)) => {
                             v = self.eqtb.count[i as usize] as i64;
+                            break 'scan_loop;
+                        }
+                        Some(Equiv::AttributeReg(n)) => {
+                            v = i64::from(self.eqtb.attribute(u32::from(n)));
                             break 'scan_loop;
                         }
                         Some(Equiv::CharDef(c)) => {
@@ -781,6 +810,16 @@ impl Engine {
                         Some(Equiv::Prim(Prim::IntP(p))) => {
                             v = self.fetch_int_param(p) as i64;
                             break 'scan_loop;
+                        }
+                        Some(Equiv::UMathCharDef(c)) => {
+                            v = c as i64;
+                            break 'scan_loop;
+                        }
+                        Some(Equiv::Prim(p @ (Prim::U(_) | Prim::UMath(_)))) => {
+                            if let Some(internal) = self.uprim_internal(p) {
+                                v = internal.as_int() as i64;
+                                break 'scan_loop;
+                            }
                         }
                         _ => {}
                     },
@@ -980,6 +1019,22 @@ impl Engine {
         }
     }
 
+    /// LuaTeX attribute register number (0..=65535).
+    pub(crate) fn scan_attribute_num(&mut self) -> u32 {
+        let (n, source) = self.scan_int_with_source();
+        let max = crate::eqtb::MAX_ATTRIBUTE;
+        if !(0..=max).contains(&n) {
+            self.error_at(
+                &format!(
+                    "Register number {n} is out of range; expected a number from 0 through {max}"
+                ),
+                source,
+            );
+            return 0;
+        }
+        n as u32
+    }
+
     pub fn scan_reg_num(&mut self) -> u16 {
         let (n, origin) = self.scan_int_with_origin();
         let max = self.eqtb.count.len() as i32 - 1;
@@ -1068,6 +1123,14 @@ impl Engine {
 
     pub(crate) fn scan_math_family(&mut self, command: &str) -> usize {
         let (family, origin) = self.scan_int_with_origin();
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            // scanning.c `scan_limited_int(255, "math family")`
+            if (0..=255).contains(&family) {
+                return family as usize;
+            }
+            self.error(&format!("Bad math family ({family})"));
+            return 0;
+        }
         if (0..=15).contains(&family) {
             family as usize
         } else {
@@ -1093,13 +1156,28 @@ impl Engine {
         r
     }
 
-    fn scan_math_style_param(&mut self) {
-        self.skip_spaces_relax();
-        let tok = self.get_token();
-        if tok.is_char() && tok.chr() >= u32::from(b'0') && tok.chr() <= u32::from(b'9') {
-            self.push_token(tok);
-            let _ = self.scan_int();
+    /// luatex `set_math_param_cmd` operand: a math style token (`get_token`,
+    /// not expanded). Anything else is an error that reads as `\displaystyle`.
+    pub(crate) fn scan_math_style(&mut self) -> u8 {
+        let tok = self.raw_token();
+        if tok.is_cs() {
+            if let Some(Equiv::Prim(p)) = self.eqtb.resolve(tok.cs_id()) {
+                match p {
+                    Prim::DisplayStyle => return 0,
+                    Prim::TextStyle => return 2,
+                    Prim::ScriptStyle => return 4,
+                    Prim::ScriptScriptStyle => return 6,
+                    Prim::U(crate::uprim::UPrim::CrampedDisplayStyle) => return 1,
+                    Prim::U(crate::uprim::UPrim::CrampedTextStyle) => return 3,
+                    Prim::U(crate::uprim::UPrim::CrampedScriptStyle) => return 5,
+                    Prim::U(crate::uprim::UPrim::CrampedScriptScriptStyle) => return 7,
+                    _ => {}
+                }
+            }
         }
+        self.error("Missing math style, treated as \\displaystyle");
+        self.push_token(tok);
+        0
     }
 
     /// `inf`: fil/fill/filll units are allowed (glue stretch and shrink).
@@ -1330,28 +1408,40 @@ impl Engine {
                             .unwrap_or(0),
                     );
                 }
-                Some(Prim::Umathfractiondelsize) => {
-                    self.scan_math_style_param();
-                    int_part = 1;
-                    frac_f = 0;
-                    direct = Some(20 * 65536);
-                }
-                Some(Prim::Umathstacknumup | Prim::Umathstackdenomdown) => {
-                    self.scan_math_style_param();
-                    int_part = 1;
-                    frac_f = 0;
-                    direct = Some(6 * 65536);
-                }
-                Some(Prim::Umathstackvgap) => {
-                    self.scan_math_style_param();
-                    int_part = 1;
-                    frac_f = 0;
-                    direct = Some(2 * 65536);
-                }
-                Some(Prim::Count | Prim::Attribute) => {
+                Some(p @ (Prim::U(_) | Prim::UMath(_))) => match self.uprim_internal(p) {
+                    Some(crate::uprims::UInternal::Dimen(value)) => {
+                        int_part = 1;
+                        frac_f = 0;
+                        direct = Some(value);
+                    }
+                    Some(crate::uprims::UInternal::Glue(g)) => {
+                        int_part = 1;
+                        frac_f = 0;
+                        direct = Some(g.width);
+                    }
+                    Some(crate::uprims::UInternal::Int(n)) => {
+                        int_part = i64::from(n);
+                        frac_f = 0;
+                        direct = None;
+                    }
+                    None => {
+                        self.push_token(t);
+                        self.error("Missing number, treated as zero");
+                        int_part = 0;
+                        frac_f = 0;
+                        direct = None;
+                    }
+                },
+                Some(Prim::Count) => {
                     // internal integer coerced to dimen (sp), tex.web scan_something_internal
                     let i = self.scan_reg_num();
                     int_part = self.eqtb.count[i as usize] as i64;
+                    frac_f = 0;
+                    direct = None;
+                }
+                Some(Prim::Attribute) => {
+                    let n = self.scan_attribute_num();
+                    int_part = i64::from(self.eqtb.attribute(n));
                     frac_f = 0;
                     direct = None;
                 }
@@ -1382,6 +1472,11 @@ impl Engine {
                         frac_f = 0;
                         direct = None;
                     }
+                    Some(Equiv::AttributeReg(n)) => {
+                        int_part = i64::from(self.eqtb.attribute(u32::from(n)));
+                        frac_f = 0;
+                        direct = None;
+                    }
                     Some(Equiv::CharDef(c)) => {
                         int_part = c as i64;
                         frac_f = 0;
@@ -1391,6 +1486,11 @@ impl Engine {
                         // \@m/\@M constants (\mathchardef'd); \offinterlineskip
                         // computes \baselineskip-\@m\p@ through this path.
                         int_part = c as i64;
+                        frac_f = 0;
+                        direct = None;
+                    }
+                    Some(Equiv::UMathCharDef(c)) => {
+                        int_part = i64::from(c);
                         frac_f = 0;
                         direct = None;
                     }
@@ -1628,11 +1728,16 @@ impl Engine {
                 self.eqtb.dimen[i as usize]
             }
             Some(Equiv::DimenReg(i)) => self.eqtb.dimen[i as usize],
-            Some(Equiv::Prim(Prim::Count | Prim::Attribute)) => {
+            Some(Equiv::Prim(Prim::Count)) => {
                 let i = self.scan_reg_num();
                 self.eqtb.count[i as usize]
             }
             Some(Equiv::CountReg(i)) => self.eqtb.count[i as usize],
+            Some(Equiv::Prim(Prim::Attribute)) => {
+                let n = self.scan_attribute_num();
+                self.eqtb.attribute(n)
+            }
+            Some(Equiv::AttributeReg(n)) => self.eqtb.attribute(u32::from(n)),
             _ => {
                 self.push_token(t);
                 return None;
@@ -2043,8 +2148,16 @@ impl Engine {
                 emit_the!(c.to_string().as_bytes());
                 return;
             }
+            Some(Equiv::UMathCharDef(c)) => {
+                emit_the!(c.to_string().as_bytes());
+                return;
+            }
             Some(Equiv::CountReg(i)) => {
                 emit_the!(self.eqtb.count[i as usize].to_string().as_bytes());
+                return;
+            }
+            Some(Equiv::AttributeReg(n)) => {
+                emit_the!(self.eqtb.attribute(u32::from(n)).to_string().as_bytes());
                 return;
             }
             Some(Equiv::DimenReg(i)) => {
@@ -2087,9 +2200,13 @@ impl Engine {
                 let s = crate::random::microinterval(self.timer_start).to_string();
                 emit_the!(s.as_bytes());
             }
-            Some(Prim::Count | Prim::Attribute) => {
+            Some(Prim::Count) => {
                 let idx = self.scan_reg_num();
                 emit_the!(self.eqtb.count[idx as usize].to_string().as_bytes());
+            }
+            Some(Prim::Attribute) => {
+                let n = self.scan_attribute_num();
+                emit_the!(self.eqtb.attribute(n).to_string().as_bytes());
             }
             Some(Prim::DimP(p)) => {
                 // An improper \prevdepth yields the integer 0 (tex.web §418:
@@ -2120,11 +2237,19 @@ impl Engine {
             }
             Some(Prim::MathCode) => {
                 let c = self.scan_profile_character_code("\\mathcode");
-                emit_the!(self.eqtb.math_code_for(c).to_string().as_bytes());
+                if self.engine_kind == EngineKind::LuaTeX {
+                    emit_the!(self.eqtb.lua_math_code_num(c).to_string().as_bytes());
+                } else {
+                    emit_the!(self.eqtb.math_code_for(c).to_string().as_bytes());
+                }
             }
             Some(Prim::DelCode) => {
                 let c = self.scan_profile_character_code("\\delcode");
-                emit_the!(self.eqtb.delimiter_code_for(c).to_string().as_bytes());
+                if self.engine_kind == EngineKind::LuaTeX {
+                    emit_the!(self.eqtb.lua_del_code_num(c).to_string().as_bytes());
+                } else {
+                    emit_the!(self.eqtb.delimiter_code_for(c).to_string().as_bytes());
+                }
             }
             Some(Prim::LcCodeP) => {
                 let c = self.scan_profile_character_code("\\lccode");
@@ -2173,18 +2298,18 @@ impl Engine {
                 let v = self.test_no_ligatures(f as u16);
                 emit_the!(v.to_string().as_bytes());
             }
-            Some(Prim::Umathfractiondelsize) => {
-                self.scan_math_style_param();
-                emit_the!(b"20.0pt");
-            }
-            Some(Prim::Umathstacknumup | Prim::Umathstackdenomdown) => {
-                self.scan_math_style_param();
-                emit_the!(b"6.0pt");
-            }
-            Some(Prim::Umathstackvgap) => {
-                self.scan_math_style_param();
-                emit_the!(b"2.0pt");
-            }
+            Some(p @ (Prim::U(_) | Prim::UMath(_))) => match self.uprim_internal(p) {
+                Some(crate::uprims::UInternal::Int(n)) => emit_the!(n.to_string().as_bytes()),
+                Some(crate::uprims::UInternal::Dimen(value)) => {
+                    let s = self.scaled_to_string(value);
+                    emit_the!(s.as_bytes());
+                }
+                Some(crate::uprims::UInternal::Glue(g)) => {
+                    let s = self.mu_glue_to_string(&g);
+                    emit_the!(s.as_bytes());
+                }
+                None => self.error("You can't use `\\the' after that"),
+            },
             Some(
                 p @ (Prim::EfCode
                 | Prim::LpCode
@@ -2304,11 +2429,8 @@ impl Engine {
             Some(Prim::LuaTeXBanner) => {
                 emit_the!(b"This is LuaTeX, Version 1.24.0");
             }
-            Some(Prim::OutputMode) => {
-                emit_the!(b"1");
-            }
             Some(Prim::CatCodeTable) => {
-                emit_the!(self.cur_catcode_table.to_string().as_bytes());
+                emit_the!(self.eqtb.cat_table.to_string().as_bytes());
             }
             Some(Prim::XeTeXCharClass) => {
                 let v = self.scan_xetex_charclass_val();
@@ -2379,6 +2501,13 @@ impl Engine {
             Some(Prim::GlueShrinkOrder) => {
                 let v = self.scan_etex_glue_field(3);
                 emit_the!(v.to_string().as_bytes());
+            }
+            Some(p @ (Prim::LuaGlueStretchOrder | Prim::LuaGlueShrinkOrder)) => {
+                let v = self.scan_lua_glue_order(p);
+                emit_the!(v.to_string().as_bytes());
+            }
+            Some(Prim::EtxMinorVersion) => {
+                emit_the!(b"2");
             }
             Some(Prim::Ht) => {
                 let n = self.scan_reg_num();
@@ -2465,6 +2594,9 @@ impl Engine {
                 Some(Equiv::CountReg(i)) => {
                     emit_the!(self.eqtb.count[i as usize].to_string().as_bytes());
                 }
+                Some(Equiv::AttributeReg(n)) => {
+                    emit_the!(self.eqtb.attribute(u32::from(n)).to_string().as_bytes());
+                }
                 Some(Equiv::CharDef(c)) => {
                     emit_the!((c as i32).to_string().as_bytes());
                 }
@@ -2537,6 +2669,17 @@ impl Engine {
                     _ => "undefined".to_string(),
                 };
             }
+            // luatex mac_param_cmd / tab_mark_cmd with the `tab_mark_cmd_code`
+            // character: `\alignmark` and `\aligntab`
+            if matches!(cat, 4 | 6) && c == crate::token::ALIGN_PRIM_CHR {
+                let esc = self.eqtb.int_params[crate::prim::IntParam::EscapeChar.idx() as usize];
+                let mut s = String::new();
+                if (0..=255).contains(&esc) {
+                    s.push_str(&crate::tex_bytes::bytes_to_text(&[esc as u8]));
+                }
+                s.push_str(if cat == 6 { "alignmark" } else { "aligntab" });
+                return s;
+            }
             let word = match cat {
                 0 => "escape character ",
                 1 => "begin-group character ",
@@ -2605,16 +2748,42 @@ impl Engine {
                 s.push_str(&self.tokens_to_text(&m.body));
                 s
             }
-            Some(Equiv::Prim(p)) => format!("{}{}", esc_str, self.prim_name(p)),
+            Some(Equiv::Prim(p)) => {
+                // tex.web print_meaning: \topmark.. show their current text
+                let mark = match p {
+                    Prim::TopMark => Some(0),
+                    Prim::FirstMark => Some(1),
+                    Prim::BotMark => Some(2),
+                    Prim::SplitFirstMark => Some(3),
+                    Prim::SplitBotMark => Some(4),
+                    _ => None,
+                };
+                match mark {
+                    Some(which) => format!(
+                        "{}{}:{}",
+                        esc_str,
+                        self.prim_name(p),
+                        self.tokens_to_text(&self.mark_tokens_class(which, 0))
+                    ),
+                    None => format!("{}{}", esc_str, self.prim_name(p)),
+                }
+            }
+            Some(Equiv::LuaCall { slot, protected: false }) => format!("expandable luacall {slot}"),
+            Some(Equiv::LuaCall { slot, protected: true }) => format!("luacall {slot}"),
             Some(Equiv::CharDef(c)) => format!("{}char\"{:X}", esc_str, c),
             Some(Equiv::MathCharDef(c)) => format!("{}mathchar\"{:X}", esc_str, c),
             Some(Equiv::FontRef(f)) => format!("select font {}", self.font_display_name(f)),
             Some(Equiv::CountReg(i)) => format!("{}count{}", esc_str, i),
+            Some(Equiv::AttributeReg(i)) => format!("{}attribute{}", esc_str, i),
             Some(Equiv::DimenReg(i)) => format!("{}dimen{}", esc_str, i),
             Some(Equiv::SkipReg(i)) => format!("{}skip{}", esc_str, i),
             Some(Equiv::MuSkipReg(i)) => format!("{}muskip{}", esc_str, i),
             Some(Equiv::ToksReg(i)) => format!("{}toks{}", esc_str, i),
             Some(Equiv::BoxReg(i)) => format!("{}box{}", esc_str, i),
+            Some(Equiv::UMathCharDef(v)) => {
+                let (class, family, slot) = crate::uprims::decode_umath_num(v);
+                format!("{}Umathchar\"{:X}\"{:02X}\"{:06X}", esc_str, class, family, slot)
+            }
             Some(Equiv::Alias(_)) => format!("{}{}", esc_str, name),
         }
     }
@@ -2801,7 +2970,10 @@ impl Engine {
             return 0;
         }
         match self.eqtb.resolve(t.cs_id()).cloned() {
-            Some(Equiv::FontRef(f)) => f,
+            Some(Equiv::FontRef(f)) => {
+                self.lua_touch_font(f);
+                f
+            }
             Some(Equiv::Prim(Prim::Font)) => {
                 // \font refers to current font
                 self.eqtb.cur_font_val
@@ -2820,7 +2992,9 @@ impl Engine {
                     Prim::ScriptFont => 1,
                     _ => 2,
                 };
-                self.eqtb.style_fonts[slot][fam]
+                let f = self.eqtb.style_fonts[slot][fam];
+                self.lua_touch_font(f);
+                f
             }
             _ => {
                 self.error(&format!(

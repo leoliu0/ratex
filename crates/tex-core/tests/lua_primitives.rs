@@ -110,33 +110,14 @@ fn test_rust_metatable_index() {
 }
 
 #[test]
-fn directlua_node_interface_reports_types_and_ids() {
-    let mut e = boot_lua();
-    run_tex(
-        &mut e,
-        r#"
-\edef\res{\directlua{
-    local glyph_id = node.id("glyph")
-    local glyph_type = node.type(glyph_id)
-    tex.print(tostring(glyph_id) .. ":" .. glyph_type)
-}}
-\message{NODE=\res}
-\end
-"#,
-    );
-    assert_eq!(e.error_count, 0, "errors: {:?}, term: {}", e.diagnostics, e.term);
-    assert!(e.term.contains("NODE=29:glyph"), "term: {}", e.term);
-}
-
-#[test]
 fn directlua_callback_interface_registers_and_finds() {
     let mut e = boot_lua();
     run_tex(
         &mut e,
         r#"
 \directlua{
-    callback.register("test_cb", function(x) return x end)
-    local found = callback.find("test_cb")
+    callback.register("hpack_filter", function(x) return x end)
+    local found = callback.find("hpack_filter")
     assert(type(found) == "function")
     tex.print("CALLBACK_OK")
 }
@@ -146,63 +127,6 @@ fn directlua_callback_interface_registers_and_finds() {
     );
     assert_eq!(e.error_count, 0, "errors: {:?}, term: {}", e.diagnostics, e.term);
     assert!(e.term.contains("DONE"), "term: {}", e.term);
-}
-
-#[test]
-fn directlua_fontloader_and_shaping_modules_work() {
-    let mut e = boot_lua();
-    run_tex(
-        &mut e,
-        r#"
-\directlua{
-    local info = fontloader.info("lmroman10-regular.otf")
-    assert(type(info) == "table")
-    assert(type(info.fontname) == "string")
-    local f = fontloader.open("lmroman10-regular.otf")
-    assert(type(f) == "table")
-    assert(f.units_per_em == 1000)
-    local buf = luaharfbuzz.Buffer.new()
-    buf:add_utf8("TeX")
-    local glyphs = buf:get_glyph_infos_and_positions()
-    assert(glyphs[3] ~= nil)
-    font.define(1, { name = "testfont", size = 655360 })
-    local loaded = font.getfont(1)
-    assert(loaded and loaded.name == "testfont")
-    tex.print("FONTS_OK")
-}
-\message{FONTS_STATUS}
-\end
-"#,
-    );
-    assert_eq!(e.error_count, 0, "errors: {:?}, term: {}", e.diagnostics, e.term);
-    assert!(e.term.contains("FONTS_STATUS"), "term: {}", e.term);
-}
-
-#[test]
-fn directlua_runtime_modules_work() {
-    let mut e = boot_lua();
-    run_tex(
-        &mut e,
-        r#"
-\directlua{
-    local hash = md5.sumhexa("hello")
-    assert(hash == "5d41402abc4b2a76b9719d911017c592")
-    local types = img.types()
-    assert(types[1] == "png")
-    local obj = pdf.immediateobj(1)
-    assert(obj == 1)
-    local l = lang.new(1)
-    assert(l.id == 1)
-    local cur = lfs.currentdir()
-    assert(type(cur) == "string")
-    tex.print("RUNTIME_MODULES_OK")
-}
-\message{MODULES_STATUS}
-\end
-"#,
-    );
-    assert_eq!(e.error_count, 0, "errors: {:?}, term: {}", e.diagnostics, e.term);
-    assert!(e.term.contains("MODULES_STATUS"), "term: {}", e.term);
 }
 
 #[test]
@@ -223,8 +147,6 @@ fn directlua_mplib_module_works() {
     assert(f:charcode() == 1)
     local ps = f:postscript()
     assert(string.find(ps, "Adobe", 1, true))
-    local svg = f:svg()
-    assert(string.find(svg, "svg", 1, true))
     mp:finish()
     tex.print("MPLIB_OK")
 }

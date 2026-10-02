@@ -1,0 +1,35 @@
+list	glyph:0[97] glyph:0[98] glue:0[10] kern:0[5] glyph:0[99] penalty:0[100]
+length	6	5	5	0
+count glyph	3	1	3	2
+tail	true	nil	true
+copy_list	glyph:0[97] glyph:0[98] glue:0[10] kern:0[5] glyph:0[99] penalty:0[100]	true
+copy_list to	glyph:0[97] glyph:0[98]
+copy	glyph:0[97]	nil
+insert_before	glyph:0[97] kern:0[1] glyph:0[98] glue:0[10] kern:0[5] glyph:0[99] penalty:0[100]	true
+insert_after	glyph:0[97] kern:0[1] glyph:0[98] glue:0[10] kern:0[5] glyph:0[99] penalty:0[100] kern:0[2]	true
+insert_before head	penalty:0[0] glyph:0[97] kern:0[1] glyph:0[98] glue:0[10] kern:0[5] glyph:0[99] penalty:0[100] kern:0[2]	penalty
+insert_after nil	penalty:0[7]	true
+remove	penalty:0[0] kern:0[1] glyph:0[98] glue:0[10] kern:0[5] glyph:0[99] penalty:0[100] kern:0[2]	kern	29	14
+remove tail	penalty:0[0] kern:0[1] glyph:0[98] glue:0[10] kern:0[5] glyph:0[99] penalty:0[100]	nil
+remove head	kern:0[1] glyph:0[98] glue:0[10] kern:0[5] glyph:0[99] penalty:0[100]	13
+has_glyph	98
+has_glyph none	nil
+first_glyph	nil
+traverse	13/0 29/0 12/0 13/0 29/0 14/0
+traverse_id	98/0 99/0
+traverse_char	98/0 99/0
+traverse_glyph	98/0 99/0
+traverse_list	0
+traverse_list2	0/13
+getnext/prev	true	nil	nil
+getboth	true	true
+flush_list
+free	nil
+free next	true
+usedlist	userdata
+end_of_math
+end_of_math	true
+is_node	true	false	false	false
+is_zero_glue	true	true
+is_zero_glue2	false
+false	glue (spec) or list expected

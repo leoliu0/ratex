@@ -1230,6 +1230,22 @@ impl Engine {
         // tex.web hpack @12956/13006-13016: the natural-width pack of a
         // cell transfers every \vadjust node out of its hlist onto the
         // alignment level's adjustment list (cur_tail), in source order.
+        // luatex fin_col: `filtered_hpack` runs the text passes and the
+        // `hpack_filter` (group `align_set`, no direction) on the cell
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX && !self.align_is_valign {
+            let list = std::mem::take(&mut inner);
+            let list = self.lua_text_passes(list);
+            inner = self.lua_pack_filter(
+                crate::lua_callbacks::Cb::HpackFilter,
+                "hpack filter",
+                "align_set",
+                0,
+                false,
+                None,
+                None,
+                list,
+            );
+        }
         self.align_collect_adjustments(&mut inner);
         let col = self.align_cur_col as usize;
         let span = self.align_cur_row.get(col).map(|c| c.span).unwrap_or(0);
@@ -1274,7 +1290,9 @@ impl Engine {
         // Closing \noalign while a paragraph is running forces \par first,
         // breaking the paragraph into lines and restoring mode to InternalVertical.
         if self.mode == Mode::Horizontal {
+            let saved = std::mem::replace(&mut self.lua_par_group, 7);
             self.par_primitive(Token::from_cs(self.ids.par));
+            self.lua_par_group = saved;
         }
         let Some((inner, end_pd)) = self.align_pop_cell_group() else {
             return;
@@ -1295,6 +1313,7 @@ impl Engine {
                 glue_order: 0,
                 glue_set: 0.0,
                 lr: 0,
+                dir: 0,
             };
             self.align_rows.push(vec![Cell {
                 packed: Some(node),
@@ -1523,6 +1542,7 @@ impl Engine {
             glue_order: 0,
             glue_set: 0.0,
             lr: 0,
+            dir: 0,
         };
         let mut preamble: NodeList = Vec::with_capacity(2 * ncols + 1);
         preamble.push(Node::Glue(t0));
@@ -1556,7 +1576,7 @@ impl Engine {
         // is packaged ("in alignment at lines a--b")
         let align_line = origin.as_ref().map_or(0, |mark| mark.to_context().line as i32);
         let saved_begin = std::mem::replace(&mut self.pack_begin_line, -align_line);
-        self.report_pack_warnings_at(&res, origin);
+        self.report_pack_warnings_at(&mut res, origin);
         self.pack_begin_line = saved_begin;
         let (p_size, p_sign, p_order, p_set) = match &res.node {
             Node::Box {
@@ -1692,6 +1712,7 @@ impl Engine {
                 glue_order: p_order,
                 glue_set: p_set,
                 lr: if display { crate::boxes::BOX_LR_DLIST } else { 0 },
+                dir: 0,
             };
             // pdftex.web fin_row: the row's `\vadjust pre` material joins
             // the vertical list in front of the row (and its interline glue)
@@ -1768,6 +1789,7 @@ impl Engine {
                     self.prev_depth = self.ignore_depth();
                 }
                 self.page_list.extend(rows);
+                self.lua_page_filter(crate::lua_callbacks::page_info::ALIGNMENT, true);
                 self.build_page();
             }
             Mode::InternalVertical => {

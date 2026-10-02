@@ -230,7 +230,7 @@ impl FontLoader {
         }
     }
 
-    fn read_dependency(&mut self, name: &str, format: tex_kpse::Format) -> Option<Vec<u8>> {
+    pub(crate) fn read_dependency(&mut self, name: &str, format: tex_kpse::Format) -> Option<Vec<u8>> {
         let resolved = self.kpse.find(name, format);
         self.record_lookup_dependency(name, format, resolved.as_deref());
         if let Some(path) = resolved {
@@ -285,6 +285,31 @@ impl FontLoader {
             .map(|data| String::from_utf8_lossy(&data).into_owned())
     }
 
+    /// Give `font` the Type 1 program, encoding and PostScript name the
+    /// pdfTeX map file assigns to the TFM `name`.
+    pub(crate) fn apply_map_entry(&mut self, font: &mut Font, name: &str) -> Option<MapEntry> {
+        self.ensure_map();
+        let map_entry = self.map.get(name);
+        if let Some(me) = &map_entry {
+            font.map_fontname = (!me.fontname.is_empty()).then(|| me.fontname.clone());
+            if let Some(enc) = &me.enc_file {
+                font.enc_name = Some(enc.clone());
+                font.encoding = self.load_enc(enc);
+            } else if let Some(en) = &me.enc_name {
+                // no explicit vector file: try the named encoding as
+                // <name>.enc (e.g. TeXBase1Encoding alongside <8r.enc)
+                if let Some(e) = self.load_enc(en) {
+                    font.enc_name = Some(en.clone());
+                    font.encoding = Some(e);
+                }
+            }
+            if let Some(pfb) = &me.pfb {
+                font.type1_path = Some(pfb.clone());
+            }
+        }
+        map_entry
+    }
+
     pub fn load_tfm(&mut self, name: &str, at: i32) -> Option<Rc<Font>> {
         self.ensure_map();
         let key = (name.to_string(), at);
@@ -310,24 +335,7 @@ impl FontLoader {
                 return None;
             };
         let mut font = parse_tfm(&data, resolved_name, at).ok()?;
-        let map_entry = self.map.get(resolved_name);
-        if let Some(me) = &map_entry {
-            font.map_fontname = (!me.fontname.is_empty()).then(|| me.fontname.clone());
-            if let Some(enc) = &me.enc_file {
-                font.enc_name = Some(enc.clone());
-                font.encoding = self.load_enc(enc);
-            } else if let Some(en) = &me.enc_name {
-                // no explicit vector file: try the named encoding as
-                // <name>.enc (e.g. TeXBase1Encoding alongside <8r.enc)
-                if let Some(e) = self.load_enc(en) {
-                    font.enc_name = Some(en.clone());
-                    font.encoding = Some(e);
-                }
-            }
-            if let Some(pfb) = &me.pfb {
-                font.type1_path = Some(pfb.clone());
-            }
-        }
+        let map_entry = self.apply_map_entry(&mut font, resolved_name);
         // Virtual font support: when this TFM has no usable physical font
         // of its own (no map entry / no resolvable pfb, or the map points
         // at a .vf) but a same-stem .vf exists, glyph rendering is
@@ -394,6 +402,14 @@ impl FontLoader {
     pub fn read_program_bytes(&mut self, name: &str) -> Option<Rc<Vec<u8>>> {
         if let Some(data) = self.file_bytes_cache.get(name) {
             return Some(data.clone());
+        }
+
+        // 0. A path in the embedded archive's virtual tree (`kpse.find_file`
+        // reports bundled fonts that way).
+        if tex_kpse::embedded_tree::is_embedded_path(name) {
+            let data = Rc::new(tex_kpse::embedded_tree::read(name)?);
+            self.file_bytes_cache.insert(name.to_string(), data.clone());
+            return Some(data);
         }
 
         // 1. Direct filesystem read (handles project files, relative/absolute paths, MemoryFs)
@@ -724,6 +740,11 @@ impl FontLoader {
         &mut self,
         font: &crate::tfm::Font,
     ) -> Result<Rc<crate::font_program::FontProgram>, String> {
+        if let Some(lua) = font.lua.as_ref().filter(|lua| lua.filename.is_some()) {
+            if lua.pdf_kind() == crate::lua_font::LuaPdfKind::Cid {
+                return self.lua_font_program(lua);
+            }
+        }
         if crate::native_font::is_native_font_spec(&font.tfm_name) {
             let (selector, options) = crate::native_font::parse_native_font_spec(&font.tfm_name)?;
             return Ok(self.resolve_native_font(&selector, &options)?.program);
@@ -1486,6 +1507,7 @@ impl Engine {
             enc_name: None,
             map_fontname: None,
             encoding: None,
+            lua: None,
         };
         self.eqtb.fonts.push(std::rc::Rc::new(nf));
         self.eqtb.font_params.push(Vec::new());
@@ -1519,6 +1541,10 @@ impl Engine {
         let Some(name) = self.scan_font_name(declaration_source.as_ref()) else {
             return;
         };
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            self.lua_font_definition(&name, cs, declaration_source, global);
+            return;
+        }
         let mut at = 0i32;
         if self.scan_keyword(b"at") {
             at = self.scan_dimen(false, false);
@@ -1546,6 +1572,13 @@ impl Engine {
         let first = self.get_x_raw();
         if first == crate::input::EOF_MARKER {
             return Some(String::new());
+        }
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX && first.is_char() && first.cc() == 1 {
+            // luatex `tex_def_font`: `\font\x={name with spaces}`
+            self.push_token(first);
+            let toks = self.scan_general_text();
+            let bytes = self.tokens_to_bytes(&toks);
+            return Some(String::from_utf8_lossy(&bytes).into_owned());
         }
         if first.is_char() && first.chr() == b'"' as u32 {
             // Quoted font name: \font\f="[FontFile.otf]:features" or "Font Name"
@@ -1721,6 +1754,7 @@ impl Engine {
                 enc_name: None,
                 map_fontname: Some(program.postscript_name.clone()),
                 encoding: None,
+                lua: None,
             };
 
             let native_font = crate::native_font::NativeFont {

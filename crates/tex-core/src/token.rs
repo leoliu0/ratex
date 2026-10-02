@@ -107,6 +107,11 @@ impl Token {
     }
 }
 
+/// The character code of LuaTeX's `\alignmark` (a catcode 6 token) and
+/// `\aligntab` (catcode 4): `tab_mark_cmd_code`, outside Unicode, so they act
+/// as `#` and `&` in a template or macro parameter but print as themselves.
+pub const ALIGN_PRIM_CHR: u32 = 0x11_0001;
+
 pub type CsId = u32;
 
 pub const MAX_HASH_NAMES: usize = 2_097_152;

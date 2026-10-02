@@ -19,29 +19,7 @@ const TEXMK_CACHE_HIT_MARKER_ENV: &str = "TEX_RS_CACHE_HIT_MARKER";
 const TEXMK_PUBLISHED_OUTPUT_ENV: &str = "TEX_RS_TEXMK_PUBLISHED_OUTPUT";
 const DEPCACHE_END_DOMAIN: &[u8] = b"TEX-DEPCACHE-7-END";
 
-fn platform_cache_dir() -> std::path::PathBuf {
-    if let Some(dir) = std::env::var_os("TEX_RS_CACHE_DIR").filter(|value| !value.is_empty()) {
-        return std::path::PathBuf::from(dir);
-    }
-    #[cfg(target_os = "windows")]
-    if let Some(dir) = std::env::var_os("LOCALAPPDATA").filter(|value| !value.is_empty()) {
-        return std::path::PathBuf::from(dir).join("tex-rs").join("cache");
-    }
-    #[cfg(target_os = "macos")]
-    if let Some(home) = std::env::var_os("HOME").filter(|value| !value.is_empty()) {
-        return std::path::PathBuf::from(home)
-            .join("Library")
-            .join("Caches")
-            .join("tex-rs");
-    }
-    if let Some(dir) = std::env::var_os("XDG_CACHE_HOME").filter(|value| !value.is_empty()) {
-        return std::path::PathBuf::from(dir).join("tex-rs");
-    }
-    if let Some(home) = std::env::var_os("HOME").filter(|value| !value.is_empty()) {
-        return std::path::PathBuf::from(home).join(".cache").join("tex-rs");
-    }
-    std::env::temp_dir().join("tex-rs-cache")
-}
+use tex_kpse::platform_cache_dir;
 
 fn absolute_path(path: &std::path::Path) -> std::path::PathBuf {
     let joined = if path.is_absolute() {
@@ -2491,6 +2469,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     });
     let aux_start = snapshot_aux_state(&job, &aux_dir);
     let cache_root = requested_cache_dir.unwrap_or_else(platform_cache_dir);
+    tex_core::set_cache_dir(absolute_path(&cache_root));
     let published_outputs = texmk_published_outputs(&cache_root, synctex_mode.extension());
     let private_cache = depcache_path(
         &cache_root,
@@ -2554,9 +2533,6 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     };
     let mut eng = Engine::new_with_kind(engine_kind, ini || !plain);
     eng.init_primitives();
-    if engine_kind == tex_core::engine::EngineKind::LuaTeX {
-        eng.init_luatex_primitives();
-    }
     eng.allow_missing_main_aux = !plain && !ini;
     configure_engine(&mut eng, halt_on_error, interaction_mode, max_errors);
     phase_timer.mark("startup");
@@ -2603,9 +2579,6 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
                             );
                             eng = Engine::new_with_kind(engine_kind, ini || !plain);
                             eng.init_primitives();
-                            if engine_kind == tex_core::engine::EngineKind::LuaTeX {
-                                eng.init_luatex_primitives();
-                            }
                             configure_engine(&mut eng, halt_on_error, interaction_mode, max_errors);
                             eng.out_dir = out_dir.clone();
                             eng.aux_dir = requested_aux_dir.clone();
@@ -2618,6 +2591,10 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
                             break;
                         }
                         loaded = true;
+                        // LuaTeX `\formatname`: the format's base name.
+                        if let Some(stem) = cand.file_stem().and_then(|s| s.to_str()) {
+                            eng.format_name = stem.trim_end_matches(".fmt").to_string();
+                        }
                         eng.loaded_files.push(cand.clone());
                         finalize_format_load(&mut eng);
                         break;

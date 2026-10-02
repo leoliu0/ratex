@@ -147,8 +147,15 @@ impl Engine {
         self.end_char_chain();
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => {
-                let g = self.interword_glue();
-                self.cur_list.push(Node::Glue(g));
+                // luatex run_app_space: \nospaces 1 appends nothing, 2 a zero glue
+                match self.eqtb.int_params[IntParam::NoSpaces.idx() as usize] {
+                    1 => {}
+                    2 => self.cur_list.push(Node::Glue(Glue::zero())),
+                    _ => {
+                        let g = self.interword_glue();
+                        self.cur_list.push(Node::Glue(g));
+                    }
+                }
             }
             Mode::Vertical | Mode::InternalVertical => {
                 // spaces are ignored in vertical mode
@@ -199,6 +206,11 @@ impl Engine {
         }
         g.stretch = crate::scaled::xn_over_d(g.stretch, sf as i32, 1000);
         g.shrink = crate::scaled::xn_over_d(g.shrink, 1000, sf as i32);
+        // luatex run_app_space / app_space: every text space is typed
+        // `spaceskip` (`space_skip_code + 1`)
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            g.subtype = glue_subtype::SPACE_SKIP;
+        }
         g
     }
 
@@ -209,6 +221,16 @@ impl Engine {
     pub fn ex_space(&mut self) {
         self.flush_native_text();
         self.end_char_chain();
+        // luatex run_app_space: \nospaces 1 appends nothing, 2 a zero glue
+        let disable = self.eqtb.int_params[IntParam::NoSpaces.idx() as usize];
+        if disable == 1 || disable == 2 {
+            match self.mode {
+                Mode::Horizontal | Mode::RestrictedHorizontal if disable == 2 => self.cur_list.push(Node::Glue(Glue::zero())),
+                Mode::Math | Mode::DisplayMath if disable == 2 => self.append_mlist_node(Node::Glue(Glue::zero())),
+                _ => {}
+            }
+            return;
+        }
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => {
                 let ss = self.eqtb.glue_params[GlueParam::SpaceSkip.idx() as usize];
@@ -229,6 +251,10 @@ impl Engine {
                         None => Glue::zero(),
                     }
                 };
+                let mut g = g;
+                if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                    g.subtype = glue_subtype::SPACE_SKIP;
+                }
                 self.cur_list.push(Node::Glue(g));
             }
             Mode::Math | Mode::DisplayMath => {
@@ -242,6 +268,42 @@ impl Engine {
             }
             Mode::Vertical | Mode::InternalVertical => {}
         }
+    }
+
+    /// Whether the current font is a Lua font (its characters become
+    /// [`Node::LuaGlyph`] in LuaTeX).
+    #[inline]
+    pub(crate) fn cur_font_is_lua(&self) -> bool {
+        self.eqtb.fonts.get(self.eqtb.cur_font_val as usize).is_some_and(|f| f.lua.is_some())
+    }
+
+    /// LuaTeX `new_char`: a glyph node for character `c` of the current
+    /// font, recording the language state of the moment.
+    pub(crate) fn new_lua_glyph(&self, c: u32) -> Node {
+        let ctx = self.lang_ctx();
+        Node::LuaGlyph(Box::new(crate::boxes::LuaGlyph {
+            c,
+            font: self.eqtb.cur_font_val,
+            lang: ctx.lang,
+            left: ctx.left,
+            right: ctx.right,
+            uchyph: ctx.uchyph,
+            xoffset: 0,
+            yoffset: 0,
+            expansion_factor: 0,
+            data: 0,
+            subtype: crate::lua_node::GLYPH_CHARACTER as u8,
+            components: Vec::new(),
+        }))
+    }
+
+    /// LuaTeX `run_char`: append a glyph node for character `c` of the
+    /// current Lua font. Ligatures, kerns and hyphens are built later by the
+    /// text passes (`new_ligkern`).
+    pub(crate) fn append_lua_glyph(&mut self, c: u32) {
+        let glyph = self.new_lua_glyph(c);
+        self.cur_list.push(glyph);
+        self.space_factor = self.space_factor_of(c);
     }
 
     pub fn char_token(&mut self, c: u8, is_letter: bool) {
@@ -262,6 +324,12 @@ impl Engine {
                 self.start_paragraph(true);
             }
             Mode::Math | Mode::DisplayMath => {
+                if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                    let (class, family, slot) = self.eqtb.lua_math_code(u32::from(c));
+                    let source = self.current_token_source_mark();
+                    self.set_math_char_lua(class, family, slot, u32::from(c), source);
+                    return;
+                }
                 let mc = self.eqtb.math_code[c as usize];
                 if mc & 0x8000 != 0 {
                     self.active_char(u32::from(c));
@@ -308,6 +376,7 @@ impl Engine {
                     self.dispatch_cs(p, id);
                 }
             }
+            Some(crate::eqtb::Equiv::LuaCall { slot, .. }) => self.call_lua_function(slot as i32),
             None => {
                 let shown = char::from_u32(c).unwrap_or(char::REPLACEMENT_CHARACTER);
                 self.error(&format!("Undefined active character `{shown}'"));
@@ -463,8 +532,26 @@ impl Engine {
     pub fn vlist_append(&mut self, n: Node) {
         self.vlist_append_il(n, true);
     }
-    pub fn vlist_append_il(&mut self, n: Node, interline: bool) {
+    pub fn vlist_append_il(&mut self, mut n: Node, interline: bool) {
         if self.mode == Mode::Vertical {
+            // luatex append_to_vlist: `append_to_vlist_filter` supplies the
+            // nodes (and `prev_depth`) instead of the interline glue
+            if interline && self.engine_kind == crate::engine::EngineKind::LuaTeX && matches!(n, Node::Box { .. }) {
+                match self.lua_append_to_vlist(n, "box", self.prev_depth) {
+                    Ok((list, depth)) => {
+                        for item in list {
+                            self.page_append(item);
+                        }
+                        if let Some(d) = depth {
+                            self.prev_depth = d;
+                        }
+                        self.lua_page_filter(crate::lua_callbacks::page_info::BOX, true);
+                        self.build_page();
+                        return;
+                    }
+                    Err(back) => n = back,
+                }
+            }
             // tex.web append_to_vlist (§21374): interline glue is
             // materialized AT APPEND TIME against prev_depth with the
             // CURRENT \baselineskip — deferring it to the page builder
@@ -520,8 +607,17 @@ impl Engine {
                 }
                 _ => {}
             }
+            let page_info = match &n {
+                Node::Box { .. } => Some(crate::lua_callbacks::page_info::BOX),
+                Node::Ins { .. } => Some(crate::lua_callbacks::page_info::INSERT),
+                Node::Penalty(_) => Some(crate::lua_callbacks::page_info::PENALTY),
+                _ => None,
+            };
             self.page_append(n);
             if trigger {
+                if let Some(info) = page_info {
+                    self.lua_page_filter(info, true);
+                }
                 self.build_page();
             }
         } else {
@@ -615,7 +711,11 @@ impl Engine {
             if self.synctex_active() {
                 if let Some((path, line)) = self.input.current_file_position() {
                     if !path.is_empty() && line > 0 {
-                        let file_id = self.synctex.get_or_register_file(path);
+                        let file_id = match self.lua_tex.synctex_tag {
+                            Some(tag) => tag as u32,
+                            None => self.synctex.get_or_register_file(path),
+                        };
+                        let line = self.lua_tex.synctex_line.map_or(line, |l| l as u32);
                         self.cur_list.push(Node::Whatsit(crate::boxes::WhatIt::SyncPoint {
                             file_id,
                             line,
@@ -658,6 +758,14 @@ impl Engine {
             self.lig_kern_loop(f, LigStack::default(), None);
         }
         self.native_text.suppress_left_boundary = true;
+        // LuaTeX run_boundary: `\noboundary` leaves a boundary node (subtype
+        // 0) between the glyphs of a Lua font, which blocks ligatures/kerns
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX
+            && matches!(self.mode, Mode::Horizontal | Mode::RestrictedHorizontal)
+            && self.cur_font_is_lua()
+        {
+            self.cur_list.push(Node::Whatsit(crate::boxes::WhatIt::Boundary { kind: 0, value: 0 }));
+        }
     }
 
     /// tex.web main loop when the character chain ends (any command other
@@ -932,12 +1040,12 @@ impl Engine {
             cur.lig_present = false;
         }
         if self.mode == Mode::Horizontal && self.tail_ends_hyphen(f) {
-            self.cur_list.push(Node::Disc(crate::boxes::DiscNode {
-                pre_break: Vec::new(),
-                post_break: Vec::new(),
-                no_break: Vec::new(),
-                replace_count: 0,
-            }));
+            self.cur_list.push(Node::Disc(crate::boxes::DiscNode::new(
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                0,
+            )));
         }
     }
 
@@ -946,6 +1054,38 @@ impl Engine {
             Some(font) => (font.char_width(c), font.char_height(c), font.char_depth(c)),
             None => (0, 0, 0),
         }
+    }
+
+    /// `new_glyph(f, c)`: the node for character `c` of font `f` when the
+    /// font has it (a glyph for a Lua font, a character node otherwise).
+    pub(crate) fn new_glyph_node(&self, f: u16, c: u32) -> Option<Node> {
+        let font = self.eqtb.fonts.get(f as usize)?;
+        if font.lua.is_some() {
+            if !font.lua_char_exists(c) {
+                return None;
+            }
+            return Some(Node::LuaGlyph(Box::new(crate::boxes::LuaGlyph {
+                c,
+                font: f,
+                lang: 0,
+                left: 0,
+                right: 0,
+                uchyph: 0,
+                xoffset: 0,
+                yoffset: 0,
+                expansion_factor: 0,
+                data: 0,
+                subtype: 0,
+                components: Vec::new(),
+            })));
+        }
+        let byte = u8::try_from(c).ok()?;
+        font.char_present(byte).then_some(Node::Char { c: byte, font: f })
+    }
+
+    /// Width, height and depth of character `c` of font `f`.
+    pub(crate) fn glyph_whd(&self, f: u16, c: u32) -> (i32, i32, i32) {
+        crate::boxes::lua_glyph_whd(&self.eqtb.fonts, i32::from(f), c as i32, 0)
     }
 
 
@@ -1212,7 +1352,18 @@ impl Engine {
         // packed lines join the vbox instead of being vpack-discarded
 
         if matches!(kind, 1 | 2 | 3 | 8 | 9 | VADJUST_PRE_KIND) && self.mode == Mode::Horizontal {
+            // line_break_context: the group the paragraph is closed by
+            let saved = std::mem::replace(
+                &mut self.lua_par_group,
+                match kind {
+                    1 => 4,
+                    2 => 5,
+                    3 => 12,
+                    _ => 11,
+                },
+            );
             self.par_primitive(Token::from_cs(self.ids.par));
+            self.lua_par_group = saved;
         }
         let target = self.box_targets.pop().flatten();
         let shift = self.box_shifts.pop().unwrap_or(0);
@@ -1280,6 +1431,20 @@ impl Engine {
             self.build_discretionary(shift, inner, outer_mode);
             return;
         }
+        // LuaTeX package(): hyphenation, ligaturing and kerning of the
+        // contents and the hpack/vpack filter run before the box is packed
+        let inner = if self.engine_kind == crate::engine::EngineKind::LuaTeX && matches!(kind, 0 | 1 | 2) {
+            let leaders = self
+                .leader_stack
+                .last()
+                .is_some_and(|&(_, depth)| depth == self.box_kinds.len());
+            let shipout = self.shipout_pending && self.shipout_depth == self.box_kinds.len();
+            let setbox = self.setbox_target.is_some() && self.setbox_depth == self.box_kinds.len();
+            let adjusted = outer_mode.is_v() && !(leaders || shipout || setbox);
+            self.lua_pack_inner(kind, inner, target, box_max_depth, adjusted)
+        } else {
+            inner
+        };
         // tex.web package(): vboxes are packed against the value of
         let pack = |list: Vec<Node>, target: Option<(i32, bool)>, k: u8| -> boxes::PackResult {
             let (dim, spread) = match target {
@@ -1305,10 +1470,10 @@ impl Engine {
             self.finish_halign();
             return;
         }
-        let res = pack(inner, target, kind);
+        let mut res = pack(inner, target, kind);
         self.last_badness = res.badness;
         match kind {
-            0 | 1 | 2 | 8 => self.report_pack_warnings_at(&res, pack_warning_source),
+            0 | 1 | 2 | 8 => self.report_pack_warnings_at(&mut res, pack_warning_source),
             _ => {}
         }
         let mut node = res.node;
@@ -1367,6 +1532,12 @@ impl Engine {
                 return;
             }
         }
+        // token.scan_list: the box Lua asked for goes back to Lua
+        if self.lua_tex.scan_depth == Some(self.box_kinds.len()) {
+            self.lua_tex.scan_depth = None;
+            self.lua_tex.scan_result = Some(node);
+            return;
+        }
         // only the \\shipout box itself ships (tex.web box_context);
         // inner \\hbox/\\vbox inside the page must append
         if self.shipout_pending && self.shipout_depth == self.box_kinds.len() {
@@ -1413,6 +1584,24 @@ impl Engine {
                     self.vlist_append(node);
                 }
                 Mode::InternalVertical => {
+                    // luatex append_to_vlist: the callback supplies the
+                    // nodes (and `prev_depth`) instead of the interline glue
+                    let node = if self.engine_kind == crate::engine::EngineKind::LuaTeX
+                        && matches!(node, Node::Box { .. })
+                    {
+                        match self.lua_append_to_vlist(node, "box", self.prev_depth) {
+                            Ok((list, depth)) => {
+                                self.cur_list.extend(list);
+                                if let Some(d) = depth {
+                                    self.prev_depth = d;
+                                }
+                                return;
+                            }
+                            Err(back) => back,
+                        }
+                    } else {
+                        node
+                    };
                     if let Node::Box { h, d, .. } = &node {
                         if self.prev_depth > self.ignore_depth() {
                             let bs = self.eqtb.glue_params
@@ -1500,6 +1689,7 @@ impl Engine {
             return None;
         }
         if let Some(crate::eqtb::Equiv::Prim(p)) = self.eqtb.resolve(t.cs_id()) {
+            let p = &p.box_spec();
             if matches!(
                 p,
                 Prim::HBox
@@ -1680,14 +1870,14 @@ impl Engine {
     /// \hbadness|\vbadness exactly as in tex.web §653-§663.
     /// Report packing quality at the scanner's current position. Kept as the
     /// public one-argument entry point for library callers.
-    pub fn report_pack_warnings(&mut self, res: &boxes::PackResult) {
+    pub fn report_pack_warnings(&mut self, res: &mut boxes::PackResult) {
         let source = self.current_token_source_mark();
         self.report_pack_warnings_at(res, source);
     }
 
     pub(crate) fn report_pack_warnings_at(
         &mut self,
-        res: &boxes::PackResult,
+        res: &mut boxes::PackResult,
         source: Option<crate::input::SourceMark>,
     ) {
         self.last_pack = Some(res.record());
@@ -1713,6 +1903,8 @@ impl Engine {
         let obj = if hbox { "\\hbox" } else { "\\vbox" };
         let too = if hbox { "too wide" } else { "too high" };
         let mut msg: Option<String> = None;
+        // luatex hpack_quality/vpack_quality: what happened and the value
+        let mut quality: Option<(&str, i32)> = None;
         if x > 0 && res.order == 0 {
             // underfull / loose (includes badness 10000 when nothing stretches)
             if res.badness > bad_param {
@@ -1721,16 +1913,44 @@ impl Engine {
                 } else {
                     "Loose"
                 };
+                quality = Some((if res.badness > 100 { "underfull" } else { "loose" }, res.badness));
                 msg = Some(format!("{kw} {obj} (badness {}", res.badness));
             }
         } else if x < 0 && res.order == 0 {
             if -x > res.shrink[0] {
                 let excess = -x - res.shrink[0];
                 if excess > fuzz as i64 || bad_param < 100 {
+                    quality = Some(("overfull", excess as i32));
                     msg = Some(format!("Overfull {obj} ({}pt {too}", print_scaled(excess)));
                 }
             } else if res.badness > bad_param {
+                quality = Some(("tight", res.badness));
                 msg = Some(format!("Tight {obj} (badness {}", res.badness));
+            }
+        }
+        if let (Some((what, value)), true) = (quality, self.engine_kind == crate::engine::EngineKind::LuaTeX) {
+            let cb = if hbox { crate::lua_callbacks::Cb::HpackQuality } else { crate::lua_callbacks::Cb::VpackQuality };
+            if self.cb_defined(cb) {
+                // with a callback the default \overfullrule is the callback's business
+                if hbox && what == "overfull" {
+                    let rule_w = self.eqtb.dim_params[DimParam::OverfullRule.idx() as usize];
+                    if let Node::Box { list, .. } = &mut res.node {
+                        if matches!(list.last(), Some(Node::Rule { width, .. }) if *width == rule_w) {
+                            list.pop();
+                        }
+                    }
+                }
+                let (begin, line) = (self.pack_begin_line, self.nest_line());
+                let snapshot = res.node.clone();
+                if hbox && self.lua_par_lines.defer {
+                    self.lua_defer_pack_quality(what, value, snapshot, begin, line);
+                    msg = None;
+                } else if let Some(rules) = self.lua_pack_quality(hbox, what, value, &snapshot, begin, line) {
+                    if let Node::Box { list, .. } = &mut res.node {
+                        list.extend(rules);
+                    }
+                    msg = None;
+                }
             }
         }
         if let Some(mut m) = msg {
@@ -2004,6 +2224,13 @@ impl Engine {
             None if self.mode == Mode::Vertical => self.last_page_node_type,
             None => -1,
             Some(Node::Char { .. }) | Some(Node::NativeGlyphRun { .. }) => 0,
+            Some(Node::LuaGlyph(g)) => {
+                if u16::from(g.subtype) & crate::lua_node::GLYPH_LIGATURE != 0 {
+                    7
+                } else {
+                    0
+                }
+            }
             Some(Node::Box { kind, .. }) if *kind == boxes::HBOX => 1,
             Some(Node::Box { .. }) => 2,
             Some(Node::Rule { .. }) => 3,
@@ -2027,7 +2254,7 @@ impl Engine {
             Some(Node::Glue(_)) | Some(Node::Leaders { .. }) => 11,
             Some(Node::Kern(_))
             | Some(Node::ExplicitKern(_))
-            | Some(Node::AccentKern(_))
+            | Some(Node::AccentKern(_) | Node::ItalicKern(_))
             | Some(Node::MarginKern { .. }) => 12,
             Some(Node::Penalty(_)) => 13,
             Some(Node::InsDisc) | Some(Node::Empty) => 14,
@@ -2051,7 +2278,7 @@ impl Engine {
                 Node::Glue(_)
                 | Node::Kern(_)
                 | Node::ExplicitKern(_)
-                | Node::AccentKern(_)
+                | Node::AccentKern(_) | Node::ItalicKern(_)
                 | Node::Penalty(_) => {
                     continue
                 }
@@ -2065,33 +2292,50 @@ impl Engine {
     /// its three parts are typeset as restricted-horizontal groups.
     pub fn do_discretionary(&mut self) {
         self.flush_native_text();
-        self.cur_list.push(Node::Disc(crate::boxes::DiscNode {
-            pre_break: Vec::new(),
-            post_break: Vec::new(),
-            no_break: Vec::new(),
-            replace_count: 0,
-        }));
+        let mut disc = crate::boxes::DiscNode::new(Vec::new(), Vec::new(), Vec::new(), 0);
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            // luatex append_discretionary: `\discretionary [penalty <n>]`
+            // keeps the \hyphenpenalty of the moment (no exhyphenpenalty
+            // rule for an empty pre-break text)
+            disc.penalty = self.eqtb.int_params[IntParam::HyphenPenalty.idx() as usize];
+            if self.scan_keyword(b"penalty") {
+                disc.penalty = self.scan_int();
+            }
+        }
+        self.cur_list.push(Node::Disc(disc));
         self.begin_disc_part(0);
     }
 
     /// tex.web §1117 for `\-`: the pre-break text is the current font's
-    /// \hyphenchar when it is in 0..=255 and present in the font.
+    /// \hyphenchar when it is in 0..=255 and present in the font. LuaTeX
+    /// makes an explicit discretionary (subtype 1, `\exhyphenpenalty`) whose
+    /// pre-break text is the language's pre-hyphen character; a Lua font
+    /// makes it a glyph.
     pub fn append_hyphen_discretionary(&mut self) {
         self.flush_native_text();
         let f = self.eqtb.cur_font_val;
-        let hc = self.eqtb.hyphen_char.get(f as usize).copied().unwrap_or(-1);
+        let lua_mode = self.engine_kind == crate::engine::EngineKind::LuaTeX;
         let mut pre_break = Vec::new();
-        if let Ok(c) = u8::try_from(hc) {
-            if self.font_has_character_or_warn(f, c, None) {
-                pre_break.push(Node::Char { c, font: f });
+        if lua_mode && self.cur_font_is_lua() {
+            let lang = u8::try_from(self.eqtb.int_params[IntParam::Language.idx() as usize]).unwrap_or(0);
+            let c = self.lua_tex.lang.get(&lang).and_then(|p| p.pre_hyphen).unwrap_or(i32::from(b'-'));
+            if c > 0 {
+                pre_break.push(self.new_lua_glyph(c as u32));
+            }
+        } else {
+            let hc = self.eqtb.hyphen_char.get(f as usize).copied().unwrap_or(-1);
+            if let Ok(c) = u8::try_from(hc) {
+                if self.font_has_character_or_warn(f, c, None) {
+                    pre_break.push(Node::Char { c, font: f });
+                }
             }
         }
-        let disc = Node::Disc(crate::boxes::DiscNode {
-            pre_break,
-            post_break: Vec::new(),
-            no_break: Vec::new(),
-            replace_count: 0,
-        });
+        let mut disc = crate::boxes::DiscNode::new(pre_break, Vec::new(), Vec::new(), 0);
+        if lua_mode {
+            disc.subtype = 1;
+            disc.penalty = self.eqtb.int_params[IntParam::ExHyphenPenalty.idx() as usize];
+        }
+        let disc = Node::Disc(disc);
         if self.mode.is_m() {
             self.append_mlist_node(disc);
         } else {
@@ -2144,11 +2388,12 @@ impl Engine {
                 Node::Char { .. }
                     | Node::Ligature { .. }
                     | Node::NativeGlyphRun { .. }
+                    | Node::LuaGlyph(_)
                     | Node::Box { .. }
                     | Node::Rule { .. }
                     | Node::Kern(_)
                     | Node::ExplicitKern(_)
-                    | Node::AccentKern(_)
+                    | Node::AccentKern(_) | Node::ItalicKern(_)
             )
         }) {
             self.error("Improper discretionary list");
@@ -2189,7 +2434,7 @@ impl Engine {
             return 0;
         }
         match self.current_tail() {
-            Some(Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k)) => *k,
+            Some(Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) | Node::ItalicKern(k)) => *k,
             None if self.mode == Mode::Vertical => self.last_page_kern,
             _ => 0,
         }
@@ -2239,7 +2484,7 @@ impl Engine {
     pub fn un_kern(&mut self) {
         if matches!(
             self.current_tail(),
-            Some(Node::Kern(_) | Node::ExplicitKern(_) | Node::AccentKern(_))
+            Some(Node::Kern(_) | Node::ExplicitKern(_) | Node::AccentKern(_) | Node::ItalicKern(_))
         ) {
             self.take_current_tail();
         }
@@ -2403,6 +2648,7 @@ impl Engine {
         }
         if t.is_cs() {
             if let Some(crate::eqtb::Equiv::Prim(prim)) = self.eqtb.resolve(t.cs_id()).cloned() {
+                let prim = prim.box_spec();
                 match prim {
                     crate::prim::Prim::HBox
                     | crate::prim::Prim::VBox
@@ -2476,6 +2722,7 @@ impl Engine {
             Mode::Horizontal => self.end_paragraph(),
             Mode::Vertical => {
                 self.resume_after_display = false;
+                self.lua_page_filter(crate::lua_callbacks::page_info::VMODE_PAR, true);
                 self.build_page();
             }
             Mode::InternalVertical => {
@@ -2483,7 +2730,12 @@ impl Engine {
             }
             // tex.web §1047: replay the actual par_end token after an inserted
             // math shift has closed any intervening math groups.
-            Mode::Math | Mode::DisplayMath => self.insert_dollar_sign(token),
+            Mode::Math | Mode::DisplayMath => {
+                // luatex insert_dollar_sign_par_end: \suppressmathparerror ignores the \par
+                if self.eqtb.int_params[IntParam::SuppressMathParError.idx() as usize] == 0 {
+                    self.insert_dollar_sign(token);
+                }
+            }
             // tex.web §21179 end_graf: `if mode = hmode` — in restricted hmode (-hmode),
             // \par does not end a paragraph; it is a no-op.
             Mode::RestrictedHorizontal => {}
@@ -2604,6 +2856,7 @@ impl Engine {
                 }
             }
             Mode::Vertical => {
+                let mut indent = indent;
                 self.par_interrupted = false;
                 // tex.web resume_after_display (§1194): when text follows a
                 // display the new hlist is pushed directly — no \parskip,
@@ -2614,6 +2867,9 @@ impl Engine {
                     // is appended unconditionally
                     let ps = self.eqtb.glue_params[GlueParam::ParSkip.idx() as usize];
                     self.page_list.push(Node::Glue(ps.param(glue_subtype::PAR_SKIP)));
+                    if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                        indent = self.lua_new_graf(indent);
+                    }
                 }
                 // (tex.web: a paragraph is not a group; no eqtb level)
                 // In outer vmode, the global contribution list (page_list)
@@ -2643,6 +2899,9 @@ impl Engine {
                 if resume {
                     return;
                 }
+                if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                    self.lua_insert_local_par();
+                }
                 if indent {
                     let pi = self.eqtb.dim_params[DimParam::ParIndent.idx() as usize];
                     let r = boxes::hpack(Vec::new(), Some(pi), boxes::HBOX, &self.eqtb);
@@ -2652,6 +2911,7 @@ impl Engine {
                 // §1091: `if nest_ptr=1 then build_page` comes last, so an
                 // output routine it fires is read BEFORE the \everypar
                 // tokens (which then run in the paragraph, not the routine)
+                self.lua_page_filter(crate::lua_callbacks::page_info::NEW_GRAF, true);
                 self.build_page();
             }
             Mode::InternalVertical => {
@@ -2664,6 +2924,11 @@ impl Engine {
                     let ps = self.eqtb.glue_params[GlueParam::ParSkip.idx() as usize];
                     self.cur_list.push(Node::Glue(ps.param(glue_subtype::PAR_SKIP)));
                 }
+                let indent = if self.engine_kind == crate::engine::EngineKind::LuaTeX && !resume {
+                    self.lua_new_graf(indent)
+                } else {
+                    indent
+                };
                 let page = std::mem::take(&mut self.cur_list);
                 self.saved_lists.push((
                     Mode::InternalVertical,
@@ -2683,6 +2948,9 @@ impl Engine {
                 }
                 if resume {
                     return;
+                }
+                if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                    self.lua_insert_local_par();
                 }
                 if indent {
                     let pi = self.eqtb.dim_params[DimParam::ParIndent.idx() as usize];
@@ -2800,6 +3068,12 @@ impl Engine {
         }
 
         self.end_char_chain();
+        let lua_mode = self.engine_kind == crate::engine::EngineKind::LuaTeX;
+        if lua_mode {
+            // LuaTeX line_break(): hyphenate, ligature and kern first
+            let list = std::mem::take(&mut self.cur_list);
+            self.cur_list = self.lua_text_passes(list);
+        }
         let pfs = self.eqtb.glue_params[GlueParam::ParFillSkip.idx() as usize]
             .param(glue_subtype::PAR_FILL_SKIP);
         // tex.web §16074: a trailing glue node is REPLACED by the infinite
@@ -2820,7 +3094,21 @@ impl Engine {
             self.eqtb.int_params[crate::prim::IntParam::WidowPenalty.idx() as usize]
         });
 
-        let lines = self.break_paragraph(content, fw, display_widow);
+        // pre_linebreak_filter, then linebreak_filter: Lua may break the
+        // paragraph itself, in which case its lines already carry their
+        // interline glue
+        let (lines, lua_lines) = if lua_mode {
+            let content = self.lua_pre_linebreak(content);
+            match self.lua_linebreak_filter(content, self.in_display_init) {
+                Ok(list) => (boxes::vpack(list, None, boxes::VBOX, &self.eqtb).node, true),
+                Err(content) => {
+                    self.lua_par_lines.hold = true;
+                    (self.break_paragraph(content, fw, display_widow), false)
+                }
+            }
+        } else {
+            (self.break_paragraph(content, fw, display_widow), false)
+        };
         if !self.in_display_init {
             self.lr_save_take(lr_key);
         }
@@ -2882,7 +3170,7 @@ impl Engine {
                 // tex.web append_to_vlist: materialize interline glue NOW
                 // with the \baselineskip in force at paragraph end — the
                 // page builder's lazy interline would read post-group state
-                let (filled, last_d) = self.fill_line_interline(self.prev_depth, lines);
+                let (filled, last_d) = self.paragraph_vlist(lines, lua_lines, true);
                 self.page_list.extend(filled);
                 self.mode = Mode::Vertical;
                 self.cur_list = Vec::new();
@@ -2890,6 +3178,7 @@ impl Engine {
 
                 if !self.in_display_init {
                     let pages_before = self.pdf_doc.pages.len();
+                    self.lua_page_filter(crate::lua_callbacks::page_info::HMODE_PAR, true);
                     self.build_page();
                     // tex.web: a page shipped inside this paragraph interrupts
                     // it — the resumed content has no complete line yet, so
@@ -2911,14 +3200,20 @@ impl Engine {
                     Node::Box { list, .. } => list,
                     other => vec![other],
                 };
-                let (filled, last_d) = self.fill_line_interline(self.prev_depth, taken);
+                let (filled, last_d) = self.paragraph_vlist(taken, lua_lines, false);
                 self.cur_list = inner;
                 self.mode = Mode::InternalVertical;
                 self.cur_list.extend(filled);
                 self.prev_depth = last_d;
             }
             (_, outer) => {
-                let node = lines_opt.take().unwrap();
+                let mut node = lines_opt.take().unwrap();
+                if lua_mode && self.cb_defined(crate::lua_callbacks::Cb::PostLinebreakFilter) {
+                    if let Node::Box { list, .. } = &mut node {
+                        let l = std::mem::take(list);
+                        *list = self.lua_post_linebreak(l);
+                    }
+                }
                 // tex.web: after line_break, prev_depth = the final line's
                 // depth — the lines wrapper box carries exactly that depth,
                 // so thread it instead of restoring the pre-paragraph value
@@ -2936,13 +3231,35 @@ impl Engine {
                 self.mode = saved_mode;
             }
         }
+        if lua_mode {
+            // calls no line append consumed (the display branch)
+            self.lua_par_lines.hold = false;
+            self.lua_flush_pack_quality();
+        }
+    }
+
+    /// The vertical list a broken paragraph appends: interline glue
+    /// materialized (unless Lua broke the paragraph and supplied it), then
+    /// LuaTeX's `post_linebreak_filter`.
+    fn paragraph_vlist(&mut self, lines: NodeList, lua_lines: bool, main: bool) -> (NodeList, i32) {
+        let (filled, last_d) = if lua_lines {
+            (lines, self.prev_depth)
+        } else {
+            self.fill_line_interline(self.prev_depth, lines, main)
+        };
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            (self.lua_post_linebreak(filled), last_d)
+        } else {
+            (filled, last_d)
+        }
     }
 
     /// replace build_lines' zero interline placeholders with real
     /// baselineskip/lineskip glue (tex.web append_to_vlist §17438-17440):
     /// used when a paragraph's lines land in an internal vlist, which the
     /// page builder never processes
-    fn fill_line_interline(&self, outer_prev_depth: i32, list: NodeList) -> (NodeList, i32) {
+    fn fill_line_interline(&mut self, outer_prev_depth: i32, list: NodeList, main: bool) -> (NodeList, i32) {
+        let lua_mode = self.engine_kind == crate::engine::EngineKind::LuaTeX;
         let ignore_depth = self.ignore_depth();
         let bs = self.eqtb.glue_params[GlueParam::BaselineSkip.idx() as usize].clone();
         let ls = self.eqtb.glue_params[GlueParam::LineSkip.idx() as usize].clone();
@@ -2951,6 +3268,7 @@ impl Engine {
         let mut prev_depth = outer_prev_depth;
         // hold a pending placeholder until we know whether a box follows
         let mut held_placeholder = false;
+        let mut line_k = 0usize;
         for n in list.into_iter() {
             match n {
                 Node::Glue(ref g) if g.width == 0 && g.stretch == 0 && g.shrink == 0 => {
@@ -2962,6 +3280,9 @@ impl Engine {
                     // vertical list raw without interline glue and without
                     // altering prev_depth
                     out.extend(items);
+                    if lua_mode {
+                        self.lua_contribute_filter("adjust");
+                    }
                 }
                 Node::Rule { .. } => {
                     held_placeholder = false;
@@ -2970,6 +3291,31 @@ impl Engine {
                 }
                 Node::Box { h, d, .. } => {
                     let (h, d) = (h, d);
+                    let mut node = n;
+                    // luatex append_to_vlist: the callback supplies the
+                    // nodes and the depth instead of the interline glue
+                    if lua_mode {
+                        // the line's packing report, then `pre_box` while
+                        // earlier material still waits for the page builder
+                        self.lua_fire_pack_quality(line_k, &mut node);
+                        line_k += 1;
+                        if main && (!out.is_empty() || self.page_list.len() > self.page_processed) {
+                            self.lua_contribute_filter("pre_box");
+                        }
+                        match self.lua_append_to_vlist(node, "post_linebreak", prev_depth) {
+                            Ok((items, depth)) => {
+                                held_placeholder = false;
+                                out.extend(items);
+                                if let Some(depth) = depth {
+                                    prev_depth = depth;
+                                }
+                                self.lua_contribute_filter("box");
+                                continue;
+                            }
+                            Err(back) => node = back,
+                        }
+                    }
+                    let n = node;
                     if prev_depth > ignore_depth {
                         let b = bs.width as i64 - prev_depth as i64 - h as i64;
                         let glue = if b < lsl as i64 {
@@ -2988,6 +3334,9 @@ impl Engine {
                     prev_depth = d;
                     held_placeholder = false;
                     out.push(n);
+                    if lua_mode {
+                        self.lua_contribute_filter("box");
+                    }
                 }
                 _ => {
                     if held_placeholder {

@@ -1,0 +1,131 @@
+//! Engine side of LuaTeX's `img` library (limglib.c): image files are read
+//! by the pdfTeX `\pdfximage` machinery (`pdf_images.rs`); the Lua side
+//! keeps the image tables.
+
+use tex_lua::{Lua, LuaApi, LuaString, LuaTable};
+
+use crate::engine::{Engine, ImageKind};
+use crate::lua_bridge::{bytes_of, with_engine};
+use crate::token::Token;
+
+macro_rules! reg {
+    ($lua:expr, $tbl:expr, $name:literal, $f:expr) => {
+        $tbl.set($name, $lua.create_function($f).map_err(|e| format!("{}: {e:?}", $name))?)
+            .map_err(|e| format!("{}: {e:?}", $name))?
+    };
+}
+
+fn text_tokens(s: &str) -> Vec<Token> {
+    s.chars().map(|c| if c == ' ' { Token::space() } else { Token::unicode_char(12, c as u32) }).collect()
+}
+
+impl Engine {
+    /// Read the image `spec` names with `\pdfximage`; the object number of
+    /// the image, `None` when the image could not be read.
+    fn lua_img_scan(&mut self, spec: &LuaTable) -> Result<Option<i64>, String> {
+        let get_i = |k: &str| -> Result<Option<i64>, String> { spec.get(k).map_err(|e| format!("{e:?}")) };
+        let get_s = |k: &str| -> Result<Option<String>, String> {
+            let v: Option<LuaString> = spec.get(k).map_err(|e| format!("{e:?}"))?;
+            Ok(v.map(|v| String::from_utf8_lossy(&bytes_of(&v)).into_owned()))
+        };
+        let filename = get_s("filename")?.ok_or("img.scan: no filename given")?;
+        let mut text = String::new();
+        for (key, word) in [("width", "width"), ("height", "height"), ("depth", "depth")] {
+            if let Some(v) = get_i(key)? {
+                text.push_str(&format!("{word} {v}sp "));
+            }
+        }
+        if let Some(attr) = get_s("attr")? {
+            text.push_str(&format!("attr {{{attr}}} "));
+        }
+        if let Some(page) = get_i("page")? {
+            text.push_str(&format!("page {page} "));
+        }
+        if let Some(cs) = get_i("colorspace")? {
+            text.push_str(&format!("colorspace {cs} "));
+        }
+        match get_s("pagebox")?.as_deref() {
+            Some("media") => text.push_str("mediabox "),
+            Some("crop") => text.push_str("cropbox "),
+            Some("bleed") => text.push_str("bleedbox "),
+            Some("trim") => text.push_str("trimbox "),
+            Some("art") => text.push_str("artbox "),
+            _ => {}
+        }
+        let cs = self.lua_prim_cs(b"saveimageresource");
+        let mut toks = vec![Token::from_cs(cs)];
+        toks.extend(text_tokens(&text));
+        toks.push(Token::unicode_char(1, '{' as u32));
+        toks.extend(text_tokens(&filename));
+        toks.push(Token::unicode_char(2, '}' as u32));
+        let before = self.pdf_last_ximage;
+        self.pdf_last_ximage = 0;
+        self.lua_run_tokens(toks);
+        let obj = self.pdf_last_ximage;
+        if obj == 0 {
+            self.pdf_last_ximage = before;
+            return Ok(None);
+        }
+        Ok(Some(i64::from(obj)))
+    }
+}
+
+pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
+    let t: LuaTable = lua.create_table().map_err(|e| format!("{e:?}"))?;
+
+    reg!(lua, t, "scan", |spec: LuaTable| -> Result<Option<i64>, String> {
+        with_engine(|e| e.lua_img_scan(&spec))?
+    });
+    reg!(lua, t, "info", |obj: i64, field: String| -> Result<(Option<String>, i64, i64, i64, i64), String> {
+        with_engine(|e| {
+            let Some(info) = i32::try_from(obj).ok().and_then(|o| e.pdf_images.get(&o)) else {
+                return (None, 0, 0, 0, 0);
+            };
+            let n = |v: i32| (None, i64::from(v), 0, 0, 0);
+            match field.as_str() {
+                "path" => (Some(info.path.clone()), 0, 0, 0, 0),
+                "type" => (
+                    Some(match info.kind {
+                        ImageKind::Pdf => "pdf",
+                        ImageKind::Png | ImageKind::Svg => "png",
+                        ImageKind::Jpeg => "jpg",
+                    }.to_string()),
+                    0, 0, 0, 0,
+                ),
+                "width" => n(info.width),
+                "height" => n(info.height),
+                "depth" => n(info.depth),
+                "xsize" => n(info.image_width),
+                "ysize" => n(info.image_height),
+                "rotation" => n(info.rotate),
+                "bbox" => (
+                    None,
+                    i64::from(info.bbox[0]),
+                    i64::from(info.bbox[1]),
+                    i64::from(info.bbox[2]),
+                    i64::from(info.bbox[3]),
+                ),
+                "pages" => n(e.pdf_last_ximage_pages),
+                "colordepth" => n(e.pdf_backend.last_ximage_colordepth),
+                _ => (None, 0, 0, 0, 0),
+            }
+        })
+    });
+    reg!(lua, t, "ref", |obj: i64| -> Result<(), String> {
+        // \pdfrefximage <obj>: the image box joins the current list
+        with_engine(|e| {
+            let cs = e.lua_prim_cs(b"useimageresource");
+            let mut toks = vec![Token::from_cs(cs)];
+            toks.extend(text_tokens(&format!("{obj} ")));
+            e.lua_run_tokens(toks);
+            Ok::<(), String>(())
+        })?
+    });
+
+    lua.set_global("__ratex_imglib", t).map_err(|e| format!("{e:?}"))?;
+    lua.load(include_str!("lua_img.lua"))
+        .set_name("=[ratex img]")
+        .exec()
+        .map_err(|e| format!("img library: {}", lua.get_error_message(e).message()))?;
+    Ok(())
+}

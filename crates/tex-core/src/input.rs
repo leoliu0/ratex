@@ -97,6 +97,16 @@ pub enum Source {
         /// character. Diagnostics hide them, as TeX's `show_context` does.
         line_end_len: u8,
         line_pos: usize,
+        /// Lines queued by LuaTeX's `tex.print` family (luatex
+        /// `luacstring_input`); None for every real file.
+        lua_lines: Option<Box<crate::engine_lua::LuaLines>>,
+        /// The `open_read_file` object (see `lua_cb_files`) lines are read
+        /// from instead of `data`; 0 for a file read from memory.
+        lua_reader: u32,
+        /// Catcode regime of the current line (luatex `line_catcode_table`):
+        /// -1 the current table, -2 "string" catcodes, >= 0 a catcode table,
+        /// <= -0xFF the fixed catcode `-regime - 0xFF`.
+        cat_regime: i32,
         /// True for a real input file (or `\scantokens` pseudo-file) whose
         /// group and conditional nesting at open is on the engine's
         /// `file_nests` stack (e-TeX's `grp_stack`/`if_stack`).
@@ -767,6 +777,43 @@ impl InputStack {
             line_buf: None,
             line_end_len: 0,
             line_pos: 0,
+            lua_lines: None,
+            lua_reader: 0,
+            cat_regime: -1,
+            tracked: false,
+        });
+    }
+
+    /// Push a file whose lines come from an `open_read_file` object.
+    pub(crate) fn push_reader_file(&mut self, name: String, reader: u32, included_from: Option<SourceMark>) {
+        self.push_file_from(name, Vec::<u8>::new(), included_from);
+        if let Some(Source::File { lua_reader, .. }) = self.stack.last_mut() {
+            *lua_reader = reader;
+        }
+    }
+
+    /// Push LuaTeX `tex.print` output as a pseudo file. tex.web §328
+    /// begin_file_reading starts it in state mid_line.
+    pub(crate) fn push_lua_lines(&mut self, lines: crate::engine_lua::LuaLines) {
+        let included_from = self.current_source_mark();
+        self.ensure_stack_room();
+        self.stack.push(Source::File {
+            name: "<directlua>".to_string(),
+            diagnostic_name: Rc::from("<directlua>"),
+            data: Rc::from(&b""[..]),
+            included_from: included_from.map(Rc::new),
+            pos: 0,
+            line_no: 0,
+            line_start: 0,
+            state: 1,
+            ending: false,
+            done: false,
+            line_buf: None,
+            line_end_len: 0,
+            line_pos: 0,
+            lua_lines: Some(Box::new(lines)),
+            lua_reader: 0,
+            cat_regime: -1,
             tracked: false,
         });
         self.top_file.set(self.stack.len() - 1);
@@ -918,6 +965,9 @@ mod tests {
             line_buf: Some(b"needle rest".to_vec()),
             line_end_len: 0,
             line_pos: b"needle".len(),
+            lua_lines: None,
+            lua_reader: 0,
+            cat_regime: -1,
             tracked: false,
         });
 

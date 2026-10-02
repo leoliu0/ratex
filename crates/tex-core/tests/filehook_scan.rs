@@ -413,8 +413,10 @@ fn native_profiles_assign_full_scalar_character_tables() {
 
     let character = '界' as u32;
     assert_eq!(engine.eqtb.cat_code(character), 11);
-    assert_eq!(engine.eqtb.math_code_for(character), 1234);
-    assert_eq!(engine.eqtb.delimiter_code_for(character), 5678);
+    // LuaTeX packs \mathcode/\delcode into class/family/character fields:
+    // `\the\mathcode"754C` is 67109074 and `\the\delcode"754C` 5678 there
+    assert_eq!(engine.eqtb.lua_math_code_num(character), 67109074);
+    assert_eq!(engine.eqtb.lua_del_code_num(character), 5678);
     assert_eq!(engine.eqtb.space_factor_code(character), 2000);
     assert_eq!(engine.eqtb.case_code(character, false), character);
     assert_eq!(engine.eqtb.case_code(character, true), character);

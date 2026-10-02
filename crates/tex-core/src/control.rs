@@ -143,6 +143,7 @@ impl Engine {
             // register alias assignment target (\countdef'd cs etc.)
             match self.eqtb.resolve(id) {
                 Some(Equiv::CountReg(_))
+                | Some(Equiv::AttributeReg(_))
                 | Some(Equiv::DimenReg(_))
                 | Some(Equiv::SkipReg(_))
                 | Some(Equiv::MuSkipReg(_))
@@ -196,6 +197,9 @@ impl Engine {
                             | Prim::LcCodeP
                             | Prim::SfCodeP
                             | Prim::UcCodeP
+                            | Prim::CatCodeTable
+                            | Prim::InitCatCodeTable
+                            | Prim::SaveCatCodeTable
                     ) {
                         self.clear_prefixes();
                     }
@@ -257,6 +261,14 @@ impl Engine {
                     // forever. Appending the MathChar node to the current
                     // list renders the glyph directly (visually equivalent
                     // for the \fnsymbol/\ast cases) without the replay.
+                    Some(Equiv::MathCharDef(v)) if self.engine_kind == crate::engine::EngineKind::LuaTeX => {
+                        self.reject_assignment_prefixes(&format!("\\mathchar\"{v:X}"));
+                        self.math_given_command(i32::from(v), false, id);
+                    }
+                    Some(Equiv::UMathCharDef(v)) => {
+                        self.reject_assignment_prefixes("\\Umathchar");
+                        self.math_given_command(v, true, id);
+                    }
                     Some(Equiv::MathCharDef(v)) => {
                         self.reject_assignment_prefixes(&format!("\\mathchar\"{v:X}"));
                         if self.mode.is_m() {
@@ -267,6 +279,12 @@ impl Engine {
                     }
                     Some(Equiv::CharTok(v)) => {
                         self.dispatch(Token(v));
+                    }
+                    // maincontrol.c run_lua_call. An expandable lua call
+                    // reaches main control only \noexpand-frozen (\relax).
+                    Some(Equiv::LuaCall { slot, protected: true }) => {
+                        self.reject_assignment_prefixes("\\luacall");
+                        self.call_lua_function(slot as i32);
                     }
                     _ => {}
                 }
@@ -312,10 +330,11 @@ impl Engine {
                             self.show.brace_lines.pop();
                             self.mode = saved_mode;
                             if depth == self.math_lists.len() {
+                                let flatten = self.math_flatten_mode();
                                 if let Some(l) = self.math_lists.last_mut() {
                                     if start_mark <= l.len() {
                                         let inner = l.split_off(start_mark);
-                                        l.push(crate::math::finish_math_group(inner));
+                                        l.push(crate::math::finish_math_group(inner, flatten));
                                     }
                                 }
                             }
@@ -419,6 +438,13 @@ impl Engine {
             self.start_paragraph(true);
             return;
         }
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX
+            && matches!(self.mode, Mode::Horizontal | Mode::RestrictedHorizontal)
+            && self.cur_font_is_lua()
+        {
+            self.append_lua_glyph(scalar);
+            return;
+        }
         if !self.mode.is_m() && self.xetex_interchartokenstate > 0 {
             let cur_class = self.xetex_char_classes.get(&scalar).copied().unwrap_or(0);
             if let Some(prev_class) = self.xetex_last_char_class {
@@ -450,6 +476,10 @@ impl Engine {
         }
         if let Ok(byte) = u8::try_from(scalar) {
             self.char_token(byte, is_letter);
+        } else if self.mode.is_m() && self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            let (class, family, slot) = self.eqtb.lua_math_code(scalar);
+            let source = self.current_token_source_mark();
+            self.set_math_char_lua(class, family, slot, scalar, source);
         } else if self.mode.is_m() {
             let origin = self.math_diagnostic_origin();
             self.append_mlist_node(crate::boxes::Node::MathChar {
@@ -493,7 +523,7 @@ impl Engine {
 
     /// Reject every pending prefix before a command that is not an
     /// assignment. The command still executes after the diagnostic.
-    fn reject_assignment_prefixes(&mut self, command: &str) {
+    pub(crate) fn reject_assignment_prefixes(&mut self, command: &str) {
         if !(self.global_flag || self.long_flag || self.outer_flag || self.protected_flag) {
             return;
         }
@@ -564,6 +594,16 @@ impl Engine {
                 self.do_let(false);
                 true
             }
+            GLet => {
+                // LuaTeX `\glet`: `\global\let` unless `\globaldefs<0`.
+                self.global_flag = true;
+                self.do_let(false);
+                true
+            }
+            LetCharCode => {
+                self.do_letcharcode();
+                true
+            }
             FutureLet => {
                 self.do_let(true);
                 true
@@ -583,6 +623,19 @@ impl Engine {
                 self.skip_spaces_relax();
                 true
             }
+            LuaDef => {
+                // maincontrol.c def_lua_call: \protected makes a lua_call,
+                // \long/\outer are accepted and ignored.
+                let protected = self.protected_flag;
+                let t = self.scan_definable_cs();
+                self.scan_optional_equals();
+                let slot = self.scan_int();
+                let g = self.take_global();
+                self.clear_prefixes();
+                let slot = u32::try_from(slot).unwrap_or(0);
+                self.eqtb.assign(t, Equiv::LuaCall { slot, protected }, g);
+                true
+            }
             Advance => {
                 self.do_advance();
                 true
@@ -599,12 +652,27 @@ impl Engine {
                 self.do_setbox();
                 true
             }
-            Count | Attribute => {
+            Count => {
                 let idx = self.scan_reg_num();
                 self.scan_optional_equals();
                 let v = self.scan_int();
                 let g = self.take_global();
                 self.eqtb.assign_count(idx, v, g);
+                self.clear_prefixes();
+                true
+            }
+            UMath(id) => {
+                // maincontrol.c set_math_param_cmd
+                self.set_math_param_command(id);
+                true
+            }
+            U(u) => self.uprim_assign(u, id),
+            Attribute => {
+                let n = self.scan_attribute_num();
+                self.scan_optional_equals();
+                let v = self.scan_int();
+                let g = self.take_global();
+                self.eqtb.assign_attribute(n, v, g);
                 self.clear_prefixes();
                 true
             }
@@ -671,8 +739,12 @@ impl Engine {
                 self.append_box_node(b);
                 true
             }
-            CountDef | AttributeDef => {
+            CountDef => {
                 self.do_def_register(|_engine, idx| Equiv::CountReg(idx));
+                true
+            }
+            AttributeDef => {
+                self.do_def_attribute();
                 true
             }
             DimenDef => {
@@ -1001,6 +1073,29 @@ impl Engine {
                     (self.scan_int(), None)
                 };
                 let v = self.recover_linebreak_int_parameter(ip, v, value_source);
+                if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                    // maincontrol.c: the obsolete math modes only take a
+                    // value after tex.permitmathobsolete(true)
+                    let obsolete = match ip {
+                        IntParam::MathItalicsMode => Some("mathitalicsmode"),
+                        IntParam::MathNoLimitsMode => Some("mathnolimitssmode"),
+                        IntParam::MathScriptCharMode => Some("mathscriptcharmode"),
+                        IntParam::MathScriptBoxMode => Some("mathscriptboxmode"),
+                        IntParam::MathDefaultsMode => Some("mathdefaultsmode"),
+                        IntParam::MathDelimitersMode => Some("mathdelimitersmode"),
+                        _ => None,
+                    };
+                    if let Some(name) = obsolete {
+                        let g = self.take_global();
+                        if self.lua_tex.permit_math_obsolete {
+                            if self.eqtb.int_params[ip.idx() as usize] != v {
+                                self.warning_at(&format!("(math): \\{name} is obsolete"), None);
+                            }
+                            self.eqtb.assign_int_param(ip, v, g);
+                        }
+                        return true;
+                    }
+                }
                 let g = self.take_global();
                 if ip == crate::prim::IntParam::PrevGraf {
                     *self.prev_graf_mut() = v;
@@ -1054,6 +1149,14 @@ impl Engine {
                 let v = self.scan_int();
                 let g = self.take_global();
                 self.eqtb.assign_count(i, v, g);
+                self.clear_prefixes();
+                true
+            }
+            Some(Equiv::AttributeReg(n)) => {
+                self.scan_optional_equals();
+                let v = self.scan_int();
+                let g = self.take_global();
+                self.eqtb.assign_attribute(u32::from(n), v, g);
                 self.clear_prefixes();
                 true
             }
@@ -1146,6 +1249,16 @@ impl Engine {
         let idx = self.scan_reg_num();
         let value = mk(self, idx);
         self.eqtb.assign(target, value, global);
+        self.clear_prefixes();
+    }
+    /// LuaTeX `\attributedef` (registers 0..=65535).
+    fn do_def_attribute(&mut self) {
+        let target = self.scan_definable_cs();
+        let global = self.take_global();
+        self.eqtb.assign(target, Equiv::Prim(Prim::Relax), global);
+        self.scan_optional_equals();
+        let n = self.scan_attribute_num() as u16;
+        self.eqtb.assign(target, Equiv::AttributeReg(n), global);
         self.clear_prefixes();
     }
     /// \def/\gdef/\edef/\xdef
@@ -1583,7 +1696,14 @@ impl Engine {
                     return out;
                 }
                 if self.is_macro_param(t2) {
-                    out.push(Token::char(6, b'#' as u32));
+                    // luatex scan_toks stores the second token as read, so a
+                    // doubled `\alignmark` stays the control sequence
+                    let keeps_cs = t2.is_cs()
+                        && matches!(
+                            self.eqtb.resolve(t2.cs_id()),
+                            Some(Equiv::CharTok(v)) if Token(*v).chr() == crate::token::ALIGN_PRIM_CHR
+                        );
+                    out.push(if keeps_cs { t2 } else { Token::char(6, b'#' as u32) });
                     continue;
                 }
                 if t2.is_char() && (u32::from(b'1')..=u32::from(b'9')).contains(&t2.chr()) {
@@ -1676,38 +1796,45 @@ impl Engine {
                 self.push_token(tb);
             }
         } else {
-            // tex.web §1221: `repeat get_token until cur_cmd<>spacer`, then
-            // an explicit `=` may be followed by one spacer; implicit
-            // spaces (\let to a blank) are spacers in both places
-            let eq = loop {
-                self.skip_raw_spaces();
-                let t = self.raw_token();
-                if !self.raw_token_has_cmd(t, 10) {
-                    break t;
-                }
-            };
-            if eq.is_char() && eq.chr() == b'=' as u32 && eq.cc() == 12 {
-                let sp = self.raw_token();
-                if !self.raw_token_has_cmd(sp, 10) {
-                    self.push_token(sp);
-                }
-            } else {
-                self.push_token(eq);
-            }
+            self.let_target(target, global);
+            return;
+        }
+        self.clear_prefixes();
+    }
+
+    /// The `<optional equals><token>` part of `\let`, assigning `target`.
+    pub(crate) fn let_target(&mut self, target: CsId, global: bool) {
+        // tex.web §1221: `repeat get_token until cur_cmd<>spacer`, then
+        // an explicit `=` may be followed by one spacer; implicit
+        // spaces (\let to a blank) are spacers in both places
+        let eq = loop {
+            self.skip_raw_spaces();
             let t = self.raw_token();
-            if t.is_cs() {
-                self.copy_meaning(target, t.cs_id(), global);
-            } else if t.is_char() && t.cc() == 13 {
-                let id = self.active_cs_id(t.chr());
-                self.copy_meaning(target, id, global);
-            } else if t.0 >= crate::expand::PAR_REF_FLAG
-                && t.0 < 0xFFFF_0000
-                && t.0 != crate::input::PAR_END.0
-            {
-                self.error("Missing control sequence after \\let");
-            } else {
-                self.eqtb.assign(target, Equiv::CharTok(t.0), global);
+            if !self.raw_token_has_cmd(t, 10) {
+                break t;
             }
+        };
+        if eq.is_char() && eq.chr() == b'=' as u32 && eq.cc() == 12 {
+            let sp = self.raw_token();
+            if !self.raw_token_has_cmd(sp, 10) {
+                self.push_token(sp);
+            }
+        } else {
+            self.push_token(eq);
+        }
+        let t = self.raw_token();
+        if t.is_cs() {
+            self.copy_meaning(target, t.cs_id(), global);
+        } else if t.is_char() && t.cc() == 13 {
+            let id = self.active_cs_id(t.chr());
+            self.copy_meaning(target, id, global);
+        } else if t.0 >= crate::expand::PAR_REF_FLAG
+            && t.0 < 0xFFFF_0000
+            && t.0 != crate::input::PAR_END.0
+        {
+            self.error("Missing control sequence after \\let");
+        } else {
+            self.eqtb.assign(target, Equiv::CharTok(t.0), global);
         }
         self.clear_prefixes();
     }

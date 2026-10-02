@@ -30,7 +30,7 @@ impl Engine {
     /// `=` replaces and `-` deletes unless the font is already in use; an
     /// unprefixed item inserts like `+` but first drops the default map file
     /// if it has not been read yet.
-    fn process_map_item(&mut self, item: &str, is_file: bool) {
+    pub(crate) fn process_map_item(&mut self, item: &str, is_file: bool) {
         let item = item.strip_prefix(' ').unwrap_or(item);
         let (mode, rest, flush_default) = match item.as_bytes().first() {
             Some(b'+') => (MapMode::DupIgnore, &item[1..], false),
@@ -997,11 +997,15 @@ impl Engine {
     }
 
     /// `\pdftrailerid {<text>}`: the trailer /ID becomes the MD5 of the
-    /// text of all such commands (pdftex.web `pdf_trailer_id_toks`).
+    /// text of all such commands (pdftex.web `pdf_trailer_id_toks`). LuaTeX's
+    /// `\pdfvariable trailerid {<text>}` is the /ID array itself, written
+    /// verbatim (pdfgen.c `print_ID`).
     pub(crate) fn do_pdftrailerid(&mut self) {
         let toks = self.scan_general_text_expanded();
         let text = self.tokens_to_bytes(&toks);
-        if self.pdf_int(crate::prim::IntParam::PdfOutput) > 0 {
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            self.pdf_doc.trailer_id_raw = text;
+        } else if self.pdf_int(crate::prim::IntParam::PdfOutput) > 0 {
             self.pdf_doc
                 .trailer_id_text
                 .get_or_insert_with(Vec::new)

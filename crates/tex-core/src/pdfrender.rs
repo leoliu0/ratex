@@ -9,6 +9,8 @@ use crate::pdfout::{Annot, PdfPage};
 use crate::prim::{DimParam, IntParam};
 
 mod lr;
+mod lua_glyph;
+pub(crate) use lua_glyph::with_vf_packet;
 
 /// TeX sp to PDF bp
 #[inline]
@@ -181,7 +183,7 @@ fn get_vpos(nodes: &[Node], cur_v: i64, sign: u8, order: u8, set: f64) -> i64 {
                 | crate::boxes::WhatIt::PdfRefXForm { h, d, .. },
             ) => (*h + *d) as i64,
             Node::Glue(g) | Node::Leaders { glue: g, .. } => glue_state.advance(g, sign, order, set),
-            Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) => *k as i64,
+            Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) | Node::ItalicKern(k) => *k as i64,
             _ => 0,
         };
     }
@@ -683,6 +685,7 @@ impl Engine {
             xforms: std::mem::take(&mut ctx.xform_list),
             ximages: std::mem::take(&mut ctx.ximage_list),
             group,
+            media_box: ctx.eng.eqtb.int_params[crate::prim::IntParam::PdfOmitMediaBox.idx() as usize] == 0,
         }
     }
 
@@ -1119,6 +1122,7 @@ impl<'a> RenderCtx<'a> {
                     list: inner,
                     kind,
                     lr,
+                    ..
                 } => {
                     let (bh, bd) = (*h as i64, *d as i64);
                     let sh = if rtl { -(*shift as i64) } else { *shift as i64 };
@@ -1223,7 +1227,7 @@ impl<'a> RenderCtx<'a> {
                 }
                 Node::Kern(k)
                 | Node::ExplicitKern(k)
-                | Node::AccentKern(k)
+                | Node::AccentKern(k) | Node::ItalicKern(k)
                 | Node::MarginKern { width: k, .. } => {
                     cur_y += *k as i64;
                 }
@@ -1327,6 +1331,14 @@ impl<'a> RenderCtx<'a> {
     ) -> i64 {
         {
             match n {
+                Node::Char { c, font } | Node::Ligature { c, font, .. }
+                    if self.eng.eqtb.fonts.get(usize::from(*font)).is_some_and(|f| f.lua.is_some()) =>
+                {
+                    cur_x += self.emit_lua_glyph(*font, u32::from(*c), cur_x, y, 0, 0, 0);
+                }
+                Node::LuaGlyph(g) => {
+                    cur_x += self.emit_lua_glyph(g.font, g.c, cur_x, y, g.xoffset, g.yoffset, g.expansion_factor);
+                }
                 Node::Char { c, font } => {
                     let adv = self.font_char_advance_sp(*font, *c);
                     self.emit_char_sp(*font, *c, cur_x, y, 0);
@@ -1355,7 +1367,7 @@ impl<'a> RenderCtx<'a> {
                 }
                 Node::Kern(k)
                 | Node::ExplicitKern(k)
-                | Node::AccentKern(k)
+                | Node::AccentKern(k) | Node::ItalicKern(k)
                 | Node::MarginKern { width: k, .. }
                 | Node::MathKern(k, 1..) => {
                     cur_x += *k as i64;
@@ -1392,6 +1404,7 @@ impl<'a> RenderCtx<'a> {
                     list: inner,
                     kind,
                     lr,
+                    ..
                 } => {
                     let (bw, bh, sh) = (*w as i64, *h as i64, *shift as i64);
 
@@ -1434,6 +1447,11 @@ impl<'a> RenderCtx<'a> {
                 Node::Disc(dc) => {
                     for nn in &dc.no_break {
                         match nn {
+                            Node::Char { c, font }
+                                if self.eng.eqtb.fonts.get(usize::from(*font)).is_some_and(|f| f.lua.is_some()) =>
+                            {
+                                cur_x += self.emit_lua_glyph(*font, u32::from(*c), cur_x, y, 0, 0, 0);
+                            }
                             Node::Char { c, font } => {
                                 let adv = self.font_char_advance_sp(*font, *c);
                                 self.emit_char_sp(*font, *c, cur_x, y, 0);
@@ -1531,6 +1549,7 @@ impl<'a> RenderCtx<'a> {
             list: inner,
             kind,
             lr,
+            ..
         } = b
         else {
             return;
@@ -2306,8 +2325,15 @@ impl<'a> RenderCtx<'a> {
             .unwrap_or(0);
         let adv_sp = if at_size_sp <= 0 {
             0
-        } else if let Some(native) = self.eng.font_loader.native_fonts.get(&fid) {
-            if let Ok(face) = native.program.face() {
+        } else if let Some(program) = self
+            .eng
+            .font_loader
+            .native_fonts
+            .get(&fid)
+            .map(|native| native.program.clone())
+            .or_else(|| self.eng.lua_font_program(fid))
+        {
+            if let Ok(face) = program.face() {
                 let upem = face.units_per_em() as i64;
                 if upem > 0 {
                     let adv = face

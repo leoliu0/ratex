@@ -60,6 +60,9 @@ const TAG_FONT_REF: u8 = 10;
 const TAG_ALIAS: u8 = 11;
 const TAG_PRIM: u8 = 12;
 const TAG_MACRO: u8 = 13;
+const TAG_LUA_CALL: u8 = 14;
+const TAG_ATTRIBUTE_REG: u8 = 15;
+const TAG_UMATHCHAR_DEF: u8 = 16;
 /// Marks the trailing translation tables (xprn, xord, xchr).
 const TCX_TRAILER: u8 = 0xC7;
 
@@ -468,6 +471,10 @@ pub fn save_format_with_encoding(
                 w.u8(TAG_COUNT_REG);
                 w.u16(*v);
             }
+            Some(Equiv::AttributeReg(v)) => {
+                w.u8(TAG_ATTRIBUTE_REG);
+                w.u16(*v);
+            }
             Some(Equiv::DimenReg(v)) => {
                 w.u8(TAG_DIMEN_REG);
                 w.u16(*v);
@@ -500,6 +507,10 @@ pub fn save_format_with_encoding(
                 w.u8(TAG_MATHCHAR_DEF);
                 w.u16(*v);
             }
+            Some(Equiv::UMathCharDef(v)) => {
+                w.u8(TAG_UMATHCHAR_DEF);
+                w.i32(*v);
+            }
             Some(Equiv::FontRef(v)) => {
                 w.u8(TAG_FONT_REF);
                 w.u16(*v);
@@ -515,6 +526,11 @@ pub fn save_format_with_encoding(
             Some(Equiv::Macro(m)) => {
                 w.u8(TAG_MACRO);
                 write_macro(&mut w, m);
+            }
+            Some(Equiv::LuaCall { slot, protected }) => {
+                w.u8(TAG_LUA_CALL);
+                w.u32(*slot);
+                w.u8(u8::from(*protected));
             }
         }
     }
@@ -643,6 +659,18 @@ pub fn save_format_with_encoding(
         w.u8(language);
         w.bytes(eng.hyphen_codes[&language].as_slice());
     }
+    // LuaTeX bytecode registers and chunk names (llualib.c
+    // dump_luac_registers)
+    w.u32(eng.lua_bytecodes.len() as u32);
+    for (slot, code) in &eng.lua_bytecodes {
+        w.u32(*slot);
+        w.bytes(code);
+    }
+    w.u32(eng.lua_names.len() as u32);
+    for (slot, name) in &eng.lua_names {
+        w.u16(*slot);
+        w.bytes(name.as_bytes());
+    }
     // tounicode.c dumptounicode: the \pdfglyphtounicode table
     w.u32(eng.pdf_backend.glyph_unicode.len() as u32);
     for (glyph, value) in &eng.pdf_backend.glyph_unicode {
@@ -658,6 +686,32 @@ pub fn save_format_with_encoding(
                 w.str(seq);
             }
         }
+    }
+    // Sparse Unicode code tables, LuaTeX attributes and catcode tables
+    // (luatex textcodes.c dumpcatcodes & co.). A dump happens at level one,
+    // so no saved levels are written.
+    write_code_map(&mut w, &q.unicode_cat_codes, |w, v| w.u8(v));
+    write_code_map(&mut w, &q.unicode_math_codes, |w, v| w.u32(v));
+    write_code_map(&mut w, &q.unicode_del_codes, |w, v| w.u64(v as u64));
+    write_code_map(&mut w, &q.unicode_sf_codes, |w, v| w.u16(v));
+    write_code_map(&mut w, &q.attributes, |w, v| w.i32(v));
+    write_code_map(&mut w, &q.math_params, |w, v| w.i32(v));
+    write_code_map(&mut w, &q.math_glue_params, |w, v| {
+        for x in v {
+            w.i32(x);
+        }
+    });
+    write_code_map(&mut w, &q.lua_math_codes, |w, v| w.u64(v));
+    write_code_map(&mut w, &q.lua_del_codes, |w, v| w.u64(v));
+    w.i32(q.cat_table);
+    let mut tables: Vec<_> = q.cat_tables.iter().collect();
+    tables.sort_unstable_by_key(|(id, _)| **id);
+    w.u32(tables.len() as u32);
+    for (id, t) in tables {
+        w.i32(*id);
+        w.u8(u8::from(t.valid));
+        w.buf.extend_from_slice(&t.cat);
+        write_code_map(&mut w, &t.unicode, |w, v| w.u8(v));
     }
     // tex.web `format_ident`: the job id of every run that loads this format
     w.str(&eng.format_ident);
@@ -928,6 +982,37 @@ fn is_zero_glue(g: &Glue) -> bool {
     g.width == 0 && g.stretch == 0 && g.shrink == 0 && g.stretch_order == 0 && g.shrink_order == 0
 }
 
+/// A sparse `character -> (value, level)` table, sorted for a stable dump.
+fn write_code_map<T: Copy>(
+    w: &mut W,
+    map: &crate::FxHashMap<u32, (T, u16)>,
+    write: impl Fn(&mut W, T),
+) {
+    let mut entries: Vec<_> = map.iter().collect();
+    entries.sort_unstable_by_key(|(key, _)| **key);
+    w.u32(entries.len() as u32);
+    for (&key, &(value, _)) in entries {
+        w.u32(key);
+        write(w, value);
+    }
+}
+
+fn read_code_map<T>(
+    r: &mut R,
+    read: impl Fn(&mut R) -> io::Result<T>,
+) -> io::Result<crate::FxHashMap<u32, (T, u16)>> {
+    let n = r.count()?;
+    let mut map = crate::FxHashMap::default();
+    for _ in 0..n {
+        let key = r.u32()?;
+        let value = read(r)?;
+        if map.insert(key, (value, crate::eqtb::LEVEL_ONE)).is_some() {
+            return Err(bad("duplicate sparse code table entry"));
+        }
+    }
+    Ok(map)
+}
+
 /// Write the entries of a register table that differ from a fresh engine
 /// (`is_default` value at level one) as `(index, value, level)` triples.
 fn write_sparse<T>(
@@ -1043,9 +1128,12 @@ fn load_format_uncompressed(data: &[u8]) -> Result<Engine, String> {
             _ => None,
         })
         .collect();
+    let (lua_table, lua_backend) = eng.resolve_lua_primitives();
     load_state(&mut r, &mut eng).map_err(io_err)?;
+    let lua = eng.engine_kind == crate::engine::EngineKind::LuaTeX;
     // Repair primitive aliases while preserving LaTeX macro redefinitions.
-    for (name, p) in primitives {
+    // A LuaTeX format defines exactly the primitives it enabled.
+    for (name, p) in primitives.into_iter().filter(|_| !lua) {
         let did = eng.cs.lookup(&name).unwrap_or_else(|| eng.cs.intern(&name));
         let force = name.as_slice() == b"protected";
         match eng.eqtb.get(did) {
@@ -1065,8 +1153,8 @@ fn load_format_uncompressed(data: &[u8]) -> Result<Engine, String> {
     }
     if eng.engine_kind == crate::engine::EngineKind::XeTeX {
         eng.init_xetex_primitives();
-    } else if eng.engine_kind == crate::engine::EngineKind::LuaTeX {
-        eng.init_luatex_primitives();
+    } else if lua {
+        eng.install_lua_primitive_table(lua_table, lua_backend);
         if eng.lua.is_none() {
             let lua_eng = crate::engine_lua::LuaEngine::new().map_err(|e| e)?;
             eng.lua = Some(Box::new(lua_eng));
@@ -1117,6 +1205,7 @@ pub fn load_format_bytes_into(data: &[u8], eng: &mut Engine) -> Result<(), Strin
     eng.par_shape = scratch.par_shape;
     eng.penalty_shapes = scratch.penalty_shapes;
     eng.primitive_table = scratch.primitive_table;
+    eng.lua_primitives = scratch.lua_primitives;
     eng.penalty_shape_levels = scratch.penalty_shape_levels;
     eng.format_done = scratch.format_done;
     eng.ini_mode = scratch.ini_mode;
@@ -1171,6 +1260,7 @@ fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
         let equiv = match tag {
             TAG_NONE => None,
             TAG_COUNT_REG => Some(Equiv::CountReg(r.u16()?)),
+            TAG_ATTRIBUTE_REG => Some(Equiv::AttributeReg(r.u16()?)),
             TAG_DIMEN_REG => Some(Equiv::DimenReg(r.u16()?)),
             TAG_SKIP_REG => Some(Equiv::SkipReg(r.u16()?)),
             TAG_MUSKIP_REG => Some(Equiv::MuSkipReg(r.u16()?)),
@@ -1179,6 +1269,7 @@ fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
             TAG_CHAR_DEF => Some(Equiv::CharDef(r.u32()?)),
             TAG_CHAR_TOK => Some(Equiv::CharTok(r.u32()?)),
             TAG_MATHCHAR_DEF => Some(Equiv::MathCharDef(r.u16()?)),
+            TAG_UMATHCHAR_DEF => Some(Equiv::UMathCharDef(r.i32()?)),
             TAG_FONT_REF => Some(Equiv::FontRef(r.u16()?)),
             TAG_ALIAS => Some(Equiv::Alias(r.u32()?)),
             TAG_PRIM => {
@@ -1189,6 +1280,15 @@ fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
                 }
             }
             TAG_MACRO => Some(Equiv::Macro(Rc::new(read_macro(r)?))),
+            TAG_LUA_CALL => {
+                let slot = r.u32()?;
+                let protected = match r.u8()? {
+                    0 => false,
+                    1 => true,
+                    _ => return Err(bad("invalid lua call")),
+                };
+                Some(Equiv::LuaCall { slot, protected })
+            }
             _ => return Err(bad("has unknown equivalent tag")),
         };
         eng.eqtb.restore_eq(id, equiv, level);
@@ -1323,6 +1423,22 @@ fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
             return Err(bad("duplicate hyphenation code language"));
         }
     }
+    let n_bytecodes = r.count()?;
+    for _ in 0..n_bytecodes {
+        let slot = r.u32()?;
+        let code = r.bytes()?;
+        if eng.lua_bytecodes.insert(slot, code).is_some() {
+            return Err(bad("duplicate lua bytecode register"));
+        }
+    }
+    let n_names = r.count()?;
+    for _ in 0..n_names {
+        let slot = r.u16()?;
+        let name = String::from_utf8(r.bytes()?).map_err(|_| bad("invalid lua chunk name"))?;
+        if eng.lua_names.insert(slot, name).is_some() {
+            return Err(bad("duplicate lua chunk name"));
+        }
+    }
     let n_glyphs = r.count()?;
     for _ in 0..n_glyphs {
         let glyph = r.str()?;
@@ -1333,6 +1449,46 @@ fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
             _ => return Err(bad("invalid glyph-to-unicode entry")),
         };
         eng.pdf_backend.glyph_unicode.insert(glyph, value);
+    }
+    let q = &mut eng.eqtb;
+    q.unicode_cat_codes = read_code_map(r, |r| r.u8())?;
+    q.unicode_math_codes = read_code_map(r, |r| r.u32())?;
+    q.unicode_del_codes = read_code_map(r, |r| Ok(r.u64()? as i64))?;
+    q.unicode_sf_codes = read_code_map(r, |r| r.u16())?;
+    q.attributes = read_code_map(r, |r| r.i32())?;
+    q.math_params = read_code_map(r, |r| r.i32())?;
+    q.math_glue_params = read_code_map(r, |r| {
+        let mut v = [0i32; 6];
+        for x in &mut v {
+            *x = r.i32()?;
+        }
+        Ok(v)
+    })?;
+    q.lua_math_codes = read_code_map(r, |r| r.u64())?;
+    q.lua_del_codes = read_code_map(r, |r| r.u64())?;
+    q.cat_table = r.i32()?;
+    let n_tables = r.count()?;
+    for _ in 0..n_tables {
+        let id = r.i32()?;
+        let valid = match r.u8()? {
+            0 => false,
+            1 => true,
+            _ => return Err(bad("invalid catcode table")),
+        };
+        let cat = r.take(NUM_CODES)?.to_vec();
+        let unicode = read_code_map(r, |r| r.u8())?;
+        let table = crate::eqtb::CatCodeTable {
+            cat,
+            levels: vec![crate::eqtb::LEVEL_ONE; NUM_CODES],
+            unicode,
+            valid,
+        };
+        if !(0..=crate::eqtb::MAX_CAT_TABLE).contains(&id)
+            || id == q.cat_table
+            || q.cat_tables.insert(id, table).is_some()
+        {
+            return Err(bad("invalid catcode table"));
+        }
     }
     eng.format_ident = r.str()?;
     // translation tables: the trailer, or cp227 for dumps without one
@@ -1503,6 +1659,7 @@ fn read_font(r: &mut R) -> io::Result<Font> {
         enc_name,
         map_fontname,
         encoding,
+        lua: None,
     })
 }
 
@@ -1689,6 +1846,7 @@ mod tests {
             enc_name: Some("ec".to_string()),
             map_fontname: None,
             encoding: Some(vec!["grave".to_string(), "".to_string()].into()),
+            lua: None,
         };
         eng.eqtb.fonts.push(Rc::new(font));
         eng.eqtb.font_params.push(vec![1, 2, 3]);

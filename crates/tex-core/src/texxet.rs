@@ -171,6 +171,7 @@ impl Engine {
             glue_order: *glue_order,
             glue_set: *glue_set,
             lr: 0,
+            dir: 0,
         })
     }
 
@@ -178,7 +179,7 @@ impl Engine {
     /// `just_box` with the text direction `x` before the display: R-text
     /// lines are measured mirrored, reflected segments are reversed
     /// (`just_reverse`), and LR anomalies void the size (max_dimen).
-    pub(crate) fn display_line_size(&self, just_box: &Node, x: i32, quad: i64) -> i64 {
+    pub(crate) fn display_line_size(&self, just_box: &Node, x: i32, gap: i64) -> i64 {
         let Node::Box {
             w: box_w,
             list,
@@ -204,7 +205,7 @@ impl Engine {
             l.push(WItem::Own(Node::MathKern(0, END_L)));
             l
         };
-        v += 2 * quad;
+        v += gap;
         let mut stack: Vec<u8> = Vec::new();
         let mut lr_problems = 0;
         let mut w = -MAX_DIMEN;
@@ -263,10 +264,11 @@ impl Engine {
                                 .map_or(0, |f| f.char_width(*c) as i64),
                             true,
                         ),
+                        Node::LuaGlyph(g) => (crate::boxes::lua_glyph_dims(&self.eqtb, g).0 as i64, true),
                         Node::Ligature { lig_width, .. } => (*lig_width as i64, true),
                         Node::Box { w, .. } => (*w as i64, true),
                         Node::Rule { width, .. } => (*width as i64, true),
-                        Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) => {
+                        Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) | Node::ItalicKern(k) => {
                             (*k as i64, false)
                         }
                         Node::MarginKern { width, .. } => (*width as i64, false),
@@ -410,6 +412,7 @@ impl Engine {
                 glue_order,
                 glue_set,
                 lr,
+                dir,
                 ..
             }) => Node::Box {
                 kind,
@@ -422,6 +425,7 @@ impl Engine {
                 glue_order,
                 glue_set,
                 lr,
+                dir,
             },
             _ => {
                 let mut packed = crate::boxes::hpack(out, None, HBOX, &self.eqtb).node;
@@ -455,13 +459,14 @@ fn just_copied(n: &Node) -> bool {
     matches!(
         n,
         Node::Char { .. }
+            | Node::LuaGlyph(_)
             | Node::Ligature { .. }
             | Node::NativeGlyphRun { .. }
             | Node::Box { .. }
             | Node::Rule { .. }
             | Node::Kern(_)
             | Node::ExplicitKern(_)
-            | Node::AccentKern(_)
+            | Node::AccentKern(_) | Node::ItalicKern(_)
             | Node::MathKern(..)
             | Node::Glue(_)
             | Node::Leaders { .. }

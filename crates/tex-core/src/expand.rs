@@ -499,7 +499,10 @@ impl Engine {
             }
             match equiv.cloned() {
                 Some(Equiv::Macro(m)) => {
-                    if m.outer && self.outer_scan.is_some() {
+                    if m.outer
+                        && self.outer_scan.is_some()
+                        && self.eqtb.int_params[crate::prim::IntParam::SuppressOuterError.idx() as usize] == 0
+                    {
                         return self.forbidden_outer(t);
                     }
                     // edef/write/expanded list. Nested \\romannumeral (f-expansion)
@@ -591,6 +594,11 @@ impl Engine {
                         self.set_cur_cs(t);
                         return t;
                     }
+                }
+                Some(Equiv::LuaCall { slot, protected: false }) => {
+                    self.call_lua_function(slot as i32);
+                    first = self.raw_token();
+                    continue;
                 }
                 None => {
                     self.undefined_cs_error(t);
@@ -900,6 +908,7 @@ impl Engine {
                     let is_expansion = match self.eqtb.get(id) {
                         Some(Equiv::Macro(_)) => true,
                         Some(Equiv::Prim(p)) => self.is_expandable(*p),
+                        Some(Equiv::LuaCall { protected, .. }) => !protected,
                         _ => false,
                     };
                     if is_expansion {
@@ -917,7 +926,10 @@ impl Engine {
                     let equiv = self.eqtb.get(id);
                     match equiv {
                         Some(Equiv::Macro(m)) => {
-                            if m.outer && self.outer_scan.is_some() {
+                            if m.outer
+                        && self.outer_scan.is_some()
+                        && self.eqtb.int_params[crate::prim::IntParam::SuppressOuterError.idx() as usize] == 0
+                    {
                                 return self.forbidden_outer(t);
                             }
                             if m.protected && self.in_expanded_scan && self.csname_depth == 0 {
@@ -1051,6 +1063,10 @@ impl Engine {
                                 return t;
                             }
                         }
+                        Some(&Equiv::LuaCall { slot, protected: false }) => {
+                            self.call_lua_function(slot as i32);
+                            break 'expand;
+                        }
                         None => {
                             self.undefined_cs_error(t);
                             break 'expand;
@@ -1086,6 +1102,8 @@ impl Engine {
                 | Detokenize
                 | ScanTokens
                 | DirectLua
+                | LuaFunction
+                | LuaBytecode
                 | Input
                 | EndInput
                 | Expanded
@@ -1172,7 +1190,16 @@ impl Engine {
                 | Prim::XeTeXVariationName
                 | Prim::LuaTeXRevision
                 | Prim::LuaTeXBanner
-        )
+                | PdfVariable
+                | PdfFeedback
+                | DviVariable
+                | DviFeedback
+                | EtxVersionString
+                | CsString
+                | BeginCsName
+                | FormatName
+                | LuaEscapeString
+        ) || matches!(p, Prim::U(u) if u.is_expandable())
     }
 
     /// Execute an expandable primitive; None = keep expanding,
@@ -1339,6 +1366,9 @@ impl Engine {
                                     self.push_token(tt);
                                 }
                             }
+                            &Equiv::LuaCall { slot, protected: false } => {
+                                self.call_lua_function(slot as i32);
+                            }
                             _ => {
                                 self.push_token(t2);
                             }
@@ -1371,6 +1401,7 @@ impl Engine {
                     let needs_freeze = match self.eqtb.resolve(id) {
                         None | Some(Equiv::Macro(_)) => true,
                         Some(Equiv::Prim(p2)) => self.is_expandable(*p2),
+                        Some(Equiv::LuaCall { protected, .. }) => !protected,
                         _ => false,
                     };
                     if needs_freeze {
@@ -1386,7 +1417,7 @@ impl Engine {
                 // extra \endcsname outside \csname: TeX errors then continues
                 None
             }
-            CsName => {
+            CsName | BeginCsName => {
                 let csname_origin = self.current_token_source_mark();
                 let csname_span = if self.diagnostic_macro_trace.is_empty() {
                     self.diagnostic_cs_source_width(self.diagnostic_source_cs.unwrap_or(id))
@@ -1447,6 +1478,11 @@ impl Engine {
                 }
                 self.csname_depth = self.csname_depth.saturating_sub(1);
                 let id = self.cs.intern(&name);
+                if p == BeginCsName && self.eqtb.get(id).is_none() {
+                    // LuaTeX `\begincsname`: an undefined name expands to
+                    // nothing and stays undefined.
+                    return None;
+                }
                 self.last_named_cs = Some(id);
                 if self.eqtb.get(id).is_none() {
                     // tex.web §372: a new name means \relax (locally).
@@ -1597,9 +1633,19 @@ impl Engine {
                 }
                 let toks = self.scan_general_text_expanded();
                 let code = self.tokens_to_string(&toks);
-                if let Err(err) = self.execute_directlua(&code) {
+                if let Err(err) = self.execute_directlua(code.as_bytes()) {
                     self.error(&format!("LuaTeX error: {err}"));
                 }
+                None
+            }
+            LuaFunction => {
+                let slot = self.scan_int();
+                self.call_lua_function(slot);
+                None
+            }
+            LuaBytecode => {
+                let slot = self.scan_int();
+                self.call_lua_bytecode(slot);
                 None
             }
             Input => {
@@ -1640,7 +1686,15 @@ impl Engine {
                 None
             }
             Prim::JobName => {
-                let text = self.quoted_job_name();
+                // LuaTeX does not quote the job name itself; its
+                // process_jobname callback may (textoken.c print_job_name).
+                let text = if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                    let name = self.job_name.clone();
+                    self.run_lua_string_callback("process_jobname", &name)
+                        .unwrap_or(name)
+                } else {
+                    self.quoted_job_name()
+                };
                 self.exp_string(text.as_bytes());
                 None
             }
@@ -1814,10 +1868,14 @@ impl Engine {
                 let t = self.raw_token();
                 self.scanner_status = save;
                 if !t.is_cs() {
+                    self.missing_primitive_name(t);
                     return None;
                 }
                 let name = self.cs.name(t.cs_id()).to_vec();
-                let hidden = self.primitive_cs(&name)?;
+                let Some(hidden) = self.primitive_cs(&name) else {
+                    self.missing_primitive_name(t);
+                    return None;
+                };
                 match self.eqtb.get(hidden) {
                     Some(Equiv::Prim(p)) if self.is_expandable(*p) => {
                         Some(Token::from_cs(hidden))
@@ -1853,6 +1911,7 @@ impl Engine {
                 let unless = std::mem::take(&mut self.unless_next);
                 self.csname_depth += 1;
                 let mut name: Vec<u8> = Vec::new();
+                let mut aborted = false;
                 loop {
                     let t = self.get_x_raw();
                     if t == EOF_MARKER {
@@ -1880,6 +1939,27 @@ impl Engine {
                                 continue;
                             }
                             _ => {
+                                if self.eqtb.int_params[crate::prim::IntParam::SuppressIfCsnameError.idx() as usize] != 0 {
+                                    // conditional.c test_for_cs: skip to the
+                                    // \endcsname, the test fails
+                                    aborted = true;
+                                    loop {
+                                        let t = self.get_x_raw();
+                                        if t == EOF_MARKER {
+                                            self.push_token(t);
+                                            break;
+                                        }
+                                        if t.is_cs()
+                                            && matches!(
+                                                self.eqtb.resolve(t.cs_id()),
+                                                Some(Equiv::Prim(crate::prim::Prim::EndCsName))
+                                            )
+                                        {
+                                            break;
+                                        }
+                                    }
+                                    break;
+                                }
                                 self.push_token(t);
                                 self.error("Missing \\endcsname inserted");
                                 break;
@@ -1892,7 +1972,10 @@ impl Engine {
                     t.append_character_bytes(&mut name);
                 }
                 self.csname_depth = self.csname_depth.saturating_sub(1);
-                let def = if let Some(id) = self.cs.lookup(&name) {
+                let def = if aborted {
+                    self.last_named_cs = None;
+                    false
+                } else if let Some(id) = self.cs.lookup(&name) {
                     self.last_named_cs = Some(id);
                     self.eqtb.resolve(id).is_some()
                 } else {
@@ -1980,7 +2063,8 @@ impl Engine {
                 None
             }
             EtxRevision => {
-                self.exp_string(b".6");
+                // LuaTeX implements e-TeX 2.2; pdfTeX 1.40 e-TeX 2.6.
+                self.exp_string(if self.engine_kind == crate::engine::EngineKind::LuaTeX { b".2" } else { b".6" });
                 None
             }
             RatexUnicodeVersion => {
@@ -2365,6 +2449,39 @@ impl Engine {
                 self.exp_string(b"This is LuaTeX, Version 1.24.0");
                 None
             }
+            PdfVariable => {
+                self.expand_pdf_variable();
+                None
+            }
+            PdfFeedback => {
+                self.expand_pdf_feedback();
+                None
+            }
+            DviVariable => {
+                self.warning_at("(dvi backend): unexpected use of \\dvivariable", None);
+                None
+            }
+            DviFeedback => {
+                self.expand_dvi_feedback();
+                None
+            }
+            EtxVersionString => {
+                self.exp_string(b"2.2");
+                None
+            }
+            CsString => {
+                self.expand_csstring(id);
+                None
+            }
+            FormatName => {
+                self.expand_format_name();
+                None
+            }
+            LuaEscapeString => {
+                self.expand_lua_escape_string();
+                None
+            }
+            U(u) => self.uprim_expand(u),
             _ => None,
         }
     }
@@ -3036,7 +3153,7 @@ impl Engine {
         if t == EOF_MARKER {
             return Err(self.abort_file_ended(id, origin));
         }
-        if self.is_partoken(t) && !long {
+        if self.is_partoken(t) && !long && !self.suppress_long_error() {
             return Err(self.abort_paragraph(id, stored, origin));
         }
         if self.is_outer_token(raw) {
@@ -3050,6 +3167,26 @@ impl Engine {
         }
         out.push(stored);
         Ok(())
+    }
+
+    /// LuaTeX `\primitive` with something that names no primitive (expand.c):
+    /// the token is read again after the error, which
+    /// `\suppressprimitiveerror` silences (the token is then gone).
+    fn missing_primitive_name(&mut self, t: Token) {
+        if self.engine_kind != crate::engine::EngineKind::LuaTeX
+            || self.eqtb.int_params[crate::prim::IntParam::SuppressPrimitiveError.idx() as usize] != 0
+        {
+            return;
+        }
+        self.push_token(t);
+        self.error("Missing primitive name");
+    }
+
+    /// LuaTeX `\suppresslongerror`: a `\par` in the argument of a non-long
+    /// macro is an ordinary token.
+    #[inline]
+    fn suppress_long_error(&self) -> bool {
+        self.eqtb.int_params[crate::prim::IntParam::SuppressLongError.idx() as usize] != 0
     }
 
     /// tex.web §396: a forbidden \par ends the call; TeX reads it again.
@@ -3115,10 +3252,12 @@ impl Engine {
         self.push_token(EOF_MARKER);
         if !self.eof_reported {
             self.eof_reported = true;
-            self.error_at(
-                &format!("File ended while scanning use of {}", self.display_cs(id)),
-                origin.map(crate::input::SourceMark::to_context),
-            );
+            if self.eqtb.int_params[crate::prim::IntParam::SuppressOuterError.idx() as usize] == 0 {
+                self.error_at(
+                    &format!("File ended while scanning use of {}", self.display_cs(id)),
+                    origin.map(crate::input::SourceMark::to_context),
+                );
+            }
         }
         ArgAbort
     }
@@ -3161,10 +3300,13 @@ impl Engine {
 
     /// True for a control sequence or active character whose meaning is an
     /// \outer macro. Takes the token as fetched: tokens guarded by
-    /// \noexpand are exempt (tex.web §358).
+    /// \noexpand are exempt (tex.web §358). LuaTeX's
+    /// \suppressoutererror makes `check_outer_validity` return at once.
     #[inline(always)]
     pub(crate) fn is_outer_macro_token(&self, t: Token) -> bool {
-        if !self.eqtb.has_outer_macros() {
+        if !self.eqtb.has_outer_macros()
+            || self.eqtb.int_params[crate::prim::IntParam::SuppressOuterError.idx() as usize] != 0
+        {
             return false;
         }
         if t.is_cs() {
@@ -3273,8 +3415,10 @@ impl Engine {
     pub(crate) fn outer_scan_file_ended(&mut self, origin: Option<&crate::input::SourceMark>) {
         if !self.eof_reported {
             self.eof_reported = true;
-            let message = self.outer_scan_message("File ended");
-            self.error_at(&message, origin.map(crate::input::SourceMark::to_context));
+            if self.eqtb.int_params[crate::prim::IntParam::SuppressOuterError.idx() as usize] == 0 {
+                let message = self.outer_scan_message("File ended");
+                self.error_at(&message, origin.map(crate::input::SourceMark::to_context));
+            }
         }
         self.push_token(EOF_MARKER);
     }
@@ -3429,7 +3573,7 @@ impl Engine {
                         return Ok(());
                     }
                 }
-            } else if !long && self.is_partoken(t) {
+            } else if !long && !self.suppress_long_error() && self.is_partoken(t) {
                 return Err(Unbalanced::Paragraph(stored));
             } else if macro_arg {
                 if self.is_outer_token(raw) {
@@ -3722,7 +3866,7 @@ impl Engine {
             // tex.web §392 matches the delimiter before §396 rejects an
             // illegal paragraph. A non-long #1\par parameter may therefore
             // use the paragraph token as its terminator.
-            if (!long || outer_abort) && self.is_partoken(t) {
+            if (!long && !self.suppress_long_error() || outer_abort) && self.is_partoken(t) {
                 out.pop();
                 if outer_abort {
                     // tex.web §396: the call was ended by an \outer macro,
@@ -3962,8 +4106,10 @@ impl Engine {
             (Some(x), Some(y)) => match (&x, &y) {
                 (Equiv::CharDef(v1), Equiv::CharDef(v2)) => v1 == v2,
                 (Equiv::MathCharDef(v1), Equiv::MathCharDef(v2)) => v1 == v2,
+                (Equiv::UMathCharDef(v1), Equiv::UMathCharDef(v2)) => v1 == v2,
                 (Equiv::FontRef(v1), Equiv::FontRef(v2)) => v1 == v2,
                 (Equiv::CountReg(v1), Equiv::CountReg(v2)) => v1 == v2,
+                (Equiv::AttributeReg(v1), Equiv::AttributeReg(v2)) => v1 == v2,
                 (Equiv::DimenReg(v1), Equiv::DimenReg(v2)) => v1 == v2,
                 (Equiv::SkipReg(v1), Equiv::SkipReg(v2)) => v1 == v2,
                 (Equiv::ToksReg(v1), Equiv::ToksReg(v2)) => v1 == v2,

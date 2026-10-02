@@ -1,0 +1,233 @@
+field	hlist		width	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	hlist		depth	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	hlist		height	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	hlist		dir	nil	<node kern>=>ERR:p.lua:33: Direction specifiers have to be strings | 7=>ERR:p.lua:33: Direction specifiers have to be strings | TRT=>TRT | abc=>ERR:p.lua:33: Bad direction specifier abc
+field	hlist		shift	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	hlist		glue_order	0	7=>7 | 1.5=>0 | 8=>8 | -3=>65533
+field	hlist		glue_sign	0	7=>7 | 1.5=>0 | 8=>8 | -3=>65533
+field	hlist		glue_set	0.0	7=>7.0 | 1.5=>1.5 | 8=>8.0 | -3=>-3.0
+field	hlist		head	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+invalid	hlist		nil	false	p.lua:46: You cannot set field foo in a node of type hlist
+hasfield	hlist		false	true	true	true	true
+field	vlist		width	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	vlist		depth	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	vlist		height	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	vlist		dir	nil	<node kern>=>ERR:p.lua:33: Direction specifiers have to be strings | 7=>ERR:p.lua:33: Direction specifiers have to be strings | TRT=>TRT | abc=>ERR:p.lua:33: Bad direction specifier abc
+field	vlist		shift	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	vlist		glue_order	0	7=>7 | 1.5=>0 | 8=>8 | -3=>65533
+field	vlist		glue_sign	0	7=>7 | 1.5=>0 | 8=>8 | -3=>65533
+field	vlist		glue_set	0.0	7=>7.0 | 1.5=>1.5 | 8=>8.0 | -3=>-3.0
+field	vlist		head	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+invalid	vlist		nil	false	p.lua:46: You cannot set field foo in a node of type vlist
+hasfield	vlist		false	true	true	true	true
+field	rule		width	-1073741824	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	rule		depth	-1073741824	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	rule		height	-1073741824	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	rule		dir	nil	<node kern>=>ERR:p.lua:33: Direction specifiers have to be strings | 7=>ERR:p.lua:33: Direction specifiers have to be strings | TRT=>TRT | abc=>ERR:p.lua:33: Bad direction specifier abc
+field	rule		index	0	7=>7 | 1.5=>0 | 8=>8 | -3=>-3
+field	rule		left	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	rule		right	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+invalid	rule		nil	false	p.lua:46: You cannot set field foo in a node of type rule
+hasfield	rule		false	true	true	true	true
+field	ins		cost	0	7=>7 | 1.5=>0 | 8=>8 | -3=>-3
+field	ins		depth	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	ins		height	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	ins		spec	nil	<node kern>=>ERR:p.lua:33: You cannot set field spec in a node of type ins | 7=>ERR:p.lua:33: You cannot set field spec in a node of type ins | TRT=>ERR:p.lua:33: You cannot set field spec in a node of type ins | abc=>ERR:p.lua:33: You cannot set field spec in a node of type ins
+field	ins		head	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+invalid	ins		nil	false	p.lua:46: You cannot set field foo in a node of type ins
+hasfield	ins		false	false	true	true	true
+field	adjust		head	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+invalid	adjust		nil	false	p.lua:46: You cannot set field foo in a node of type adjust
+hasfield	adjust		false	false	true	true	true
+field	boundary		value	0	7=>7 | 1.5=>0 | 8=>8 | -3=>-3
+invalid	boundary		nil	false	p.lua:46: You cannot set field foo in a node of type boundary
+hasfield	boundary		false	false	true	true	true
+field	disc		pre	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+field	disc		post	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+field	disc		replace	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+field	disc		penalty	0	7=>7 | 1.5=>0 | 8=>8 | -3=>65533
+invalid	disc		nil	false	p.lua:46: You cannot set field foo in a node of type disc
+hasfield	disc		false	false	true	true	true
+field	local_par		pen_inter	0	7=>7 | 1.5=>0 | 8=>8 | -3=>-3
+field	local_par		pen_broken	0	7=>7 | 1.5=>0 | 8=>8 | -3=>-3
+field	local_par		dir	TLT	abc=>ERR:p.lua:33: Bad direction specifier abc | 5=>ERR:p.lua:33: Direction specifiers have to be strings
+field	local_par		box_left	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+field	local_par		box_left_width	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	local_par		box_right	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+field	local_par		box_right_width	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+invalid	local_par		nil	false	p.lua:46: You cannot set field foo in a node of type local_par
+hasfield	local_par		false	false	true	true	true
+field	dir		dir	+TLT	abc=>ERR:p.lua:33: Bad direction specifier abc | 5=>ERR:p.lua:33: Direction specifiers have to be strings
+field	dir		level	0	7=>7 | 1.5=>0 | 8=>8 | -3=>-3
+invalid	dir		nil	false	p.lua:46: You cannot set field foo in a node of type dir
+hasfield	dir		false	false	true	true	true
+field	math		surround	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	math		width	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	math		stretch	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	math		shrink	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	math		stretch_order	0	7=>7 | 1.5=>0 | 8=>8 | -3=>65533
+field	math		shrink_order	0	7=>7 | 1.5=>0 | 8=>8 | -3=>65533
+invalid	math		nil	false	p.lua:46: You cannot set field foo in a node of type math
+hasfield	math		false	true	true	true	true
+field	glue		leader	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+field	glue		width	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	glue		stretch	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	glue		shrink	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	glue		stretch_order	0	7=>7 | 1.5=>0 | 8=>8 | -3=>65533
+field	glue		shrink_order	0	7=>7 | 1.5=>0 | 8=>8 | -3=>65533
+invalid	glue		nil	false	p.lua:46: You cannot set field foo in a node of type glue
+hasfield	glue		false	true	true	true	true
+field	kern		kern	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	kern		expansion_factor	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+invalid	kern		nil	false	p.lua:46: You cannot set field foo in a node of type kern
+hasfield	kern		false	false	true	true	true
+field	penalty		penalty	0	7=>7 | 1.5=>0 | 8=>8 | -3=>-3
+invalid	penalty		nil	false	p.lua:46: You cannot set field foo in a node of type penalty
+hasfield	penalty		false	false	true	true	true
+field	unset		width	-1073741824	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	unset		depth	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	unset		height	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	unset		dir	TLT	abc=>ERR:p.lua:33: Bad direction specifier abc | 5=>ERR:p.lua:33: Direction specifiers have to be strings
+field	unset		shrink	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	unset		glue_order	0	7=>7 | 1.5=>0 | 8=>8 | -3=>65533
+field	unset		glue_sign	0	7=>7 | 1.5=>0 | 8=>8 | -3=>65533
+field	unset		stretch	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	unset		span	nil	<node kern>=>ERR:p.lua:33: You cannot set field span in a node of type unset | 7=>ERR:p.lua:33: You cannot set field span in a node of type unset | TRT=>ERR:p.lua:33: You cannot set field span in a node of type unset | abc=>ERR:p.lua:33: You cannot set field span in a node of type unset
+field	unset		head	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+invalid	unset		nil	false	p.lua:46: You cannot set field foo in a node of type unset
+hasfield	unset		false	true	true	true	false
+field	style		style	display	abc=>text | 5=>crampedscript
+invalid	style		nil	true
+hasfield	style		false	false	true	true	true
+field	choice		display	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+field	choice		text	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+field	choice		script	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+field	choice		scriptscript	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+invalid	choice		nil	false	p.lua:46: You cannot set field foo in a node of type choice
+hasfield	choice		false	false	true	true	true
+field	noad		nucleus	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+field	noad		sub	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+field	noad		sup	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+invalid	noad		nil	false	p.lua:46: You cannot set field foo in a node of type noad
+hasfield	noad		false	false	true	true	true
+field	radical		nucleus	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+field	radical		sub	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+field	radical		sup	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+field	radical		left	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+field	radical		degree	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+field	radical		width	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	radical		options	0	7=>7 | 1.5=>0 | 8=>8 | -3=>-3
+invalid	radical		nil	false	p.lua:46: You cannot set field foo in a node of type radical
+hasfield	radical		false	true	true	true	true
+field	fraction		width	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	fraction		num	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+field	fraction		denom	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+field	fraction		left	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+field	fraction		right	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+field	fraction		middle	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+field	fraction		fam	-1	7=>7 | 1.5=>0 | 8=>8 | -3=>-3
+field	fraction		options	0	7=>7 | 1.5=>0 | 8=>8 | -3=>-3
+invalid	fraction		nil	false	p.lua:46: You cannot set field foo in a node of type fraction
+hasfield	fraction		false	true	true	true	true
+field	accent		nucleus	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+field	accent		sub	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+field	accent		sup	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+field	accent		accent	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+field	accent		bot_accent	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+field	accent		top_accent	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+field	accent		overlay_accent	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+field	accent		fraction	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+invalid	accent		nil	false	p.lua:46: You cannot set field foo in a node of type accent
+hasfield	accent		false	false	true	true	true
+field	fence		delim	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+field	fence		italic	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	fence		height	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	fence		depth	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	fence		options	0	7=>7 | 1.5=>0 | 8=>8 | -3=>-3
+field	fence		class	0	7=>7 | 1.5=>0 | 8=>8 | -3=>-3
+invalid	fence		nil	false	p.lua:46: You cannot set field foo in a node of type fence
+hasfield	fence		false	false	true	true	true
+field	math_char		fam	0	7=>7 | 1.5=>0 | 8=>8 | -3=>-3
+field	math_char		char	0	7=>7 | 1.5=>0 | 8=>8 | -3=>-3
+invalid	math_char		nil	false	p.lua:46: You cannot set field foo in a node of type math_char
+hasfield	math_char		false	false	true	true	true
+field	sub_box		head	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+invalid	sub_box		nil	false	p.lua:46: You cannot set field foo in a node of type sub_box
+hasfield	sub_box		false	false	true	true	true
+field	sub_mlist		head	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+invalid	sub_mlist		nil	false	p.lua:46: You cannot set field foo in a node of type sub_mlist
+hasfield	sub_mlist		false	false	true	true	true
+field	math_text_char		fam	0	7=>7 | 1.5=>0 | 8=>8 | -3=>-3
+field	math_text_char		char	0	7=>7 | 1.5=>0 | 8=>8 | -3=>-3
+invalid	math_text_char		nil	false	p.lua:46: You cannot set field foo in a node of type math_text_char
+hasfield	math_text_char		false	false	true	true	true
+field	delim		small_fam	0	7=>7 | 1.5=>0 | 8=>8 | -3=>-3
+field	delim		small_char	0	7=>7 | 1.5=>0 | 8=>8 | -3=>-3
+field	delim		large_fam	0	7=>7 | 1.5=>0 | 8=>8 | -3=>-3
+field	delim		large_char	0	7=>7 | 1.5=>0 | 8=>8 | -3=>-3
+invalid	delim		nil	false	p.lua:46: You cannot set field foo in a node of type delim
+hasfield	delim		false	false	true	true	true
+field	margin_kern		width	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	margin_kern		glyph	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+invalid	margin_kern		nil	false	p.lua:46: You cannot set field foo in a node of type margin_kern
+hasfield	margin_kern		false	true	true	true	true
+field	glyph		char	0	7=>7 | 1.5=>0 | 8=>8 | -3=>-3
+field	glyph		font	0	7=>7 | 1.5=>0 | 8=>8 | -3=>-3
+field	glyph		lang	0	7=>7 | 1.5=>0 | 8=>8 | -3=>-3
+field	glyph		left	1	7=>7 | 1.5=>255 | 8=>8 | -3=>255
+field	glyph		right	1	7=>7 | 1.5=>255 | 8=>8 | -3=>255
+field	glyph		uchyph	1	7=>0 | 1.5=>1 | 8=>0 | -3=>1
+field	glyph		components	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+field	glyph		xoffset	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	glyph		yoffset	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	glyph		expansion_factor	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	glyph		data	0	7=>7 | 1.5=>0 | 8=>8 | -3=>-3
+invalid	glyph		nil	false	p.lua:46: You cannot set field foo in a node of type glyph
+hasfield	glyph		false	true	true	true	true
+field	whatsit	3	data		abc=>abc | 5=>
+invalid	whatsit	3	nil	false	p.lua:46: You cannot set field foo in a node of type whatsit
+hasfield	whatsit	3	false	false	true	true	true
+field	whatsit	4	data		abc=>abc | 5=>
+invalid	whatsit	4	nil	false	p.lua:46: You cannot set field foo in a node of type whatsit
+hasfield	whatsit	4	false	false	true	true	true
+invalid	whatsit	7	nil	false	p.lua:46: You cannot set field foo in a node of type whatsit
+hasfield	whatsit	7	false	false	true	true	true
+field	whatsit	9	user_id	0	7=>7 | 1.5=>0 | 8=>8 | -3=>-3
+field	whatsit	9	type	0	7=>7 | 1.5=>0 | 8=>8 | -3=>-3
+field	whatsit	9	value	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+invalid	whatsit	9	nil	false	p.lua:46: You cannot set field foo in a node of type whatsit
+hasfield	whatsit	9	false	false	true	true	true
+field	whatsit	18	objnum	0	7=>7 | 1.5=>0 | 8=>8 | -3=>-3
+invalid	whatsit	18	nil	false	p.lua:46: You cannot set field foo in a node of type whatsit
+hasfield	whatsit	18	false	false	true	true	true
+field	whatsit	19	width	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	whatsit	19	depth	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	whatsit	19	height	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	whatsit	19	objnum	0	7=>7 | 1.5=>0 | 8=>8 | -3=>-3
+field	whatsit	19	data		abc=>abc | 5=>
+invalid	whatsit	19	nil	false	p.lua:46: You cannot set field foo in a node of type whatsit
+hasfield	whatsit	19	false	true	true	true	true
+field	whatsit	20	width	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	whatsit	20	depth	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	whatsit	20	height	0	7=>7 | 1.5=>2 | 8=>8 | -3=>-3
+field	whatsit	20	objnum	0	7=>7 | 1.5=>0 | 8=>8 | -3=>-3
+field	whatsit	20	link_attr		abc=>abc | 5=>
+field	whatsit	20	action	nil	<node kern>=><node kern> | 7=>nil | TRT=>nil | abc=>nil
+invalid	whatsit	20	nil	false	p.lua:46: You cannot set field foo in a node of type whatsit
+hasfield	whatsit	20	false	true	true	true	true
+invalid	whatsit	21	nil	false	p.lua:46: You cannot set field foo in a node of type whatsit
+hasfield	whatsit	21	false	false	true	true	true
+invalid	whatsit	26	nil	false	p.lua:46: You cannot set field foo in a node of type whatsit
+hasfield	whatsit	26	false	false	true	true	true
+field	whatsit	29	stack	0	7=>7 | 1.5=>0 | 8=>8 | -3=>-3
+field	whatsit	29	cmd	nil	<node kern>=>ERR:p.lua:33: You cannot set field cmd in a node of type whatsit | 7=>ERR:p.lua:33: You cannot set field cmd in a node of type whatsit | TRT=>ERR:p.lua:33: You cannot set field cmd in a node of type whatsit | abc=>ERR:p.lua:33: You cannot set field cmd in a node of type whatsit
+field	whatsit	29	data		abc=>abc | 5=>
+invalid	whatsit	29	nil	false	p.lua:46: You cannot set field foo in a node of type whatsit
+hasfield	whatsit	29	false	false	true	true	true
+field	whatsit	30	data		abc=>abc | 5=>
+invalid	whatsit	30	nil	false	p.lua:46: You cannot set field foo in a node of type whatsit
+hasfield	whatsit	30	false	false	true	true	true
+invalid	whatsit	31	nil	false	p.lua:46: You cannot set field foo in a node of type whatsit
+hasfield	whatsit	31	false	false	true	true	true
+invalid	whatsit	32	nil	false	p.lua:46: You cannot set field foo in a node of type whatsit
+hasfield	whatsit	32	false	false	true	true	true

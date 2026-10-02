@@ -3,7 +3,7 @@
 //! semantic nest levels; these records say which levels tex.web would have
 //! had, so `show_activities` can print them (tex.web §218-§219).
 
-use crate::boxes::NodeList;
+use crate::boxes::{AccentSpec, Delim, NodeList};
 
 /// What tex.web had pushed a math level for (the `push_math` caller).
 pub(crate) enum ScanKind {
@@ -12,10 +12,23 @@ pub(crate) enum ScanKind {
     /// the argument of `^` or `_`; `limits` is a `\limits` request that
     /// applies to the tail operator (tex.web `math_limit_switch`)
     Script { sup: bool, limits: Option<u8> },
-    /// `\mathaccent`: the accent noad is appended before its nucleus
-    Accent { fam: u8, c: u8 },
-    /// `\radical`: the radical noad (with its delimiter code) comes first
-    Radical { delim: i32 },
+    /// `\mathaccent`, `\Umathaccent`: the accent noad is appended before
+    /// its nucleus
+    Accent(AccentSpec),
+    /// `\radical`, `\Uradical`, `\Uroot`, `\Uoverdelimiter`...: the radical
+    /// noad (with its delimiter and options) comes first
+    Radical {
+        delim: Delim,
+        subtype: u8,
+        width: i32,
+        options: u16,
+    },
+    /// the root degree of `\Uroot`
+    Degree {
+        delim: Delim,
+        width: i32,
+        options: u16,
+    },
     /// `\mathord`...`\mathinner`: a noad of this class
     Class(u8),
     /// `\overline`
@@ -32,8 +45,8 @@ pub(crate) enum ScanKind {
 pub(crate) struct PendingFrac {
     pub(crate) num: NodeList,
     pub(crate) thickness: i32,
-    pub(crate) left: i32,
-    pub(crate) right: i32,
+    pub(crate) left: Delim,
+    pub(crate) right: Delim,
 }
 
 /// One entry of `Engine::math_lists` that is not backed by a semantic
@@ -76,17 +89,40 @@ impl crate::engine::Engine {
         let index = self.math_lists.len();
         self.math_lists.push(NodeList::new());
         let line = self.nest_line();
+        // the style the sub-list is scanned in (`\mathstyle`)
+        let g = crate::math::gstyle_of(self.cur_math_style());
+        let style = match &kind {
+            ScanKind::Script { sup: true, .. } => crate::math::sup_style(g),
+            ScanKind::Script { sup: false, .. } => crate::math::sub_style(g),
+            // texmath.c math_radical: `used_style` starts cramped; with
+            // `\mathdefaultsmode>0` the over/under delimiters keep (or
+            // shrink) the style instead
+            ScanKind::Radical { subtype, .. } => {
+                let defaults = self.eqtb.int_params[crate::prim::IntParam::MathDefaultsMode.idx() as usize] > 0;
+                match subtype {
+                    3 if defaults => crate::math::sub_style(g),
+                    4 if defaults => crate::math::sup_style(g),
+                    5 if defaults => g,
+                    _ => g | 1,
+                }
+            }
+            ScanKind::Degree { .. } => crate::math::sup_style(crate::math::sup_style(g)),
+            ScanKind::Accent(_) | ScanKind::Over | ScanKind::Denominator(_) => g | 1,
+            _ => g,
+        };
+        self.math_style_stack.push(crate::math::math_style_of(style));
         self.show.math_scans.push(MathScan { index, kind, line });
     }
 
     /// Close the entry opened by [`Self::begin_math_scan`].
     pub(crate) fn end_math_scan(&mut self) -> NodeList {
         self.show.math_scans.pop();
+        self.math_style_stack.pop();
         self.math_lists.pop().unwrap_or_default()
     }
 
     /// Record the parameters of the fraction whose denominator is scanned.
-    pub(crate) fn set_pending_fraction(&mut self, thickness: i32, left: i32, right: i32) {
+    pub(crate) fn set_pending_fraction(&mut self, thickness: i32, left: Delim, right: Delim) {
         if let Some(MathScan {
             kind: ScanKind::Denominator(p),
             ..
@@ -104,7 +140,10 @@ impl crate::engine::Engine {
             Some(MathScan {
                 kind: ScanKind::Denominator(p),
                 ..
-            }) => p.num,
+            }) => {
+                self.math_style_stack.pop();
+                p.num
+            }
             _ => NodeList::new(),
         }
     }

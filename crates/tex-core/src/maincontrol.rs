@@ -173,24 +173,29 @@ impl Engine {
                     }
                 }
             },
-            HMove => {
+            HMove | HMoveLeft => {
                 let d = self.scan_dimen(false, false);
-                let neg = id_cs_is(self, id, b"moveleft");
-                self.box_move(d, neg, true);
+                self.box_move(d, p == HMoveLeft, true);
             }
-            VMove => {
+            VMove | VRaise => {
                 let d = self.scan_dimen(false, false);
-                let neg = id_cs_is(self, id, b"raise");
-                self.box_move(d, neg, false);
+                self.box_move(d, p == VRaise, false);
             }
-            HBox | VBox | VTop | VCenter => {
-                let kind = match p {
+            HBox | VBox | VTop | VCenter | HPack | VPack | TPack => {
+                let kind = match p.box_spec() {
                     HBox => 0u8,
                     VBox => 1,
                     VTop => 2,
                     _ => 3,
                 };
                 self.begin_box(kind);
+            }
+            PdfExtension => self.do_pdf_extension(),
+            DviExtension => self.do_dvi_extension(),
+            Deferred => self.do_deferred(),
+            Boundary | WordBoundary | ProtrusionBoundary => self.append_boundary(p),
+            ToksApp | ToksPre | EToksApp | EToksPre | GToksApp | GToksPre | XToksApp | XToksPre => {
+                self.combine_the_toks(p)
             }
             HRule => {
                 if self.mode == Mode::Horizontal {
@@ -365,6 +370,15 @@ impl Engine {
                     self.eqtb.assign_cat_code(character.unwrap(), v as u8, g);
                 }
             }
+            MathCode if self.engine_kind == crate::engine::EngineKind::LuaTeX => {
+                self.assign_lua_math_code_command(crate::uprims::MathExt::Tex, "\\mathcode");
+            }
+            DelCode if self.engine_kind == crate::engine::EngineKind::LuaTeX => {
+                self.assign_lua_del_code_command(crate::uprims::MathExt::Tex, "\\delcode");
+            }
+            MathChar if self.engine_kind == crate::engine::EngineKind::LuaTeX => {
+                self.math_char_num_command(crate::uprims::MathExt::Tex, id);
+            }
             MathCode => {
                 let g = self.take_assignment_prefixes("\\mathcode");
                 let (c, character_source) = self.scan_int_with_source();
@@ -512,6 +526,8 @@ impl Engine {
                                 int(crate::prim::IntParam::Month),
                                 int(crate::prim::IntParam::Day)
                             );
+                            // dumpdata.c store_fmt_file: pre_dump runs first.
+                            self.run_lua_callback("pre_dump");
                             self.format_done = true;
                             self.end_occurred = true;
                         }
@@ -556,14 +572,19 @@ impl Engine {
                         glue_order: 0,
                         glue_set: 0.0,
                         lr: 0,
+                        dir: 0,
                     });
                     self.page_append(Node::Glue(crate::boxes::Glue::fil(
                         crate::boxes::GLUE_FILL,
                         0,
                     )));
                     self.page_append(Node::Penalty(-0x4000_0000));
+                    self.lua_page_filter(crate::lua_callbacks::page_info::END, false);
                     self.build_page();
                     return;
+                }
+                if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                    self.lua_stop_open_files();
                 }
                 self.explicit_end_seen = true;
                 self.end_occurred = true;
@@ -621,6 +642,17 @@ impl Engine {
             ErrMessage => self.do_message(true),
             DirectLua => {
                 let _ = self.expand_prim(DirectLua, id);
+            }
+            LuaFunctionCall => {
+                let slot = self.scan_int();
+                self.call_lua_function(slot);
+            }
+            LuaBytecodeCall => {
+                let slot = self.scan_int();
+                self.call_lua_bytecode(slot);
+            }
+            LuaFunction | LuaBytecode => {
+                let _ = self.expand_prim(p, id);
             }
             OpenIn => self.do_openin(),
             CloseIn => self.do_closein(),
@@ -718,7 +750,7 @@ impl Engine {
                     return;
                 }
                 let (value, source) = self.scan_int_with_source();
-                let maximum = if self.native_text_active() {
+                let maximum = if self.native_text_active() || self.engine_kind == crate::engine::EngineKind::LuaTeX {
                     0x10ffff
                 } else {
                     255
@@ -773,6 +805,12 @@ impl Engine {
                     Mode::Horizontal | Mode::RestrictedHorizontal => self.do_accent(),
                     // mmode+accent is unmatched in tex.web's main_control
                     // switch: silently ignored.
+                    Mode::Math | Mode::DisplayMath
+                        if self.engine_kind == crate::engine::EngineKind::LuaTeX =>
+                    {
+                        let command_source = self.current_token_source_mark();
+                        self.math_ac_lua(0, true, command_source);
+                    }
                     _ => {}
                 }
             }
@@ -800,6 +838,9 @@ impl Engine {
                                 .get(*font as usize)
                                 .map_or(0, |font| font.char_italic(*c)),
                         ),
+                        Some(Node::LuaGlyph(g)) => {
+                            Some(self.lua_char(g.font, g.c).map_or(0, |ci| ci.italic))
+                        }
                         _ => None,
                     };
                     if let Some(correction) = correction {
@@ -810,6 +851,9 @@ impl Engine {
                 Mode::Math | Mode::DisplayMath => self.append_mlist_node(Node::Kern(0)),
             },
             // math
+            MathChar if self.engine_kind == crate::engine::EngineKind::LuaTeX => {
+                self.math_char_num_command(crate::uprims::MathExt::Tex, id)
+            }
             MathChar => {
                 let command_source = self.current_token_source_mark();
                 let (value, source) = self.scan_int_with_source();
@@ -828,6 +872,12 @@ impl Engine {
                     self.append_mathchar_at(v, command_source);
                 }
             }
+            MathAccent if self.engine_kind == crate::engine::EngineKind::LuaTeX => {
+                if !self.lua_insert_dollar(id) {
+                    let command_source = self.current_token_source_mark();
+                    self.math_ac_lua(0, false, command_source);
+                }
+            }
             MathAccent => {
                 let command_source = self.current_token_source_mark();
                 let (value, source) = self.scan_int_with_source();
@@ -844,6 +894,12 @@ impl Engine {
                 };
                 if self.mode.is_m() {
                     self.do_math_accent_at(v, command_source);
+                }
+            }
+            Radical if self.engine_kind == crate::engine::EngineKind::LuaTeX => {
+                if !self.lua_insert_dollar(id) {
+                    let command_source = self.current_token_source_mark();
+                    self.math_radical_lua(0, command_source);
                 }
             }
             Radical => {
@@ -893,6 +949,21 @@ impl Engine {
             }
             Delimiter => {
                 let command_source = self.current_token_source_mark();
+                if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                    // texmath.c `scan_delimiter_as_mathchar`
+                    if !self.lua_insert_dollar(id) {
+                        let (class, family, character, _, _) =
+                            self.scan_delcode_lua(crate::uprims::MathExt::Tex, true);
+                        self.set_math_char_lua(
+                            class as u32,
+                            family as u32,
+                            character as u32,
+                            0,
+                            command_source,
+                        );
+                    }
+                    return;
+                }
                 let v = self.scan_delimiter_code("\\delimiter");
                 if self.mode.is_m() {
                     // tex.web §1160 mmode+delim_num:
@@ -925,33 +996,53 @@ impl Engine {
                 self.scan_optional_equals();
                 let f = self.scan_font_id();
                 self.eqtb.assign_style_font(style, fam as u16, f, global);
+                self.fixup_math_parameters(fam, usize::from(style), f, global);
             }
-            Left => {
+            Left | ULeft => {
                 if self.mode.is_m() {
                     let command_source = self.current_token_source_mark();
-                    let v = self.scan_delim_int();
-                    self.push_math_group_at(v, command_source);
+                    let fence = if p == ULeft {
+                        self.scan_fence_options()
+                    } else {
+                        crate::boxes::FenceOpts::NONE
+                    };
+                    let v = self.scan_delim(true);
+                    self.push_math_group_at(v, fence, command_source);
+                } else {
+                    self.error("Missing $ inserted (\\left)");
                 }
             }
-            Right => {
+            Right | URight => {
                 if self.mode.is_m() && !self.mismatched_right_or_middle(Token::from_cs(id), false) {
                     let command_source = self.current_token_source_mark();
-                    let v = self.scan_delim_int();
+                    let fence = if p == URight {
+                        self.scan_fence_options()
+                    } else {
+                        crate::boxes::FenceOpts::NONE
+                    };
+                    let v = self.scan_delim(true);
                     self.right_delim = Some(v);
                     // ends the \left...\right group
-                    self.pop_math_group_delimited_at(v, command_source);
+                    self.pop_math_group_delimited_at(v, fence, command_source);
+                } else {
+                    self.error("Missing $ inserted (\\right)");
                 }
             }
-            Middle => {
+            Middle | UMiddle => {
                 if self.mode.is_m() && !self.mismatched_right_or_middle(Token::from_cs(id), true) {
                     let command_source = self.current_token_source_mark();
-                    let v = self.scan_delim_int();
+                    let fence = if p == UMiddle {
+                        self.scan_fence_options()
+                    } else {
+                        crate::boxes::FenceOpts::NONE
+                    };
+                    let v = self.scan_delim(true);
                     let origin = self.math_diagnostic_origin_at(command_source);
-                    let (sf, sc, lf, lc) = crate::math::delim_code_parts_pub(v);
                     self.append_mlist_node(Node::DelimBox {
-                        small: (sf, sc),
-                        large: (lf, lc),
+                        small: (v.small_fam, v.small_char),
+                        large: (v.large_fam, v.large_char),
                         size: 3,
+                        fence,
                         origin,
                     });
                     self.restart_math_left_group();
@@ -1324,45 +1415,49 @@ impl Engine {
             CatCodeTable => {
                 let g = self.take_assignment_prefixes("\\catcodetable");
                 self.scan_optional_equals();
-                let table_idx = self.scan_int();
-                if !g && self.eqtb.cur_level > crate::eqtb::LEVEL_ONE {
-                    self.saved_catcode_tables.push((
-                        self.eqtb.cur_level,
-                        self.cur_catcode_table,
-                        self.eqtb.cat.clone(),
-                        self.eqtb.unicode_cat_codes.clone(),
-                    ));
+                let table = self.scan_int();
+                // luatex maincontrol.c assign_internal_value
+                if self.eqtb.cat_table_valid(table) {
+                    self.eqtb.assign_cat_table(table, g);
+                } else {
+                    self.error("Invalid \\catcode table");
                 }
-                if let Some((cat, ucat)) = self.catcode_tables.get(&table_idx) {
-                    self.eqtb.cat = cat.clone();
-                    self.eqtb.cat_levels.fill(crate::eqtb::LEVEL_ONE);
-                    self.eqtb.unicode_cat_codes = ucat.clone();
+            }
+            InitCatCodeTable | SaveCatCodeTable => {
+                // luatex maincontrol.c run_normal: both are global and
+                // never replace the current table.
+                self.reject_assignment_prefixes(if p == InitCatCodeTable {
+                    "\\initcatcodetable"
+                } else {
+                    "\\savecatcodetable"
+                });
+                let table = self.scan_int();
+                if !(0..=crate::eqtb::MAX_CAT_TABLE).contains(&table)
+                    || table == self.eqtb.cat_table
+                {
+                    self.error("Invalid \\catcode table");
+                } else if p == InitCatCodeTable {
+                    self.eqtb.init_cat_table(table);
+                } else {
+                    self.eqtb.save_cat_table(table);
                 }
-                self.cur_catcode_table = table_idx;
-            }
-            InitCatCodeTable => {
-                let _ = self.take_assignment_prefixes("\\initcatcodetable");
-                self.scan_optional_equals();
-                let table_idx = self.scan_int();
-                let default_cat = crate::token::CatTable::initex().0;
-                self.catcode_tables.insert(table_idx, (default_cat.to_vec(), crate::FxHashMap::default()));
-            }
-            SaveCatCodeTable => {
-                let _ = self.take_assignment_prefixes("\\savecatcodetable");
-                self.scan_optional_equals();
-                let table_idx = self.scan_int();
-                self.catcode_tables.insert(
-                    table_idx,
-                    (self.eqtb.cat.clone(), self.eqtb.unicode_cat_codes.clone()),
-                );
             }
             XeTeXPicFile | XeTeXPdfFile => {
                 self.do_pdfximage();
             }
-            Ustack => {}
-            Ustartmath | Ustopmath => {
-                self.push_token(Token::char(3, b'$' as u32));
+            Ustack => {
+                if self.mode.is_m() {
+                    self.do_ustack();
+                } else {
+                    // maincontrol.c non_math(math_choice_cmd, insert_dollar_sign)
+                    self.push_token(Token::from_cs(id));
+                    self.push_token(Token::char(3, u32::from(b'$')));
+                    self.error("Missing $ inserted");
+                }
             }
+            Ustartmath => self.math_shift_cs(2, id),
+            Ustopmath => self.math_shift_cs(3, id),
+            U(u) if !u.is_expandable() => self.uprim_command(u, id),
             // expanded by get_token (they must be storeable by \edef etc)
             IfChar | IfCat | IfOdd | IfNum | IfDim | IfVoid | IfHBox | IfVBox | IfHMode
             | IfVMode | IfInner | IfMMode | IfTrue | IfFalse | IfEOF | IfDef | IfCSName
@@ -1384,11 +1479,17 @@ impl Engine {
 
     /// tex.web §1050 report_illegal_case (`you_cant`).
     pub(crate) fn report_illegal_case(&mut self, id: CsId) {
+        self.report_illegal_case_in(id, self.mode);
+    }
+
+    /// [`Self::report_illegal_case`] for a given mode (luatex's
+    /// `after_math` reports after it has left the formula).
+    pub(crate) fn report_illegal_case_in(&mut self, id: CsId, mode: Mode) {
         let name = match self.eqtb.resolve(id) {
             Some(crate::eqtb::Equiv::Prim(p)) => self.prim_name(*p),
             _ => ::std::string::String::from_utf8_lossy(self.cs.name(id)).into_owned(),
         };
-        let mode = self.mode.name();
+        let mode = mode.name();
         self.error(&format!("You can't use `\\{name}' in {mode}"));
     }
 
@@ -1400,21 +1501,29 @@ impl Engine {
     ///   kern(delta) [accent char] kern(-a-delta) base_char
     /// so the sequence is exactly as wide as the base character.
     fn do_accent(&mut self) {
-        let acc = self.scan_character_code("\\accent");
-        let f_acc = self.eqtb.cur_font_val;
-        let Some(af) = self.eqtb.fonts.get(f_acc as usize) else {
-            return; // nullfont: nothing happens (tex.web new_character fails)
+        let lua_mode = self.engine_kind == crate::engine::EngineKind::LuaTeX;
+        let acc: u32 = if lua_mode {
+            self.scan_unicode_character_code("\\accent")
+        } else {
+            u32::from(self.scan_character_code("\\accent"))
         };
-        if !af.char_present(acc) {
+        let f_acc = self.eqtb.cur_font_val;
+        if self.eqtb.fonts.get(f_acc as usize).is_none() {
+            return; // nullfont: nothing happens (tex.web new_character fails)
+        }
+        let Some(accent_node) = self.new_glyph_node(f_acc, acc) else {
             // char_warning: no accent glyph — drop the accent; the base
             // character stays in the stream and typesets normally.
             let accent_source = self
                 .current_token_source_mark()
                 .map(|mark| mark.to_context());
-            self.font_has_character_or_warn(f_acc, acc, accent_source);
+            if let Ok(byte) = u8::try_from(acc) {
+                self.font_has_character_or_warn(f_acc, byte, accent_source);
+            }
             return;
-        }
-        let a = af.char_width(acc);
+        };
+        let (a, _, _) = self.glyph_whd(f_acc, acc);
+        let af = &self.eqtb.fonts[f_acc as usize];
         let x = af.x_height();
         let s = f64::from(af.param(1)) / 65536.0; // accent font slant
         // tex.web §1123 do_assignments: expand, skip blanks/\relax and
@@ -1486,14 +1595,18 @@ impl Engine {
             }
         };
         // §1124: a letter, other char, \chardef'd char or \char is the base
-        let base: Option<u8> = if t.is_char() && (t.cc() == 11 || t.cc() == 12) {
-            u8::try_from(t.chr()).ok()
+        let base: Option<u32> = if t.is_char() && (t.cc() == 11 || t.cc() == 12) {
+            Some(t.chr()).filter(|c| lua_mode || *c < 256)
         } else if t.is_cs() {
             match self.eqtb.resolve(t.cs_id()).cloned() {
-                Some(Equiv::Prim(Prim::Char)) => Some(self.scan_character_code("\\char")),
-                Some(Equiv::CharDef(v)) => u8::try_from(v).ok(),
+                Some(Equiv::Prim(Prim::Char)) => Some(if lua_mode {
+                    self.scan_unicode_character_code("\\char")
+                } else {
+                    u32::from(self.scan_character_code("\\char"))
+                }),
+                Some(Equiv::CharDef(v)) => Some(v).filter(|c| lua_mode || *c < 256),
                 Some(Equiv::CharTok(raw)) if matches!(Token(raw).cc(), 11 | 12) => {
-                    u8::try_from(Token(raw).chr()).ok()
+                    Some(Token(raw).chr()).filter(|c| lua_mode || *c < 256)
                 }
                 _ => None,
             }
@@ -1505,33 +1618,23 @@ impl Engine {
         }
         let Some(bc) = base else {
             // no usable base character: append the accent alone
-            self.cur_list.push(Node::Char {
-                c: acc,
-                font: f_acc,
-            });
+            self.cur_list.push(accent_node);
             self.space_factor = 1000;
             return;
         };
         let f_base = self.eqtb.cur_font_val;
-        let exists = self
-            .eqtb
-            .fonts
-            .get(f_base as usize)
-            .map(|f| f.char_present(bc))
-            .unwrap_or(false);
-        if !exists {
+        let Some(base_node) = self.new_glyph_node(f_base, bc) else {
             let source = self
                 .current_token_source_mark()
                 .map(|mark| mark.to_context());
-            self.font_has_character_or_warn(f_base, bc, source);
-            self.cur_list.push(Node::Char {
-                c: acc,
-                font: f_acc,
-            });
+            if let Ok(byte) = u8::try_from(bc) {
+                self.font_has_character_or_warn(f_base, byte, source);
+            }
+            self.cur_list.push(accent_node);
             self.space_factor = 1000;
             return;
-        }
-        let (w, h, _) = self.char_dims(f_base, bc);
+        };
+        let (w, h, _) = self.glyph_whd(f_base, bc);
         let t_sl = self
             .eqtb
             .fonts
@@ -1541,34 +1644,19 @@ impl Engine {
         // If the base height differs from the x-height, the accent char is
         // packed into a box shifted by x-h (tex.web §1274).
         let accent_part: Node = if h != x {
-            let mut b = crate::boxes::hpack(
-                vec![Node::Char {
-                    c: acc,
-                    font: f_acc,
-                }],
-                None,
-                crate::boxes::HBOX,
-                &self.eqtb,
-            )
-            .node;
+            let mut b = crate::boxes::hpack(vec![accent_node], None, crate::boxes::HBOX, &self.eqtb).node;
             if let Node::Box { shift, .. } = &mut b {
                 *shift = x - h;
             }
             b
         } else {
-            Node::Char {
-                c: acc,
-                font: f_acc,
-            }
+            accent_node
         };
         let delta = ((w - a) as f64 / 2.0 + h as f64 * t_sl - x as f64 * s).round() as i32;
         self.cur_list.push(Node::AccentKern(delta));
         self.cur_list.push(accent_part);
         self.cur_list.push(Node::AccentKern(-a - delta));
-        self.cur_list.push(Node::Char {
-            c: bc,
-            font: f_base,
-        });
+        self.cur_list.push(base_node);
         self.space_factor = 1000;
     }
 
@@ -1602,7 +1690,7 @@ impl Engine {
         }
         let toks = self.scan_general_text_expanded();
         let code = self.tokens_to_string(&toks);
-        if let Err(err) = self.execute_directlua(&code) {
+        if let Err(err) = self.execute_directlua(code.as_bytes()) {
             self.error(&format!("LuaTeX error: {err}"));
         }
     }
@@ -1953,7 +2041,10 @@ impl Engine {
             page_box = PDF_BOX_SPEC_CROP;
         }
 
-        let (path, bytes, bundled) = if let Some(path) = self.resolve_input_path(&file) {
+        let (path, bytes, bundled) = if let Some(bytes) = self.pdfe_memstreams.get(&file).cloned() {
+            // registered by `pdfe.new(stream, length, id)`
+            (std::path::PathBuf::from(&file), bytes, true)
+        } else if let Some(path) = self.resolve_input_path(&file) {
             let bytes = match tex_kpse::fs::read(&path) {
                 Ok(bytes) => bytes,
                 Err(error) => {
@@ -2371,9 +2462,6 @@ impl Engine {
     }
 }
 
-fn id_cs_is(e: &Engine, id: CsId, name: &[u8]) -> bool {
-    e.cs.lookup(name) == Some(id)
-}
 
 /// The font map and font programs an included PDF's fonts are looked up
 /// in (`\pdfinclusioncopyfonts` = 0 replaces them by the map's programs).

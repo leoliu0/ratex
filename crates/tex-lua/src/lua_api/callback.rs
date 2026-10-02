@@ -47,6 +47,12 @@ impl CallbackLua<'_> {
         lauxlib::argerror(self.state, index, message)
     }
 
+    /// `luaL_argerror` with a signed index (negative: relative to the top
+    /// of the stack, which LuaTeX's `mplib.new` reports as `#-1`).
+    pub fn arg_error_at(&mut self, index: i64, message: &str) -> LuaError {
+        lauxlib::argerror_at(self.state, index, message)
+    }
+
     /// `luaL_typeerror`: "`expected` expected, got <type of argument>".
     pub fn type_error(&mut self, index: usize, expected: &str) -> LuaError {
         lauxlib::typeerror(self.state, index, expected)

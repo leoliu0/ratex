@@ -1,0 +1,34 @@
+copy nested	hlist[glyph65:0 kern3]	hlist[glyph65:0 kern3]	true
+copy_list nested	hlist[glyph65:0 kern3] glyph66:0	true
+disc copy	disc{glyph45:0|glyph46:0|glyph47:0 glyph48:0}	disc{glyph45:0|glyph46:0|glyph47:0 glyph48:0}
+getdisc	45	46	47
+disc replace nil	disc{glyph45:0|glyph46:0|}
+setdisc	disc{glyph1:0|glyph2:0|glyph3:0}	2	30
+flatten	glyph65:0 glyph3:0 glyph66:0	1
+check_discretionaries	glyph65:0 disc{glyph45:0||glyph46:0} glyph66:0
+protect	glyph65:65280 glyph66:0 glyph67:0	65280	0
+protect all	glyph65:65280 glyph66:65280 glyph67:65280
+unprotect	glyph65:0 glyph66:65280 glyph67:65280
+unprotect all	glyph65:0 glyph66:0 glyph67:0
+is_char	65	false	false	nil	13
+is_glyph	65	false	13
+is_char vals	65	nil
+is_char prot	false	65	0
+uses_font	true	false
+first_glyph	nil	nil	nil
+has_glyph box	nil
+first_glyph nested	nil	false
+effective_glue	98.000001907349	10
+skippable	true	true	false	true	true	true
+eq	true	false	true	true
+tostring fmt	<node nil < N > nil : kern N>	<node nil < N > nil : kern N>
+tostring linked	<node nil < N > N : kern N>	<node N < N > nil : kern N>
+direct tostring	<direct nil < N > nil : kern N>
+direct tostring nil	nil	nil
+prop none	nil
+prop	1	1
+true	nil
+1	13
+todirect	true	true	false	true	false
+direct flush	nil
+nil	nil	39

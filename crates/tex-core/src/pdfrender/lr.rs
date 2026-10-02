@@ -193,13 +193,14 @@ impl<'a> RenderCtx<'a> {
                     None => Class::Other,
                     Some(node) => match node {
                         Node::Char { c, font } => Class::Char(self.font_char_advance_sp(*font, *c)),
+                        Node::LuaGlyph(g) => Class::Char(i64::from(crate::boxes::lua_glyph_dims(&self.eng.eqtb, g).0)),
                         Node::Ligature {
                             font, lig_width, ..
                         } => Class::Char(self.font_lig_advance_sp(*font, *lig_width)),
                         Node::NativeGlyphRun { width, .. } => Class::Char(*width as i64),
                         Node::Box { w, .. } => Class::Width(*w as i64),
                         Node::Rule { width, .. } => Class::Width(*width as i64),
-                        Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) => {
+                        Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) | Node::ItalicKern(k) => {
                             Class::Kern(*k as i64)
                         }
                         Node::Glue(g) => Class::Glue(*g),

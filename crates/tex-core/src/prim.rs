@@ -192,9 +192,84 @@ pub enum IntParam {
     PdfOmitProcset,
     /// `\pdfptexuseunderscore`: write `PTEX_` instead of `PTEX.` keys.
     PdfPtexUseUnderscore,
+    /// LuaTeX `\exhyphenchar`: the character that makes an explicit hyphen
+    /// (`-` in the text) a discretionary.
+    ExHyphenChar,
+    /// LuaTeX `\firstvalidlanguage`: the lowest `\language` that hyphenates.
+    FirstValidLanguage,
+    /// LuaTeX `\showstream`: a `\write` stream that receives `\show` output.
+    ShowStream,
+    /// LuaTeX `\pdfvariable ignoreunknownimages`.
+    PdfIgnoreUnknownImages,
+    /// LuaTeX `\pdfvariable imageaddfilename`.
+    PdfImageAddFilename,
+    /// LuaTeX `\pdfvariable pkfixeddpi`.
+    PdfPkFixedDpi,
+    /// LuaTeX `\pdfvariable omitcidset`.
+    PdfOmitCidSet,
+    /// LuaTeX `\pdfvariable recompress`.
+    PdfRecompress,
+    /// LuaTeX `\pdfvariable omitmediabox`: pages get no /MediaBox.
+    PdfOmitMediaBox,
+    /// LuaTeX `\pdfvariable linking`.
+    PdfLinking,
+    // ---- LuaTeX-only integer parameters (INITEX values in luatex.rs) ----
+    AutomaticHyphenMode,
+    AutomaticHyphenPenalty,
+    BreakAfterDirMode,
+    CompoundHyphenMode,
+    DiscretionaryLigatureMode,
+    ExceptionPenalty,
+    ExplicitHyphenPenalty,
+    FixupBoxesMode,
+    GlyphDimensionsMode,
+    HyphenationBounds,
+    HyphenPenaltyMode,
+    LocalBrokenPenalty,
+    LocalInterLinePenalty,
+    LuaCopyInputNodes,
+    MathDefaultsMode,
+    MathDelimitersMode,
+    MathDisplaySkipMode,
+    MathEmptyDisplayMode,
+    MathEqDirMode,
+    MathEqnoGapStep,
+    MathFlattenMode,
+    MathItalicsMode,
+    MathNoLimitsMode,
+    MathPenaltiesMode,
+    MathRulesFam,
+    MathRulesMode,
+    MathRuleThicknessMode,
+    MathScriptBoxMode,
+    MathScriptCharMode,
+    MathScriptsMode,
+    MathSurroundMode,
+    NoKerns,
+    NoLigs,
+    NoSpaces,
+    OutputBox,
+    PreBinOpPenalty,
+    PreDisplayGapFactor,
+    PreRelPenalty,
+    ShapeMode,
+    SuppressFontNotFoundError,
+    SuppressIfCsnameError,
+    SuppressLongError,
+    SuppressMathParError,
+    SuppressOuterError,
+    SuppressPrimitiveError,
+    VariableFam,
+    /// LuaTeX `\textdirection` and the other direction parameters (0 = TLT).
+    TextDirection,
+    ParDirection,
+    BodyDirection,
+    LineDirection,
+    MathDirection,
+    PageDirection,
 }
 
-pub const NUM_INT_PARAMS: usize = 130;
+pub const NUM_INT_PARAMS: usize = 140 + 52;
 
 impl IntParam {
     #[inline]
@@ -333,6 +408,68 @@ impl IntParam {
         IntParam::PdfOmitInfoDict,
         IntParam::PdfOmitProcset,
         IntParam::PdfPtexUseUnderscore,
+        IntParam::ExHyphenChar,
+        IntParam::FirstValidLanguage,
+        IntParam::ShowStream,
+        IntParam::PdfIgnoreUnknownImages,
+        IntParam::PdfImageAddFilename,
+        IntParam::PdfPkFixedDpi,
+        IntParam::PdfOmitCidSet,
+        IntParam::PdfRecompress,
+        IntParam::PdfOmitMediaBox,
+        IntParam::PdfLinking,
+        IntParam::AutomaticHyphenMode,
+        IntParam::AutomaticHyphenPenalty,
+        IntParam::BreakAfterDirMode,
+        IntParam::CompoundHyphenMode,
+        IntParam::DiscretionaryLigatureMode,
+        IntParam::ExceptionPenalty,
+        IntParam::ExplicitHyphenPenalty,
+        IntParam::FixupBoxesMode,
+        IntParam::GlyphDimensionsMode,
+        IntParam::HyphenationBounds,
+        IntParam::HyphenPenaltyMode,
+        IntParam::LocalBrokenPenalty,
+        IntParam::LocalInterLinePenalty,
+        IntParam::LuaCopyInputNodes,
+        IntParam::MathDefaultsMode,
+        IntParam::MathDelimitersMode,
+        IntParam::MathDisplaySkipMode,
+        IntParam::MathEmptyDisplayMode,
+        IntParam::MathEqDirMode,
+        IntParam::MathEqnoGapStep,
+        IntParam::MathFlattenMode,
+        IntParam::MathItalicsMode,
+        IntParam::MathNoLimitsMode,
+        IntParam::MathPenaltiesMode,
+        IntParam::MathRulesFam,
+        IntParam::MathRulesMode,
+        IntParam::MathRuleThicknessMode,
+        IntParam::MathScriptBoxMode,
+        IntParam::MathScriptCharMode,
+        IntParam::MathScriptsMode,
+        IntParam::MathSurroundMode,
+        IntParam::NoKerns,
+        IntParam::NoLigs,
+        IntParam::NoSpaces,
+        IntParam::OutputBox,
+        IntParam::PreBinOpPenalty,
+        IntParam::PreDisplayGapFactor,
+        IntParam::PreRelPenalty,
+        IntParam::ShapeMode,
+        IntParam::SuppressFontNotFoundError,
+        IntParam::SuppressIfCsnameError,
+        IntParam::SuppressLongError,
+        IntParam::SuppressMathParError,
+        IntParam::SuppressOuterError,
+        IntParam::SuppressPrimitiveError,
+        IntParam::VariableFam,
+        IntParam::TextDirection,
+        IntParam::ParDirection,
+        IntParam::BodyDirection,
+        IntParam::LineDirection,
+        IntParam::MathDirection,
+        IntParam::PageDirection,
     ];
 
     pub fn from_idx(i: u16) -> Option<Self> {
@@ -447,9 +584,17 @@ pub enum DimParam {
     /// pdfTeX `\pdfignoreddimen`: the `\prevdepth` value meaning "ignore"
     /// and the "unset" marker of the four line dimensions above.
     PdfIgnoredDimen,
+    /// LuaTeX `\pdfvariable xformmargin`.
+    PdfXFormMargin,
+    /// LuaTeX `\pagetopoffset`, `\pageleftoffset`, `\pagebottomoffset` and
+    /// `\pagerightoffset` (shift of the page box on the page).
+    PageTopOffset,
+    PageLeftOffset,
+    PageBottomOffset,
+    PageRightOffset,
 }
 
-pub const NUM_DIM_PARAMS: usize = 44;
+pub const NUM_DIM_PARAMS: usize = 45 + 4;
 
 impl DimParam {
     #[inline]
@@ -502,6 +647,11 @@ impl DimParam {
         DimParam::PdfEachLineHeight,
         DimParam::PdfEachLineDepth,
         DimParam::PdfIgnoredDimen,
+        DimParam::PdfXFormMargin,
+        DimParam::PageTopOffset,
+        DimParam::PageLeftOffset,
+        DimParam::PageBottomOffset,
+        DimParam::PageRightOffset,
     ];
 
     pub fn from_idx(i: u16) -> Option<Self> {
@@ -546,9 +696,11 @@ pub enum GlueParam {
     ThinMuSkip,
     MedMuSkip,
     ThickMuSkip,
+    /// LuaTeX `\mathsurroundskip`.
+    MathSurroundSkip,
 }
 
-pub const NUM_GLUE_PARAMS: usize = 17;
+pub const NUM_GLUE_PARAMS: usize = 18;
 
 impl GlueParam {
     #[inline]
@@ -579,9 +731,13 @@ pub enum ToksParam {
     ErrHelp,
     /// pdfTeX `\pdfpkmode`: METAFONT mode for generated PK fonts.
     PdfPkMode,
+    /// LuaTeX `\pdfvariable xformattr`: extra form XObject dictionary keys.
+    PdfXFormAttr,
+    /// LuaTeX `\pdfvariable xformresources`: extra form resources.
+    PdfXFormResources,
 }
 
-pub const NUM_TOKS_PARAMS: usize = 11;
+pub const NUM_TOKS_PARAMS: usize = 13;
 
 impl ToksParam {
     #[inline]
@@ -717,6 +873,10 @@ pub enum Prim {
     MKern,
     HMove,
     VMove,
+    /// `\moveleft`: `HMove` is `\moveright`
+    HMoveLeft,
+    /// `\raise`: `VMove` is `\lower`
+    VRaise,
     HBox,
     VBox,
     VTop,
@@ -1005,7 +1165,6 @@ pub enum Prim {
     LuaTeXVersion,
     LuaTeXRevision,
     LuaTeXBanner,
-    OutputMode,
     XeTeXDashBreakState,
     CatCodeTable,
     InitCatCodeTable,
@@ -1013,10 +1172,6 @@ pub enum Prim {
     Attribute,
     AttributeDef,
     Ustack,
-    Umathfractiondelsize,
-    Umathstacknumup,
-    Umathstackdenomdown,
-    Umathstackvgap,
     Ustartmath,
     Ustopmath,
     PdfNoBuiltinToUnicode,
@@ -1070,6 +1225,78 @@ pub enum Prim {
     PdfSnapRefPoint,
     PdfSnapY,
     PdfSnapYComp,
+    // LuaTeX Lua calls (wire codes 780-799).
+    /// `\luafunction n`: expandable call of `lua.get_functions_table()[n]`.
+    LuaFunction,
+    /// `\luafunctioncall n`: the same call as a command.
+    LuaFunctionCall,
+    /// `\luadef\cs n`: `\cs` becomes a (protected: unexpandable) lua call.
+    LuaDef,
+    /// `\luabytecode n`: expandable run of bytecode register `n`.
+    LuaBytecode,
+    /// `\luabytecodecall n`: the same run as a command.
+    LuaBytecodeCall,
+    // LuaTeX primitives (wire codes 620-699).
+    /// LuaTeX `\pdfvariable <key>`: expands to the backend parameter.
+    PdfVariable,
+    /// LuaTeX `\pdffeedback <key>`: expands to backend state.
+    PdfFeedback,
+    /// LuaTeX `\pdfextension <key> ...`: the pdfTeX backend commands.
+    PdfExtension,
+    DviVariable,
+    DviFeedback,
+    DviExtension,
+    /// LuaTeX `\glet`: `\global\let`.
+    GLet,
+    /// LuaTeX `\hpack`/`\vpack`/`\tpack`: `\hbox`/`\vbox`/`\vtop` without
+    /// the packaging callbacks.
+    HPack,
+    VPack,
+    TPack,
+    /// e-TeX `\eTeXminorversion` (read-only integer).
+    EtxMinorVersion,
+    /// LuaTeX `\eTeXVersion` (expandable version string).
+    EtxVersionString,
+    /// LuaTeX `\gluestretchorder`/`\glueshrinkorder`: orders counted with
+    /// LuaTeX's `fi` level (fil = 2); `\eTeXglue*order` keep e-TeX's.
+    LuaGlueStretchOrder,
+    LuaGlueShrinkOrder,
+    /// LuaTeX token-list register appending/prepending
+    /// (`\toksapp`, `\tokspre`, the `e` expanding and `g`/`x` global forms).
+    ToksApp,
+    ToksPre,
+    EToksApp,
+    EToksPre,
+    GToksApp,
+    GToksPre,
+    XToksApp,
+    XToksPre,
+    /// LuaTeX `\csstring`: `\string` without the escape character.
+    CsString,
+    /// LuaTeX `\begincsname`: `\csname` that does not define `\relax`.
+    BeginCsName,
+    /// LuaTeX `\letcharcode <char> <token>`: `\let` the active character.
+    LetCharCode,
+    /// LuaTeX `\formatname`.
+    FormatName,
+    /// LuaTeX `\luaescapestring {<text>}`.
+    LuaEscapeString,
+    /// LuaTeX `\deferred`: the next extension command acts at shipout.
+    Deferred,
+    /// LuaTeX `\boundary <n>`: a user boundary node.
+    Boundary,
+    /// LuaTeX `\wordboundary`: a word boundary node.
+    WordBoundary,
+    /// LuaTeX `\protrusionboundary <n>`.
+    ProtrusionBoundary,
+    /// LuaTeX `\Uleft`/`\Umiddle`/`\Uright`: `\left`/`\middle`/`\right`.
+    ULeft,
+    UMiddle,
+    URight,
+    /// LuaTeX-only primitive with its own [`crate::uprim::UPrim`] identity.
+    U(crate::uprim::UPrim),
+    /// LuaTeX `\Umath<param>` (`set_math_param_cmd`), by `math_param_*` number.
+    UMath(u8),
 }
 
 /// Stable wire codes for the format dump (`crate::format`). Unit variants
@@ -1078,6 +1305,17 @@ pub enum Prim {
 /// codes keep their values. The four parameter families occupy dedicated
 /// high ranges that carry the parameter index directly.
 impl Prim {
+    /// The TeX82 box command a LuaTeX `\hpack`/`\vpack`/`\tpack` stands
+    /// for (they only skip the packaging callbacks); other commands as is.
+    pub fn box_spec(self) -> Prim {
+        match self {
+            Prim::HPack => Prim::HBox,
+            Prim::VPack => Prim::VBox,
+            Prim::TPack => Prim::VTop,
+            p => p,
+        }
+    }
+
     #[allow(non_upper_case_globals)]
     pub const LetterspaceFont: Prim = Prim::Letterspacefont;
     #[inline]
@@ -1204,6 +1442,8 @@ impl Prim {
             Prim::MKern => 106,
             Prim::HMove => 107,
             Prim::VMove => 108,
+            Prim::HMoveLeft => 786,
+            Prim::VRaise => 787,
             Prim::HBox => 109,
             Prim::VBox => 110,
             Prim::VTop => 111,
@@ -1462,7 +1702,6 @@ impl Prim {
             Prim::LuaTeXVersion => 367,
             Prim::LuaTeXRevision => 368,
             Prim::LuaTeXBanner => 369,
-            Prim::OutputMode => 370,
             Prim::XeTeXDashBreakState => 371,
             Prim::CatCodeTable => 372,
             Prim::InitCatCodeTable => 373,
@@ -1470,10 +1709,6 @@ impl Prim {
             Prim::Attribute => 375,
             Prim::AttributeDef => 376,
             Prim::Ustack => 377,
-            Prim::Umathfractiondelsize => 378,
-            Prim::Umathstacknumup => 379,
-            Prim::Umathstackdenomdown => 380,
-            Prim::Umathstackvgap => 381,
             Prim::Ustartmath => 382,
             Prim::Ustopmath => 383,
             Prim::PdfNoBuiltinToUnicode => 384,
@@ -1502,7 +1737,7 @@ impl Prim {
             Prim::PdfXFormName => 503,
             Prim::PdfLastXImageColorDepth => 504,
             Prim::PdfTrailer => 505,
-            Prim::PdfTrailerId => 780,
+            Prim::PdfTrailerId => 785,
             Prim::PdfIncludeChars => 506,
             Prim::PdfCopyFont => 507,
             Prim::PdfSpaceFont => 508,
@@ -1514,6 +1749,47 @@ impl Prim {
             Prim::PdfSnapRefPoint => 514,
             Prim::PdfSnapY => 515,
             Prim::PdfSnapYComp => 516,
+            Prim::LuaFunction => 780,
+            Prim::LuaFunctionCall => 781,
+            Prim::LuaDef => 782,
+            Prim::LuaBytecode => 783,
+            Prim::LuaBytecodeCall => 784,
+            Prim::PdfVariable => 620,
+            Prim::PdfFeedback => 621,
+            Prim::PdfExtension => 622,
+            Prim::DviVariable => 623,
+            Prim::DviFeedback => 624,
+            Prim::DviExtension => 625,
+            Prim::GLet => 627,
+            Prim::HPack => 628,
+            Prim::VPack => 629,
+            Prim::TPack => 630,
+            Prim::EtxMinorVersion => 631,
+            Prim::EtxVersionString => 632,
+            Prim::LuaGlueStretchOrder => 633,
+            Prim::LuaGlueShrinkOrder => 634,
+            Prim::ToksApp => 635,
+            Prim::ToksPre => 636,
+            Prim::EToksApp => 637,
+            Prim::EToksPre => 638,
+            Prim::GToksApp => 639,
+            Prim::GToksPre => 640,
+            Prim::XToksApp => 641,
+            Prim::XToksPre => 642,
+            Prim::CsString => 643,
+            Prim::BeginCsName => 644,
+            Prim::LetCharCode => 645,
+            Prim::FormatName => 646,
+            Prim::LuaEscapeString => 647,
+            Prim::Deferred => 648,
+            Prim::Boundary => 649,
+            Prim::WordBoundary => 650,
+            Prim::ProtrusionBoundary => 651,
+            Prim::ULeft => 652,
+            Prim::UMiddle => 653,
+            Prim::URight => 654,
+            Prim::U(u) => 0x5000 | u.idx(),
+            Prim::UMath(id) => 0x5800 | id as u16,
             Prim::ScriptScriptStyle => 284,
             Prim::Patterns => 287,
             Prim::Hyphenation => 288,
@@ -1637,6 +1913,8 @@ impl Prim {
             106 => Some(Prim::MKern),
             107 => Some(Prim::HMove),
             108 => Some(Prim::VMove),
+            786 => Some(Prim::HMoveLeft),
+            787 => Some(Prim::VRaise),
             109 => Some(Prim::HBox),
             110 => Some(Prim::VBox),
             111 => Some(Prim::VTop),
@@ -1895,7 +2173,6 @@ impl Prim {
             367 => Some(Prim::LuaTeXVersion),
             368 => Some(Prim::LuaTeXRevision),
             369 => Some(Prim::LuaTeXBanner),
-            370 => Some(Prim::OutputMode),
             371 => Some(Prim::XeTeXDashBreakState),
             372 => Some(Prim::CatCodeTable),
             373 => Some(Prim::InitCatCodeTable),
@@ -1903,10 +2180,6 @@ impl Prim {
             375 => Some(Prim::Attribute),
             376 => Some(Prim::AttributeDef),
             377 => Some(Prim::Ustack),
-            378 => Some(Prim::Umathfractiondelsize),
-            379 => Some(Prim::Umathstacknumup),
-            380 => Some(Prim::Umathstackdenomdown),
-            381 => Some(Prim::Umathstackvgap),
             382 => Some(Prim::Ustartmath),
             383 => Some(Prim::Ustopmath),
             384 => Some(Prim::PdfNoBuiltinToUnicode),
@@ -1935,7 +2208,7 @@ impl Prim {
             503 => Some(Prim::PdfXFormName),
             504 => Some(Prim::PdfLastXImageColorDepth),
             505 => Some(Prim::PdfTrailer),
-            780 => Some(Prim::PdfTrailerId),
+            785 => Some(Prim::PdfTrailerId),
             506 => Some(Prim::PdfIncludeChars),
             507 => Some(Prim::PdfCopyFont),
             508 => Some(Prim::PdfSpaceFont),
@@ -1947,6 +2220,49 @@ impl Prim {
             514 => Some(Prim::PdfSnapRefPoint),
             515 => Some(Prim::PdfSnapY),
             516 => Some(Prim::PdfSnapYComp),
+            780 => Some(Prim::LuaFunction),
+            781 => Some(Prim::LuaFunctionCall),
+            782 => Some(Prim::LuaDef),
+            783 => Some(Prim::LuaBytecode),
+            784 => Some(Prim::LuaBytecodeCall),
+            620 => Some(Prim::PdfVariable),
+            621 => Some(Prim::PdfFeedback),
+            622 => Some(Prim::PdfExtension),
+            623 => Some(Prim::DviVariable),
+            624 => Some(Prim::DviFeedback),
+            625 => Some(Prim::DviExtension),
+            627 => Some(Prim::GLet),
+            628 => Some(Prim::HPack),
+            629 => Some(Prim::VPack),
+            630 => Some(Prim::TPack),
+            631 => Some(Prim::EtxMinorVersion),
+            632 => Some(Prim::EtxVersionString),
+            633 => Some(Prim::LuaGlueStretchOrder),
+            634 => Some(Prim::LuaGlueShrinkOrder),
+            635 => Some(Prim::ToksApp),
+            636 => Some(Prim::ToksPre),
+            637 => Some(Prim::EToksApp),
+            638 => Some(Prim::EToksPre),
+            639 => Some(Prim::GToksApp),
+            640 => Some(Prim::GToksPre),
+            641 => Some(Prim::XToksApp),
+            642 => Some(Prim::XToksPre),
+            643 => Some(Prim::CsString),
+            644 => Some(Prim::BeginCsName),
+            645 => Some(Prim::LetCharCode),
+            646 => Some(Prim::FormatName),
+            647 => Some(Prim::LuaEscapeString),
+            648 => Some(Prim::Deferred),
+            649 => Some(Prim::Boundary),
+            650 => Some(Prim::WordBoundary),
+            651 => Some(Prim::ProtrusionBoundary),
+            652 => Some(Prim::ULeft),
+            653 => Some(Prim::UMiddle),
+            654 => Some(Prim::URight),
+            0x5000..=0x57ff => Some(Prim::U(crate::uprim::UPrim::from_idx(c & 0x07ff)?)),
+            0x5800..=0x58ff if (c & 0xff) < crate::uprim::UMATH_NAMES.len() as u16 => {
+                Some(Prim::UMath((c & 0xff) as u8))
+            }
             0x1000..=0x1fff => {
                 let i = c & 0x0fff;
                 Some(Prim::IntP(IntParam::from_idx(i)?))
@@ -1978,6 +2294,7 @@ impl Prim {
                     14 => GlueParam::ThinMuSkip,
                     15 => GlueParam::MedMuSkip,
                     16 => GlueParam::ThickMuSkip,
+                    17 => GlueParam::MathSurroundSkip,
                     _ => return None,
                 }))
             }
@@ -1998,6 +2315,8 @@ impl Prim {
                     8 => ToksParam::Output,
                     9 => ToksParam::ErrHelp,
                     10 => ToksParam::PdfPkMode,
+                    11 => ToksParam::PdfXFormAttr,
+                    12 => ToksParam::PdfXFormResources,
                     _ => return None,
                 }))
             }

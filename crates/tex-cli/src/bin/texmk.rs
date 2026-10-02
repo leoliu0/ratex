@@ -371,29 +371,7 @@ fn artifact_path(out_dir: &Path, job: &str, ext: &str) -> PathBuf {
     out_dir.join(format!("{job}{ext}"))
 }
 
-fn platform_cache_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("TEX_RS_CACHE_DIR").filter(|value| !value.is_empty()) {
-        return PathBuf::from(dir);
-    }
-    #[cfg(target_os = "windows")]
-    if let Some(dir) = std::env::var_os("LOCALAPPDATA").filter(|value| !value.is_empty()) {
-        return PathBuf::from(dir).join("tex-rs").join("cache");
-    }
-    #[cfg(target_os = "macos")]
-    if let Some(home) = std::env::var_os("HOME").filter(|value| !value.is_empty()) {
-        return PathBuf::from(home)
-            .join("Library")
-            .join("Caches")
-            .join("tex-rs");
-    }
-    if let Some(dir) = std::env::var_os("XDG_CACHE_HOME").filter(|value| !value.is_empty()) {
-        return PathBuf::from(dir).join("tex-rs");
-    }
-    if let Some(home) = std::env::var_os("HOME").filter(|value| !value.is_empty()) {
-        return PathBuf::from(home).join(".cache").join("tex-rs");
-    }
-    std::env::temp_dir().join("tex-rs-cache")
-}
+use tex_kpse::platform_cache_dir;
 
 fn stable_hash(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325u64;

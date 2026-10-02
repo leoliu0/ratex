@@ -92,6 +92,10 @@ impl Engine {
                 line_buf,
                 line_pos,
                 state,
+                cat_regime,
+                lua_lines,
+                lua_reader,
+                name,
                 ..
             } = &self.input.stack[si]
             else {
@@ -101,6 +105,10 @@ impl Engine {
                 // e-TeX semantics: \everyeof fires every time scanning
                 // reaches EOF of an input file or pseudo-file (expl3 \file_get
                 // and \tl_set_rescan rely on this to supply closing delimiters).
+                // LuaTeX's `tex.print` input ends with force_eof instead.
+                let lua = lua_lines.is_some();
+                let reader = *lua_reader;
+                let real_file = !name.starts_with('<') || name.starts_with("<embedded:");
                 if matches!(
                     self.input.stack.get(si),
                     Some(Source::File { tracked: true, .. })
@@ -108,6 +116,18 @@ impl Engine {
                     self.finish_tracked_file();
                 }
                 self.input.finish_file(si);
+                if lua {
+                    return None;
+                }
+                if self.engine_kind == EngineKind::LuaTeX {
+                    // textoken.c force_eof: `stop_file`, then the reader's close
+                    if real_file || reader != 0 {
+                        self.lua_report_stop_file(crate::lua_cb_files::filetype::TEX);
+                    }
+                    if reader != 0 {
+                        self.lua_reader_close(reader);
+                    }
+                }
                 let eof_toks = (*self.eqtb.tok_params
                     [crate::prim::ToksParam::EveryEOF.idx() as usize])
                     .clone();
@@ -117,22 +137,42 @@ impl Engine {
                 return None;
             }
             let Some(buf) = line_buf else {
+                let ending = *ending;
+                // luatex next_line: a printed token object is read next
+                // (it is backed up and the pseudo file is resumed after it).
+                if !ending {
+                    if let Some(token) = self.take_lua_token(si) {
+                        return Some(token);
+                    }
+                }
                 // \endinput takes effect once the current line is finished.
-                if *ending || !self.file_load_line(si) {
+                if ending || !self.file_load_line(si) {
                     self.set_file_done(si);
                 }
                 continue;
             };
             let start = *line_pos;
             let state = *state;
-            let Some((character, width)) = self.decode_scalar(buf, start) else {
+            let regime = *cat_regime;
+            let Some((mut character, mut width)) = self.decode_scalar(buf, start) else {
                 // tex.web §360: an exhausted line moves to the next one in
                 // state new_line.
                 self.file_line_clear(si);
                 continue;
             };
+            // luatex str2uni/do_buffer_to_unichar: an invalid UTF-8
+            // sequence reads as U+FFFD and skips utf8_size(0xFFFD) bytes.
+            let invalid =
+                self.engine_kind == EngineKind::LuaTeX && width == 1 && character >= 0x80;
+            if invalid {
+                character = 0xFFFD;
+                width = 3.min(buf.len() - start);
+            }
             self.file_line_advance_by(si, width);
-            if let Some(token) = self.tokenize_char(character, si, state, start) {
+            if invalid {
+                self.error("String contains an invalid utf-8 sequence");
+            }
+            if let Some(token) = self.tokenize_char(character, si, state, start, regime) {
                 if token != PAR_END && !self.file_line_is_none(si) {
                     self.record_physical_token(si, start, token);
                 }
@@ -145,6 +185,14 @@ impl Engine {
         if let Source::File { done, .. } = &mut self.input.stack[si] {
             *done = true;
         }
+    }
+
+    fn take_lua_token(&mut self, si: usize) -> Option<Token> {
+        let Some(Source::File { lua_lines: Some(lines), .. }) = self.input.stack.get_mut(si) else {
+            return None;
+        };
+        lines.lines.front()?.token?;
+        lines.lines.pop_front()?.token
     }
 
     fn set_file_state(&mut self, si: usize, value: u8) {
@@ -200,14 +248,30 @@ impl Engine {
             self.eqtb.int_params[crate::prim::IntParam::EndLineChar.idx() as usize];
         let unicode = self.engine_kind != EngineKind::PdfTeX;
         let mut buf = std::mem::take(&mut self.spare_line_buf);
+        if let Some(Source::File {
+            lua_lines: Some(lines),
+            ..
+        }) = self.input.stack.get_mut(si)
+        {
+            let Some(line) = lines.lines.pop_front() else {
+                self.spare_line_buf = buf;
+                return false;
+            };
+            let last = lines.lines.is_empty();
+            return self.load_lua_line(si, buf, line, last, end_line_char);
+        }
+        if let Some(Source::File { lua_reader, .. }) = self.input.stack.get(si) {
+            let reader = *lua_reader;
+            if reader != 0 {
+                self.spare_line_buf = buf;
+                return self.load_reader_line(si, reader, end_line_char, unicode);
+            }
+        }
         let Source::File {
             data,
             pos,
             line_no,
             line_start,
-            line_buf,
-            line_end_len,
-            line_pos,
             state,
             ..
         } = &mut self.input.stack[si]
@@ -226,6 +290,14 @@ impl Engine {
         }
         buf.clear();
         buf.extend_from_slice(&data[start..content_end]);
+        *line_start = start;
+        *pos = next;
+        *line_no += 1;
+        *state = 0;
+        // luatex process_input_buffer: sees the line without \endlinechar
+        if self.engine_kind == EngineKind::LuaTeX {
+            self.lua_process_input_line(&mut buf);
+        }
         let before = buf.len();
         if let Ok(character) = u8::try_from(end_line_char) {
             if unicode && !character.is_ascii() {
@@ -235,14 +307,110 @@ impl Engine {
                 buf.push(character);
             }
         }
+        let Source::File {
+            line_buf,
+            line_end_len,
+            line_pos,
+            ..
+        } = &mut self.input.stack[si]
+        else {
+            return false;
+        };
         *line_end_len = (buf.len() - before) as u8;
         *line_buf = Some(buf);
         *line_pos = 0;
-        *line_start = start;
-        *pos = next;
+        true
+    }
+
+    /// A line of a file read through an `open_read_file` object: the line
+    /// the reader returns passes `process_input_buffer` and receives the
+    /// end-of-line character like a line of a real file.
+    fn load_reader_line(&mut self, si: usize, reader: u32, end_line_char: i32, unicode: bool) -> bool {
+        let Some(mut buf) = self.lua_reader_line(reader) else {
+            return false;
+        };
+        self.lua_process_input_line(&mut buf);
+        let before = buf.len();
+        if let Ok(character) = u8::try_from(end_line_char) {
+            if unicode && !character.is_ascii() {
+                buf.extend_from_slice(char::from(character).encode_utf8(&mut [0u8; 4]).as_bytes());
+            } else {
+                buf.push(character);
+            }
+        }
+        let Some(Source::File { line_buf, line_end_len, line_pos, line_no, state, .. }) = self.input.stack.get_mut(si) else {
+            return false;
+        };
+        *line_end_len = (buf.len() - before) as u8;
+        *line_buf = Some(buf);
+        *line_pos = 0;
         *line_no += 1;
         *state = 0;
         true
+    }
+
+    /// luatex textoken.c next_line for a `tex.print` line: full lines lose
+    /// trailing spaces and restart in state new_line; partial (`sprint`)
+    /// lines keep both and the scanner state. The end-of-line character is
+    /// appended only to full lines that are not the last queued line and
+    /// are not read with "string" catcodes.
+    fn load_lua_line(
+        &mut self,
+        si: usize,
+        mut buf: Vec<u8>,
+        line: crate::engine_lua::LuaLine,
+        last: bool,
+        end_line_char: i32,
+    ) -> bool {
+        let unicode = self.engine_kind != EngineKind::PdfTeX;
+        buf.clear();
+        buf.extend_from_slice(&line.text);
+        if !line.partial {
+            while buf.last() == Some(&b' ') {
+                buf.pop();
+            }
+        }
+        let before = buf.len();
+        if !(last || line.partial || line.cattable == crate::engine_lua::NO_CAT_TABLE) {
+            if let Ok(character) = u8::try_from(end_line_char) {
+                if unicode && !character.is_ascii() {
+                    buf.extend_from_slice(char::from(character).encode_utf8(&mut [0u8; 4]).as_bytes());
+                } else {
+                    buf.push(character);
+                }
+            }
+        }
+        let Source::File {
+            line_buf,
+            line_end_len,
+            line_pos,
+            line_no,
+            state,
+            cat_regime,
+            ..
+        } = &mut self.input.stack[si]
+        else {
+            return false;
+        };
+        *line_end_len = (buf.len() - before) as u8;
+        *line_buf = Some(buf);
+        *line_pos = 0;
+        *line_no += 1;
+        if !line.partial {
+            *state = 0;
+        }
+        *cat_regime = line.cattable;
+        true
+    }
+
+    /// luatex textoken.c `do_get_cat_code` for the current line's regime.
+    #[inline]
+    fn regime_cat_code(&self, regime: i32, character: u32) -> u8 {
+        if regime == crate::engine_lua::DEFAULT_CAT_TABLE {
+            self.eqtb.cat_code(character)
+        } else {
+            self.lua_line_cat_code(regime, character)
+        }
     }
 
     fn source_character_token(&self, cat: u8, character: u32) -> Token {
@@ -261,9 +429,10 @@ impl Engine {
         si: usize,
         state: u8,
         start: usize,
+        regime: i32,
     ) -> Option<Token> {
         loop {
-            let cat = self.eqtb.cat_code(character);
+            let cat = self.regime_cat_code(regime, character);
             let token = match cat {
                 CAT_ESCAPE => return Some(self.scan_control_sequence(si)),
                 CAT_IGNORED => return None,
@@ -314,25 +483,27 @@ impl Engine {
             let Source::File {
                 line_buf: Some(buf),
                 line_pos,
+                cat_regime,
                 ..
             } = &self.input.stack[si]
             else {
                 unreachable!()
             };
+            let regime = *cat_regime;
             let loc = *line_pos;
             let Some((first, first_width)) = self.decode_scalar(buf, loc) else {
                 // The escape character ended the buffer: the null control
                 // sequence (the state is irrelevant; the line is finished).
                 return Token::from_cs(self.cs.intern(b""));
             };
-            let first_cat = self.eqtb.cat_code(first);
+            let first_cat = self.regime_cat_code(regime, first);
             let mut k = loc + first_width;
             let mut end = loc + first_width;
             let reduce_at = if first_cat == CAT_LETTER && k < buf.len() {
                 let (mut character, mut width, mut cat);
                 loop {
                     (character, width) = self.decode_scalar(buf, k).expect("k is inside the buffer");
-                    cat = self.eqtb.cat_code(character);
+                    cat = self.regime_cat_code(regime, character);
                     k += width;
                     if cat != CAT_LETTER || k >= buf.len() {
                         break;
@@ -396,6 +567,7 @@ impl Engine {
     /// begins `^^` notation, replace the notation by the character it
     /// denotes and close the gap. Returns false if no expanded code is there.
     fn reduce_expanded_code(&mut self, si: usize, k: usize, sup: u32) -> bool {
+        let unicode = self.engine_kind != EngineKind::PdfTeX;
         let Some(Source::File {
             line_buf: Some(buf),
             ..
@@ -406,6 +578,14 @@ impl Engine {
         let Some((value, width)) = sup_notation(buf, k, sup) else {
             return false;
         };
+        if unicode && value >= 0x80 {
+            // The denoted scalar is spelled in UTF-8 so the line still
+            // decodes (luatex stores `^^ad` as U+00AD, not a raw byte).
+            let mut encoded = [0u8; 4];
+            let bytes = char::from(value).encode_utf8(&mut encoded).as_bytes();
+            buf.splice(k - 1..k + width, bytes.iter().copied());
+            return true;
+        }
         buf[k - 1] = value;
         buf.drain(k..k + width);
         true

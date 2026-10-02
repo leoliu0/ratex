@@ -2016,7 +2016,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         // pdfTeX "Write out page object": pdf_print_mag_bp of the page size
         // in sp, omitted when \pdfpageattr supplies its own /MediaBox.
         let mut media_box = String::new();
-        if !page_attr.contains("/MediaBox") {
+        if page.media_box && !page_attr.contains("/MediaBox") {
             media_box.push_str(" /MediaBox [0 0 ");
             media_box.push_str(&mag_bp_sp(page.width_sp, (doc.mag, doc.decimal_digits)));
             media_box.push(' ');
@@ -2242,6 +2242,15 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
     } else {
         (None, trailer_id(doc))
     };
+    // LuaTeX's user supplied /ID array replaces the computed one
+    let mut trailer_extra = doc.trailer_extra.clone();
+    let file_id = if doc.trailer_id_raw.is_empty() || encrypt_obj.is_some() {
+        file_id
+    } else {
+        trailer_extra.extend_from_slice(b" /ID ");
+        trailer_extra.extend_from_slice(&doc.trailer_id_raw);
+        None
+    };
 
     // Raw extension objects can contain duplicate keys, uncompressed streams
     // and arbitrary syntax. Preserve the existing parser's normalization for
@@ -2273,7 +2282,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             &b.objs,
             catalog_obj,
             info_obj,
-            &doc.trailer_extra,
+            &trailer_extra,
             encrypt_obj,
             file_id,
             (doc.major_version, doc.minor_version.unwrap_or(5)),
@@ -2284,7 +2293,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             &b.packable,
             catalog_obj,
             info_obj,
-            &doc.trailer_extra,
+            &trailer_extra,
             encrypt_obj,
             file_id,
             (doc.major_version, doc.minor_version.unwrap_or(5)),

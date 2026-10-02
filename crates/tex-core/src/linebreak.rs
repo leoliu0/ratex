@@ -183,7 +183,7 @@ fn find_protchar_left(slice: &[Node], eqtb: &crate::eqtb::Eqtb, protrude_chars: 
             | Node::Kern(_)
             | Node::ExplicitKern(_)
             // pdftex cp_skipable: only a zero-width accent kern is skipped
-            | Node::AccentKern(0)
+            | Node::AccentKern(0) | Node::ItalicKern(0)
             | Node::Whatsit(_) => {}
             Node::Box {
                 w: 0,
@@ -429,6 +429,7 @@ impl Engine {
                 &params,
                 threshold,
                 final_pass,
+                second_pass,
                 extra_stretch,
                 bg_w,
                 bg_st,
@@ -603,6 +604,8 @@ impl Engine {
             lh,
             rh,
             uc_hyph: self.eqtb.int_params[IntParam::UcHyph.idx() as usize] > 0,
+            min_len: self.lang_hyphenation_min(st.lang),
+            pre_hyphen: self.lua_tex.lang.get(&st.lang).and_then(|p| p.pre_hyphen),
         })
     }
 
@@ -664,7 +667,7 @@ impl Engine {
         };
         let ctx = ctx?;
         let ctx = &ctx;
-        let hyf_char = self.eqtb.hyphen_char.get(hf as usize).copied().unwrap_or(-1);
+        let hyf_char = ctx.pre_hyphen.unwrap_or_else(|| self.eqtb.hyphen_char.get(hf as usize).copied().unwrap_or(-1));
         let hyf_char = u8::try_from(hyf_char).ok()?;
         let font = self.eqtb.fonts.get(hf as usize)?.clone();
         // §897-898: the letters hu[1..=hn] (hc lowercased) of nodes ..=hb
@@ -726,7 +729,7 @@ impl Engine {
             s += 1;
         }
         // §899: the nodes after hb must permit hyphenation
-        if hn < ctx.lh + ctx.rh {
+        if hn < ctx.lh + ctx.rh || hn < ctx.min_len {
             return None;
         }
         loop {
@@ -735,7 +738,7 @@ impl Engine {
                 None
                 | Some(
                     Node::ExplicitKern(_)
-                    | Node::AccentKern(_)
+                    | Node::AccentKern(_) | Node::ItalicKern(_)
                     | Node::Whatsit(_)
                     | Node::Glue(_)
                     | Node::Leaders { .. }
@@ -932,7 +935,7 @@ impl Engine {
         // a word closed by an explicit hyphen gets no internal points
         let closed_by_hyphen = matches!(&list[end], Node::Char { c, .. } if *c == hyphen_c)
             || matches!(&list[end], Node::Disc(_));
-        if closed_by_hyphen || !prev_ok || word.len() < ctx.lh + ctx.rh {
+        if closed_by_hyphen || !prev_ok || word.len() < ctx.lh + ctx.rh || word.len() < ctx.min_len {
             return;
         }
         let hyphen_str = (hyphen_c as char).to_string();
@@ -967,19 +970,14 @@ impl Engine {
                 ) else {
                     continue;
                 };
-                crate::boxes::DiscNode {
-                    pre_break,
-                    post_break,
-                    no_break: vec![list[pos].clone()],
-                    replace_count: 1,
-                }
+                crate::boxes::DiscNode::new(pre_break, post_break, vec![list[pos].clone()], 1)
             } else {
-                crate::boxes::DiscNode {
-                    pre_break: self.shape_native_slice(run.font, &hyphen_str).unwrap_or_default(),
-                    post_break: Vec::new(),
-                    replace_count: 0,
-                    no_break: Vec::new(),
-                }
+                crate::boxes::DiscNode::new(
+                    self.shape_native_slice(run.font, &hyphen_str).unwrap_or_default(),
+                    Vec::new(),
+                    Vec::new(),
+                    0,
+                )
             };
             disc_at_node = Some(pos);
             edits.push((pos, Node::Disc(disc)));
@@ -994,6 +992,7 @@ impl Engine {
         params: &ParaParams,
         threshold: i32,
         final_pass: bool,
+        second_pass: bool,
         extra_stretch: i32,
         bg_w: i64,
         bg_st: [i64; 4],
@@ -1050,6 +1049,10 @@ impl Engine {
                         };
                         (fonts.char_width(*font, *c) as i64, [0; 4], [0; 4], fst, fsh)
                     }
+                    Node::LuaGlyph(g) => {
+                        prev_exp_char = None;
+                        (crate::boxes::lua_glyph_dims(&self.eqtb, g).0 as i64, [0; 4], [0; 4], 0, 0)
+                    }
                     Node::Ligature {
                         c, font, lig_width, ..
                     } => {
@@ -1096,7 +1099,7 @@ impl Engine {
                         };
                         (*k as i64, [0; 4], [0; 4], fst, fsh)
                     }
-                    Node::ExplicitKern(k) | Node::AccentKern(k) => {
+                    Node::ExplicitKern(k) | Node::AccentKern(k) | Node::ItalicKern(k) => {
                         (*k as i64, [0; 4], [0; 4], 0, 0)
                     }
                     Node::Disc(dc) => {
@@ -1681,13 +1684,19 @@ impl Engine {
                     }
                 }
                 Node::Disc(dc) => {
-                    let pen = if !dc.pre_break.is_empty() {
+                    let pen = if dc.penalty != crate::boxes::DISC_PENALTY_TEX {
+                        dc.penalty
+                    } else if !dc.pre_break.is_empty() {
                         params.hyphen_penalty
                     } else {
                         params.ex_hyphen_penalty
                     };
                     let endw = cum_w[i] + disc_list_width(&self.eqtb, &dc.pre_break);
-                    consider!(i, true, pen, BreakType::Hyphenated, false, endw);
+                    // luatex: syllable discretionaries (subtype > automatic)
+                    // only break in the second pass
+                    if second_pass || dc.subtype <= 2 {
+                        consider!(i, true, pen, BreakType::Hyphenated, false, endw);
+                    }
                 }
                 _ => {}
             }
@@ -1734,7 +1743,13 @@ impl Engine {
         let mut dead_until = 0usize; // nodes in [i, dead_until) are dead
                                      // chain[0] is the synthetic paragraph start (pos 0, line 0)
         let total_lines = chain.len() - 1;
+        // luatex packs and appends line by line: hold the hpack_quality
+        // calls back until `fill_line_interline` reaches the line
+        self.lua_par_lines.defer = self.engine_kind == crate::engine::EngineKind::LuaTeX
+            && self.cb_defined(crate::lua_callbacks::Cb::HpackQuality);
+        self.lua_par_lines.quality.clear();
         for (li, bp) in chain.iter().skip(1).enumerate() {
+            self.lua_par_lines.ordinal = li;
             let j = bp.pos.min(list.len());
             let mut seg: NodeList = Vec::new();
             let mut nat_w = 0i64;
@@ -1809,21 +1824,11 @@ impl Engine {
                         // line ends with the pre-break text
                         let mut dc = std::mem::replace(
                             dc,
-                            crate::boxes::DiscNode {
-                                pre_break: Vec::new(),
-                                post_break: Vec::new(),
-                                no_break: Vec::new(),
-                                replace_count: 0,
-                            },
+                            crate::boxes::DiscNode::new(Vec::new(), Vec::new(), Vec::new(), 0),
                         );
                         // tex.web §882: the (now empty) disc node stays in the
                         // line, followed by the transplanted pre-break list
-                        seg.push(Node::Disc(crate::boxes::DiscNode {
-                            pre_break: Vec::new(),
-                            post_break: Vec::new(),
-                            no_break: Vec::new(),
-                            replace_count: 0,
-                        }));
+                        seg.push(Node::Disc(crate::boxes::DiscNode::new(Vec::new(), Vec::new(), Vec::new(), 0)));
                         for nn in std::mem::take(&mut dc.pre_break) {
                             push_dims(&self.eqtb, nn, &mut seg, &mut nat_w);
                         }
@@ -1887,7 +1892,7 @@ impl Engine {
                     | Node::Penalty(_)
                     | Node::Kern(_)
                     | Node::ExplicitKern(_)
-                    | Node::AccentKern(0)
+                    | Node::AccentKern(0) | Node::ItalicKern(0)
                     | Node::Whatsit(_) => None,
                     // pdftex cp_skipable: zero-width math nodes; only the
                     // TeXXeT \beginM..\endR kinds are skipped here
@@ -1960,7 +1965,7 @@ impl Engine {
             let source = self.current_token_source_mark();
             let begin_line = self.mode_line();
             let saved_begin = std::mem::replace(&mut self.pack_begin_line, begin_line);
-            self.report_pack_warnings_at(&r, source);
+            self.report_pack_warnings_at(&mut r, source);
             self.pack_begin_line = saved_begin;
             if indent != 0 {
                 if let Node::Box { shift, .. } = &mut r.node {
@@ -2037,6 +2042,10 @@ impl Engine {
             }
         }
         self.lr_save_store(lr_key, lr);
+        self.lua_par_lines.defer = false;
+        if !self.lua_par_lines.hold {
+            self.lua_flush_pack_quality();
+        }
 
         crate::boxes::vpack(lines, None, crate::boxes::VBOX, &self.eqtb).node
     }
@@ -2061,7 +2070,7 @@ impl Engine {
                 None => Some(-10000),
                 Some(Node::Penalty(p)) => Some(*p),
                 Some(Node::Glue(_) | Node::Leaders { .. }) if prev_non_discardable => Some(0),
-                Some(Node::Kern(_) | Node::ExplicitKern(_) | Node::AccentKern(_))
+                Some(Node::Kern(_) | Node::ExplicitKern(_) | Node::AccentKern(_) | Node::ItalicKern(_))
                     if matches!(list.get(i + 1), Some(Node::Glue(_) | Node::Leaders { .. })) =>
                 {
                     Some(0)
@@ -2130,7 +2139,7 @@ impl Engine {
                     t += d + g.width as i64;
                     d = 0;
                 }
-                Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) => {
+                Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) | Node::ItalicKern(k) => {
                     t += d + *k as i64;
                     d = 0;
                 }
@@ -2171,7 +2180,7 @@ impl Engine {
                 | Node::Penalty(_)
                 | Node::Kern(_)
                 | Node::ExplicitKern(_)
-                | Node::AccentKern(_) => false,
+                | Node::AccentKern(_) | Node::ItalicKern(_) => false,
                 Node::Whatsit(
                     crate::boxes::WhatIt::PdfSnapY(_) | crate::boxes::WhatIt::PdfSnapYComp(_),
                 ) => {
@@ -2213,7 +2222,24 @@ impl Engine {
                 }
             }
         }
-        let r = crate::boxes::vpack_add_md(
+        // luatex vsplit: `filtered_vpackage(q, h, exactly, split_max_depth,
+        // split_off_group)` runs `vpack_filter` and reports the packing
+        let lua = self.engine_kind == crate::engine::EngineKind::LuaTeX;
+        let top = if lua {
+            self.lua_pack_filter(
+                crate::lua_callbacks::Cb::VpackFilter,
+                "vpack filter",
+                "split_off",
+                target,
+                true,
+                Some(smd as i32),
+                Some("TLT"),
+                top,
+            )
+        } else {
+            top
+        };
+        let mut r = crate::boxes::vpack_add_md(
             top,
             Some(target),
             false,
@@ -2221,6 +2247,9 @@ impl Engine {
             &self.eqtb,
             smd as i32,
         );
+        if lua {
+            self.report_pack_warnings(&mut r);
+        }
         self.last_badness = r.badness;
         self.vsplat_remainder = Some(rest);
         Some(r.node)
@@ -2239,6 +2268,10 @@ struct HyphCtx<'a> {
     lh: usize,
     rh: usize,
     uc_hyph: bool,
+    /// `lang.hyphenationmin`: words shorter than this stay whole
+    min_len: usize,
+    /// `lang.prehyphenchar` when a Lua program set it for the language
+    pre_hyphen: Option<i32>,
 }
 
 impl HyphCtx<'_> {
@@ -2524,12 +2557,12 @@ impl Reconstitute<'_> {
                 }
                 // §918: a discretionary may replace at most 127 nodes
                 if major.len() <= 127 {
-                    out.push(Node::Disc(crate::boxes::DiscNode {
+                    out.push(Node::Disc(crate::boxes::DiscNode::new(
                         pre_break,
                         post_break,
-                        no_break: major.clone(),
-                        replace_count: major.len(),
-                    }));
+                        major.clone(),
+                        major.len(),
+                    )));
                 }
                 out.append(&mut major);
                 self.hyphen_passed = j - 1;
@@ -2565,9 +2598,10 @@ fn push_dims(eqtb: &crate::eqtb::Eqtb, n: Node, seg: &mut NodeList, w: &mut i64)
     let fonts = crate::boxes::eqtb_fonts(eqtb);
     let wd = match &n {
         Node::Char { c, font } => fonts.char_width(*font, *c),
+        Node::LuaGlyph(g) => crate::boxes::lua_glyph_dims(eqtb, g).0,
         Node::Ligature { lig_width, .. } => *lig_width,
         Node::Glue(g) => g.width,
-        Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) => *k,
+        Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) | Node::ItalicKern(k) => *k,
         Node::Box { w: bw, .. } => *bw,
         Node::Rule { width, .. } => *width,
         Node::NativeGlyphRun { width, .. } => *width,
@@ -2583,8 +2617,9 @@ fn disc_list_width(eqtb: &crate::eqtb::Eqtb, l: &[Node]) -> i64 {
     l.iter()
         .map(|nn| match nn {
             Node::Char { c, font } => fonts.char_width(*font, *c) as i64,
+            Node::LuaGlyph(g) => crate::boxes::lua_glyph_dims(eqtb, g).0 as i64,
             Node::Ligature { lig_width, .. } => *lig_width as i64,
-            Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) => *k as i64,
+            Node::Kern(k) | Node::ExplicitKern(k) | Node::AccentKern(k) | Node::ItalicKern(k) => *k as i64,
             Node::Box { w, .. } | Node::Rule { width: w, .. } => *w as i64,
             Node::NativeGlyphRun { width, .. } => *width as i64,
             _ => 0,

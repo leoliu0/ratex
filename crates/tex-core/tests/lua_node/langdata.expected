@@ -1,0 +1,18 @@
+default	0,1,1,0
+left2	0,2,1,0
+right3	0,2,3,0
+uchyph1	0,2,3,1
+lang5	5,2,3,1
+uchyph0	5,2,3,0
+left300	5,255,3,0
+right0	5,255,255,0
+lang-1	-1,255,255,1
+lang40000	7232,255,255,0
+uchyph7	7232,255,255,1
+uchyph0b	7232,255,255,0
+left-3	7232,255,255,0
+uchyph2	7232,255,255,1
+fresh uchyph1	0,1,1,1
+then left4	0,4,1,1
+direct	3
+direct	4	0

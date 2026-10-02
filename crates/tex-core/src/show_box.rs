@@ -120,6 +120,20 @@ impl<'a> BoxDisplay<'a> {
         }
     }
 
+    /// a character code of a Lua font: UTF-8 beyond the 8-bit range
+    fn print_unicode(&mut self, c: u32) {
+        match u8::try_from(c) {
+            Ok(b) => self.print_ascii(b),
+            Err(_) => {
+                let mut buf = [0u8; 4];
+                match char::from_u32(c) {
+                    Some(ch) => self.out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes()),
+                    None => self.print(&format!("[{c:X}]")),
+                }
+            }
+        }
+    }
+
     fn print_rule_dimen(&mut self, d: i32) {
         if d == RULE_FILL {
             self.out.push(b'*');
@@ -191,14 +205,14 @@ impl<'a> BoxDisplay<'a> {
         }
     }
 
-    fn print_font_and_char(&mut self, f: FontId, c: u8) {
+    fn print_font_and_char(&mut self, f: FontId, c: u32) {
         if (f as usize) < self.e.eqtb.fonts.len() {
             self.print_font_identifier(f);
         } else {
             self.out.push(b'*');
         }
         self.out.push(b' ');
-        self.print_ascii(c);
+        self.print_unicode(c);
     }
 
     fn print_token_list(&mut self, tokens: &[Token]) {
@@ -240,7 +254,14 @@ impl<'a> BoxDisplay<'a> {
             let n = &list[i];
             i += 1;
             match n {
-                Node::Char { c, font } => self.short_char(*font, *c),
+                Node::Char { c, font } => self.short_char(*font, u32::from(*c)),
+                Node::LuaGlyph(g) => {
+                    if g.components.is_empty() {
+                        self.short_char(g.font, g.c);
+                    } else {
+                        self.short_display(&g.components);
+                    }
+                }
                 Node::Ligature {
                     font,
                     letters,
@@ -248,7 +269,7 @@ impl<'a> BoxDisplay<'a> {
                     ..
                 } => {
                     for &c in &letters[..(*n_letters as usize).min(3)] {
-                        self.short_char(*font, c);
+                        self.short_char(*font, u32::from(c));
                     }
                 }
                 Node::Box { .. }
@@ -289,7 +310,7 @@ impl<'a> BoxDisplay<'a> {
         }
     }
 
-    fn short_char(&mut self, font: FontId, c: u8) {
+    fn short_char(&mut self, font: FontId, c: u32) {
         if self.font_in_short_display != Some(font) {
             if (font as usize) < self.e.eqtb.fonts.len() {
                 self.print_font_identifier(font);
@@ -299,7 +320,7 @@ impl<'a> BoxDisplay<'a> {
             self.out.push(b' ');
             self.font_in_short_display = Some(font);
         }
-        self.print_ascii(c);
+        self.print_unicode(c);
     }
 
     /// tex.web show_box: the list `p`, then print_ln.
@@ -345,7 +366,22 @@ impl<'a> BoxDisplay<'a> {
 
     fn display_node(&mut self, node: &Node) {
         match node {
-            Node::Char { c, font } => self.print_font_and_char(*font, *c),
+            Node::Char { c, font } => self.print_font_and_char(*font, u32::from(*c)),
+            Node::LuaGlyph(g) => {
+                self.print_font_and_char(g.font, g.c);
+                if u16::from(g.subtype) & crate::lua_node::GLYPH_LIGATURE != 0 {
+                    self.print(" (ligature ");
+                    if u16::from(g.subtype) & crate::lua_node::GLYPH_LEFT != 0 {
+                        self.out.push(b'|');
+                    }
+                    self.font_in_short_display = Some(g.font);
+                    self.short_display(&g.components);
+                    if u16::from(g.subtype) & crate::lua_node::GLYPH_RIGHT != 0 {
+                        self.out.push(b'|');
+                    }
+                    self.out.push(b')');
+                }
+            }
             Node::Box {
                 kind,
                 w,
@@ -357,6 +393,7 @@ impl<'a> BoxDisplay<'a> {
                 glue_order,
                 glue_set,
                 lr,
+                ..
             } => {
                 self.print_esc(match *kind {
                     crate::boxes::HBOX => "h",
@@ -386,8 +423,14 @@ impl<'a> BoxDisplay<'a> {
                     self.print(", shifted ");
                     self.print_scaled(*shift);
                 }
+                if self.e.engine_kind == crate::engine::EngineKind::LuaTeX {
+                    self.print(", direction TLT");
+                }
                 // etex.ch "Display if this box is never to be reversed"
-                if *kind == crate::boxes::HBOX && *lr == crate::boxes::BOX_LR_DLIST {
+                if *kind == crate::boxes::HBOX
+                    && *lr == crate::boxes::BOX_LR_DLIST
+                    && self.e.engine_kind != crate::engine::EngineKind::LuaTeX
+                {
                     self.print(", display");
                 }
                 self.node_list_display(list);
@@ -434,8 +477,10 @@ impl<'a> BoxDisplay<'a> {
                     self.print_esc(name);
                     self.out.push(b')');
                 }
-                self.out.push(b' ');
-                self.print_spec(g, "");
+                if g.subtype != glue_subtype::NONSCRIPT {
+                    self.out.push(b' ');
+                    self.print_spec(g, "");
+                }
             }
             Node::Leaders { glue, kind, body } => {
                 self.print_esc("");
@@ -474,11 +519,19 @@ impl<'a> BoxDisplay<'a> {
             Node::Kern(k) => {
                 self.print_esc("kern");
                 self.print_scaled(*k);
+                if self.e.engine_kind == crate::engine::EngineKind::LuaTeX {
+                    self.print(" (font)");
+                }
             }
             Node::ExplicitKern(k) => {
                 self.print_esc("kern");
                 self.out.push(b' ');
                 self.print_scaled(*k);
+            }
+            Node::ItalicKern(k) => {
+                self.print_esc("kern");
+                self.print_scaled(*k);
+                self.print(" (italic)");
             }
             Node::AccentKern(k) => {
                 self.print_esc("kern");
@@ -518,14 +571,14 @@ impl<'a> BoxDisplay<'a> {
                 subtype,
                 ..
             } => {
-                self.print_font_and_char(*font, *c);
+                self.print_font_and_char(*font, u32::from(*c));
                 self.print(" (ligature ");
                 if *subtype > 1 {
                     self.out.push(b'|');
                 }
                 self.font_in_short_display = Some(*font);
                 for &l in &letters[..(*n_letters as usize).min(3)] {
-                    self.short_char(*font, l);
+                    self.short_char(*font, u32::from(l));
                 }
                 if subtype % 2 == 1 {
                     self.out.push(b'|');
@@ -535,6 +588,29 @@ impl<'a> BoxDisplay<'a> {
             Node::Penalty(p) => {
                 self.print_esc("penalty ");
                 self.print_int(*p as i64);
+            }
+            Node::Disc(d) if self.e.engine_kind == crate::engine::EngineKind::LuaTeX => {
+                // texnodes.c show_box: `\discretionary (penalty n)` with the
+                // three lists marked `<`, `>` and `=`
+                let penalty = if d.penalty != crate::boxes::DISC_PENALTY_TEX {
+                    d.penalty
+                } else if d.pre_break.is_empty() {
+                    self.e.eqtb.int_params[crate::prim::IntParam::ExHyphenPenalty.idx() as usize]
+                } else {
+                    self.e.eqtb.int_params[crate::prim::IntParam::HyphenPenalty.idx() as usize]
+                };
+                self.print_esc("discretionary");
+                self.print(" (penalty ");
+                self.print_int(i64::from(penalty));
+                self.out.push(b')');
+                for (mark, list) in [(b'<', &d.pre_break), (b'>', &d.post_break), (b'=', &d.no_break)] {
+                    if !list.is_empty() {
+                        let len = self.prefix.len();
+                        self.prefix.extend_from_slice(&[b'.', mark, b' ']);
+                        self.show_node_list(list);
+                        self.prefix.truncate(len);
+                    }
+                }
             }
             Node::Disc(d) => {
                 self.print_esc("discretionary");
@@ -787,6 +863,10 @@ impl<'a> BoxDisplay<'a> {
             MathStyle::Text => "textstyle",
             MathStyle::Script => "scriptstyle",
             MathStyle::ScriptScript => "scriptscriptstyle",
+            MathStyle::CrampedDisplay => "crampeddisplaystyle",
+            MathStyle::CrampedText => "crampedtextstyle",
+            MathStyle::CrampedScript => "crampedscriptstyle",
+            MathStyle::CrampedScriptScript => "crampedscriptscriptstyle",
         });
     }
 
@@ -794,7 +874,18 @@ impl<'a> BoxDisplay<'a> {
         self.print_esc("fam");
         self.print_int(fam as i64);
         self.out.push(b' ');
-        self.print_ascii(c as u8);
+        if self.e.engine_kind == crate::engine::EngineKind::LuaTeX {
+            // texmath.c print_fam_and_char: `print(math_character(p))`
+            // writes the code point as UTF-8 (printing.c `print`)
+            if i64::from(c) == i64::from(self.e.new_line_char()) {
+                self.out.push(b'\n');
+            } else if let Some(ch) = char::from_u32(c) {
+                let mut buf = [0u8; 4];
+                self.out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+            }
+        } else {
+            self.print_ascii(c as u8);
+        }
     }
 }
 
@@ -1053,7 +1144,11 @@ impl Engine {
                 }
                 Mode::Math | Mode::DisplayMath => {
                     if let Some(frac) = level.incompleat.as_ref() {
-                        d.print("this will begin denominator of:");
+                        d.print(if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                            "this will be denominator of:"
+                        } else {
+                            "this will begin denominator of:"
+                        });
                         d.show_items_box(std::slice::from_ref(frac));
                     }
                 }

@@ -179,10 +179,15 @@ pub(crate) enum FoundInputFile {
     Bytes(Vec<u8>),
 }
 
-/// Engine-owned package adapters and small bootstrap inputs.
+/// Engine-owned package adapters and small bootstrap inputs of the pdfTeX
+/// engine and its XeTeX-profile packages. LuaTeX runs the upstream
+/// packages (real fontspec/luaotfload, `graphics.cfg`, `tuenc.def`).
 /// They are immutable virtual files: keeping them in `InputStack`'s byte
 /// cache avoids fixed names and repeated writes in the process temp folder.
-fn compatibility_input(name: &str) -> Option<&'static [u8]> {
+fn compatibility_input(name: &str, kind: crate::engine::EngineKind) -> Option<&'static [u8]> {
+    if kind == crate::engine::EngineKind::LuaTeX {
+        return None;
+    }
     Some(match name {
         // pdftexconfig.tex of TeX Live (PNG recompression is capped by the
         // speed/size option, not by this value)
@@ -209,49 +214,6 @@ fn compatibility_input(name: &str) -> Option<&'static [u8]> {
 \input latex.ltx
 \endinput
 ",
-        "lualatex.ini" => br"\input luatexconfig.tex
-\begingroup
-  \catcode`\{=1
-  \catcode`\}=2
-  \global\everyjob{\directlua{require('lualatexquotejobname.lua')}}
-\endgroup
-\input latex.ltx
-\endinput
-",
-        "luatexconfig.tex" => br"\begingroup
-  \catcode`\{=1
-  \catcode`\}=2
-  \catcode`\#=6
-  \globaldefs=1
-  \pdfoutput=1
-  \pdfpageheight=297 true mm
-  \pdfpagewidth=210 true mm
-  \pdfminorversion=7
-  \pdfobjcompresslevel=2
-  \pdfhorigin=1 true in
-  \pdfvorigin=1 true in
-  \pdfcompresslevel=9
-  \globaldefs=0
-\endgroup
-\endinput
-",
-        "lualatexquotejobname.lua" => br#"local jobname_cache = {}
-if callback and callback.register then
-    callback.register('process_jobname', function(jobname)
-        local cached = jobname_cache[jobname]
-        if cached ~= nil then return cached end
-        local clean, n_quotes = jobname:gsub([["]], [[]])
-        if n_quotes % 2 ~= 0 then
-            texio.write_nl('! Unbalanced quotes in jobname: ' .. jobname)
-        end
-        if jobname:find(' ') then
-            clean = '"' .. clean .. '"'
-        end
-        jobname_cache[jobname] = clean
-        return clean
-    end)
-end
-"#,
         "graphics.cfg" => br"\ProvidesFile{graphics.cfg}[2026/01/01 v1.0 Ratex graphics configuration]
 \ExecuteOptions{pdftex}
 \AtEndOfPackage{
@@ -355,13 +317,18 @@ impl Engine {
             );
             return false;
         }
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            if let Some(result) = self.lua_input_file(name, included_from.clone()) {
+                return result;
+            }
+        }
         let path = if raw_name == name {
             self.resolve_input_path(name)
         } else {
             self.resolve_raw_input_path(raw_name)
                 .or_else(|| self.resolve_input_path(name))
         };
-        if let Some(bytes) = path.is_none().then(|| compatibility_input(name)).flatten() {
+        if let Some(bytes) = path.is_none().then(|| compatibility_input(name, self.engine_kind)).flatten() {
             let key = format!("<compat:{name}>");
             let data = self
                 .input
@@ -415,7 +382,9 @@ impl Engine {
                 let shown = std::os::unix::ffi::OsStrExt::as_bytes(p.as_os_str()).to_vec();
                 #[cfg(not(unix))]
                 let shown = p.to_string_lossy().into_owned().into_bytes();
-                self.print_file_open(&shown);
+                if !self.lua_report_start_file(crate::lua_cb_files::filetype::TEX, &shown) {
+                    self.print_file_open(&shown);
+                }
                 // tex.web start_input: the file sits above the current
                 // token list. `pushed` is that token list, so leftovers
                 // must park below the file even during \\output — else
@@ -464,7 +433,9 @@ impl Engine {
                     (key, data)
                 });
                 if let Some((key, data)) = found_data {
-                    self.print_file_open(key.as_bytes());
+                    if !self.lua_report_start_file(crate::lua_cb_files::filetype::TEX, key.as_bytes()) {
+                        self.print_file_open(key.as_bytes());
+                    }
                     if !self.pushed.is_empty() {
                         let mut rest = std::mem::take(&mut self.pushed);
                         rest.reverse();
@@ -485,6 +456,71 @@ impl Engine {
                 false
             }
         }
+    }
+
+    /// luatex `start_input` with a `find_read_file` and/or `open_read_file`
+    /// callback (texfileio.c `lua_a_open_in`): the first names the file, the
+    /// second supplies an object whose `reader` yields its lines. `None`
+    /// when neither callback is registered.
+    fn lua_input_file(&mut self, name: &str, included_from: Option<crate::input::SourceMark>) -> Option<bool> {
+        use crate::lua_callbacks::Cb;
+        let find = self.cb_defined(Cb::FindReadFile);
+        let open = self.cb_defined(Cb::OpenReadFile);
+        if !find && !open {
+            return None;
+        }
+        let fnam: Option<String> = if find {
+            self.lua_find_file(Cb::FindReadFile, Some(0), name.as_bytes())
+                .flatten()
+                .map(|b| String::from_utf8_lossy(&b).into_owned())
+        } else {
+            self.resolve_input_path(name).map(|p| p.to_string_lossy().into_owned())
+        };
+        let not_found = |this: &mut Self| {
+            this.fatal_error_at(
+                &format!("File `{}` not found", name),
+                included_from.as_ref().map(crate::input::SourceMark::to_context),
+            );
+            Some(false)
+        };
+        let Some(fnam) = fnam else {
+            return not_found(self);
+        };
+        enum Content {
+            Reader(u32),
+            Bytes(std::rc::Rc<[u8]>),
+        }
+        let content = if open {
+            match self.lua_reader_open(fnam.as_bytes()) {
+                Some(id) => Content::Reader(id),
+                None => return not_found(self),
+            }
+        } else {
+            let path = std::path::PathBuf::from(&fnam);
+            match self.input.read_file(&path) {
+                Ok(bytes) => {
+                    self.loaded_files.push(path.clone());
+                    self.record_loaded_bytes(&path, &bytes);
+                    Content::Bytes(self.from_external(bytes))
+                }
+                Err(_) => return not_found(self),
+            }
+        };
+        if !self.lua_report_start_file(crate::lua_cb_files::filetype::TEX, fnam.as_bytes()) {
+            self.print_file_open(fnam.as_bytes());
+        }
+        if !self.pushed.is_empty() {
+            let mut rest = std::mem::take(&mut self.pushed);
+            rest.reverse();
+            if !self.try_push_tokens_named(rest, "<after-input>") {
+                return Some(false);
+            }
+        }
+        match content {
+            Content::Reader(id) => self.input.push_reader_file(fnam, id, included_from),
+            Content::Bytes(data) => self.input.push_file_from(fnam, data, included_from),
+        }
+        Some(true)
     }
 
     /// A file whose name holds bytes that are not valid UTF-8 (TeX reads
@@ -604,7 +640,7 @@ impl Engine {
         }
         // Project/managed files above retain precedence. Engine adapters win
         // over installed legacy shims and engine-specific upstream packages.
-        if compatibility_input(name).is_some() {
+        if compatibility_input(name, self.engine_kind).is_some() {
             return None;
         }
         let kpse = &self.font_loader.kpse;
@@ -658,7 +694,7 @@ impl Engine {
         if let Some(path) = self.resolve_input_path_in(&name, false) {
             return Some(FoundInputFile::Path(path));
         }
-        if let Some(data) = compatibility_input(&name) {
+        if let Some(data) = compatibility_input(&name, self.engine_kind) {
             return Some(FoundInputFile::Bytes(data.to_vec()));
         }
         tex_kpse::get_embedded_tex_tree_input(&name).map(|(_, data)| FoundInputFile::Bytes(data))
@@ -874,6 +910,24 @@ impl Engine {
             self.fatal_error_at(&format!("I can't write on file `{full}`"), source.cloned());
             return;
         }
+        // luatex lua_a_open_out: a `find_write_file` callback names the file
+        // (and replaces the transcript note)
+        let lua_named = if self.engine_kind == crate::engine::EngineKind::LuaTeX && self.cb_defined(crate::lua_callbacks::Cb::FindWriteFile) {
+            match self
+                .lua_find_file(crate::lua_callbacks::Cb::FindWriteFile, Some(i32::from(stream) + 1), full.as_bytes())
+                .flatten()
+                .filter(|n| !n.is_empty())
+            {
+                Some(n) => Some(String::from_utf8_lossy(&n).into_owned()),
+                None => {
+                    self.fatal_error_at(&format!("I can't write on file `{full}`"), source.cloned());
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        let full: &str = lua_named.as_deref().unwrap_or(full);
         let idx = (stream as usize).min(self.write_streams.len() - 1);
         if self.write_streams[idx].take().is_some() {
             // canonical: an open on a busy stream closes the old file first
@@ -904,7 +958,9 @@ impl Engine {
                 self.write_streams[idx] = Some(f);
                 self.write_stream_paths[idx] = Some(full.to_string());
                 self.written_files.push(path);
-                self.print_openout_note(stream, full);
+                if lua_named.is_none() {
+                    self.print_openout_note(stream, full);
+                }
             }
             // tex.web §1374: a stream that cannot be opened goes to
             // prompt_file_name, which is fatal without a terminal.
@@ -1161,6 +1217,12 @@ impl Engine {
                 if self.write_streams[idx].is_some() {
                     // print(c) for a \write file: the new-line character
                     // ends the line, unprintable bytes use `^^` notation
+                    let replaced = if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                        self.lua_process_output_line(raw)
+                    } else {
+                        None
+                    };
+                    let raw: &[u8] = replaced.as_deref().unwrap_or(raw);
                     let nl = self.new_line_char();
                     let mut line = Vec::with_capacity(raw.len() + 1);
                     for &byte in raw {
@@ -1265,11 +1327,17 @@ impl Engine {
             self.read_files.push(None);
             self.read_eof.push(true);
         }
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            self.lua_close_read_reader(n as usize);
+            if self.lua_openin(n as usize, &name) {
+                return;
+            }
+        }
         // kpathsea/web2c lookup: output directory first for relative
         // names, then the kpse search path (covers literal paths too)
 
         let path = self.resolve_input_path(&name);
-        if let Some(data) = path.is_none().then(|| compatibility_input(&name)).flatten() {
+        if let Some(data) = path.is_none().then(|| compatibility_input(&name, self.engine_kind)).flatten() {
             let is_empty = data.is_empty();
             self.read_files[n as usize] = Some(Box::new(std::io::Cursor::new(data)));
             self.read_eof[n as usize] = is_empty;
@@ -1311,6 +1379,9 @@ impl Engine {
         while self.read_files.len() <= n {
             self.read_files.push(None);
             self.read_eof.push(true);
+        }
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            self.lua_close_read_reader(n);
         }
         self.read_files[n] = None;
         self.read_eof[n] = true;
@@ -1380,7 +1451,17 @@ impl Engine {
         let mut balance = 0i32;
         loop {
             let mut line = Vec::new();
-            let read = if (0..16).contains(&stream) {
+            let reader = self.read_readers.get(stream as usize).copied().unwrap_or(0);
+            let read = if reader != 0 && (0..16).contains(&stream) && self.read_files[stream as usize].is_some() {
+                // an `open_read_file` object: `reader` gives the next line
+                Some(Ok(match self.lua_reader_line(reader) {
+                    Some(l) => {
+                        line = l;
+                        (true, false)
+                    }
+                    None => (false, false),
+                }))
+            } else if (0..16).contains(&stream) {
                 self.read_files
                     .get_mut(stream as usize)
                     .and_then(Option::as_mut)
@@ -1436,6 +1517,9 @@ impl Engine {
             if eof {
                 self.read_files[stream as usize] = None;
                 self.read_eof[stream as usize] = true;
+                if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                    self.lua_close_read_reader(stream as usize);
+                }
                 if balance != 0 {
                     self.error_at(
                         "File ended within \\read",
@@ -1448,6 +1532,10 @@ impl Engine {
                 line.pop();
             }
             let endline = self.eqtb.int_params[crate::prim::IntParam::EndLineChar.idx() as usize];
+            if line_mode && !eof && self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                // luatex lua_input_ln: \readline lines pass the callback too
+                self.lua_process_input_line(&mut line);
+            }
             if line_mode {
                 if (0..256).contains(&endline) {
                     if line.len() >= crate::input::MAX_TOKEN_LIST_TOKENS {
@@ -1794,7 +1882,9 @@ impl Engine {
         }
         self.scan_keyword(b"by");
         let v = match loc {
-            QuantityLoc::Int(_) | QuantityLoc::Count(_) => Value::Int(self.scan_int()),
+            QuantityLoc::Int(_) | QuantityLoc::Count(_) | QuantityLoc::Attribute(_) => {
+                Value::Int(self.scan_int())
+            }
             QuantityLoc::Dim(_) | QuantityLoc::Dimen(_) => Value::Dim(self.scan_dimen(false, true)),
             QuantityLoc::Glue(p) if p.is_mu() => Value::Glue(self.scan_glue(true)),
             QuantityLoc::Glue(_) | QuantityLoc::Skip(_) => Value::Glue(self.scan_glue(false)),
@@ -1818,6 +1908,12 @@ impl Engine {
                 let cur = self.eqtb.count[i as usize];
                 if let Some(value) = self.checked_advance(cur, v.as_int(), false, origin.as_ref()) {
                     self.eqtb.assign_count(i, value, global);
+                }
+            }
+            QuantityLoc::Attribute(n) => {
+                let cur = self.eqtb.attribute(n);
+                if let Some(value) = self.checked_advance(cur, v.as_int(), false, origin.as_ref()) {
+                    self.eqtb.assign_attribute(n, value, global);
                 }
             }
             QuantityLoc::Dim(p) => {
@@ -1885,6 +1981,12 @@ impl Engine {
                 let cur = self.eqtb.count[i as usize];
                 if let Some(value) = self.checked_arith(cur, n, op, false, origin.as_ref()) {
                     self.eqtb.assign_count(i, value, global);
+                }
+            }
+            QuantityLoc::Attribute(i) => {
+                let cur = self.eqtb.attribute(i);
+                if let Some(value) = self.checked_arith(cur, n, op, false, origin.as_ref()) {
+                    self.eqtb.assign_attribute(i, value, global);
                 }
             }
             QuantityLoc::Dim(p) => {
@@ -2057,7 +2159,7 @@ impl Engine {
             return;
         }
         let prim = match self.eqtb.resolve(t.cs_id()) {
-            Some(Equiv::Prim(p)) => Some(*p),
+            Some(Equiv::Prim(p)) => Some(p.box_spec()),
             _ => None,
         };
         if let Some(prim) = prim {
@@ -2199,6 +2301,7 @@ impl Engine {
             },
             Some(Prim::GlueP(p)) => QuantityLoc::Glue(p),
             Some(Prim::Count) => QuantityLoc::Count(self.scan_reg_num()),
+            Some(Prim::Attribute) => QuantityLoc::Attribute(self.scan_attribute_num()),
             Some(Prim::Dimen) => QuantityLoc::Dimen(self.scan_reg_num()),
             Some(Prim::Skip) => QuantityLoc::Skip(self.scan_reg_num()),
             Some(Prim::MuSkip) => QuantityLoc::MuSkip(self.scan_reg_num()),
@@ -2206,6 +2309,7 @@ impl Engine {
             None if t.is_cs() => {
                 match self.eqtb.resolve(t.cs_id()) {
                     Some(Equiv::CountReg(i)) => QuantityLoc::Count(*i),
+                    Some(Equiv::AttributeReg(n)) => QuantityLoc::Attribute(u32::from(*n)),
                     Some(Equiv::DimenReg(i)) => QuantityLoc::Dimen(*i),
                     Some(Equiv::SkipReg(i)) => QuantityLoc::Skip(*i),
                     Some(Equiv::MuSkipReg(i)) => QuantityLoc::MuSkip(*i),
@@ -2291,6 +2395,7 @@ impl Engine {
             // tex.web §4416: an explicit kern is shown with a space after
             // the escape (`\kern 1.0`), an implicit one without (`\kern1.0`)
             Node::ExplicitKern(k) => out.push_str(&format!("kern {}\n", self.scaled_to_string(*k))),
+            Node::ItalicKern(k) => out.push_str(&format!("kern {} (italic)\n", self.scaled_to_string(*k))),
             Node::AccentKern(k) => out.push_str(&format!(
                 "kern {} (for accent)\n",
                 self.scaled_to_string(*k)
@@ -2330,6 +2435,8 @@ impl Engine {
 
 pub enum QuantityLoc {
     Int(crate::prim::IntParam),
+    /// LuaTeX `\attribute n`
+    Attribute(u32),
     Dim(crate::prim::DimParam),
     Glue(crate::prim::GlueParam),
     Count(u16),

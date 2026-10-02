@@ -1,0 +1,106 @@
+new	0	nil	hlist	prev=nil next=nil id=0 subtype=0 attr=nil width=0 depth=0 height=0 dir=nil shift=0 glue_order=0 glue_sign=0 glue_set=0.0 head=nil
+new	1	nil	vlist	prev=nil next=nil id=1 subtype=0 attr=nil width=0 depth=0 height=0 dir=nil shift=0 glue_order=0 glue_sign=0 glue_set=0.0 head=nil
+new	2	nil	rule	prev=nil next=nil id=2 subtype=0 attr=nil width=-1073741824 depth=-1073741824 height=-1073741824 dir=nil index=0 left=0 right=0
+new	3	nil	ins	prev=nil next=nil id=3 subtype=0 attr=nil cost=0 depth=0 height=0 spec=nil head=nil
+new	5	nil	adjust	prev=nil next=nil id=5 subtype=0 attr=nil head=nil
+new	6	nil	boundary	prev=nil next=nil id=6 subtype=0 attr=nil value=0
+new	7	nil	disc	prev=nil next=nil id=7 subtype=0 attr=nil pre=nil post=nil replace=nil penalty=0
+new	9	nil	local_par	prev=nil next=nil id=9 subtype=nil attr=nil pen_inter=0 pen_broken=0 dir=TLT box_left=nil box_left_width=0 box_right=nil box_right_width=0
+new	10	nil	dir	prev=nil next=nil id=10 subtype=0 attr=nil dir=+TLT level=0
+new	11	nil	math	prev=nil next=nil id=11 subtype=0 attr=nil surround=0 width=0 stretch=0 shrink=0 stretch_order=0 shrink_order=0
+new	12	nil	glue	prev=nil next=nil id=12 subtype=0 attr=nil leader=nil width=0 stretch=0 shrink=0 stretch_order=0 shrink_order=0
+new	13	nil	kern	prev=nil next=nil id=13 subtype=0 attr=nil kern=0 expansion_factor=0
+new	14	nil	penalty	prev=nil next=nil id=14 subtype=0 attr=nil penalty=0
+new	15	nil	unset	prev=nil next=nil id=15 subtype=0 attr=nil width=-1073741824 depth=0 height=0 dir=TLT shrink=0 glue_order=0 glue_sign=0 stretch=0 span=nil head=nil
+new	16	nil	style	prev=nil next=nil id=16 subtype=0 attr=nil style=display
+new	17	nil	choice	prev=nil next=nil id=17 subtype=0 attr=nil display=nil text=nil script=nil scriptscript=nil
+new	18	nil	noad	prev=nil next=nil id=18 subtype=0 attr=nil nucleus=nil sub=nil sup=nil
+new	19	nil	radical	prev=nil next=nil id=19 subtype=0 attr=nil nucleus=nil sub=nil sup=nil left=nil degree=nil width=0 options=0
+new	20	nil	fraction	prev=nil next=nil id=20 subtype=0 attr=nil width=0 num=nil denom=nil left=nil right=nil middle=nil fam=-1 options=0
+new	21	nil	accent	prev=nil next=nil id=21 subtype=0 attr=nil nucleus=nil sub=nil sup=nil accent=nil bot_accent=nil top_accent=nil overlay_accent=nil fraction=0
+new	22	nil	fence	prev=nil next=nil id=22 subtype=0 attr=nil delim=nil italic=0 height=0 depth=0 options=0 class=0
+new	23	nil	math_char	prev=nil next=nil id=23 subtype=0 attr=nil fam=0 char=0
+new	24	nil	sub_box	prev=nil next=nil id=24 subtype=0 attr=nil head=nil
+new	25	nil	sub_mlist	prev=nil next=nil id=25 subtype=0 attr=nil head=nil
+new	26	nil	math_text_char	prev=nil next=nil id=26 subtype=0 attr=nil fam=0 char=0
+new	27	nil	delim	prev=nil next=nil id=27 subtype=0 attr=nil small_fam=0 small_char=0 large_fam=0 large_char=0
+new	28	nil	margin_kern	prev=nil next=nil id=28 subtype=0 attr=nil width=0 glyph=nil
+new	29	nil	glyph	prev=nil next=nil id=29 subtype=0 attr=nil char=0 font=0 lang=0 left=1 right=1 uchyph=0 components=nil xoffset=0 yoffset=0 width=0 height=0 depth=0 expansion_factor=0 data=0
+new	30	nil	align_record	prev=nil next=nil id=30 subtype=nil
+new	31	nil	pseudo_file	prev=nil next=nil id=31 subtype=nil
+new	32	nil	pseudo_line	prev=nil next=nil id=32 subtype=nil
+new	33	nil	page_insert	prev=nil next=nil id=33 subtype=0 height=nil last_ins_ptr=nil best_ins_ptr=nil width=nil stretch=nil shrink=nil stretch_order=nil shrink_order=nil
+new	34	nil	split_insert	prev=nil next=nil id=34 subtype=0 height=nil last_ins_ptr=nil best_ins_ptr=nil broken_ptr=nil broken_ins=nil
+new	35	nil	expr_stack	prev=nil next=nil id=35 subtype=nil
+new	36	nil	nested_list	prev=nil next=nil id=36 subtype=nil
+new	37	nil	span	prev=nil next=nil id=37 subtype=nil
+new	41	nil	temp	prev=nil next=nil id=41 subtype=nil
+new	42	nil	align_stack	prev=nil next=nil id=42 subtype=nil
+new	43	nil	movement_stack	prev=nil next=nil id=43 subtype=nil
+new	44	nil	if_stack	prev=nil next=nil id=44 subtype=nil
+new	45	nil	unhyphenated	prev=nil next=nil id=45 subtype=nil
+new	46	nil	hyphenated	prev=nil next=nil id=46 subtype=nil
+new	47	nil	delta	prev=nil next=nil id=47 subtype=nil
+new	48	nil	passive	prev=nil next=nil id=48 subtype=nil
+new	49	nil	shape	prev=nil next=nil id=49 subtype=nil
+new	8	0	whatsit	prev=nil next=nil id=8 subtype=0 attr=nil stream=0 name= area= ext=
+new	8	1	whatsit	prev=nil next=nil id=8 subtype=1 attr=nil stream=0 data=
+new	8	2	whatsit	prev=nil next=nil id=8 subtype=2 attr=nil stream=0
+new	8	3	whatsit	prev=nil next=nil id=8 subtype=3 attr=nil data=
+new	8	4	whatsit	prev=nil next=nil id=8 subtype=4 attr=nil data=
+new	8	7	whatsit	prev=nil next=nil id=8 subtype=7 attr=nil
+new	8	8	whatsit	prev=nil next=nil id=8 subtype=8 attr=nil reg=nil data= name= string=
+new	8	9	whatsit	prev=nil next=nil id=8 subtype=9 attr=nil user_id=0 type=0 value=0
+new	8	16	whatsit	prev=nil next=nil id=8 subtype=16 attr=nil mode=0 data=data
+new	8	17	whatsit	prev=nil next=nil id=8 subtype=17 attr=nil mode=0 data=data
+new	8	18	whatsit	prev=nil next=nil id=8 subtype=18 attr=nil objnum=0
+new	8	19	whatsit	prev=nil next=nil id=8 subtype=19 attr=nil width=0 depth=0 height=0 objnum=0 data=
+new	8	20	whatsit	prev=nil next=nil id=8 subtype=20 attr=nil width=0 depth=0 height=0 objnum=0 link_attr= action=nil
+new	8	21	whatsit	prev=nil next=nil id=8 subtype=21 attr=nil
+new	8	22	whatsit	prev=nil next=nil id=8 subtype=22 attr=nil width=0 depth=0 height=0 named_id=0 dest_id=0 dest_type=0 xyz_zoom=0 objnum=0
+new	8	23	whatsit	prev=nil next=nil id=8 subtype=23 action_type=0 named_id=0 action_id=0 file= new_window=0 data= struct_id=nil
+new	8	24	whatsit	prev=nil next=nil id=8 subtype=24 attr=nil width=0 depth=0 height=0 named_id=0 thread_id=0 thread_attr=
+new	8	25	whatsit	prev=nil next=nil id=8 subtype=25 attr=nil width=0 depth=0 height=0 named_id=0 thread_id=0 thread_attr=
+new	8	26	whatsit	prev=nil next=nil id=8 subtype=26 attr=nil
+new	8	27	whatsit	prev=nil next=nil id=8 subtype=27
+new	8	28	whatsit	prev=nil next=nil id=8 subtype=28
+new	8	29	whatsit	prev=nil next=nil id=8 subtype=29 attr=nil stack=0 cmd=nil data=
+new	8	30	whatsit	prev=nil next=nil id=8 subtype=30 attr=nil data=
+new	8	31	whatsit	prev=nil next=nil id=8 subtype=31 attr=nil
+new	8	32	whatsit	prev=nil next=nil id=8 subtype=32 attr=nil
+new	8	33	whatsit	prev=nil next=nil id=8 subtype=33 attr=nil value=nil
+new	12	0	glue	prev=nil next=nil id=12 subtype=0 attr=nil leader=nil width=0 stretch=0 shrink=0 stretch_order=0 shrink_order=0
+new	29	0	glyph	prev=nil next=nil id=29 subtype=0 attr=nil char=0 font=0 lang=0 left=1 right=1 uchyph=0 components=nil xoffset=0 yoffset=0 width=0 height=0 depth=0 expansion_factor=0 data=0
+new	13	0	kern	prev=nil next=nil id=13 subtype=0 attr=nil kern=0 expansion_factor=0
+new	14	0	penalty	prev=nil next=nil id=14 subtype=0 attr=nil penalty=0
+new	0	0	hlist	prev=nil next=nil id=0 subtype=0 attr=nil width=0 depth=0 height=0 dir=nil shift=0 glue_order=0 glue_sign=0 glue_set=0.0 head=nil
+new	12	1	glue	prev=nil next=nil id=12 subtype=1 attr=nil leader=nil width=0 stretch=0 shrink=0 stretch_order=0 shrink_order=0
+new	29	1	glyph	prev=nil next=nil id=29 subtype=1 attr=nil char=0 font=0 lang=0 left=1 right=1 uchyph=0 components=nil xoffset=0 yoffset=0 width=0 height=0 depth=0 expansion_factor=0 data=0
+new	13	1	kern	prev=nil next=nil id=13 subtype=1 attr=nil kern=0 expansion_factor=0
+new	14	1	penalty	prev=nil next=nil id=14 subtype=1 attr=nil penalty=0
+new	0	1	hlist	prev=nil next=nil id=0 subtype=1 attr=nil width=0 depth=0 height=0 dir=nil shift=0 glue_order=0 glue_sign=0 glue_set=0.0 head=nil
+new	12	2	glue	prev=nil next=nil id=12 subtype=2 attr=nil leader=nil width=0 stretch=0 shrink=0 stretch_order=0 shrink_order=0
+new	29	2	glyph	prev=nil next=nil id=29 subtype=2 attr=nil char=0 font=0 lang=0 left=1 right=1 uchyph=0 components=nil xoffset=0 yoffset=0 width=0 height=0 depth=0 expansion_factor=0 data=0
+new	13	2	kern	prev=nil next=nil id=13 subtype=2 attr=nil kern=0 expansion_factor=0
+new	14	2	penalty	prev=nil next=nil id=14 subtype=2 attr=nil penalty=0
+new	0	2	hlist	prev=nil next=nil id=0 subtype=2 attr=nil width=0 depth=0 height=0 dir=nil shift=0 glue_order=0 glue_sign=0 glue_set=0.0 head=nil
+new	12	3	glue	prev=nil next=nil id=12 subtype=3 attr=nil leader=nil width=0 stretch=0 shrink=0 stretch_order=0 shrink_order=0
+new	29	3	glyph	prev=nil next=nil id=29 subtype=3 attr=nil char=0 font=0 lang=0 left=1 right=1 uchyph=0 components=nil xoffset=0 yoffset=0 width=0 height=0 depth=0 expansion_factor=0 data=0
+new	13	3	kern	prev=nil next=nil id=13 subtype=3 attr=nil kern=0 expansion_factor=0
+new	14	3	penalty	prev=nil next=nil id=14 subtype=3 attr=nil penalty=0
+new	0	3	hlist	prev=nil next=nil id=0 subtype=3 attr=nil width=0 depth=0 height=0 dir=nil shift=0 glue_order=0 glue_sign=0 glue_set=0.0 head=nil
+new	12	100	glue	prev=nil next=nil id=12 subtype=100 attr=nil leader=nil width=0 stretch=0 shrink=0 stretch_order=0 shrink_order=0
+new	29	100	glyph	prev=nil next=nil id=29 subtype=100 attr=nil char=0 font=0 lang=0 left=1 right=1 uchyph=0 components=nil xoffset=0 yoffset=0 width=0 height=0 depth=0 expansion_factor=0 data=0
+new	13	100	kern	prev=nil next=nil id=13 subtype=100 attr=nil kern=0 expansion_factor=0
+new	14	100	penalty	prev=nil next=nil id=14 subtype=100 attr=nil penalty=0
+new	0	100	hlist	prev=nil next=nil id=0 subtype=100 attr=nil width=0 depth=0 height=0 dir=nil shift=0 glue_order=0 glue_sign=0 glue_set=0.0 head=nil
+new	12	101	glue	prev=nil next=nil id=12 subtype=101 attr=nil leader=nil width=0 stretch=0 shrink=0 stretch_order=0 shrink_order=0
+new	29	101	glyph	prev=nil next=nil id=29 subtype=101 attr=nil char=0 font=0 lang=0 left=1 right=1 uchyph=0 components=nil xoffset=0 yoffset=0 width=0 height=0 depth=0 expansion_factor=0 data=0
+new	13	101	kern	prev=nil next=nil id=13 subtype=101 attr=nil kern=0 expansion_factor=0
+new	14	101	penalty	prev=nil next=nil id=14 subtype=101 attr=nil penalty=0
+new	0	101	hlist	prev=nil next=nil id=0 subtype=101 attr=nil width=0 depth=0 height=0 dir=nil shift=0 glue_order=0 glue_sign=0 glue_set=0.0 head=nil
+false	invalid node id for creating new node
+false	invalid node id for creating new node
+false	creating a whatsit requires the subtype number as a second argument
+2
+false	invalid node id for creating new node

@@ -213,6 +213,16 @@ impl Engine {
             Equiv::MuSkipReg(i) => self.print_register(out, escape, b"muskip", *i),
             Equiv::ToksReg(i) => self.print_register(out, escape, b"toks", *i),
             Equiv::BoxReg(i) => self.print_register(out, escape, b"box", *i),
+            Equiv::AttributeReg(i) => self.print_register(out, escape, b"attribute", *i),
+            Equiv::UMathCharDef(v) => {
+                let (class, family, slot) = crate::uprims::decode_umath_num(*v);
+                Self::print_esc_bytes(out, escape, b"Umathchar");
+                out.extend_from_slice(format!("\"{class:X}\"{family:02X}\"{slot:06X}").as_bytes());
+            }
+            Equiv::LuaCall { slot, protected } => {
+                out.extend_from_slice(if *protected { b"luacall " } else { b"expandable luacall " });
+                out.extend_from_slice(slot.to_string().as_bytes());
+            }
             Equiv::CharTok(v) => {
                 out.extend_from_slice(self.meaning_of(Token(*v)).as_bytes());
             }

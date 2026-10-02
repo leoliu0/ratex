@@ -19,6 +19,9 @@ fn main() {
                          static PACKAGE_NAMES: &[u8] = &[];\n\
                          static PACKAGE_INDEX: PackedTable<6> = PackedTable(&[]);\n\
                          static PACKAGE_FOLDED: PackedTable<1> = PackedTable(&[]);\n\
+                         static PACKAGE_DIR_NAMES: &[u8] = &[];\n\
+                         static PACKAGE_DIRS: PackedTable<2> = PackedTable(&[]);\n\
+                         static PACKAGE_MEMBER_DIRS: PackedTable<1> = PackedTable(&[]);\n\
                          static EMBEDDED_FONT_FACES: &[EmbeddedFontFace] = &[];\n";
         std::fs::write(out.join("packages_index.rs"), generated).unwrap();
         return;
@@ -89,6 +92,8 @@ fn main() {
         })
         .collect();
     let mut blob = BlobWriter::create(&out);
+    // Directory (`/`-separated, relative to the TDS root) of each member.
+    let mut member_dirs: BTreeMap<String, String> = BTreeMap::new();
     // name -> (chunk, offset, length, below the TDS `tex/` subtree)
     let mut index: BTreeMap<String, (usize, usize, usize, bool)> = BTreeMap::new();
     let mut chunks: Vec<(usize, usize, usize)> = Vec::new();
@@ -107,6 +112,20 @@ fn main() {
         if index.contains_key(name) {
             continue;
         }
+        let directory = path
+            .parent()
+            .map(|parent| {
+                parent
+                    .components()
+                    .filter_map(|part| match part {
+                        std::path::Component::Normal(part) => part.to_str(),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("/")
+            })
+            .unwrap_or_default();
+        member_dirs.insert(name.to_owned(), directory);
         let mut data = Vec::new();
         entry.read_to_end(&mut data).unwrap();
         if !chunk.is_empty() && chunk.len().saturating_add(data.len()) > CHUNK_TARGET {
@@ -163,6 +182,32 @@ fn main() {
         push_u32s(&mut chunk_table, [offset, compressed, decoded]);
     }
 
+    // Every directory of the archive (with all ancestors), sorted, and the
+    // directory of each member in index order: the virtual TDS tree that
+    // `/<embedded>/…` paths expose.
+    let mut directories: BTreeMap<String, usize> = BTreeMap::new();
+    directories.insert(String::new(), 0);
+    for directory in member_dirs.values() {
+        let mut prefix = String::new();
+        for part in directory.split('/').filter(|part| !part.is_empty()) {
+            if !prefix.is_empty() {
+                prefix.push('/');
+            }
+            prefix.push_str(part);
+            directories.entry(prefix.clone()).or_insert(0);
+        }
+    }
+    for (position, id) in directories.values_mut().enumerate() {
+        *id = position;
+    }
+    let mut dir_names = Vec::new();
+    let mut dir_table = Vec::with_capacity(directories.len() * 8);
+    for name in directories.keys() {
+        push_u32s(&mut dir_table, [dir_names.len(), name.len()]);
+        dir_names.extend_from_slice(name.as_bytes());
+    }
+    let mut member_dir_table = Vec::with_capacity(index.len() * 4);
+
     // A Rust `&str` per record would cost a pointer-sized field and a dynamic
     // relocation in position-independent executables. Keep exact names in one
     // byte blob and refer to them with u32 offset/length pairs; the folded
@@ -175,6 +220,7 @@ fn main() {
             &mut index_table,
             [names.len(), name.len(), chunk, offset, length, usize::from(in_tex_tree)],
         );
+        push_u32s(&mut member_dir_table, [directories[&member_dirs[&name]]]);
         names.extend_from_slice(name.as_bytes());
         folded.entry(name.to_ascii_lowercase()).or_insert(position);
     }
@@ -188,6 +234,9 @@ fn main() {
     std::fs::write(out.join("package_names.bin"), &names).unwrap();
     std::fs::write(out.join("package_index.bin"), &index_table).unwrap();
     std::fs::write(out.join("package_folded.bin"), &folded_table).unwrap();
+    std::fs::write(out.join("package_dir_names.bin"), &dir_names).unwrap();
+    std::fs::write(out.join("package_dirs.bin"), &dir_table).unwrap();
+    std::fs::write(out.join("package_member_dirs.bin"), &member_dir_table).unwrap();
 
     let mut generated =
         std::io::BufWriter::new(std::fs::File::create(out.join("packages_index.rs")).unwrap());
@@ -197,6 +246,9 @@ fn main() {
         ("PACKAGE_NAMES", "package_names.bin", None),
         ("PACKAGE_INDEX", "package_index.bin", Some(6)),
         ("PACKAGE_FOLDED", "package_folded.bin", Some(1)),
+        ("PACKAGE_DIR_NAMES", "package_dir_names.bin", None),
+        ("PACKAGE_DIRS", "package_dirs.bin", Some(2)),
+        ("PACKAGE_MEMBER_DIRS", "package_member_dirs.bin", Some(1)),
     ] {
         let bytes = format!("include_bytes!(concat!(env!(\"OUT_DIR\"), \"/{file}\"))");
         match fields {

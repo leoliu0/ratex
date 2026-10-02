@@ -15,7 +15,9 @@
 //! `DelimBox{size:2}` is a plain delimiter atom (Ord).
 
 use crate::boxes::{
-    hlist_dims, hpack, vpack, Glue, MathDiagnosticOrigin, MathStyle, Node, NodeList, HBOX, VBOX,
+    hlist_dims, hpack, noad_option, vpack, AccentSpec, Delim, FenceOpts, Glue, MathDiagnosticOrigin,
+    MathStyle,
+    Node, NodeList, HBOX, VBOX,
 };
 use crate::engine::{Engine, Mode};
 use crate::eqtb::Equiv;
@@ -36,6 +38,24 @@ pub fn gstyle_of(m: MathStyle) -> GStyle {
         MathStyle::Text => 2,
         MathStyle::Script => 4,
         MathStyle::ScriptScript => 6,
+        MathStyle::CrampedDisplay => 1,
+        MathStyle::CrampedText => 3,
+        MathStyle::CrampedScript => 5,
+        MathStyle::CrampedScriptScript => 7,
+    }
+}
+
+/// Inverse of [`gstyle_of`].
+pub(crate) fn math_style_of(g: GStyle) -> MathStyle {
+    match g {
+        0 => MathStyle::Display,
+        1 => MathStyle::CrampedDisplay,
+        2 => MathStyle::Text,
+        3 => MathStyle::CrampedText,
+        4 => MathStyle::Script,
+        5 => MathStyle::CrampedScript,
+        6 => MathStyle::ScriptScript,
+        _ => MathStyle::CrampedScriptScript,
     }
 }
 /// tex.web `half(x)`: round x/2, .5 up (odd positives toward +inf, odd
@@ -77,7 +97,7 @@ fn den_style(g: GStyle) -> GStyle {
 
 /// superscript style
 #[inline]
-fn sup_style(g: GStyle) -> GStyle {
+pub(crate) fn sup_style(g: GStyle) -> GStyle {
     match g >> 1 {
         0 | 1 => 4 + (g & 1),
         _ => 6 + (g & 1),
@@ -86,7 +106,7 @@ fn sup_style(g: GStyle) -> GStyle {
 
 /// subscript style: always cramped at the next level
 #[inline]
-fn sub_style(g: GStyle) -> GStyle {
+pub(crate) fn sub_style(g: GStyle) -> GStyle {
     match g >> 1 {
         0 | 1 => 5,
         _ => 7,
@@ -121,17 +141,46 @@ pub const CL_INNER: u8 = 7;
 /// an Ord whose nucleus is a sub-mlist. Keeping the singleton as a character
 /// is essential because `make_scripts` then uses its italic correction and
 /// skips the box-nucleus drop calculations.
-pub(crate) fn finish_math_group(mut inner: NodeList) -> Node {
-    if inner.len() == 1
-        && matches!(
-            inner.first(),
-            Some(Node::MathChar {
-                class: CL_ORD,
-                ..
-            })
-        )
-    {
-        return inner.pop().unwrap();
+pub(crate) fn finish_math_group(mut inner: NodeList, flatten: i32) -> Node {
+    // luatex `close_math_group`: one scriptless simple noad is flattened
+    // into its field when `\mathflattenmode` has the bit of its class
+    // (ord 1, bin 2, rel 4, punct 8, inner 16); other engines use 1
+    let bit = |class: u8| -> bool {
+        match class {
+            CL_ORD => flatten & 1 != 0,
+            CL_BIN => flatten & 2 != 0,
+            CL_REL => flatten & 4 != 0,
+            CL_PUNCT => flatten & 8 != 0,
+            CL_INNER => flatten & 16 != 0,
+            _ => false,
+        }
+    };
+    if inner.len() == 1 {
+        match inner.first() {
+            Some(Node::MathChar { fam, class, .. }) if *fam != 255 && bit(*class) => {
+                let mut n = inner.pop().unwrap();
+                if let Node::MathChar { class, .. } = &mut n {
+                    *class = CL_ORD;
+                }
+                return n;
+            }
+            Some(Node::Scripts { nucleus, sup: None, sub: None })
+                if matches!(
+                    nucleus.first(),
+                    Some(Node::MathChar { fam: 255, class, .. }) if *class != CL_ORD && bit(*class)
+                ) =>
+            {
+                let mut n = inner.pop().unwrap();
+                if let Node::Scripts { nucleus, .. } = &mut n {
+                    if let Some(Node::MathChar { class, c, .. }) = nucleus.first_mut() {
+                        *class = CL_ORD;
+                        *c = 0;
+                    }
+                }
+                return n;
+            }
+            _ => {}
+        }
     }
     let mut nucleus = Vec::with_capacity(inner.len() + 1);
     nucleus.push(Node::MathChar {
@@ -174,53 +223,36 @@ fn is_bin_forbidden_right(c: u8) -> bool {
     matches!(c, CL_REL | CL_CLOSE | CL_PUNCT)
 }
 
-// ---------- Frac / Radical thickness encoding ----------
+// ---------- Frac thickness encoding ----------
 //
 // The `Frac` node keeps tex.web semantics: thickness = `DEFAULT_CODE` means
 // the default rule, 0 = atop (no rule), anything else is explicit (an
-// explicit negative `\above` thickness is legal). `Radical` has no field for
-// the 27-bit `\radical` delimiter code, so `do_radical` packs it into
-// `thickness` with the sentinel below (both are created and consumed only
-// inside this file).
-// thickness <= -1  =>  delimiter code = -1 - thickness (0 => no surd),
-//                      rule thickness = default.
-// thickness > 0    =>  explicit rule thickness, no delimiter code stored.
+// explicit negative `\above` thickness is legal).
 
 /// tex.web `default_code`: "denotes default_rule_thickness"
 const DEFAULT_CODE: i32 = 0x4000_0000;
 
-#[inline]
-fn pack_radical_delim(code: i32) -> i32 {
-    -1 - (code & 0x0FFF_FFFF)
+/// texmath.c `math_fraction` codes: `\above` (0), `\over` (1), `\atop` (2)
+/// and the LuaTeX-only `\Uskewed` (3); `withdelims` adds 4.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FracKind {
+    Above,
+    Over,
+    Atop,
+    Skewed,
 }
 
+/// The delimiter of a `DelimBox` marker.
 #[inline]
-fn unpack_radical(t: i32) -> (i32, i32) {
-    if t <= -1 {
-        (-1 - t, -1)
-    } else {
-        (0, t)
+fn delim_of(small: (u8, u32), large: (u8, u32)) -> Delim {
+    Delim {
+        small_fam: small.0,
+        small_char: small.1,
+        large_fam: large.0,
+        large_char: large.1,
     }
 }
 
-#[inline]
-fn delim_code_parts(code: i32) -> (u8, u8, u8, u8) {
-    // 27-bit tex.web delimiter: class(3) @24, small fam(4) @20, small
-    // char(8) @12, large fam(4) @8, large char(8) @0 — the small fam mask
-    // must be 4 bits; 0xFF leaks the class into the family (e.g. `\{` =
-    // "426630A decoded to fam 0x42=66 → glyph 'f' instead of fam 2's brace)
-    (
-        ((code >> 20) & 0xF) as u8,
-        ((code >> 12) & 0xFF) as u8,
-        ((code >> 8) & 0xF) as u8,
-        (code & 0xFF) as u8,
-    )
-}
-
-/// public view for maincontrol's standalone \delimiter arm
-pub fn delim_code_parts_pub(code: i32) -> (u8, u8, u8, u8) {
-    delim_code_parts(code)
-}
 
 /// Record a limit_switch subtype on an operator noad's nucleus. The fam-255
 /// CL_OP marker char carries tex.web's noad subtype (0=normal, 1=limits,
@@ -269,22 +301,12 @@ fn limits_req_to_subtype(v: u8) -> u8 {
 }
 
 #[inline]
-fn pair_to_code(p: Option<(u8, u8)>) -> i32 {
-    match p {
-        Some((f, c)) if c != 0 => {
-            ((f as i32) << 20) | ((c as i32) << 12) | ((f as i32) << 8) | (c as i32)
-        }
-        _ => 0,
-    }
-}
-
-#[inline]
-fn delim_marker(code: i32, size: u8, origin: MathDiagnosticOrigin) -> Node {
-    let (sf, sc, lf, lc) = delim_code_parts(code);
+fn delim_marker(d: Delim, size: u8, fence: FenceOpts, origin: MathDiagnosticOrigin) -> Node {
     Node::DelimBox {
-        small: (sf, sc),
-        large: (lf, lc),
+        small: (d.small_fam, d.small_char),
+        large: (d.large_fam, d.large_char),
         size,
+        fence,
         origin,
     }
 }
@@ -338,6 +360,10 @@ fn is_lr_close(n: &Node) -> bool {
 /// spacing. The choice node itself becomes a style node; a fam-255 marker
 /// keeps that separating, output-free role (no cramped-style loss).
 /// `None` when the list holds no choice.
+pub(crate) fn splice_choices_pub(list: &[Node], start: GStyle) -> Option<NodeList> {
+    splice_choices(list, start)
+}
+
 fn splice_choices(list: &[Node], start: GStyle) -> Option<NodeList> {
     if !list.iter().any(|n| matches!(n, Node::Choice)) {
         return None;
@@ -385,14 +411,23 @@ fn splice_choices(list: &[Node], start: GStyle) -> Option<NodeList> {
 impl Engine {
     // ---------- mode entry / exit ----------
 
-    pub fn enter_math(&mut self, _display: bool) {
+    pub fn enter_math(&mut self, display: bool) {
+        self.enter_math_inner(display, true);
+    }
+
+    /// `\Ustartmath` / `\Ustartdisplaymath`: no second `$` is looked for.
+    pub(crate) fn enter_math_cs(&mut self, display: bool) {
+        self.enter_math_inner(display, false);
+    }
+
+    fn enter_math_inner(&mut self, _display: bool, peek_dollar: bool) {
         // marks alive until that outer formula also finishes.
         if self.math_lists.is_empty() && self.pending_display_formula.is_none() {
             self.math_diagnostic_sources.clear();
         }
         let math_entry_mark = self.current_known_token_source_mark();
         let mut display = _display;
-        if !display && self.mode == Mode::Horizontal {
+        if !display && peek_dollar && self.mode == Mode::Horizontal {
             // tex.web §1134: a second math_shift promotes to display math.
             // The peek must be RAW: get_token processes \if conditionals
             // (tex.web get_next), so `$\ifmmode...` would evaluate \ifmmode
@@ -540,6 +575,7 @@ impl Engine {
             // builder before the display material exists. This online ordering
             // can fire a page that would otherwise absorb the later display.
             if outer_mode == Mode::Vertical {
+                self.lua_page_filter(crate::lua_callbacks::page_info::BEFORE_DISPLAY, true);
                 self.build_page();
             }
             // TeX's page/contribution list is global, not part of the semantic
@@ -610,6 +646,9 @@ impl Engine {
     /// tex.web §1195: pdfTeX typesets no formula unless families 2 and 3
     /// have at least 22 and 13 \fontdimen parameters in all three sizes.
     fn insufficient_math_fonts(&self) -> Option<&'static str> {
+        if self.is_luamath() {
+            return None;
+        }
         if self.engine_kind != crate::engine_mode::EngineKind::PdfTeX {
             return None;
         }
@@ -645,6 +684,25 @@ impl Engine {
     }
 
     pub fn exit_math(&mut self) {
+        self.exit_math_with(None);
+    }
+
+    /// texmath.c `after_math`; `closer` is the `\Ustartmath` family command
+    /// (character, control sequence) that ended the formula instead of `$`.
+    pub(crate) fn exit_math_with(&mut self, closer: Option<(u8, crate::token::CsId)>) {
+        if let Some((chr, id)) = closer {
+            if chr == 0 || chr == 2 {
+                // `\Ustartmath` inside math: luatex complains, then closes the
+                // formula; the nest is already popped, so the mode is the
+                // enclosing one
+                let outer = self.saved_lists.last().map_or(self.mode, |l| l.0);
+                self.report_illegal_case_in(id, outer);
+            }
+            if !matches!(self.mode, Mode::DisplayMath) && chr != 3 {
+                // texmath.c check_inline_math_end
+                self.error("Inline math should end with \\Ustopmath");
+            }
+        }
         let was_display = self.mode == Mode::DisplayMath;
         // a directive at the very end of the formula (`$\sum_0^1\limits$`)
         // still switches the tail op noad before conversion
@@ -660,12 +718,22 @@ impl Engine {
             danger = true;
         }
         if was_display {
-            // tex.web §1197 <Check that another $ follows>: get_x_token; a
-            // non-math-shift token is an error and is read again (back_error)
-            let t = self.get_token();
-            if t != crate::input::EOF_MARKER && !(t.is_char() && t.cc() == 3) {
-                self.error("Display math should end with $$");
-                self.push_token(t);
+            match closer {
+                // tex.web §1197 <Check that another $ follows>: get_x_token; a
+                // non-math-shift token is an error and is read again (back_error)
+                None => {
+                    let t = self.get_token();
+                    if t != crate::input::EOF_MARKER && !(t.is_char() && t.cc() == 3) {
+                        self.error("Display math should end with $$");
+                        self.push_token(t);
+                    }
+                }
+                // texmath.c check_display_math_end
+                Some((chr, _)) => {
+                    if chr != 1 {
+                        self.error("Display math should end with \\Ustopdisplaymath");
+                    }
+                }
             }
             // with \eqno the popped list is the tag; TeX checks again for the
             // formula itself after unsaving the tag's group
@@ -761,6 +829,7 @@ impl Engine {
             // tokens, then `if nest_ptr=1 then build_page`.
             self.scan_optional_space();
             if outer_mode == Mode::Vertical {
+                self.lua_page_filter(crate::lua_callbacks::page_info::AFTER_DISPLAY, false);
                 self.build_page();
             }
             return;
@@ -833,11 +902,15 @@ impl Engine {
                 // shifted the rows by \displayindent (§800).
                 let (ads, bds, _, _, pre, post, ..) = regs;
                 page.push(Node::Penalty(pre));
-                page.push(Node::Glue(ads));
+                if self.display_skip_applies(&ads) {
+                    page.push(Node::Glue(ads));
+                }
                 self.prev_depth = final_pd;
                 page.extend(rows);
                 page.push(Node::Penalty(post));
-                page.push(Node::Glue(bds));
+                if self.display_skip_applies(&bds) {
+                    page.push(Node::Glue(bds));
+                }
                 if outer_mode == Mode::Vertical {
                     self.page_list = page;
                     self.saved_lists.push((
@@ -904,10 +977,16 @@ impl Engine {
                 }
                 e = self.box_w(&ab) as i64;
                 // q = e + math_quad(text_size): quad of the fam-2 symbols font
-                let mq = self
-                    .fam_font(0, 2)
-                    .map(|(_, f)| f.quad() as i64)
-                    .unwrap_or(0);
+                let mq = if self.is_luamath() {
+                    // luatex: round_xn_over_d(\matheqnogapstep, math quad, 1000)
+                    let step = self.eqtb.int_params[IntParam::MathEqnoGapStep.idx() as usize];
+                    let quad = self.math_quad_style(2);
+                    i64::from(crate::tfm::round_xn_over_d(quad, step, 1000))
+                } else {
+                    self.fam_font(0, 2)
+                        .map(|(_, f)| f.quad() as i64)
+                        .unwrap_or(0)
+                };
                 q = e + mq;
                 // tex.web §1199: `if (a=null) or danger then e:=0; q:=0`
                 if danger {
@@ -961,7 +1040,17 @@ impl Engine {
             // oracle shows (t6: consecutive $$ get \abovedisplayshortskip).
             // etex.ch: `if pre_display_direction<0 then s:=-s-z`
             let s_clear = if x < 0 { -s - z } else { s };
-            let is_short = !leqno && (s_clear + d > self.pre_display_size);
+            let is_short = if self.is_luamath()
+                && self.eqtb.int_params[IntParam::MathEqDirMode.idx() as usize] > 0
+            {
+                // luatex \matheqdirmode: the tag side is judged against the
+                // direction of the text
+                let reversed = x < 0;
+                let near = a.is_some() && ((!reversed && leqno) || (reversed && !leqno));
+                !(s_clear + d <= self.pre_display_size || near)
+            } else {
+                !leqno && (s_clear + d > self.pre_display_size)
+            };
             let (above, below) = if is_short {
                 (regs.2.clone(), regs.3.clone())
             } else {
@@ -1004,7 +1093,8 @@ impl Engine {
                 // tex.web append_to_vlist gives the tag box ordinary interline
                 // glue from prev_depth, then prev_depth := tag depth.
                 if let Some(ab) = a.take() {
-                    let ab = self.app_display(lr_box.as_ref(), ab, 0, z, s, x);
+                    let own_s = if self.is_luamath() { 0 } else { s };
+                    let ab = self.app_display(lr_box.as_ref(), ab, 0, z, own_s, x);
                     let (th, td) = match &ab {
                         Node::Box { h, d, .. } => (*h as i64, *d as i64),
                         _ => (0, 0),
@@ -1016,7 +1106,7 @@ impl Engine {
                     self.prev_depth = td as i32;
                     page.push(Node::Penalty(crate::scaled::INF_PENALTY));
                 }
-            } else {
+            } else if self.display_skip_applies(&above) {
                 page.push(Node::Glue(above));
             }
             // the display line itself (§22592): with a tag, b becomes
@@ -1024,14 +1114,28 @@ impl Engine {
             let mut line = r0.node;
             if e != 0 {
                 let ab = a.take().unwrap();
-                let kern = Node::ExplicitKern((z - w - e - d) as i32);
-                let (seq, nd) = if leqno {
-                    (vec![ab, kern, line], 0i64)
+                if self.is_luamath() {
+                    // luatex finish_displayed_math: the line is
+                    // [kern d] eq [kern] eqno (or eqno [kern] eq [kern]) and
+                    // shifted by \displayindent only
+                    let r = (z - w - e - d) as i32;
+                    let seq = if leqno {
+                        vec![ab, Node::Kern(r), line, Node::Kern((i64::from(r) + e) as i32)]
+                    } else {
+                        vec![Node::Kern(d as i32), line, Node::Kern(r), ab]
+                    };
+                    d = 0;
+                    line = hpack(seq, None, HBOX, &self.eqtb).node;
                 } else {
-                    (vec![line, kern, ab], d)
-                };
-                d = nd;
-                line = hpack(seq, None, HBOX, &self.eqtb).node;
+                    let kern = Node::ExplicitKern((z - w - e - d) as i32);
+                    let (seq, nd) = if leqno {
+                        (vec![ab, kern, line], 0i64)
+                    } else {
+                        (vec![line, kern, ab], d)
+                    };
+                    d = nd;
+                    line = hpack(seq, None, HBOX, &self.eqtb).node;
+                }
             }
             let line = self.app_display(lr_box.as_ref(), line, d, z, s, x);
             // tex.web append_to_vlist: the display box joins the vlist with
@@ -1080,7 +1184,9 @@ impl Engine {
             page.extend(migrated);
             page.push(Node::Penalty(post));
             if let Some(g) = g2 {
-                page.push(Node::Glue(g));
+                if self.display_skip_applies(&g) {
+                    page.push(Node::Glue(g));
+                }
             }
             if outer_mode == Mode::Vertical {
                 self.page_list = page;
@@ -1145,7 +1251,14 @@ impl Engine {
             .get(self.eqtb.cur_font_val as usize)
             .map(|f| f.quad() as i64)
             .unwrap_or(0);
-        self.display_line_size(line, x, quad)
+        // luatex texmath.c: x_over_n(quad, 1000) * \predisplaygapfactor
+        // (2000 by default) instead of 2em
+        let gap = if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            quad / 1000 * i64::from(self.eqtb.int_params[IntParam::PreDisplayGapFactor.idx() as usize])
+        } else {
+            2 * quad
+        };
+        self.display_line_size(line, x, gap)
     }
 
     pub fn append_mlist_node(&mut self, n: Node) {
@@ -1289,14 +1402,10 @@ impl Engine {
             .unwrap_or(MathStyle::Text)
     }
 
-    pub fn push_math_group(&mut self, left: i32) {
-        let source = self.current_token_source_mark();
-        self.push_math_group_at(left, source);
-    }
-
     pub(crate) fn push_math_group_at(
         &mut self,
-        left: i32,
+        left: Delim,
+        fence: FenceOpts,
         source: Option<crate::input::SourceMark>,
     ) {
         // tex.web math_limit_switch fires at scan time: a directive before
@@ -1313,7 +1422,7 @@ impl Engine {
         self.mode = Mode::Math;
         self.push_group_level(crate::eqtb::LevelType::MathLeft);
         let origin = self.math_diagnostic_origin_at(source);
-        self.math_lists.push(vec![delim_marker(left, 0, origin)]);
+        self.math_lists.push(vec![delim_marker(left, 0, fence, origin)]);
     }
 
     /// tex.web §1192 "Try to recover from mismatched \right": `\right` or
@@ -1368,14 +1477,10 @@ impl Engine {
     /// `\right` end of a `\left...\right` group: the inner *raw* math list is
     /// spliced into the enclosing math list, bracketed by boundary markers.
     /// Conversion (including delimiter sizing) happens in one pass later.
-    pub fn pop_math_group_delimited(&mut self, right_delim: i32) {
-        let source = self.current_token_source_mark();
-        self.pop_math_group_delimited_at(right_delim, source);
-    }
-
     pub(crate) fn pop_math_group_delimited_at(
         &mut self,
-        right_delim: i32,
+        right_delim: Delim,
+        fence: FenceOpts,
         source: Option<crate::input::SourceMark>,
     ) {
         self.flush_math_limits();
@@ -1398,7 +1503,7 @@ impl Engine {
         match self.math_lists.last_mut() {
             Some(l) => {
                 l.extend(inner);
-                l.push(delim_marker(right_delim, 1, origin));
+                l.push(delim_marker(right_delim, 1, fence, origin));
             }
             None => {
                 self.error("Missing $ inserted (\\right)");
@@ -1816,7 +1921,8 @@ impl Engine {
                     // noad; other groups remain raw until conversion so they
                     // acquire the style in force at their use site.
                     let inner = self.scan_math_group_braced(ScanKind::Brace);
-                    self.append_mlist_node(finish_math_group(inner));
+                    let flatten = self.math_flatten_mode();
+                    self.append_mlist_node(finish_math_group(inner, flatten));
                 } else {
                     self.begin_group(true);
                 }
@@ -1828,11 +1934,6 @@ impl Engine {
         self.end_math_scan()
     }
 
-    pub fn do_math_accent(&mut self, mc: u16) {
-        let source = self.current_token_source_mark();
-        self.do_math_accent_at(mc, source);
-    }
-
     pub(crate) fn do_math_accent_at(&mut self, mc: u16, source: Option<crate::input::SourceMark>) {
         let origin = self.math_diagnostic_origin_at(source);
         let mut fam = ((mc >> 8) & 0xF) as u8;
@@ -1842,32 +1943,45 @@ impl Engine {
         if mc >= 0x7000 && (0..16).contains(&cur_fam) {
             fam = cur_fam as u8;
         }
-        self.show.scan_owner = Some(ScanKind::Accent { fam, c });
+        let spec = AccentSpec {
+            top: Some((fam, u32::from(c))),
+            ..AccentSpec::default()
+        };
+        self.append_accent_noad(spec, origin);
+    }
+
+    /// Scan the nucleus of an accent noad (the accent characters are
+    /// already scanned) and append the noad.
+    pub(crate) fn append_accent_noad(&mut self, spec: AccentSpec, origin: MathDiagnosticOrigin) {
+        self.show.scan_owner = Some(ScanKind::Accent(spec));
         let group = self.scan_math_group_or_token();
         self.append_mlist_node(Node::Accent {
-            fam,
-            c,
+            spec,
             body: group,
             origin,
         });
-    }
-
-    pub fn do_radical(&mut self, delim: i32) {
-        let source = self.current_token_source_mark();
-        self.do_radical_at(delim, source);
     }
 
     pub(crate) fn do_radical_at(&mut self, delim: i32, source: Option<crate::input::SourceMark>) {
         let origin = self.math_diagnostic_origin_at(source);
-        self.show.scan_owner = Some(ScanKind::Radical { delim });
+        self.show.scan_owner = Some(ScanKind::Radical {
+            delim: Delim::from_code(delim),
+            subtype: 0,
+            width: 0,
+            options: 0,
+        });
         let group = self.scan_math_group_or_token();
         self.append_mlist_node(Node::Radical {
             body: group,
-            left_delim: None,
-            thickness: pack_radical_delim(delim),
+            delim: Delim::from_code(delim),
+            subtype: 0,
+            width: 0,
+            options: 0,
+            degree: None,
             origin,
         });
     }
+
     pub fn do_math_class(&mut self, class: u8) {
         self.show.scan_owner = Some(ScanKind::Class(class));
         let field = self.scan_math_group_or_token();
@@ -1993,7 +2107,17 @@ impl Engine {
         let t = self.get_token();
         let token_source = self.current_token_source_mark();
         let code = if t.is_char() && matches!(t.cc(), 11 | 12) {
-            self.eqtb.delimiter_code_for(t.chr())
+            if self.is_luamath() {
+                // luatex `\delcode` (get_del_code): -1 = undefined
+                let (sf, sc, lf, lc) = self.eqtb.lua_del_code(t.chr());
+                if sf < 0 {
+                    -1
+                } else {
+                    (i64::from(sf & 0xF) << 20) | (i64::from(sc & 0xFF) << 12) | (i64::from(lf & 0xF) << 8) | i64::from(lc & 0xFF)
+                }
+            } else {
+                self.eqtb.delimiter_code_for(t.chr())
+            }
         } else if t.is_cs()
             && matches!(self.eqtb.resolve(t.cs_id()), Some(Equiv::Prim(Prim::Delimiter)))
         {
@@ -2033,23 +2157,30 @@ impl Engine {
     }
 
     pub fn do_fraction(&mut self, p: Prim) {
+        let (kind, delimited) = match p {
+            Prim::Above => (FracKind::Above, false),
+            Prim::AboveWithDelims => (FracKind::Above, true),
+            Prim::Over => (FracKind::Over, false),
+            Prim::OverWithDelims => (FracKind::Over, true),
+            Prim::Atop => (FracKind::Atop, false),
+            _ => (FracKind::Atop, true),
+        };
+        self.do_fraction_kind(kind, delimited);
+    }
+
+    /// texmath.c `math_fraction`; the LuaTeX-only `\Uskewed` and
+    /// `\Uskewedwithdelims` come in through [`FracKind::Skewed`].
+    pub(crate) fn do_fraction_kind(&mut self, kind: FracKind, delimited: bool) {
         let origin = self.math_diagnostic_origin();
+        let lua = self.engine_kind == crate::engine::EngineKind::LuaTeX;
         if self.fraction_is_ambiguous() {
             // tex.web §1181: the arguments are scanned, then the fraction is ignored
-            match p {
-                Prim::Above => {
-                    self.scan_dimen(false, false);
-                }
-                Prim::OverWithDelims | Prim::AtopWithDelims => {
-                    self.scan_delim_int();
-                    self.scan_delim_int();
-                }
-                Prim::AboveWithDelims => {
-                    self.scan_delim_int();
-                    self.scan_delim_int();
-                    self.scan_dimen(false, false);
-                }
-                _ => {}
+            if delimited {
+                self.scan_delim(!lua);
+                self.scan_delim(!lua);
+            }
+            if kind == FracKind::Above {
+                self.scan_dimen(false, false);
             }
             self.error("Ambiguous; you need another { and }");
             return;
@@ -2088,50 +2219,69 @@ impl Engine {
         self.begin_math_scan(ScanKind::Denominator(PendingFrac {
             num,
             thickness: DEFAULT_CODE,
-            left: 0,
-            right: 0,
+            left: Delim::default(),
+            right: Delim::default(),
         }));
         // tex.web: the lexically-following arguments (\above's dimen, the
         // withdelims delimiter pair) are scanned immediately...
         let mut thickness = DEFAULT_CODE;
-        let mut ld = 0i32;
-        let mut rd = 0i32;
-        match p {
-            Prim::Above => {
+        let mut options = 0u16;
+        let mut middle = None;
+        let mut ld = Delim::default();
+        let mut rd = Delim::default();
+        if kind == FracKind::Skewed {
+            middle = Some(self.scan_delim(true));
+        }
+        if delimited {
+            ld = self.scan_delim(true);
+            rd = self.scan_delim(true);
+        }
+        match kind {
+            FracKind::Above => {
+                if lua {
+                    // texmath.c math_fraction: `exact` and `norule`
+                    loop {
+                        if self.scan_keyword(b"exact") {
+                            options |= noad_option::EXACT;
+                        } else if self.scan_keyword(b"norule") {
+                            options |= noad_option::NO_RULE;
+                        } else {
+                            break;
+                        }
+                    }
+                }
                 thickness = self.scan_dimen(false, false);
             }
-            Prim::Atop => {
+            FracKind::Over => {}
+            FracKind::Atop => thickness = 0,
+            FracKind::Skewed => {
+                loop {
+                    if self.scan_keyword(b"exact") {
+                        options |= noad_option::EXACT;
+                    } else if self.scan_keyword(b"noaxis") {
+                        options |= noad_option::NO_AXIS;
+                    } else {
+                        break;
+                    }
+                }
                 thickness = 0;
             }
-            Prim::OverWithDelims => {
-                ld = self.scan_delim_int();
-                rd = self.scan_delim_int();
-            }
-            Prim::AtopWithDelims => {
-                thickness = 0;
-                ld = self.scan_delim_int();
-                rd = self.scan_delim_int();
-            }
-            Prim::AboveWithDelims => {
-                ld = self.scan_delim_int();
-                rd = self.scan_delim_int();
-                thickness = self.scan_dimen(false, false);
-            }
-            _ => {}
         }
         // ...and the denominator is the REST of the current math group (up
         // to the closing brace / end of formula), which stays unconsumed
         self.set_pending_fraction(thickness, ld, rd);
         let den = self.scan_math_rest_of_group();
         let num = self.take_pending_numerator();
-        let left = if ld > 0 { Some(ld) } else { None };
-        let right = if rd > 0 { Some(rd) } else { None };
+        let left = (!ld.is_null()).then_some(ld);
+        let right = (!rd.is_null()).then_some(rd);
         self.append_mlist_node(Node::Frac {
             num,
             den,
             thickness,
             left,
             right,
+            middle,
+            options,
             origin,
         });
     }
@@ -2267,6 +2417,17 @@ impl Engine {
         }
     }
 
+    /// A `\Umath` parameter value a LuaTeX job has defined (luatex
+    /// `get_math_param`); other engines and undefined parameters read the
+    /// font parameters directly.
+    fn umath_param(&self, param: u32, style: GStyle) -> Option<i32> {
+        if self.engine_kind != crate::engine::EngineKind::LuaTeX {
+            return None;
+        }
+        let value = self.eqtb.math_param(param, style);
+        (value != crate::eqtb::UNDEFINED_MATH_PARAMETER).then_some(value)
+    }
+
     /// \mathchoice{D}{T}{S}{SS}: scan the four style groups immediately and
     /// attach them as ChoiceAlt bodies of a Choice atom; mlist_to_hlist picks
     /// the branch matching the current style. tex.web build_choices opens
@@ -2274,7 +2435,7 @@ impl Engine {
     /// `{` reports "Missing { inserted" and still opens its group.
     pub fn begin_mathchoice(&mut self) {
         self.append_mlist_node(Node::Choice);
-        for _ in 0..4 {
+        for branch in 0..4u8 {
             self.flush_math_limits();
             // tex.web build_choices: push_math(math_choice_group) comes
             // before scan_left_brace, so the group is entered (and traced)
@@ -2286,9 +2447,39 @@ impl Engine {
                 self.error("Missing { inserted");
                 self.push_token(t);
             }
+            // each branch is scanned in its own style (`\mathstyle`)
+            self.math_style_stack.push(math_style_of(branch * 2));
             let body = self.scan_math_group_body(my_level);
+            self.math_style_stack.pop();
             self.append_mlist_node(Node::ChoiceAlt { body });
         }
+    }
+
+    /// LuaTeX `\Ustack {<mlist>}` (texmath.c `setup_math_style`): an Ord
+    /// noad whose nucleus is the braced subformula. Unlike plain braces the
+    /// group never reduces to a single character noad; luatex scans it in
+    /// the numerator style, which only `\mathstyle` could observe.
+    pub(crate) fn do_ustack(&mut self) {
+        self.flush_math_limits();
+        self.skip_spaces_relax();
+        let t = self.get_token();
+        if !(t.is_char() && t.cc() == 1) {
+            self.error("Missing { inserted");
+            self.push_token(t);
+        }
+        let g = gstyle_of(self.cur_math_style());
+        self.math_style_stack.push(math_style_of(num_style(g)));
+        let inner = self.scan_math_group_braced(ScanKind::Brace);
+        self.math_style_stack.pop();
+        let mut nucleus = Vec::with_capacity(inner.len() + 1);
+        nucleus.push(Node::MathChar {
+            fam: 255,
+            c: 0,
+            class: CL_ORD,
+            origin: MathDiagnosticOrigin::default(),
+        });
+        nucleus.extend(inner);
+        self.append_mlist_node(Node::Scripts { nucleus, sup: None, sub: None });
     }
 
     /// 1mu = quad of family 2 at the current math size / 18 (tex.web §767).
@@ -2469,6 +2660,15 @@ impl Engine {
                 let Some((kern, op, replacement)) = action else {
                     break;
                 };
+                // luatex mlist.c: \noligs / \nokerns switch the font's math
+                // ligatures and kerns off
+                if self.engine_kind == crate::engine::EngineKind::LuaTeX
+                    && self.eqtb.int_params
+                        [(if kern.is_some() { IntParam::NoKerns } else { IntParam::NoLigs }).idx() as usize]
+                        != 0
+                {
+                    break;
+                }
                 if let Some(kern) = kern {
                     nodes.insert(i + 1, Node::Kern(kern));
                     math_text.insert(i + 1, false);
@@ -2520,6 +2720,11 @@ impl Engine {
         self.mlist_to_hlist_full(list, start, pen, false)
     }
 
+    /// `node.mlist_to_hlist` (Lua): convert the math nodes of `list`.
+    pub(crate) fn lua_mlist_to_hlist(&mut self, list: &[Node], style: GStyle, pen: bool) -> NodeList {
+        self.mlist_to_hlist_pen(list, style, pen)
+    }
+
     /// `lr_body`: the list is the inside of a `\left...\right` group, so a
     /// close noad (the right delimiter) follows it for spacing purposes
     fn mlist_to_hlist_full(
@@ -2535,7 +2740,11 @@ impl Engine {
         }
         self.math_diagnostic_depth += 1;
         let saved_pen = self.math_penalties.replace(pen);
-        let out = self.mlist_to_hlist_inner(list, start, lr_body);
+        let out = if self.is_luamath() {
+            self.lm_mlist_to_hlist(list, start, pen)
+        } else {
+            self.mlist_to_hlist_inner(list, start, lr_body)
+        };
         self.math_penalties.set(saved_pen);
         self.math_diagnostic_depth -= 1;
         out
@@ -2594,7 +2803,7 @@ impl Engine {
         // (`lr_nest` counts its open markers) so the recursive conversion of
         // the body builds it as an Inner atom in the body's own style
         // (tex.web: the nested group is an inner_noad of the outer sub_mlist).
-        let mut lr_open: Option<(i32, MathDiagnosticOrigin, NodeList)> = None;
+        let mut lr_open: Option<(Delim, MathDiagnosticOrigin, NodeList)> = None;
         let mut lr_nest = 0usize;
         let mut i = 0usize;
         while i < list.len() {
@@ -2616,14 +2825,14 @@ impl Engine {
                     small,
                     large,
                     origin,
+                    ..
                 } = n
                 {
                     if let Some((_, _, buf)) = lr_open.as_mut() {
                         buf.push(n.clone());
                         lr_nest += 1;
                     } else {
-                        let code = delim_code_of(*small, *large);
-                        lr_open = Some((code, origin.clone(), Vec::new()));
+                        lr_open = Some((delim_of(*small, *large), origin.clone(), Vec::new()));
                     }
                     i += 1;
                     continue;
@@ -2637,6 +2846,7 @@ impl Engine {
                         small,
                         large,
                         origin,
+                        ..
                     } => Some((*small, *large, None, None, origin)),
                     Node::Scripts { nucleus, sup, sub } => match nucleus.as_slice() {
                         [Node::DelimBox {
@@ -2644,6 +2854,7 @@ impl Engine {
                             small,
                             large,
                             origin,
+                            ..
                         }] => Some((
                             *small,
                             *large,
@@ -2659,6 +2870,7 @@ impl Engine {
                             small,
                             large,
                             origin,
+                            ..
                         }] => Some((
                             *small,
                             *large,
@@ -2679,7 +2891,7 @@ impl Engine {
                         i += 1;
                         continue;
                     }
-                    let code = delim_code_of(small, large);
+                    let close_delim = delim_of(small, large);
                     match lr_open.take() {
                         Some((lopen, open_origin, buf)) => {
                             // tex.web §762: max_h/max_d come from the inner
@@ -2696,7 +2908,7 @@ impl Engine {
                             let mut assembled: NodeList =
                                 self.var_delimiter(lopen, needed, style, &open_origin);
                             assembled.extend(body);
-                            assembled.extend(self.var_delimiter(code, needed, style, close_origin));
+                            assembled.extend(self.var_delimiter(close_delim, needed, style, close_origin));
                             let gb = hpack(assembled, None, HBOX, &self.eqtb).node;
                             let tail: NodeList = match (scripts, limits) {
                                 (Some((sup, sub)), _) => self.make_scripts(&[gb], sup, sub, style),
@@ -2710,7 +2922,7 @@ impl Engine {
                         None => {
                             // A stray close is an ordinary close delimiter.
                             // Build it before borrowing `self` for `emit_atom`.
-                            let delimiter = self.var_delimiter(code, 0, style, close_origin);
+                            let delimiter = self.var_delimiter(close_delim, 0, style, close_origin);
                             self.emit_atom(&mut out, &mut prev, Some(CL_CLOSE), delimiter, sp_style);
                         }
                     }
@@ -2730,7 +2942,24 @@ impl Engine {
                     style = start;
                 }
                 // inter-atom mu glue comes first (tex.web second pass)
+                let after_penalty = matches!(out.last(), Some(Node::Penalty(_)));
                 self.insert_spacing(&mut out, prev, Some(cls), sp_style);
+                // luatex mlist.c: \prebinoppenalty / \prerelpenalty precede a
+                // Bin / Rel noad that is not the first one
+                if self.engine_kind == crate::engine::EngineKind::LuaTeX
+                    && self.math_penalties.get()
+                    && prev.is_some()
+                    && !after_penalty
+                {
+                    let pre = match cls {
+                        CL_BIN => self.eqtb.int_params[IntParam::PreBinOpPenalty.idx() as usize],
+                        CL_REL => self.eqtb.int_params[IntParam::PreRelPenalty.idx() as usize],
+                        _ => 10000,
+                    };
+                    if pre < 10000 {
+                        out.push(Node::Penalty(pre));
+                    }
+                }
                 out.extend(nodes);
                 // tex.web pass 2: after a Bin/Rel noad in inline text math,
                 // a \binoppenalty/\relpenalty breakpoint follows (skipped when
@@ -2903,6 +3132,14 @@ impl Engine {
             match self.eqtb.resolve(t.cs_id()).cloned() {
                 // \mathchardef'd control sequences never reach main_dispatch
                 // (control.rs has no arm for the equiv), so materialize them here
+                Some(Equiv::MathCharDef(v)) if self.mode.is_m() && self.engine_kind == crate::engine::EngineKind::LuaTeX => {
+                    self.math_given_command(i32::from(v), false, t.cs_id());
+                    return;
+                }
+                Some(Equiv::UMathCharDef(v)) if self.mode.is_m() => {
+                    self.math_given_command(v, true, t.cs_id());
+                    return;
+                }
                 Some(Equiv::MathCharDef(v)) if self.mode.is_m() => {
                     self.append_mathchar(v);
                     return;
@@ -2913,7 +3150,7 @@ impl Engine {
         self.dispatch(t);
     }
 
-    fn convert_atom(&mut self, n: &Node, style: GStyle, math_text_char: bool) -> NodeList {
+    pub(crate) fn convert_atom(&mut self, n: &Node, style: GStyle, math_text_char: bool) -> NodeList {
         match n {
             Node::MathChar {
                 fam,
@@ -2955,7 +3192,8 @@ impl Engine {
                 // attach to the character, not the taller accent box. Ordinary
                 // groups containing a lone accent preserve that noad identity.
                 if sup.is_some() || sub.is_some() {
-                    if let Some((accent, body, origin)) = accent_noad_of(nucleus) {
+                    if let Some((spec, body, origin)) = accent_noad_of(nucleus) {
+                        let accent = spec.top.map_or((0, 0), |(fam, c)| (fam, c as u8));
                         if matches!(body, [Node::MathChar { fam, .. }] if *fam != 255) {
                             return self.make_accent(
                                 accent,
@@ -3010,27 +3248,24 @@ impl Engine {
                 left,
                 right,
                 origin,
+                ..
             } => self.make_fraction(num, den, *thickness, (*left, *right), style, origin),
             Node::Radical {
-                body,
-                thickness,
-                origin,
-                ..
-            } => self.make_radical(body, *thickness, style, origin),
-            Node::Accent {
-                fam,
-                c,
-                body,
-                origin,
-            } => self.make_accent((*fam, *c), body, style, None, None, origin),
+                body, delim, origin, ..
+            } => self.make_radical(body, *delim, style, origin),
+            Node::Accent { spec, body, origin } => {
+                let accent = spec.top.map_or((0, 0), |(fam, c)| (fam, c as u8));
+                self.make_accent(accent, body, style, None, None, origin)
+            }
             Node::DelimBox {
                 small,
                 large,
                 size,
                 origin,
+                ..
             } => {
                 // plain delimiter atom (size 2); 3 is e-TeX \middle delimiter; 0/1 only reach here as strays
-                let code = delim_code_of(*small, *large);
+                let delim = delim_of(*small, *large);
                 let target_size = if *size == 3 {
                     if self.middle_delimiter_size == MIDDLE_UNSIZED {
                         return Vec::new();
@@ -3039,7 +3274,7 @@ impl Engine {
                 } else {
                     0
                 };
-                let mut out = self.var_delimiter(code, target_size, style, origin);
+                let mut out = self.var_delimiter(delim, target_size, style, origin);
                 if out.is_empty() {
                     out.push(Node::Kern(0));
                 }
@@ -3133,9 +3368,10 @@ impl Engine {
                 large,
                 size: 2,
                 origin,
+                ..
             }] => {
-                let code = delim_code_of(*small, *large);
-                let mut out = self.var_delimiter(code, 0, style, origin);
+                let delim = delim_of(*small, *large);
+                let mut out = self.var_delimiter(delim, 0, style, origin);
                 if out.len() == 1 {
                     (out.pop().unwrap(), 0)
                 } else {
@@ -3239,11 +3475,12 @@ impl Engine {
                 origin,
                 ..
             }] => {
+                let cb = *c as u8;
                 let fid = self.eqtb.style_fonts[font_size(style)][*fam as usize];
-                if self.math_font_has_character_or_warn(fid, *c, origin) {
+                if self.math_font_has_character_or_warn(fid, cb, origin) {
                     let f = self.eqtb.fonts[fid as usize].clone();
-                    let ic = f.char_italic(*c);
-                    let mut core = vec![Node::Char { c: *c, font: fid }];
+                    let ic = f.char_italic(cb);
+                    let mut core = vec![Node::Char { c: cb, font: fid }];
                     if sub.is_none() && ic != 0 {
                         core.push(Node::Kern(ic));
                     } else {
@@ -3535,7 +3772,7 @@ impl Engine {
         num: &[Node],
         den: &[Node],
         thickness: i32,
-        delimiters: (Option<i32>, Option<i32>),
+        delimiters: (Option<Delim>, Option<Delim>),
         style: GStyle,
         origin: &MathDiagnosticOrigin,
     ) -> NodeList {
@@ -3571,8 +3808,17 @@ impl Engine {
         let vlist: NodeList;
         if r == 0 {
             // \atop: symmetric minimum clearance around the numerator/denominator
+            // (luatex stack_num_up, stack_denom_down, stack_vgap)
+            if let Some(v) = self.umath_param(crate::luatex::MATH_PARAM_STACK_NUM_UP, style) {
+                su = v;
+            }
+            if let Some(v) = self.umath_param(crate::luatex::MATH_PARAM_STACK_DENOM_DOWN, style) {
+                sd = v;
+            }
             let rt = self.default_rule_thickness(style);
-            let clr = if display { rt * 7 } else { rt * 3 };
+            let clr = self
+                .umath_param(crate::luatex::MATH_PARAM_STACK_VGAP, style)
+                .unwrap_or(if display { rt * 7 } else { rt * 3 });
             let delta = half_i(clr - ((su - nd) - (dh - sd)));
             if delta > 0 {
                 su += delta;
@@ -3617,10 +3863,10 @@ impl Engine {
             *shift = 0;
         }
         // \overwithdelims etc.: both delimiters sized to delim1/delim2
-        let dd_size = if display {
-            self.fparam(style, 2, 20)
-        } else {
-            self.fparam(style, 2, 21)
+        let dd_size = match self.umath_param(crate::luatex::MATH_PARAM_FRACTION_DEL_SIZE, style) {
+            Some(v) => v,
+            None if display => self.fparam(style, 2, 20),
+            None => self.fparam(style, 2, 21),
         };
         let mut out: NodeList = Vec::new();
         if let Some(l) = left {
@@ -3644,19 +3890,14 @@ impl Engine {
     fn make_radical(
         &mut self,
         body: &[Node],
-        thickness: i32,
+        delim: Delim,
         style: GStyle,
         origin: &MathDiagnosticOrigin,
     ) -> NodeList {
-        let (delim_code, r_explicit) = unpack_radical(thickness);
         let body_nodes = self.mlist_to_hlist_pen(body, style | 1, self.math_penalties.get());
         let x = hpack(body_nodes, None, HBOX, &self.eqtb).node;
         let (xw, xh, xd) = box_dims(&x);
-        let rt = if r_explicit >= 0 {
-            r_explicit
-        } else {
-            self.default_rule_thickness(style)
-        };
+        let rt = self.default_rule_thickness(style);
         let x_h = self.math_x_height(style);
         let mut clr = if style < 2 {
             rt + (x_h / 4).abs()
@@ -3664,7 +3905,7 @@ impl Engine {
             rt + rt / 4
         };
         let target_size = xh + xd + clr + rt;
-        let mut d_nodes = self.var_delimiter(delim_code, target_size, style, origin);
+        let mut d_nodes = self.var_delimiter(delim, target_size, style, origin);
         let mut d_box = if d_nodes.len() == 1 {
             d_nodes.pop().unwrap()
         } else {
@@ -3903,15 +4144,15 @@ impl Engine {
     /// then the large char, each at the current size and smaller.
     fn var_delimiter(
         &mut self,
-        code: i32,
+        d: Delim,
         v: i32,
         style: GStyle,
         origin: &MathDiagnosticOrigin,
     ) -> NodeList {
-        if code <= 0 {
+        if d.is_null() {
             return vec![self.null_delimiter_box(style)];
         }
-        let (sf, sc, lf, lc) = delim_code_parts(code);
+        let (sf, sc, lf, lc) = (d.small_fam, d.small_char as u8, d.large_fam, d.large_char as u8);
         let cur_size = font_size(style);
         let mut best: Option<(usize, u8, u8)> = None;
         let mut found: Option<(usize, u8, u8)> = None;
@@ -3984,7 +4225,7 @@ impl Engine {
                         .and_then(|ci| ff.ext.get(ci.remainder as usize).cloned())
                 });
                 match ext_rec {
-                    Some(rec) => vec![self.make_extensible(sz, fam, rec, v, style)],
+                    Some(rec) => vec![self.make_extensible_tex82(sz, fam, rec, v, style)],
                     None => vec![self.delim_char_box(sz, fam, c, style)],
                 }
             }
@@ -4000,7 +4241,7 @@ impl Engine {
     /// tex.web make_extensible: stack top / n x rep / mid / n x rep / bottom
     /// with n grown until the total extent reaches `v` (in pairs when a mid
     /// part exists). Height = top part's height, depth = w - height.
-    fn make_extensible(
+    fn make_extensible_tex82(
         &self,
         size_idx: usize,
         fam: u8,
@@ -4091,11 +4332,6 @@ impl Engine {
 
 // ---------- small local helpers ----------
 
-#[inline]
-fn delim_code_of(small: (u8, u8), large: (u8, u8)) -> i32 {
-    ((small.0 as i32) << 20) | ((small.1 as i32) << 12) | ((large.0 as i32) << 8) | (large.1 as i32)
-}
-
 /// tex.web `half` on a scaled value (see `half_sp`)
 #[inline]
 fn half_i(x: i32) -> i32 {
@@ -4123,7 +4359,7 @@ fn box_dims_shifted(n: &Node) -> (i32, i32) {
 
 /// Preserve TeX's ordinary-group unwrap for a lone accent noad.
 /// Explicit non-ordinary class markers must not be unwrapped.
-fn accent_noad_of(nucleus: &[Node]) -> Option<((u8, u8), &[Node], &MathDiagnosticOrigin)> {
+fn accent_noad_of(nucleus: &[Node]) -> Option<(AccentSpec, &[Node], &MathDiagnosticOrigin)> {
     let accent = match nucleus {
         [a @ Node::Accent { .. }] => a,
         [Node::MathChar {
@@ -4134,12 +4370,7 @@ fn accent_noad_of(nucleus: &[Node]) -> Option<((u8, u8), &[Node], &MathDiagnosti
         _ => return None,
     };
     match accent {
-        Node::Accent {
-            fam,
-            c,
-            body,
-            origin,
-        } => Some(((*fam, *c), body, origin)),
+        Node::Accent { spec, body, origin } => Some((*spec, body, origin)),
         _ => None,
     }
 }
@@ -5062,6 +5293,7 @@ mod tests {
             glue_order: order,
             glue_set: set,
             lr: 0,
+            dir: 0,
         }
     }
 
@@ -5085,6 +5317,7 @@ mod tests {
                     glue_order: 0,
                     glue_set: 0.0,
                     lr: 0,
+                    dir: 0,
                 },
                 Node::Glue(Glue::spec(su(3.33333), su(1.66666), 0, su(1.11111), 0)),
                 Node::Rule {

@@ -31,29 +31,30 @@ pub fn finalize_format_load(eng: &mut Engine) {
             true,
         );
     }
-    for name in [
-        b"pdfrandomseed" as &[u8],
-        b"randomseed",
-        b"tex_randomseed:D",
-    ] {
-        let id = eng.cs.intern(name);
-        eng.eqtb.assign(
-            id,
-            crate::eqtb::Equiv::Prim(crate::prim::Prim::PdfRandomSeed),
-            true,
-        );
-    }
-    for name in [
-        b"pdfsetrandomseed" as &[u8],
-        b"setrandomseed",
-        b"tex_setrandomseed:D",
-    ] {
-        let id = eng.cs.intern(name);
-        eng.eqtb.assign(
-            id,
-            crate::eqtb::Equiv::Prim(crate::prim::Prim::PdfSetRandomSeed),
-            true,
-        );
+    // pdfTeX formats dumped before the random-number primitives existed.
+    if eng.engine_kind == crate::engine::EngineKind::PdfTeX {
+        for name in [
+            b"pdfrandomseed" as &[u8],
+            b"tex_randomseed:D",
+        ] {
+            let id = eng.cs.intern(name);
+            eng.eqtb.assign(
+                id,
+                crate::eqtb::Equiv::Prim(crate::prim::Prim::PdfRandomSeed),
+                true,
+            );
+        }
+        for name in [
+            b"pdfsetrandomseed" as &[u8],
+            b"tex_setrandomseed:D",
+        ] {
+            let id = eng.cs.intern(name);
+            eng.eqtb.assign(
+                id,
+                crate::eqtb::Equiv::Prim(crate::prim::Prim::PdfSetRandomSeed),
+                true,
+            );
+        }
     }
     // Compat shim for formats dumped before the
     // active-char namespace split: their boot wrote the
@@ -208,14 +209,6 @@ pub fn prepare_latex_job(eng: &mut Engine) {
 
 pub fn insert_everyjob(eng: &mut Engine) {
     if eng.engine_kind == crate::engine::EngineKind::LuaTeX {
-        let dl = eng.cs.intern(b"directlua");
-        eng.eqtb.assign(
-            dl,
-            crate::eqtb::Equiv::Prim(crate::prim::Prim::DirectLua),
-            true,
-        );
-        let code = b"\\ExplSyntaxOn\\long\\def\\lua_load_module:n#1{\\directlua{pcall(require, '#1')}}\\let\\sys_if_engine_luatex:TF\\use_i:nn\\let\\sys_if_engine_luatex:T\\use:n\\let\\sys_if_engine_luatex:F\\use_none:n\\let\\sys_if_engine_pdftex:TF\\use_ii:nn\\let\\sys_if_engine_pdftex:T\\use_none:n\\let\\sys_if_engine_pdftex:F\\use:n\\ExplSyntaxOff ";
-        eng.input.push_file("<luatex-init>".to_string(), code.to_vec());
         let ej = (*eng.eqtb.tok_params[crate::prim::ToksParam::EveryJob.idx() as usize]).clone();
         if !ej.is_empty() {
             eng.push_tokens_named(ej, "<everyjob>");

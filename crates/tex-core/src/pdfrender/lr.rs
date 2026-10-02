@@ -200,7 +200,7 @@ impl<'a> RenderCtx<'a> {
                         Node::NativeGlyphRun { width, .. } => Class::Char(*width as i64),
                         Node::Box { w, .. } => Class::Width(*w as i64),
                         Node::Rule { width, .. } => Class::Width(*width as i64),
-                        Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) => {
+                        Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) | Node::SpaceAdjKern(k, _) => {
                             Class::Kern(*k as i64)
                         }
                         Node::ExKern { width, ex, .. } => Class::Kern((*width + *ex) as i64),

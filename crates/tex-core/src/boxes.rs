@@ -930,6 +930,9 @@ pub enum Node {
     /// LuaTeX `italic_kern` (kern subtype 3): italic correction kerns
     /// that math conversion inserts
     ItalicKern(i32, Attr),
+    /// xetex.web `space_adjustment` kern (`\XeTeXinterwordspaceshaping`): a
+    /// discardable kern after an inter-word glue.
+    SpaceAdjKern(i32, Attr),
     /// pdfTeX `margin_kern_node`: a kern of width `-w` placed at the very
     /// start (or just before the trailing `\rightskip`) of a line box to let
     /// the marginal character `c` protrude `w` into the margin when
@@ -1150,7 +1153,7 @@ impl Node {
             | Node::Kern(_, a)
             | Node::ExplicitKern(_, a)
             | Node::AccentKern(_, a)
-            | Node::ItalicKern(_, a)
+            | Node::ItalicKern(_, a) | Node::SpaceAdjKern(_, a)
             | Node::Penalty(_, a)
             | Node::Adj(_, a)
             | Node::Whatsit(_, a)
@@ -1190,7 +1193,7 @@ impl Node {
             | Node::Kern(_, x)
             | Node::ExplicitKern(_, x)
             | Node::AccentKern(_, x)
-            | Node::ItalicKern(_, x)
+            | Node::ItalicKern(_, x) | Node::SpaceAdjKern(_, x)
             | Node::Penalty(_, x)
             | Node::Adj(_, x)
             | Node::Whatsit(_, x)
@@ -1264,7 +1267,7 @@ fn single_dims(n: &Node, eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
             ..
         } => (*lig_width, *lig_height, *lig_depth),
         Node::Glue(g, _) => (g.width, 0, 0),
-        Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) => (*k, 0, 0),
+        Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) | Node::SpaceAdjKern(k, _) => (*k, 0, 0),
         // tex.web math_node: width = \mathsurround (math-on 1 / math-off 2);
         // an unconverted \mkern (kind 0) has no width yet
         Node::MathKern(k, MATH_ON.., _) => (*k, 0, 0),
@@ -1394,7 +1397,7 @@ pub fn vlist_dims(list: &[Node], eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
                 x += d + (*width + *ex) as i64;
                 d = 0;
             }
-            Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) => {
+            Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) | Node::SpaceAdjKern(k, _) => {
                 x += d + *k as i64;
                 d = 0;
             }
@@ -2263,7 +2266,7 @@ pub fn split_vlist(list: &[Node], target: i64) -> (NodeList, NodeList) {
                 height += depth + w;
                 depth = 0;
             }
-            Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) => {
+            Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) | Node::SpaceAdjKern(k, _) => {
                 let w = *k as i64;
                 if seen_box && height + depth + w > target {
                     split_at = Some(i);

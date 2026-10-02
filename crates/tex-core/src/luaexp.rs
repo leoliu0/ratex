@@ -263,7 +263,7 @@ fn cp_skipable(n: &Node) -> bool {
         Node::Penalty(..) => true,
         Node::Disc(d) => d.pre_break.is_empty() && d.post_break.is_empty() && d.no_break.is_empty(),
         Node::Kern(..) | Node::ExKern { .. } => true,
-        Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) => *k == 0,
+        Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) | Node::SpaceAdjKern(k, _) => *k == 0,
         Node::Rule { width, height, depth, .. } => *width == 0 && *height == 0 && *depth == 0,
         Node::MathKern(_, kind, _) => *kind >= crate::boxes::MATH_ON,
         Node::Box { kind, w, h, d, list, .. } => *kind == crate::boxes::HBOX && list.is_empty() && *w == 0 && *h == 0 && *d == 0,
@@ -283,7 +283,7 @@ fn non_discardable(n: &Node) -> bool {
             | Node::ExKern { .. }
             | Node::ExplicitKern(..)
             | Node::AccentKern(..)
-            | Node::ItalicKern(..)
+            | Node::ItalicKern(..) | Node::SpaceAdjKern(..)
             | Node::MathKern(..)
             | Node::Penalty(..)
     )

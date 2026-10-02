@@ -624,7 +624,9 @@ mod tests {
         assert_eq!(s.feat, Some("color=FF0000;slant=0.2"));
         let s = split_font_name("[a.otf]");
         assert_eq!(s.name, "[a.otf");
-        assert_eq!(s.var, None);
+        // splitFontName leaves `var` on the `]`, so `feat > var` and
+        // findnativefont's varString is the empty string
+        assert_eq!(s.var, Some(""));
     }
 
     #[test]

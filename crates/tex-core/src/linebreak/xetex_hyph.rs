@@ -233,7 +233,7 @@ impl Engine {
                 | Some(
                     Node::ExplicitKern(_, _)
                     | Node::AccentKern(_, _)
-                    | Node::ItalicKern(_, _)
+                    | Node::ItalicKern(_, _) | Node::SpaceAdjKern(_, _)
                     | Node::Whatsit(_, _)
                     | Node::NativeGlyphRun { .. }
                     | Node::Glue(_, _)
@@ -325,7 +325,7 @@ impl Engine {
                 | Some(
                     Node::ExplicitKern(_, _)
                     | Node::AccentKern(_, _)
-                    | Node::ItalicKern(_, _)
+                    | Node::ItalicKern(_, _) | Node::SpaceAdjKern(_, _)
                     | Node::Whatsit(_, _)
                     | Node::NativeGlyphRun { .. }
                     | Node::Glue(_, _)

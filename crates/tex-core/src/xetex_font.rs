@@ -379,6 +379,8 @@ impl Engine {
 
     /// XeTeX `\font`: `new_font` (§1257) with `read_font_info`.
     pub(crate) fn xetex_do_font(&mut self, cs: crate::token::CsId, global: bool, source: Option<crate::input::SourceContext>) {
+        // tex.web §1257: `define(u, set_font, null_font)` before scanning
+        self.eqtb.assign(cs, Equiv::FontRef(0), global);
         let (name, quote) = self.scan_xetex_font_name();
         let quoted = quote != 0;
         // at / scaled

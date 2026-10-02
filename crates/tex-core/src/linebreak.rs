@@ -189,7 +189,7 @@ fn find_protchar_left(slice: &[Node], eqtb: &crate::eqtb::Eqtb, protrude_chars: 
             | Node::Kern(_, _)
             | Node::ExplicitKern(_, _)
             // pdftex cp_skipable: only a zero-width accent kern is skipped
-            | Node::AccentKern(0, _) | Node::ItalicKern(0, _)
+            | Node::AccentKern(0, _) | Node::ItalicKern(0, _) | Node::SpaceAdjKern(0, _)
             | Node::Whatsit(_, _) => {}
             Node::Box {
                 w: 0,
@@ -792,7 +792,7 @@ impl Engine {
                 None
                 | Some(
                     Node::ExplicitKern(_, _)
-                    | Node::AccentKern(_, _) | Node::ItalicKern(_, _)
+                    | Node::AccentKern(_, _) | Node::ItalicKern(_, _) | Node::SpaceAdjKern(_, _)
                     | Node::Whatsit(_, _)
                     | Node::Glue(_, _)
                     | Node::Leaders { .. }
@@ -1071,7 +1071,7 @@ impl Engine {
                         };
                         (*k as i64, [0; 4], [0; 4], fst, fsh)
                     }
-                    Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) => {
+                    Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) | Node::SpaceAdjKern(k, _) => {
                         (*k as i64, [0; 4], [0; 4], 0, 0)
                     }
                     Node::ExKern { width, ex, .. } => ((*width + *ex) as i64, [0; 4], [0; 4], 0, 0),
@@ -1938,6 +1938,7 @@ impl Engine {
                     Node::Glue(_, _)
                     | Node::Penalty(_, _)
                     | Node::ExplicitKern(_, _)
+                    | Node::SpaceAdjKern(_, _)
                     | Node::MathKern(..) => {
                         // glue becomes \rightskip at packing; tex.web §881
                         // keeps a penalty node as is and a kern or math node
@@ -2027,7 +2028,7 @@ impl Engine {
                     | Node::Penalty(_, _)
                     | Node::Kern(_, _)
                     | Node::ExplicitKern(_, _)
-                    | Node::AccentKern(0, _) | Node::ItalicKern(0, _)
+                    | Node::AccentKern(0, _) | Node::ItalicKern(0, _) | Node::SpaceAdjKern(0, _)
                     | Node::Whatsit(_, _) => None,
                     // pdftex cp_skipable: zero-width math nodes; only the
                     // TeXXeT \beginM..\endR kinds are skipped here
@@ -2233,7 +2234,7 @@ impl Engine {
                 None => Some(-10000),
                 Some(Node::Penalty(p, _)) => Some(*p),
                 Some(Node::Glue(_, _) | Node::Leaders { .. }) if prev_non_discardable => Some(0),
-                Some(Node::Kern(_, _) | Node::ExplicitKern(_, _) | Node::AccentKern(_, _) | Node::ItalicKern(_, _))
+                Some(Node::Kern(_, _) | Node::ExplicitKern(_, _) | Node::AccentKern(_, _) | Node::ItalicKern(_, _) | Node::SpaceAdjKern(_, _))
                     if matches!(list.get(i + 1), Some(Node::Glue(_, _) | Node::Leaders { .. })) =>
                 {
                     Some(0)
@@ -2300,7 +2301,7 @@ impl Engine {
                     t += d + g.width as i64;
                     d = 0;
                 }
-                Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) => {
+                Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) | Node::SpaceAdjKern(k, _) => {
                     t += d + *k as i64;
                     d = 0;
                 }
@@ -2341,7 +2342,7 @@ impl Engine {
                 | Node::Penalty(_, _)
                 | Node::Kern(_, _)
                 | Node::ExplicitKern(_, _)
-                | Node::AccentKern(_, _) | Node::ItalicKern(_, _) => false,
+                | Node::AccentKern(_, _) | Node::ItalicKern(_, _) | Node::SpaceAdjKern(_, _) => false,
                 Node::Whatsit(
                     crate::boxes::WhatIt::PdfSnapY(_) | crate::boxes::WhatIt::PdfSnapYComp(_),
                 _) => {
@@ -2743,7 +2744,7 @@ impl Reconstitute<'_> {
 fn is_prunable<const LUA: bool>(n: &Node) -> bool {
     matches!(
         n,
-        Node::Glue(_, _) | Node::Penalty(_, _) | Node::ExplicitKern(_, _) | Node::MathKern(..)
+        Node::Glue(_, _) | Node::Penalty(_, _) | Node::ExplicitKern(_, _) | Node::SpaceAdjKern(_, _) | Node::MathKern(..)
     ) || (LUA && matches!(n, Node::Whatsit(WhatIt::LocalPar(_), _))) // luatex post_line_break: "weird, in the middle somewhere"
 }
 
@@ -2763,7 +2764,7 @@ fn push_dims(eqtb: &crate::eqtb::Eqtb, n: Node, seg: &mut NodeList, w: &mut i64)
         Node::LuaGlyph(g) => crate::boxes::lua_glyph_dims(eqtb, g).0,
         Node::Ligature { lig_width, .. } => *lig_width,
         Node::Glue(g, _) => g.width,
-        Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) => *k,
+        Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) | Node::SpaceAdjKern(k, _) => *k,
         Node::ExKern { width, ex, .. } => *width + *ex,
         Node::Box { w: bw, .. } => *bw,
         Node::Rule { width, .. } => *width,
@@ -2783,7 +2784,7 @@ fn disc_list_width(eqtb: &crate::eqtb::Eqtb, l: &[Node]) -> i64 {
             Node::Char { c, font, .. } => fonts.char_width(*font, *c) as i64,
             Node::LuaGlyph(g) => crate::boxes::lua_glyph_dims(eqtb, g).0 as i64,
             Node::Ligature { lig_width, .. } => *lig_width as i64,
-            Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) => *k as i64,
+            Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) | Node::SpaceAdjKern(k, _) => *k as i64,
             Node::Box { w, .. } | Node::Rule { width: w, .. } => *w as i64,
             Node::NativeGlyphRun { width, .. } => *width as i64,
             Node::Whatsit(WhatIt::XePic { w, .. }, _) => *w as i64,

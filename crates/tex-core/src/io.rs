@@ -46,6 +46,17 @@ pub(crate) fn pdf_escape(primitive: Prim, bytes: &[u8]) -> Vec<u8> {
     out
 }
 
+/// A path as TeX shows and opens it: web2c on Windows uses `/`. Verbatim
+/// (`\\\\?\\`) paths only work with backslashes and stay as they are.
+fn tex_path_text(path: &std::path::Path) -> String {
+    let text = path.to_string_lossy().into_owned();
+    if cfg!(windows) && !text.starts_with("\\\\?\\") {
+        text.replace('\\', "/")
+    } else {
+        text
+    }
+}
+
 /// kpathsea's `kpathsea_name_ok` for writing (TeX Live 2026, non-extended,
 /// Unix rules): `openout_any` `a` allows everything; `r` refuses dotfiles
 /// (`.rhosts`, `dir/.ssh`, `..x`) and `p` (the default) also refuses
@@ -75,6 +86,80 @@ fn out_name_ok(rel: &str, absolute: bool, choice: &str) -> bool {
         return false;
     }
     !rel.contains("/../")
+}
+
+/// A path the way kpathsea sees it on Windows: `\\?\` verbatim and
+/// `\\?\UNC\` prefixes dropped and `IS_DIR_SEP` (both `/` and `\`) read
+/// as `/`.
+fn win_form(path: &str) -> String {
+    let path = if let Some(unc) = path.strip_prefix("\\\\?\\UNC\\") {
+        format!("//{unc}")
+    } else if let Some(rest) = path.strip_prefix("\\\\?\\") {
+        rest.to_string()
+    } else {
+        path.to_string()
+    };
+    path.replace('\\', "/")
+}
+
+/// `kpathsea_absolute_p` on Windows: a leading separator (rooted or UNC)
+/// or a drive letter.
+fn win_is_absolute(form: &str) -> bool {
+    let b = form.as_bytes();
+    b.first() == Some(&b'/') || (b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':')
+}
+
+/// `rest` of `full` below `root` (both in `/` form; Windows names compare
+/// case-insensitively).
+fn below_root<'a>(full: &'a str, root: &str, ignore_case: bool) -> Option<&'a str> {
+    let head = full.get(..root.len())?;
+    let same = if ignore_case { head.eq_ignore_ascii_case(root) } else { head == root };
+    if !same {
+        return None;
+    }
+    full[root.len()..].strip_prefix('/')
+}
+
+/// The `openout_any` decision for a resolved output path. `roots` are the
+/// trusted output directories; with `windows` both separators, verbatim
+/// prefixes, drive letters and letter case follow Windows kpathsea.
+fn openout_policy(full: &str, roots: &[String], choice: &str, windows: bool) -> bool {
+    let form = |s: &str| if windows { win_form(s) } else { s.to_string() };
+    let full = form(full);
+    for root in roots {
+        let root = form(root);
+        let root = root.trim_end_matches('/');
+        if root.is_empty() {
+            continue;
+        }
+        if let Some(rest) = below_root(&full, root, windows) {
+            return out_name_ok(rest, false, choice);
+        }
+    }
+    let absolute = if windows { win_is_absolute(&full) } else { std::path::Path::new(&full).is_absolute() };
+    out_name_ok(&full, absolute, choice)
+}
+
+/// The target with its nearest existing ancestor canonicalized (the file
+/// itself usually does not exist yet).
+#[cfg(windows)]
+fn canonical_target(full: &str) -> Option<String> {
+    let mut tail = Vec::new();
+    let mut cur = std::path::PathBuf::from(full);
+    loop {
+        if let Ok(real) = std::fs::canonicalize(&cur) {
+            let mut out = real;
+            for part in tail.iter().rev() {
+                out.push(part);
+            }
+            return Some(out.to_string_lossy().into_owned());
+        }
+        let name = cur.file_name()?.to_os_string();
+        tail.push(name);
+        if !cur.pop() {
+            return None;
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -887,7 +972,7 @@ impl Engine {
         } else {
             requested.to_path_buf()
         };
-        let full = full_path.to_string_lossy().into_owned();
+        let full = tex_path_text(&full_path);
         // §1394: stream numbers <0 map to 17, >15 to 16
         let stream = if n < 0 { 17u16 } else { n.min(16) as u16 };
         if !immediate {
@@ -912,18 +997,33 @@ impl Engine {
         let choice = if choice.is_empty() { "p" } else { choice.as_str() };
         let env_roots = ["TEXMF_OUTPUT_DIRECTORY", "TEXMFOUTPUT"].map(|v| std::env::var(v).ok());
         let aux = self.aux_dir.as_ref().map(|dir| dir.to_string_lossy().into_owned());
-        let roots = [aux.as_deref(), Some(self.out_dir.as_str())]
+        #[allow(unused_mut)]
+        let mut roots: Vec<String> = [aux.as_deref(), Some(self.out_dir.as_str())]
             .into_iter()
             .chain(env_roots.iter().map(Option::as_deref))
             .flatten()
-            .map(|root| root.trim_end_matches('/'))
-            .filter(|root| !root.is_empty());
-        for root in roots {
-            if let Some(rest) = full.strip_prefix(root).and_then(|r| r.strip_prefix('/')) {
-                return out_name_ok(rest, false, choice);
+            .map(str::to_string)
+            .collect();
+        #[cfg(windows)]
+        {
+            // 8.3 short names (`RUNNER~1`) and long names spell one
+            // directory: also trust the canonical form of every root and
+            // compare against the canonical form of the target's nearest
+            // existing ancestor.
+            let canonical: Vec<String> = roots
+                .iter()
+                .filter(|root| !root.is_empty())
+                .filter_map(|root| std::fs::canonicalize(root).ok())
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect();
+            roots.extend(canonical);
+            if openout_policy(full, &roots, choice, true) {
+                return true;
             }
+            return canonical_target(full).is_some_and(|target| openout_policy(&target, &roots, choice, true));
         }
-        out_name_ok(full, std::path::Path::new(full).is_absolute(), choice)
+        #[cfg(not(windows))]
+        openout_policy(full, &roots, choice, false)
     }
 
     /// the actual file open, shared by `\immediate\openout` and the
@@ -2566,6 +2666,37 @@ mod tests {
         assert!(super::out_name_ok("../x.txt", false, "r"));
         assert!(!super::out_name_ok(".profile", false, "r"));
         assert!(super::out_name_ok("/etc/.profile", true, "a"));
+    }
+
+    #[test]
+    fn openout_policy_follows_windows_kpathsea_rules() {
+        let roots = |r: &[&str]| r.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let out = roots(&["C:/Users/runneradmin/Temp/job"]);
+        let verbatim = roots(&["\\\\?\\C:\\Users\\runneradmin\\Temp\\job\\aux"]);
+        for (full, r, ok) in [
+            ("C:/Users/runneradmin/Temp/job\\plain.tex", &out, true),
+            ("C:\\Users\\runneradmin\\Temp\\job\\sub\\a.txt", &out, true),
+            ("c:/users/RUNNERADMIN/temp/JOB/a.txt", &out, true),
+            ("\\\\?\\C:\\Users\\runneradmin\\Temp\\job\\aux\\main.aux", &verbatim, true),
+            ("C:/Users/runneradmin/Temp/job/aux/main.aux", &verbatim, true),
+            ("C:/Users/runneradmin/Temp/job\\..\\victim.txt", &out, false),
+            ("C:\\Users\\runneradmin\\Temp\\jobx\\a.txt", &out, false),
+            ("C:\\Windows\\win.ini", &out, false),
+            ("\\\\server\\share\\x.txt", &out, false),
+            ("\\x.txt", &out, false),
+            ("D:x.txt", &out, false),
+            ("sub\\x.txt", &out, true),
+            ("..\\x.txt", &out, false),
+            ("sub\\..\\x.txt", &out, false),
+            ("sub\\.ssh\\config", &out, false),
+        ] {
+            assert_eq!(super::openout_policy(full, r, "p", true), ok, "{full}");
+        }
+        // Unix: a backslash is an ordinary file name character.
+        assert!(super::openout_policy("sub\\..\\x.txt", &[], "p", false));
+        assert!(!super::openout_policy("sub/../x.txt", &[], "p", false));
+        assert_eq!(super::win_form("\\\\?\\UNC\\srv\\share\\a"), "//srv/share/a");
+        assert_eq!(super::win_form("\\\\?\\C:\\a\\b"), "C:/a/b");
     }
 
     #[test]

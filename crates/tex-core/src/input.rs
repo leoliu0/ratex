@@ -111,6 +111,8 @@ pub enum Source {
         /// group and conditional nesting at open is on the engine's
         /// `file_nests` stack (e-TeX's `grp_stack`/`if_stack`).
         tracked: bool,
+        /// XeTeX: how the bytes of this file are decoded (`\XeTeXinputencoding`).
+        xetex_enc: crate::xetex_input::Enc,
     },
     TokList {
         toks: TokTokens,
@@ -812,6 +814,7 @@ impl InputStack {
             lua_reader: 0,
             cat_regime: -1,
             tracked: false,
+            xetex_enc: crate::xetex_input::Enc::Default,
         });
         self.top_file.set(self.stack.len() - 1);
     }
@@ -847,6 +850,7 @@ impl InputStack {
             lua_reader: 0,
             cat_regime: -1,
             tracked: false,
+            xetex_enc: crate::xetex_input::Enc::Utf8,
         });
         self.top_file.set(self.stack.len() - 1);
     }
@@ -1001,6 +1005,7 @@ mod tests {
             lua_reader: 0,
             cat_regime: -1,
             tracked: false,
+            xetex_enc: crate::xetex_input::Enc::Default,
         });
 
         let context = input

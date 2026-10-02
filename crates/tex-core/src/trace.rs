@@ -285,7 +285,7 @@ impl Engine {
                 self.print_name(out, escape, 0x3000 | i, "[unknown glue parameter!]");
                 out.push(b'=');
                 if let TraceValue::Glue(g) = value {
-                    let mu = i >= GlueParam::ThinMuSkip.idx();
+                    let mu = (GlueParam::ThinMuSkip.idx()..=GlueParam::ThickMuSkip.idx()).contains(&i);
                     self.print_spec_bytes(out, g, if mu { "mu" } else { "pt" });
                 }
             }
@@ -346,6 +346,7 @@ impl Engine {
             TraceSlot::LcCode(c) => self.print_code(out, escape, b"lccode", c, int(value)),
             TraceSlot::UcCode(c) => self.print_code(out, escape, b"uccode", c, int(value)),
             TraceSlot::SfCode(c) => self.print_code(out, escape, b"sfcode", c, int(value)),
+            TraceSlot::InterCharToks => out.extend_from_slice(b"?=?"),
             TraceSlot::MathCode(c) => self.print_code(out, escape, b"mathcode", c, int(value)),
             TraceSlot::DelCode(c) => self.print_code(out, escape, b"delcode", c, int(value)),
             TraceSlot::CurFont => {

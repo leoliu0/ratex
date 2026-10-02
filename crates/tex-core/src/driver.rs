@@ -208,7 +208,7 @@ pub fn prepare_latex_job(eng: &mut Engine) {
 }
 
 pub fn insert_everyjob(eng: &mut Engine) {
-    if eng.engine_kind == crate::engine::EngineKind::LuaTeX {
+    if eng.engine_kind != crate::engine::EngineKind::PdfTeX {
         let ej = (*eng.eqtb.tok_params[crate::prim::ToksParam::EveryJob.idx() as usize]).clone();
         if !ej.is_empty() {
             eng.push_tokens_named(ej, "<everyjob>");

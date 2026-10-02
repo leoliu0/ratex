@@ -506,6 +506,11 @@ impl Engine {
                 for (k, g) in groups.iter().enumerate() {
                     if let Some(parent) = chain.last_mut() {
                         parent.items.push(empty_noad(0));
+                        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                            if let Some(tail) = parent.items.last_mut() {
+                                set_pending_field(tail, PendingField::Nucleus);
+                            }
+                        }
                     }
                     chain.push(MathLevel {
                         mode: Mode::Math,

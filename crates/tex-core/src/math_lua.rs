@@ -244,6 +244,7 @@ impl Engine {
             ],
             sup: None,
             sub: None,
+            options: 0,
         });
     }
 
@@ -830,6 +831,7 @@ impl Engine {
                     nucleus: body.to_vec(),
                     sup: sup.map(<[Node]>::to_vec),
                     sub: sub.map(<[Node]>::to_vec),
+                    options: 0,
                 }];
                 x = self.lm_clean_list(&scripted, g);
                 let nh = box_whd(&x).1;

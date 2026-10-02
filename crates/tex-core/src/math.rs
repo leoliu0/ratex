@@ -165,6 +165,7 @@ pub(crate) fn finish_math_group(mut inner: NodeList) -> Node {
         nucleus,
         sup: None,
         sub: None,
+        options: 0,
     }
 }
 
@@ -1449,7 +1450,14 @@ impl Engine {
 
     /// `^` / `_`: scan the following group-or-token and attach it to the last
     /// atom of the current math list (tex.web "scripts on the tail noad").
-    pub fn append_script(&mut self, sup: bool, _c: u8) {
+    pub fn append_script(&mut self, sup: bool, c: u8) {
+        self.append_script_opt(sup, c, false);
+    }
+
+    /// texmath.c `do_sub_sup(no)`: `no_script` marks the noad with
+    /// `noad_option_no_sub_script`/`no_super_script` (`\Unosubscript`,
+    /// `\Unosuperscript`): that script is typeset in the style of the noad.
+    pub fn append_script_opt(&mut self, sup: bool, _c: u8, no_script: bool) {
         let limits_req = self.math_limits.take();
         if self.script_repeats(sup) {
             // tex.web sub_sup: a second script of the same kind goes on a fresh noad
@@ -1462,6 +1470,7 @@ impl Engine {
                 nucleus: Vec::new(),
                 sup: None,
                 sub: None,
+                options: 0,
             });
         }
         self.show.scan_owner = Some(ScanKind::Script { sup, limits: limits_req });
@@ -1494,6 +1503,7 @@ impl Engine {
                     nucleus: choice_nodes,
                     sup: None,
                     sub: None,
+                    options: 0,
                 })
             } else {
                 l.pop()
@@ -1508,6 +1518,7 @@ impl Engine {
                 nucleus: Vec::new(),
                 sup: None,
                 sub: None,
+                options: 0,
             },
         };
         match top {
@@ -1515,6 +1526,7 @@ impl Engine {
                 mut nucleus,
                 sup: s,
                 sub: x,
+                options: opts,
             } => {
                 // a `\mathop{...}` group atom is stored as a null-MathChar-
                 // prefixed Scripts node. tex.web keeps the limits subtype ON
@@ -1595,10 +1607,16 @@ impl Engine {
                     } else {
                         (s, Some(group))
                     };
+                    let no_bit = match (no_script, sup) {
+                        (false, _) => 0,
+                        (true, true) => crate::boxes::noad_option::NO_SUPER_SCRIPT,
+                        (true, false) => crate::boxes::noad_option::NO_SUB_SCRIPT,
+                    };
                     self.append_mlist_node(Node::Scripts {
                         nucleus,
                         sup: ns,
                         sub: nx,
+                        options: opts | no_bit,
                     });
                 }
             }
@@ -1665,6 +1683,7 @@ impl Engine {
                         nucleus: vec![atom],
                         sup: sup_g,
                         sub: sub_g,
+                        options: 0,
                     });
                 }
             }
@@ -1696,10 +1715,11 @@ impl Engine {
                 mut nucleus,
                 sup,
                 sub,
+                options,
             } => {
                 let head_op = matches!(nucleus.first(), Some(Node::MathChar { class: CL_OP, .. }));
                 if !head_op {
-                    *tail = Node::Scripts { nucleus, sup, sub };
+                    *tail = Node::Scripts { nucleus, sup, sub, options };
                     return;
                 }
                 if st == 2 {
@@ -1716,7 +1736,7 @@ impl Engine {
                     {
                         *c = 2;
                     }
-                    *tail = Node::Scripts { nucleus, sup, sub };
+                    *tail = Node::Scripts { nucleus, sup, sub, options };
                     return;
                 }
                 set_limits_subtype(&mut nucleus, st);
@@ -1727,7 +1747,7 @@ impl Engine {
                         below: sub,
                     };
                 } else {
-                    *tail = Node::Scripts { nucleus, sup, sub };
+                    *tail = Node::Scripts { nucleus, sup, sub, options };
                 }
             }
             Node::OpLimits {
@@ -1955,6 +1975,7 @@ impl Engine {
                         nucleus: nuc,
                         sup: None,
                         sub: None,
+                        options: 0,
                     }
                 }
             }
@@ -1979,6 +2000,7 @@ impl Engine {
                 nucleus: nuc,
                 sup: None,
                 sub: None,
+                options: 0,
             }
         };
         self.append_mlist_node(node);
@@ -2416,7 +2438,7 @@ impl Engine {
             origin: MathDiagnosticOrigin::default(),
         });
         nucleus.extend(inner);
-        self.append_mlist_node(Node::Scripts { nucleus, sup: None, sub: None });
+        self.append_mlist_node(Node::Scripts { nucleus, sup: None, sub: None, options: 0 });
     }
 
     /// 1mu = quad of family 2 at the current math size / 18 (tex.web §767).
@@ -2631,12 +2653,12 @@ impl Engine {
                         let p = nodes.remove(i + 1);
                         math_text.remove(i + 1);
                         Self::set_math_noad_char(&mut nodes[i], replacement);
-                        if let Node::Scripts { sup, sub, .. } = p {
+                        if let Node::Scripts { sup, sub, options, .. } = p {
                             let nucleus = match nodes[i].clone() {
                                 Node::Scripts { nucleus, .. } => nucleus,
                                 q => vec![q],
                             };
-                            nodes[i] = Node::Scripts { nucleus, sup, sub };
+                            nodes[i] = Node::Scripts { nucleus, sup, sub, options };
                         }
                     }
                 }
@@ -2785,7 +2807,7 @@ impl Engine {
                         origin,
                         ..
                     } => Some((*small, *large, None, None, origin)),
-                    Node::Scripts { nucleus, sup, sub } => match nucleus.as_slice() {
+                    Node::Scripts { nucleus, sup, sub, .. } => match nucleus.as_slice() {
                         [Node::DelimBox {
                             size: 1,
                             small,
@@ -3124,7 +3146,7 @@ impl Engine {
                     out
                 }
             }
-            Node::Scripts { nucleus, sup, sub } => {
+            Node::Scripts { nucleus, sup, sub, .. } => {
                 // TeX make_math_accent: scripts on a single-character accent
                 // attach to the character, not the taller accent box. Ordinary
                 // groups containing a lone accent preserve that noad identity.

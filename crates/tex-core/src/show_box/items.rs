@@ -212,6 +212,7 @@ pub(super) fn field_of<'a>(list: &'a [Node]) -> Field<'a> {
             nucleus,
             sup: None,
             sub: None,
+            ..
         }] if matches!(
             nucleus.first(),
             Some(Node::MathChar {
@@ -239,7 +240,7 @@ fn lr_close<'a>(node: &'a Node) -> Option<(Delim, Field<'a>, Field<'a>)> {
     };
     match node {
         Node::DelimBox { .. } => delim(node).map(|d| (d, Field::Empty, Field::Empty)),
-        Node::Scripts { nucleus, sup, sub } => match nucleus.as_slice() {
+        Node::Scripts { nucleus, sup, sub, .. } => match nucleus.as_slice() {
             [n] => delim(n).map(|d| (d, field_opt(sup.as_ref()), field_opt(sub.as_ref()))),
             _ => None,
         },
@@ -384,7 +385,7 @@ fn view_node<'a>(node: &'a Node, out: &mut Vec<Item<'a>>) {
             Field::Empty,
             Field::Empty,
         )),
-        Node::Scripts { nucleus, sup, sub } => scripts_items(
+        Node::Scripts { nucleus, sup, sub, .. } => scripts_items(
             nucleus,
             field_opt(sup.as_ref()),
             field_opt(sub.as_ref()),
@@ -739,7 +740,24 @@ impl<'a> BoxDisplay<'a> {
             if n.subtype != 0 {
                 self.print_esc(if n.subtype == 1 { "limits" } else { "nolimits" });
             }
-            self.subsidiary_field(&n.nucleus, b'.');
+            // luatex's `sub_sup` gives a nucleus-less noad an empty
+            // `sub_mlist` nucleus (`{}`); tex.web leaves it empty
+            let simple = matches!(
+                n.kind,
+                NoadKind::Ord
+                    | NoadKind::Op
+                    | NoadKind::Bin
+                    | NoadKind::Rel
+                    | NoadKind::Open
+                    | NoadKind::Close
+                    | NoadKind::Punct
+                    | NoadKind::Inner
+            );
+            if simple && matches!(n.nucleus, Field::Empty) && self.e.engine_kind == crate::engine::EngineKind::LuaTeX {
+                self.subsidiary_field(&Field::List(Vec::new()), b'.');
+            } else {
+                self.subsidiary_field(&n.nucleus, b'.');
+            }
         }
         self.subsidiary_field(&n.sup, b'^');
         self.subsidiary_field(&n.sub, b'_');

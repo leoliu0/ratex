@@ -52,11 +52,13 @@ struct Noad {
     sup: Option<NodeList>,
     sub: Option<NodeList>,
     text_char: bool,
+    /// luatex `noadoptions` (`noad_option::NO_SUB_SCRIPT`, `NO_SUPER_SCRIPT`)
+    options: u16,
 }
 
 impl Noad {
     fn new(class: u8, nuc: Nuc) -> Noad {
-        Noad { class, special: Special::None, opsub: OP_NORMAL, nuc, sup: None, sub: None, text_char: false }
+        Noad { class, special: Special::None, opsub: OP_NORMAL, nuc, sup: None, sub: None, text_char: false, options: 0 }
     }
     fn has_scripts(&self) -> bool {
         self.sup.is_some() || self.sub.is_some()
@@ -192,8 +194,12 @@ impl Engine {
                     noad.opsub = OP_NORMAL;
                     out.push(Slot::new(Item::Noad(noad)));
                 }
-                Node::Scripts { nucleus, sup, sub } => {
-                    out.push(Slot::new(self.lm_decode_scripts(nucleus, sup, sub, false)));
+                Node::Scripts { nucleus, sup, sub, options } => {
+                    let mut item = self.lm_decode_scripts(nucleus, sup, sub, false);
+                    if let Item::Noad(q) = &mut item {
+                        q.options = *options;
+                    }
+                    out.push(Slot::new(item));
                 }
                 Node::OpLimits { op, above, below } => {
                     out.push(Slot::new(self.lm_decode_oplimits(op, above, below)));
@@ -261,7 +267,7 @@ impl Engine {
             if let [Node::Accent { body, .. }] = nucleus {
                 if matches!(body.as_slice(), [Node::MathChar { fam, .. }] if *fam != 255) {
                     return Item::Raw {
-                        node: Node::Scripts { nucleus: nucleus.to_vec(), sup: sup.clone(), sub: sub.clone() },
+                        node: Node::Scripts { nucleus: nucleus.to_vec(), sup: sup.clone(), sub: sub.clone(), options: 0 },
                         frac: false,
                     };
                 }
@@ -989,9 +995,16 @@ impl Engine {
         subshift: i32,
     ) {
         let size = size_of_style(cur_style);
-        let (sup, sub, nuc_is_char) = match &slots[i].item {
-            Item::Noad(q) => (q.sup.clone(), q.sub.clone(), matches!(q.nuc, Nuc::Char { .. })),
+        let (sup, sub, nuc_is_char, options) = match &slots[i].item {
+            Item::Noad(q) => (q.sup.clone(), q.sub.clone(), matches!(q.nuc, Nuc::Char { .. }), q.options),
             _ => return,
+        };
+        // `\Unosubscript`/`\Unosuperscript`: the script keeps the style of the noad
+        let sub_style = |g: GStyle| {
+            if crate::boxes::noad_option::has(options, crate::boxes::noad_option::NO_SUB_SCRIPT) { g } else { sub_style(g) }
+        };
+        let sup_style = |g: GStyle| {
+            if crate::boxes::noad_option::has(options, crate::boxes::noad_option::NO_SUPER_SCRIPT) { g } else { sup_style(g) }
         };
         let mut shift_up;
         let mut shift_down;
@@ -1434,7 +1447,7 @@ fn xn_over_d_signed(x: i32, n: i32, d: i32) -> i32 {
 fn close_marker(n: &Node) -> Option<(&Node, Option<NodeList>, Option<NodeList>)> {
     match n {
         Node::DelimBox { size: 1, .. } => Some((n, None, None)),
-        Node::Scripts { nucleus, sup, sub } => match nucleus.as_slice() {
+        Node::Scripts { nucleus, sup, sub, .. } => match nucleus.as_slice() {
             [m @ Node::DelimBox { size: 1, .. }] => Some((m, sup.clone(), sub.clone())),
             _ => None,
         },

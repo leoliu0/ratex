@@ -1785,8 +1785,20 @@ impl Engine {
             return;
         };
         if file {
-            let name = String::from_utf8_lossy(&body).trim().to_string();
-            if let Some(bytes) = tex_kpse::get_embedded_package(&name) {
+            let mut name = String::from_utf8_lossy(&body).trim().to_string();
+            // find_data_file/read_data_file
+            let mut served = None;
+            match self.lua_data_file(&name) {
+                Some(Ok(bytes)) => served = Some(bytes),
+                Some(Err(open_name)) => name = open_name,
+                None => {}
+            }
+            if self.stopped_on_error && self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                return;
+            }
+            if let Some(bytes) = served {
+                body = bytes;
+            } else if let Some(bytes) = tex_kpse::get_embedded_package(&name) {
                 body = bytes;
             } else {
                 let Some(path) = self
@@ -2041,10 +2053,22 @@ impl Engine {
             page_box = PDF_BOX_SPEC_CROP;
         }
 
+        // find_image_file names the path the image is read from
+        let (lookup, from_callback) = match self.lua_image_file(&file) {
+            Some(Some(path)) => (path, true),
+            Some(None) => return,
+            None => (file.clone(), false),
+        };
         let (path, bytes, bundled) = if let Some(bytes) = self.pdfe_memstreams.get(&file).cloned() {
             // registered by `pdfe.new(stream, length, id)`
             (std::path::PathBuf::from(&file), bytes, true)
-        } else if let Some(path) = self.resolve_input_path(&file) {
+        } else if tex_kpse::embedded_tree::is_embedded_path(&lookup) {
+            let Some(bytes) = tex_kpse::embedded_tree::read(&lookup) else {
+                self.lua_res_error(Some(&file), "pdf backend", &format!("reading image file '{lookup}' failed"));
+                return;
+            };
+            (std::path::PathBuf::from(&lookup), bytes, true)
+        } else if let Some(path) = self.resolve_input_path(&lookup) {
             let bytes = match tex_kpse::fs::read(&path) {
                 Ok(bytes) => bytes,
                 Err(error) => {
@@ -2058,6 +2082,9 @@ impl Engine {
             self.record_loaded_bytes(&path, &bytes);
             self.loaded_files.push(path.clone());
             (path, bytes, false)
+        } else if from_callback {
+            self.lua_res_error(Some(&file), "pdf backend", &format!("reading image file '{lookup}' failed"));
+            return;
         } else if !std::path::Path::new(&file).is_absolute() {
             let Some(bytes) = tex_kpse::get_embedded_package(&file) else {
                 self.error_at(

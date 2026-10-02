@@ -33,6 +33,7 @@ mod lua_font_lib;
 mod lua_font_vf;
 mod lua_callbacks;
 mod lua_cb_files;
+mod lua_cb_resources;
 mod lua_ligkern;
 mod lua_bridge;
 mod lua_sys;

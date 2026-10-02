@@ -2885,7 +2885,11 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             }
         };
         phase_timer.mark("pdf_serialize");
-        let out = format!("{}{}.pdf", eng.out_dir, job);
+        // a LuaTeX `find_output_file` callback may name the PDF file
+        let out = match eng.pdf_output_file_override() {
+            Some(name) => name.to_string(),
+            None => format!("{}{}.pdf", eng.out_dir, job),
+        };
         if !eng.out_dir.is_empty() {
             let _ = std::fs::create_dir_all(&eng.out_dir);
         }

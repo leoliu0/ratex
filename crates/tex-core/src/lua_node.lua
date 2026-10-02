@@ -325,6 +325,10 @@ end
 function node.mlist_to_hlist(n, style, penalties)
   return tonode(N.mlist_to_hlist(todirect_ud(n), style, penalties))
 end
+function node.make_extensible(...)
+  if select("#", ...) < 3 then return nil end
+  return tonode(N.make_extensible(...))
+end
 node.hpack = lenient_pack(N.wrap_hpack, "hpack")
 node.vpack = lenient_pack(N.wrap_vpack, "vpack")
 function node.tostring(n) return N.tostring_node(todirect_ud(n)) end

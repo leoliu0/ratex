@@ -336,8 +336,8 @@ impl Engine {
     }
 
     /// mlist.c `overbar`: kern `ht`, rule `t`, kern `k`, then `b`.
-    fn lua_overbar(&mut self, b: Node, k: i32, t: i32, ht: i32) -> Node {
-        let rule = Node::Rule { width: crate::build::RULE_FILL, height: t, depth: 0, attr: crate::boxes::Attr::NONE };
+    fn lua_overbar(&mut self, b: Node, k: i32, t: i32, ht: i32, size: usize) -> Node {
+        let rule = self.lm_math_rule(t, crate::boxes::RULE_MATH_RADICAL, size);
         vpack_nat(self, vec![Node::Kern(ht, crate::boxes::Attr::NONE), rule, Node::Kern(k, crate::boxes::Attr::NONE), b])
     }
 
@@ -533,7 +533,7 @@ impl Engine {
                 set_shift(&mut y, shift);
                 let h = dy + hy;
                 let kern = self.mparam_err(MATH_PARAM_RADICAL_KERN, g);
-                let p = self.lua_overbar(x, clr, theta, kern);
+                let p = self.lua_overbar(x, clr, theta, kern, size);
                 let mut list = vec![y, p];
                 if let Some(degree) = degree {
                     let r = self.lm_clean_list(degree, 6);
@@ -568,12 +568,13 @@ impl Engine {
         right: Option<&Delim>,
         middle: Option<&Delim>,
         options: u16,
+        fam: i32,
         g: GStyle,
     ) -> Node {
         let size = font_size(g);
         let mut thickness = thickness;
-        if self.eqtb.int_params[Ip::MathRuleThicknessMode.idx() as usize] > 0 && thickness != 0 {
-            let f = self.fam_fnt(0, size);
+        if self.eqtb.int_params[Ip::MathRuleThicknessMode.idx() as usize] > 0 && thickness != 0 && fam >= 0 {
+            let f = self.fam_fnt(fam as u32, size);
             if self.assume_new_math(f) {
                 let t = self.font_math_par(f, crate::math_otf::mc::FRACTION_RULE_THICKNESS);
                 if t != UNDEFINED_MATH_PARAMETER {
@@ -683,10 +684,11 @@ impl Engine {
             let (wx, _, _) = box_whd(&x);
             set_dims(&mut vb, Some(wx), Some(shift_up + hx), Some(dz + shift_down));
             let list = if thickness != 0 && !noad_option::has(options, noad_option::NO_RULE) {
+                let fraction_rule = self.lm_math_rule(thickness, crate::boxes::RULE_MATH_FRACTION, size);
                 vec![
                     x,
                     Node::Kern((shift_up - dx) - (axis + delta), crate::boxes::Attr::NONE),
-                    Node::Rule { width: crate::build::RULE_FILL, height: thickness, depth: 0, attr: crate::boxes::Attr::NONE },
+                    fraction_rule,
                     Node::Kern((axis - delta) - (hz - shift_down), crate::boxes::Attr::NONE),
                     z,
                 ]
@@ -794,7 +796,7 @@ impl Engine {
                     let tag = self.mc_tag(f, c);
                     if tag == CharTag::Ext && self.mc_variants(f, c, true).is_some() {
                         let ov = self.mparam_err(MATH_PARAM_CONNECTOR_OVERLAP_MIN, g);
-                        y = Some(self.make_extensible(f, c, w, ov, true));
+                        y = Some(self.get_delim_box(f, c, w, ov, true));
                         ext = true;
                         break;
                     } else if let CharTag::List(yy) = tag {

@@ -976,6 +976,9 @@ impl Engine {
             // s = \displayindent, b = the formula at natural width
             let z = self.pre_display_l;
             let s = self.pre_display_s;
+            // tex.web after_math converts the equation number (when there is one)
+            // before the formula itself
+            let tag_hlist = tag.as_ref().map(|(tl, _)| self.run_mlist_to_hlist(tl, 2, false));
             let fh = self.run_mlist_to_hlist(&formula, 0, false);
             // tex.web §22507: the display's hpack runs with adjust_tail
             // non-null (§22507 `adjust_tail:=adjust_head`), so §12956-12957
@@ -996,9 +999,9 @@ impl Engine {
             let mut leqno = false;
             let mut e = 0i64;
             let mut q = 0i64;
-            if let Some((tl, lq)) = tag {
+            if let Some((_, lq)) = tag {
                 leqno = lq;
-                let th = self.run_mlist_to_hlist(&tl, 2, false);
+                let th = tag_hlist.unwrap_or_default();
                 let mut ab = hpack(th, None, HBOX, &self.eqtb).node;
                 if let Node::Box { lr, .. } = &mut ab {
                     *lr = crate::boxes::BOX_LR_DLIST;
@@ -2348,6 +2351,7 @@ impl Engine {
             right,
             middle,
             options,
+            fam: -1,
             origin, attr: self.eqtb.cur_attr,
         });
     }
@@ -3328,6 +3332,7 @@ impl Engine {
                 right,
                 middle,
                 options,
+                fam,
                 origin, .. } => {
                 if self.engine_kind == crate::engine::EngineKind::LuaTeX {
                     vec![self.make_fraction_lua(
@@ -3338,6 +3343,7 @@ impl Engine {
                         right.as_ref(),
                         middle.as_ref(),
                         *options,
+                        *fam,
                         style,
                     )]
                 } else {

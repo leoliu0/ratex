@@ -998,6 +998,32 @@ impl Engine {
         }
     }
 
+    /// mlist.c `get_delim_box`: the `make_extensible` callback may build the
+    /// box; no result means the default construction.
+    pub(crate) fn get_delim_box(&mut self, fnt: FontId, chr: u32, v: i32, min_overlap: i32, horizontal: bool) -> Node {
+        use crate::lua_callbacks::{Cb, CbArg, CbRet};
+        if self.is_luamath() && self.cb_defined(Cb::MakeExtensible) {
+            let args = vec![
+                CbArg::Int(i64::from(fnt)),
+                CbArg::Int(i64::from(chr)),
+                CbArg::Int(i64::from(v)),
+                CbArg::Int(i64::from(min_overlap)),
+                CbArg::Bool(horizontal),
+                CbArg::Nil,
+            ];
+            if let Some(CbRet::Node(h)) = self.lua_cb_call(Cb::MakeExtensible, "make_extensible", args).as_deref().and_then(|r| r.first()) {
+                let list = self.lua_nodes_to_engine(i64::from(*h));
+                match list.into_iter().next() {
+                    Some(b @ Node::Box { .. }) => return b,
+                    _ => self.error(&format!(
+                        "invalid extensible character {chr} created for font {fnt}, [h|v]list expected"
+                    )),
+                }
+            }
+        }
+        self.make_extensible(fnt, chr, v, min_overlap, horizontal)
+    }
+
     /// luatex `make_extensible`.
     pub(crate) fn make_extensible(
         &mut self,
@@ -1212,7 +1238,7 @@ impl Engine {
             if variants.is_some() {
                 parts_done = true;
                 let ov = self.mparam_err(MATH_PARAM_CONNECTOR_OVERLAP_MIN, cur_style);
-                b = self.make_extensible(f, c, v, ov, flat);
+                b = self.get_delim_box(f, c, v, ov, flat);
                 let m = self.mc_metrics(f, x_start);
                 info.delta = if self.assume_new_math(f) { m.vert_italic } else { m.italic };
                 info.stack = true;

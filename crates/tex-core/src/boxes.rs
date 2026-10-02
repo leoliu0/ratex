@@ -497,6 +497,12 @@ pub const RULE_IMAGE: u8 = 2;
 /// `\nohrule`, `\novrule`: takes space, draws nothing
 pub const RULE_EMPTY: u8 = 3;
 pub const RULE_USER: u8 = 4;
+/// the rules `\mathrulesmode` marks in math: `\overline`, `\underline`,
+/// fraction rules and the bar of a radical (`rule_subtypes` 5..8)
+pub const RULE_MATH_OVER: u8 = 5;
+pub const RULE_MATH_UNDER: u8 = 6;
+pub const RULE_MATH_FRACTION: u8 = 7;
+pub const RULE_MATH_RADICAL: u8 = 8;
 
 /// the repeated object of a leader node: a rule or a packed box
 #[derive(Clone, Debug)]
@@ -862,6 +868,9 @@ pub enum Node {
         middle: Option<Delim>,
         /// luatex `fractionoptions` (`noad_option_*`, see [`noad_option`])
         options: u16,
+        /// luatex `fraction_fam`: -1 unless a Lua fraction noad sets `fam`; with
+        /// `\mathrulethicknessmode` its font gives the rule thickness
+        fam: i32,
         origin: MathDiagnosticOrigin,
         attr: Attr,
     },

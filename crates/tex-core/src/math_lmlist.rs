@@ -675,8 +675,19 @@ impl Engine {
 
     // ================= over / under / vcenter =================
 
-    fn lm_rule(t: i32) -> Node {
-        Node::Rule { width: crate::build::RULE_FILL, height: t, depth: 0, subtype: crate::boxes::RULE_NORMAL, index: 0, attr: crate::boxes::Attr::NONE }
+    /// mlist.c `do_fraction_rule`: a rule of thickness `t`; under
+    /// `\mathrulesmode` it carries the math rule subtype `some_rule` and the
+    /// size it was made for as its `index`.
+    pub(crate) fn lm_math_rule(&self, t: i32, some_rule: u8, size: usize) -> Node {
+        let marked = self.eqtb.int_params[IntParam::MathRulesMode.idx() as usize] != 0;
+        Node::Rule {
+            width: crate::build::RULE_FILL,
+            height: t,
+            depth: 0,
+            subtype: if marked { some_rule } else { crate::boxes::RULE_NORMAL },
+            index: if marked { size as i32 } else { 0 },
+            attr: crate::boxes::Attr::NONE,
+        }
     }
 
     fn lm_nuc_of(&self, slots: &[Slot], i: usize) -> Nuc {
@@ -699,7 +710,7 @@ impl Engine {
         let vgap = self.mparam_err(MATH_PARAM_OVERBAR_VGAP, cur_style);
         let kern = self.mparam_err(MATH_PARAM_OVERBAR_KERN, cur_style);
         // overbar(b, k = vgap, t, ht = kern)
-        let v = vpack_nat(self, vec![Node::Kern(kern, crate::boxes::Attr::NONE), Self::lm_rule(thickness), Node::Kern(vgap, crate::boxes::Attr::NONE), b]);
+        let v = vpack_nat(self, vec![Node::Kern(kern, crate::boxes::Attr::NONE), self.lm_math_rule(thickness, crate::boxes::RULE_MATH_OVER, size_of_style(cur_style)), Node::Kern(vgap, crate::boxes::Attr::NONE), b]);
         Self::lm_set_nuc_box(slots, i, v);
     }
 
@@ -709,7 +720,8 @@ impl Engine {
         let x = self.lm_clean_nuc(&nuc, cur_style);
         let vgap = self.mparam_err(MATH_PARAM_UNDERBAR_VGAP, cur_style);
         let (_, xh, _) = box_whd(&x);
-        let mut y = vpack_nat(self, vec![x, Node::Kern(vgap, crate::boxes::Attr::NONE), Self::lm_rule(thickness)]);
+        let rule = self.lm_math_rule(thickness, crate::boxes::RULE_MATH_UNDER, size_of_style(cur_style));
+        let mut y = vpack_nat(self, vec![x, Node::Kern(vgap, crate::boxes::Attr::NONE), rule]);
         let kern = self.mparam_err(MATH_PARAM_UNDERBAR_KERN, cur_style);
         let (_, yh, yd) = box_whd(&y);
         let delta = yh + yd + kern;

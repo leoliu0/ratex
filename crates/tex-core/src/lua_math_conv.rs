@@ -275,7 +275,7 @@ impl Engine {
                 };
                 self.import_noad_with(CL_OP, sub, payload, above.as_deref(), below.as_deref(), ctx, None)
             }
-            Node::Frac { num, den, thickness, left, right, middle, options, .. } => {
+            Node::Frac { num, den, thickness, left, right, middle, options, fam, .. } => {
                 let n = self.lua_new_node(FRACTION, 0);
                 let nu = self.import_math_sub_mlist(num, ctx);
                 let de = self.import_math_sub_mlist(den, ctx);
@@ -289,6 +289,7 @@ impl Engine {
                 f[3] = l as i32;
                 f[4] = r as i32;
                 f[5] = m as i32;
+                f[6] = *fam;
                 f[7] = i32::from(*options);
                 n
             }
@@ -702,6 +703,7 @@ impl Engine {
                     right,
                     middle,
                     options: f[7] as u16,
+                    fam: f[6],
                     origin: origin(), attr: crate::boxes::Attr::NONE,
                 });
             }

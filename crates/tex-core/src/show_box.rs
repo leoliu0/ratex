@@ -629,6 +629,12 @@ impl<'a> BoxDisplay<'a> {
                 self.print_scaled(*k);
                 self.print(" (italic)");
             }
+            Node::SpaceAdjKern(k, _) => {
+                self.print_esc("kern");
+                self.out.push(b' ');
+                self.print_scaled(*k);
+                self.print(" (space adjustment)");
+            }
             Node::AccentKern(k, _) => {
                 self.print_esc("kern");
                 if self.e.engine_kind == crate::engine::EngineKind::LuaTeX {

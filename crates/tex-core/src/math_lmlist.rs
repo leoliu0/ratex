@@ -608,7 +608,7 @@ impl Engine {
         };
         if let Node::Box { list, subtype, .. } = &mut x {
             *subtype = st;
-            if list.len() == 2 && is_char_node(&list[0]) && matches!(list[1], Node::Kern(_, _) | Node::ItalicKern(_, _)) {
+            if list.len() == 2 && is_char_node(&list[0]) && matches!(list[1], Node::Kern(_, _) | Node::ItalicKern(_, _) | Node::SpaceAdjKern(_, _)) {
                 list.pop();
             }
         }

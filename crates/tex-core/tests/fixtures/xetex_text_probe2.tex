@@ -1,0 +1,12 @@
+\catcode`\{=1 \catcode`\}=2 \catcode`\#=6
+\tracingonline1 \showboxbreadth100 \showboxdepth100
+\font\a="[lmroman10-regular.otf]" at 10pt
+\font\i="[lmroman10-italic.otf]" at 10pt
+\scrollmode
+\font\n="[nosuchfont.otf]" at 10pt \message{[\fontname\n]}
+\suppressfontnotfounderror=1
+\font\n="[nosuchfont.otf]" at 10pt \message{[\fontname\n]}
+\a \sfcode`\:=2000
+\setbox0\hbox{ab\/cd \i f\/ \a x:\hskip1pt{} y x:\vrule{} y}
+\showbox0
+\end

@@ -107,7 +107,19 @@ pub fn merge_native_fragments(list: &mut NodeList, eqtb: &Eqtb) {
         if let Some((font, _, at)) = list[i].native_word() {
             // the chain of same-font words and empty discretionaries
             let mut j = i + 1;
+            // Ratex's SyncTeX marks are not nodes of the TeX Live list:
+            // they never end a chain and stay behind the merged word
+            let mut syncs: Vec<Node> = Vec::new();
             loop {
+                let mut k = j;
+                while k < list.len() && matches!(&list[k], Node::Whatsit(crate::boxes::WhatIt::SyncPoint { .. }, _)) {
+                    k += 1;
+                }
+                if k > j && k < list.len() && is_word(&list[k], Some(font)) {
+                    syncs.extend(list[j..k].iter().cloned());
+                    list.drain(j..k);
+                    continue;
+                }
                 if j < list.len() && is_word(&list[j], Some(font)) {
                     j += 1;
                 } else if j + 1 < list.len()
@@ -127,11 +139,208 @@ pub fn merge_native_fragments(list: &mut NodeList, eqtb: &Eqtb) {
                     }
                 }
                 let merged = native_word(eqtb, font, &text, at, ugm);
-                list.splice(i..j, std::iter::once(merged));
+                let nsync = syncs.len();
+                list.splice(i..j, std::iter::once(merged).chain(syncs));
+                i += nsync;
             }
         }
         i += 1;
     }
+}
+
+/// xetex.web `store_justified_native_glyphs`: re-measure `text` in `nf`'s
+/// font and spread the difference to `target` width over the space glyphs
+/// (or, with none, over all glyphs).
+fn justified_word(eqtb: &Eqtb, font: FontId, text: &str, target: i32, at: bool, ugm: bool) -> Node {
+    let nf = eqtb.fonts[font as usize].native.as_ref().expect("native font");
+    let m = measure_native_word(nf, text, ugm);
+    let n = m.glyphs.len();
+    // absolute x of every glyph
+    let mut xs: Vec<f64> = Vec::with_capacity(n);
+    let mut x = m.glyphs.first().map_or(0, |g| g.x_offset);
+    for g in &m.glyphs {
+        xs.push(crate::native_font::fix2d(x));
+        x += g.x_advance;
+    }
+    if m.width != target && n > 0 {
+        let just = crate::native_font::fix2d(target - m.width);
+        let space_gid = nf.map_char(' ' as u32);
+        let space_count = m.glyphs.iter().filter(|g| g.glyph_id == space_gid).count();
+        if space_count > 0 {
+            let mut adjustment = 0.0;
+            let mut space_index = 0;
+            for (i, g) in m.glyphs.iter().enumerate() {
+                xs[i] += adjustment;
+                if g.glyph_id == space_gid {
+                    space_index += 1;
+                    adjustment = just * space_index as f64 / space_count as f64;
+                }
+            }
+        } else {
+            for (i, xv) in xs.iter_mut().enumerate().skip(1) {
+                *xv += just * i as f64 / (n - 1) as f64;
+            }
+        }
+    }
+    let fx: Vec<i32> = xs.iter().map(|&v| crate::native_font::d2fix(v)).collect();
+    let glyphs: Vec<NativeGlyph> = m
+        .glyphs
+        .iter()
+        .enumerate()
+        .map(|(i, g)| {
+            let next = fx.get(i + 1).copied().unwrap_or(target);
+            NativeGlyph {
+                x_advance: next - fx[i],
+                x_offset: if i == 0 { fx[0] } else { 0 },
+                ..g.clone()
+            }
+        })
+        .collect();
+    Node::NativeGlyphRun {
+        run: Rc::new(NativeRun { font, text: Rc::from(text), glyphs, actual_text: at }),
+        start: 0,
+        end: n,
+        width: target,
+        height: m.height,
+        depth: m.depth,
+    }
+}
+
+/// xetex.web "Merge sequences of words using native fonts and inter-word
+/// spaces into single nodes" (`hlist_out`, `\XeTeXinterwordspaceshaping>1`):
+/// runs of words of one font joined by the font's normal space are replaced
+/// by one justified word whose width is the run's set width. `sign`, `order`
+/// and `glue_set` are the glue setting of the enclosing box.
+pub fn merge_interword_runs(list: &[Node], eqtb: &Eqtb, sign: u8, order: u8, glue_set: f64) -> NodeList {
+    use crate::boxes::WhatIt;
+    let ugm = eqtb.int_params[crate::prim::IntParam::XeTeXUseGlyphMetrics.idx() as usize] != 0;
+    let invisible = |n: &Node| {
+        matches!(
+            n,
+            Node::Penalty(..)
+                | Node::Ins { .. }
+                | Node::Mark { .. }
+                | Node::Adj(..)
+                | Node::VAdjust(..)
+                | Node::PreAdjust(..)
+                | Node::Whatsit(
+                    WhatIt::Write { .. }
+                        | WhatIt::OpenOut { .. }
+                        | WhatIt::CloseOut { .. }
+                        | WhatIt::Special(..)
+                        | WhatIt::Language { .. }
+                        | WhatIt::SyncPoint { .. },
+                    _
+                )
+        )
+    };
+    let skip_invisible = |mut q: usize| {
+        while q < list.len() && invisible(&list[q]) {
+            q += 1;
+        }
+        q
+    };
+    let word_of = |i: usize, font: FontId| -> bool {
+        i < list.len() && list[i].native_word().is_some_and(|(f, _, _)| f == font)
+    };
+    let font_space = |f: FontId| -> (i32, i32, i32) {
+        let p = eqtb.font_params.get(f as usize);
+        let g = |i: usize| p.and_then(|p| p.get(i)).copied().unwrap_or(0);
+        (g(1), g(2), g(3))
+    };
+    let is_font_glue = |n: &Node, f: FontId| match n {
+        Node::Glue(g, _) if g.subtype == 0 => {
+            let (w, st, sh) = font_space(f);
+            g.width == w && g.stretch == st && g.shrink == sh && g.stretch_order == 0 && g.shrink_order == 0
+        }
+        _ => false,
+    };
+    let mut out: NodeList = Vec::with_capacity(list.len());
+    let mut i = 0;
+    while i < list.len() {
+        let Some((font, _, at)) = list[i].native_word() else {
+            out.push(list[i].clone());
+            i += 1;
+            continue;
+        };
+        let letter_space = eqtb.fonts[font as usize].native.as_ref().map_or(0, |n| n.letter_space);
+        if i + 1 >= list.len() || letter_space != 0 {
+            out.push(list[i].clone());
+            i += 1;
+            continue;
+        }
+        // r = i; p = last word of the run
+        let mut p = i;
+        let mut q = i + 1;
+        loop {
+            q = skip_invisible(q);
+            if q >= list.len() {
+                break;
+            }
+            if matches!(list[q], Node::Glue(g, _) if g.subtype == 0) {
+                let normal = is_font_glue(&list[q], font);
+                let mut r = q + 1;
+                if normal {
+                    r = skip_invisible(r);
+                    if word_of(r, font) {
+                        p = r;
+                        q = r + 1;
+                        continue;
+                    }
+                }
+                // a space adjustment also licenses merging
+                if matches!(list.get(r), Some(Node::SpaceAdjKern(..))) {
+                    let r2 = skip_invisible(r + 1);
+                    if word_of(r2, font) {
+                        p = r2;
+                        q = r2 + 1;
+                        continue;
+                    }
+                }
+                break;
+            }
+            if word_of(q, font) {
+                p = q;
+                q += 1;
+                continue;
+            }
+            break;
+        }
+        if p == i {
+            out.push(list[i].clone());
+            i += 1;
+            continue;
+        }
+        let mut text = String::new();
+        let mut width = 0i64;
+        let mut invisibles: Vec<Node> = Vec::new();
+        for n in &list[i..=p] {
+            match n {
+                Node::NativeGlyphRun { run, width: w, .. } if !run.text.is_empty() => {
+                    text.push_str(&run.text);
+                    width += *w as i64;
+                }
+                Node::Glue(g, _) => {
+                    text.push(' ');
+                    width += g.width as i64;
+                    if sign == 1 && g.stretch_order == order {
+                        width += (glue_set * g.stretch as f64).round() as i64;
+                    } else if sign == 2 && g.shrink_order == order {
+                        width -= (glue_set * g.shrink as f64).round() as i64;
+                    }
+                }
+                Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) | Node::SpaceAdjKern(k, _) => {
+                    width += *k as i64;
+                }
+                n if invisible(n) => invisibles.push(n.clone()),
+                _ => {}
+            }
+        }
+        out.push(justified_word(eqtb, font, &text, width as i32, at, ugm));
+        out.extend(invisibles);
+        i = p + 1;
+    }
+    out
 }
 
 impl Engine {
@@ -539,7 +748,73 @@ impl Engine {
 
     /// `\XeTeXinterwordspaceshaping`: measure the space between two words in
     /// context and adjust it with a kern (`space_adjustment`).
-    fn xe_interword_space_shaping(&mut self, _f: FontId) {}
+    fn xe_interword_space_shaping(&mut self, f: FontId) {
+        use crate::boxes::WhatIt;
+        let invisible = |n: &Node| {
+            matches!(
+                n,
+                Node::Penalty(..)
+                    | Node::Ins { .. }
+                    | Node::Mark { .. }
+                    | Node::Adj(..)
+                    | Node::VAdjust(..)
+                    | Node::PreAdjust(..)
+                    | Node::Whatsit(
+                        WhatIt::Write { .. }
+                            | WhatIt::OpenOut { .. }
+                            | WhatIt::CloseOut { .. }
+                            | WhatIt::Special(..)
+                            | WhatIt::Language { .. }
+                            | WhatIt::SyncPoint { .. },
+                        _
+                    )
+            )
+        };
+        let n = self.cur_list.len();
+        if n < 3 || !self.cur_list[n - 1].is_native_word() {
+            return;
+        }
+        let tail = n - 1;
+        // the most recent earlier native word
+        let Some(pp) = (0..tail).rev().find(|&i| self.cur_list[i].is_native_word()) else { return };
+        if self.cur_list[pp].native_word().map(|w| w.0) != Some(f) {
+            return;
+        }
+        let mut p = pp + 1;
+        while p < tail && invisible(&self.cur_list[p]) {
+            p += 1;
+        }
+        if p >= tail || !matches!(self.cur_list[p], Node::Glue(..)) {
+            return;
+        }
+        let mut ppp = p + 1;
+        while ppp < tail && invisible(&self.cur_list[ppp]) {
+            ppp += 1;
+        }
+        if ppp != tail {
+            return;
+        }
+        let (w_pp, t_pp) = match &self.cur_list[pp] {
+            Node::NativeGlyphRun { width, run, .. } => (*width, run.text.to_string()),
+            _ => return,
+        };
+        let (w_tail, t_tail) = match &self.cur_list[tail] {
+            Node::NativeGlyphRun { width, run, .. } => (*width, run.text.to_string()),
+            _ => return,
+        };
+        let joined = format!("{t_pp} {t_tail}");
+        let Node::NativeGlyphRun { width: w_joined, .. } =
+            self.xetex_native_word(f, &joined)
+        else {
+            return;
+        };
+        let t = w_joined - w_pp - w_tail;
+        let space = self.eqtb.font_params.get(f as usize).and_then(|p| p.get(1)).copied().unwrap_or(0);
+        if t != space {
+            let attr = self.eqtb.cur_attr;
+            self.cur_list.insert(p + 1, Node::SpaceAdjKern(t - space, attr));
+        }
+    }
 }
 
 #[allow(unused)]

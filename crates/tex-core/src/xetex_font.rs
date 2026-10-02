@@ -390,6 +390,8 @@ impl Engine {
 
     /// XeTeX `\font`: `new_font` (§1257) with `read_font_info`.
     pub(crate) fn xetex_do_font(&mut self, cs: crate::token::CsId, global: bool, source: Option<crate::input::SourceContext>) {
+        // tex.web §1257: `define(u, set_font, null_font)` before scanning
+        self.eqtb.assign(cs, Equiv::FontRef(0), global);
         let (name, quote) = self.scan_xetex_font_name();
         let quoted = quote != 0;
         // at / scaled
@@ -463,7 +465,9 @@ impl Engine {
         let Some(id) = found else {
             if self.eqtb.int_params[crate::prim::IntParam::SuppressFontNotFoundError.idx() as usize] == 0 {
                 let cs_name = String::from_utf8_lossy(self.cs.name(cs)).to_string();
-                let q = if quote != 0 { char::from_u32(quote).unwrap().to_string() } else { String::new() };
+                // file_name_quote_char was reset by the closing quote
+                let q = String::new();
+                let _ = quote;
                 let size = if s >= 0 {
                     format!(" at {}pt", crate::build::print_scaled(s as i64))
                 } else if s != -1000 {

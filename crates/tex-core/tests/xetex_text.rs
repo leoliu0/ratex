@@ -62,3 +62,35 @@ fn interchartoks_fire_between_classes() {
     assert!(!t.contains("[bA]") && !t.contains("[Bb]"), "boundary tokens fired:\n{t}");
     has(t, "\\hbox(7.16+2.04999)x29.58\n.\\a xAByz");
 }
+
+fn run_file(src: &[u8]) -> Engine {
+    let mut eng = Engine::new_with_kind(EngineKind::XeTeX, true);
+    eng.init_primitives();
+    eng.add_nullfont();
+    eng.set_interaction_mode(InteractionMode::Nonstop);
+    eng.input.push_file("probe2.tex".into(), src.to_vec());
+    eng.run();
+    eng
+}
+
+/// `\font` of a missing native font defines the control sequence as
+/// `nullfont` (tex.web §1257), reports the error only without
+/// `\suppressfontnotfounderror`, and prints the spec unquoted; `\/` after a
+/// native word is an explicit kern with the last glyph's italic correction;
+/// glue leaves the space factor alone while a rule resets it.
+#[test]
+fn font_failure_italic_correction_and_space_factor_match_texlive() {
+    let eng = run_file(include_bytes!("fixtures/xetex_text_probe2.tex"));
+    let t = &eng.term;
+    let errors: Vec<&str> = eng.diagnostics.iter().map(|d| d.message.as_str()).filter(|m| m.contains("not loadable")).collect();
+    assert_eq!(
+        errors,
+        ["Font \\n=[nosuchfont.otf] at 10.0pt not loadable: Metric (TFM) file or installed font not found"],
+        "\n{t}"
+    );
+    has(t, "[nullfont] [nullfont]");
+    has(
+        t,
+        "\\hbox(11.27+2.89998)x71.17\n.\\a ab\n.\\kern 0.0\n.\\a cd\n.\\glue 3.33 plus 1.665 minus 1.11\n.\\i f\n.\\kern 1.45\n.\\glue 3.58 plus 1.79 minus 1.19333\n.\\a x:\n.\\glue 1.0\n.\\glue 4.44 plus 3.32999 minus 0.555\n.\\a y\n.\\glue 3.33 plus 1.665 minus 1.11\n.\\a x:\n.\\rule(*+*)x0.4\n.\\glue 3.33 plus 1.665 minus 1.11\n.\\a y",
+    );
+}

@@ -500,8 +500,8 @@ impl Engine {
         let _ = leader;
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => {
+                // tex.web append_glue (§1060) leaves the space factor alone
                 self.cur_list.push(Node::Glue(g, self.eqtb.cur_attr));
-                self.space_factor = 1000;
             }
             Mode::Vertical | Mode::InternalVertical => {
                 self.start_paragraph(false);
@@ -1229,6 +1229,8 @@ impl Engine {
                     self.vlist_append(node);
                 } else {
                     self.cur_list.push(node);
+                    // tex.web §1056: a rule in horizontal mode resets the factor
+                    self.space_factor = 1000;
                 }
             }
             Mode::Vertical => {
@@ -2373,7 +2375,7 @@ impl Engine {
             Some(Node::Glue(_, _)) | Some(Node::Leaders { .. }) => 11,
             Some(Node::Kern(_, _))
             | Some(Node::ExplicitKern(_, _))
-            | Some(Node::AccentKern(_, _) | Node::ItalicKern(_, _))
+            | Some(Node::AccentKern(_, _) | Node::ItalicKern(_, _) | Node::SpaceAdjKern(_, _))
             | Some(Node::MarginKern { .. }) => 12,
             Some(Node::Penalty(_, _)) => 13,
             Some(Node::InsDisc) | Some(Node::Empty) => 14,
@@ -2399,7 +2401,7 @@ impl Engine {
                 Node::Glue(_, _)
                 | Node::Kern(_, _)
                 | Node::ExplicitKern(_, _)
-                | Node::AccentKern(_, _) | Node::ItalicKern(_, _)
+                | Node::AccentKern(_, _) | Node::ItalicKern(_, _) | Node::SpaceAdjKern(_, _)
                 | Node::Penalty(_, _) => {
                     continue
                 }
@@ -2539,7 +2541,7 @@ impl Engine {
                     | Node::Rule { .. }
                     | Node::Kern(_, _)
                     | Node::ExplicitKern(_, _)
-                    | Node::AccentKern(_, _) | Node::ItalicKern(_, _)
+                    | Node::AccentKern(_, _) | Node::ItalicKern(_, _) | Node::SpaceAdjKern(_, _)
             )
         }) {
             self.error("Improper discretionary list");
@@ -2580,7 +2582,7 @@ impl Engine {
             return 0;
         }
         match self.current_tail() {
-            Some(Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _)) => *k,
+            Some(Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) | Node::SpaceAdjKern(k, _)) => *k,
             None if self.mode == Mode::Vertical => self.last_page_kern,
             _ => 0,
         }
@@ -2630,7 +2632,7 @@ impl Engine {
     pub fn un_kern(&mut self) {
         if matches!(
             self.current_tail(),
-            Some(Node::Kern(_, _) | Node::ExplicitKern(_, _) | Node::AccentKern(_, _) | Node::ItalicKern(_, _))
+            Some(Node::Kern(_, _) | Node::ExplicitKern(_, _) | Node::AccentKern(_, _) | Node::ItalicKern(_, _) | Node::SpaceAdjKern(_, _))
         ) {
             self.take_current_tail();
         }

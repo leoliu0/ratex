@@ -172,23 +172,8 @@ impl FontProgram {
                 )
             });
 
-        // Validate embedding restrictions
-        if let Some(perm) = face.permissions() {
-            if perm == ttf_parser::Permissions::Restricted {
-                return Err(format!(
-                    "Font `{}` denies embedding (fsType = Restricted)",
-                    postscript_name
-                ));
-            }
-        }
-        if !face.is_outline_embedding_allowed()
-            && (face.tables().glyf.is_some() || face.tables().cff.is_some())
-        {
-            return Err(format!(
-                "Font `{}` denies outline embedding",
-                postscript_name
-            ));
-        }
+        // fsType is not enforced: xdvipdfmx runs with -E under xelatex and
+        // luatex embeds such fonts too (TeX Live 2026 probes).
 
         let allow_subsetting = face
             .tables()

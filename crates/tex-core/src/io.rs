@@ -2505,6 +2505,7 @@ impl Engine {
             // the escape (`\kern 1.0`), an implicit one without (`\kern1.0`)
             Node::ExplicitKern(k, _) => out.push_str(&format!("kern {}\n", self.scaled_to_string(*k))),
             Node::ItalicKern(k, _) => out.push_str(&format!("kern {} (italic)\n", self.scaled_to_string(*k))),
+            Node::SpaceAdjKern(k, _) => out.push_str(&format!("kern {} (space adjustment)\n", self.scaled_to_string(*k))),
             Node::AccentKern(k, _) => out.push_str(&format!(
                 "kern {} (for accent)\n",
                 self.scaled_to_string(*k)

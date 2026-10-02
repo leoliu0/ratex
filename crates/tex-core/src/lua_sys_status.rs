@@ -91,8 +91,10 @@ fn field(name: &str) -> Option<Field> {
         "lasterrorstring" => diagnostic_message(Error),
         "lastluaerrorstring" | "lastwarningtag" | "lasterrorcontext" => Field::Nil,
         "lastwarningstring" => diagnostic_message(Warning),
+        // pdf.c: the named-destination table starts with room for 1000 entries
+        "dest_names_size" => Field::Int(1000),
         "pdf_gone" | "pdf_ptr" | "dvi_gone" | "dvi_ptr" | "total_pages" | "obj_ptr" | "obj_tab_size" | "pdf_os_cntr"
-        | "pdf_os_objidx" | "pdf_dest_names_ptr" | "dest_names_size" | "pdf_mem_ptr" | "pdf_mem_size" => Field::Int(0),
+        | "pdf_os_objidx" | "pdf_dest_names_ptr" | "pdf_mem_ptr" | "pdf_mem_size" => Field::Int(0),
         "output_file_name" => Field::Nil,
         "log_name" => Field::Str(
             with_engine(|e| {

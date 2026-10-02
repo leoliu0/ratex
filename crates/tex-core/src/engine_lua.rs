@@ -235,14 +235,6 @@ reg["luatex.token"] = {
   __index = function(t, k) return t[k] end,
   __tostring = function(t) return tostring(t) end,
 }
-reg["luatex.node"] = {
-  __name = "luatex.node",
-  __eq = function(a, b) return a == b end,
-  __index = function(n, k) return n[k] end,
-  __newindex = function(n, k, v) n[k] = v end,
-  __tostring = function(n) return tostring(n) end,
-}
-
 local function named(t, name)
   local mt = type(t) == "table" and getmetatable(t) or nil
   if type(mt) == "table" then mt.__name = name end

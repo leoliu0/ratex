@@ -2,7 +2,9 @@
 //! by the pdfTeX `\pdfximage` machinery (`pdf_images.rs`); the Lua side
 //! keeps the image tables.
 
-use tex_lua::{Lua, LuaApi, LuaString, LuaTable};
+use std::any::Any;
+
+use tex_lua::{Lua, LuaApi, LuaString, LuaTable, UserDataTrait};
 
 use crate::engine::{Engine, ImageKind};
 use crate::lua_bridge::{bytes_of, with_engine};
@@ -15,11 +17,48 @@ macro_rules! reg {
     };
 }
 
+/// An image object (limglib.c `luatex.image`): a bare userdata whose fields
+/// the Lua side keeps; the metatable holds the accessors.
+struct ImageUd;
+
+impl UserDataTrait for ImageUd {
+    fn type_name(&self) -> &'static str {
+        "luatex.image"
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
 fn text_tokens(s: &str) -> Vec<Token> {
     s.chars().map(|c| if c == ' ' { Token::space() } else { Token::unicode_char(12, c as u32) }).collect()
 }
 
 impl Engine {
+    /// The `img` index of the image object `obj` (limglib.c `idict_array`
+    /// position, from 1); the first use assigns the next one.
+    pub(crate) fn lua_image_index(&mut self, obj: i32) -> i32 {
+        let objs = &mut self.lua_tex.image_objs;
+        match objs.iter().position(|o| *o == obj) {
+            Some(i) => i as i32 + 1,
+            None => {
+                objs.push(obj);
+                objs.len() as i32
+            }
+        }
+    }
+
+    /// The image object of `img` index `index`; `index` itself when it names
+    /// no image.
+    pub(crate) fn lua_image_obj(&self, index: i32) -> i32 {
+        usize::try_from(index - 1).ok().and_then(|i| self.lua_tex.image_objs.get(i)).copied().unwrap_or(index)
+    }
+
     /// Read the image `spec` names with `\pdfximage`; the object number of
     /// the image, `None` when the image could not be read.
     fn lua_img_scan(&mut self, spec: &LuaTable) -> Result<Option<i64>, String> {
@@ -73,6 +112,20 @@ impl Engine {
 pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
     let t: LuaTable = lua.create_table().map_err(|e| format!("{e:?}"))?;
 
+    let meta: LuaTable = lua.create_table().map_err(|e| format!("{e:?}"))?;
+    t.set("meta", meta.clone()).map_err(|e| format!("{e:?}"))?;
+    let newud = lua
+        .create_callback(move |cx| {
+            let ud = cx.create_userdata(ImageUd)?;
+            let value = cx.pack(&ud)?;
+            value.set_metatable(Some(&meta))?;
+            cx.push(value)
+        })
+        .map_err(|e| format!("{e:?}"))?;
+    t.set("newud", newud).map_err(|e| format!("{e:?}"))?;
+    reg!(lua, t, "fatal", |message: String| -> Result<(), String> {
+        with_engine(|e| e.fatal_error(&message))
+    });
     reg!(lua, t, "scan", |spec: LuaTable| -> Result<Option<i64>, String> {
         with_engine(|e| e.lua_img_scan(&spec))?
     });
@@ -110,6 +163,11 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
                 _ => (None, 0, 0, 0, 0),
             }
         })
+    });
+    reg!(lua, t, "write_now", |obj: i64| -> Result<(), String> { with_engine(|e| e.write_ximage(obj as i32)) });
+    reg!(lua, t, "index_of", |obj: i64| -> Result<i64, String> { with_engine(|e| i64::from(e.lua_image_index(obj as i32))) });
+    reg!(lua, t, "obj_of", |index: i64| -> Result<Option<i64>, String> {
+        with_engine(|e| usize::try_from(index - 1).ok().and_then(|i| e.lua_tex.image_objs.get(i)).map(|o| i64::from(*o)))
     });
     reg!(lua, t, "ref", |obj: i64| -> Result<(), String> {
         // \pdfrefximage <obj>: the image box joins the current list

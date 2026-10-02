@@ -1585,56 +1585,6 @@ impl Engine {
             self.build_page();
         }
     }
-    /// fire deferred \write/\openout/\closeout whatsits found anywhere in a
-    /// shipped tree, in list order (tex.web `out_what` @1414)
-    fn fire_page_writes(&mut self, n: &Node) {
-        match n {
-            Node::Whatsit(crate::boxes::WhatIt::Write {
-                stream,
-                tokens,
-                source,
-            }, _) => {
-                let toks = tokens.clone();
-                self.fire_write(*stream, &toks, source.as_deref());
-            }
-            Node::Whatsit(crate::boxes::WhatIt::LateLua { code, func }, _) => {
-                if *func > 0 {
-                    let f = *func;
-                    self.call_lua_function(f);
-                } else {
-                    let code = code.clone();
-                    if let Err(err) = self.execute_directlua(&code) {
-                        self.error(&format!("LuaTeX error: {err}"));
-                    }
-                }
-            }
-            Node::Whatsit(crate::boxes::WhatIt::OpenOut {
-                stream,
-                names,
-                create_parent,
-                source,
-            }, _) => {
-                let p = names.0.clone();
-                self.exec_openout(*stream, &p, *create_parent, source.as_deref());
-            }
-            Node::Whatsit(crate::boxes::WhatIt::CloseOut { stream, source }, _) => {
-                self.exec_closeout(*stream, source.as_deref());
-            }
-            Node::Box { list, .. } => {
-                for m in list {
-                    self.fire_page_writes(m);
-                }
-            }
-            Node::Ins { box_node, .. } => self.fire_page_writes(box_node),
-            Node::VAdjust(v, _) | Node::PreAdjust(v, _) => {
-                for m in v {
-                    self.fire_page_writes(m);
-                }
-            }
-            _ => {}
-        }
-    }
-
     /// \shipout received a box: emit a PDF page
     pub fn ship_box(&mut self, b: Option<Node>) {
         self.dead_cycles = 0;

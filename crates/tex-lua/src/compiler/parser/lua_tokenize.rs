@@ -102,7 +102,7 @@ impl<'a> LuaTokenize<'a> {
                     let sep = self.skip_sep();
                     if self.reader.current_char() == '[' {
                         self.reader.bump();
-                        self.lex_long_string(sep);
+                        self.lex_long_string(sep, false);
                         return LuaTokenKind::TkLongComment;
                     }
                 }
@@ -117,12 +117,16 @@ impl<'a> LuaTokenize<'a> {
                     return LuaTokenKind::TkLeftBracket;
                 }
                 if self.reader.current_char() != '[' {
-                    self.error(|| "invalid long string delimiter".to_string());
+                    if self.is_lua53() {
+                        self.error(|| format!("invalid long string delimiter near '[{}'", "=".repeat(sep)));
+                    } else {
+                        self.error(|| "invalid long string delimiter".to_string());
+                    }
                     return LuaTokenKind::TkLongString;
                 }
 
                 self.reader.bump();
-                self.lex_long_string(sep)
+                self.lex_long_string(sep, true)
             }
             '=' => {
                 self.reader.bump();
@@ -190,7 +194,11 @@ impl<'a> LuaTokenize<'a> {
             '"' | '\'' => {
                 let quote = self.reader.current_char();
                 self.reader.bump();
-                self.lex_string(quote)
+                if self.is_lua53() {
+                    self.lex_string53(quote)
+                } else {
+                    self.lex_string(quote)
+                }
             }
             '`' => {
                 if self.lexer_config.language_level == crate::LuaLanguageLevel::Lua53 {
@@ -204,7 +212,7 @@ impl<'a> LuaTokenize<'a> {
             }
             '.' => {
                 if self.reader.next_char().is_ascii_digit() {
-                    return self.lex_number();
+                    return if self.is_lua53() { self.lex_number53() } else { self.lex_number() };
                 }
 
                 self.reader.bump();
@@ -218,7 +226,13 @@ impl<'a> LuaTokenize<'a> {
                 self.reader.bump();
                 LuaTokenKind::TkDots
             }
-            '0'..='9' => self.lex_number(),
+            '0'..='9' => {
+                if self.is_lua53() {
+                    self.lex_number53()
+                } else {
+                    self.lex_number()
+                }
+            }
             '/' => {
                 self.reader.bump();
                 let current_char = self.reader.current_char();
@@ -588,7 +602,8 @@ impl<'a> LuaTokenize<'a> {
         LuaTokenKind::TkString
     }
 
-    fn lex_long_string(&mut self, sep: usize) -> LuaTokenKind {
+    fn lex_long_string(&mut self, sep: usize, is_string: bool) -> LuaTokenKind {
+        let start_line = self.line;
         let mut end = false;
         while !self.reader.is_eof() {
             match self.reader.current_char() {
@@ -611,10 +626,230 @@ impl<'a> LuaTokenize<'a> {
         }
 
         if !end {
-            self.error(|| "unfinished long string or comment near <eof>".to_string());
+            if self.is_lua53() {
+                let what = if is_string { "string" } else { "comment" };
+                self.error(|| format!("unfinished long {what} (starting at line {start_line}) near <eof>"));
+            } else {
+                self.error(|| "unfinished long string or comment near <eof>".to_string());
+            }
         }
 
         LuaTokenKind::TkLongString
+    }
+
+    fn is_lua53(&self) -> bool {
+        self.lexer_config.language_level == LuaLanguageLevel::Lua53
+    }
+
+    /// llex.c `esccheck`: on failure the current character joins the buffer
+    /// and the error quotes the buffer.
+    fn esccheck53(&mut self, buf: &mut String, ok: bool, msg: &str) -> bool {
+        if !ok {
+            if !self.reader.is_eof() {
+                buf.push(self.reader.current_char());
+                self.reader.bump();
+            }
+            let text = buf.clone();
+            self.error(|| format!("{msg} near '{text}'"));
+        }
+        ok
+    }
+
+    /// llex.c `read_string` of Lua 5.3 (the opening quote is consumed). `buf`
+    /// mirrors the lexer buffer, which the error messages quote.
+    fn lex_string53(&mut self, quote: char) -> LuaTokenKind {
+        let mut buf = String::new();
+        buf.push(quote);
+        loop {
+            if self.reader.is_eof() {
+                self.error(|| "unfinished string near <eof>".to_string());
+                return LuaTokenKind::TkString;
+            }
+            let c = self.reader.current_char();
+            if c == quote {
+                break;
+            }
+            match c {
+                '\n' | '\r' => {
+                    let text = buf.clone();
+                    self.error(|| format!("unfinished string near '{text}'"));
+                    return LuaTokenKind::TkString;
+                }
+                '\\' => {
+                    buf.push('\\');
+                    self.reader.bump();
+                    if self.reader.is_eof() {
+                        continue;
+                    }
+                    let e = self.reader.current_char();
+                    let simple = match e {
+                        'a' => Some('\x07'),
+                        'b' => Some('\x08'),
+                        'f' => Some('\x0c'),
+                        'n' => Some('\n'),
+                        'r' => Some('\r'),
+                        't' => Some('\t'),
+                        'v' => Some('\x0b'),
+                        '\\' | '"' | '\'' => Some(e),
+                        _ => None,
+                    };
+                    if let Some(value) = simple {
+                        self.reader.bump();
+                        buf.pop();
+                        buf.push(value);
+                        continue;
+                    }
+                    match e {
+                        'x' => {
+                            let mut value = 0u32;
+                            for _ in 0..2 {
+                                buf.push(self.reader.current_char());
+                                self.reader.bump();
+                                let d = self.reader.current_char();
+                                let ok = !self.reader.is_eof() && d.is_ascii_hexdigit();
+                                if !self.esccheck53(&mut buf, ok, "hexadecimal digit expected") {
+                                    return LuaTokenKind::TkString;
+                                }
+                                value = value * 16 + d.to_digit(16).unwrap_or(0);
+                            }
+                            self.reader.bump();
+                            for _ in 0..3 {
+                                buf.pop();
+                            }
+                            buf.push(char::from(value as u8));
+                        }
+                        'u' => {
+                            buf.push('u');
+                            self.reader.bump();
+                            let brace = self.reader.current_char() == '{';
+                            if !self.esccheck53(&mut buf, brace, "missing '{'") {
+                                return LuaTokenKind::TkString;
+                            }
+                            buf.push('{');
+                            self.reader.bump();
+                            let first = self.reader.current_char();
+                            let ok = !self.reader.is_eof() && first.is_ascii_hexdigit();
+                            if !self.esccheck53(&mut buf, ok, "hexadecimal digit expected") {
+                                return LuaTokenKind::TkString;
+                            }
+                            let mut value = u64::from(first.to_digit(16).unwrap_or(0));
+                            let mut removed = 4;
+                            loop {
+                                buf.push(self.reader.current_char());
+                                self.reader.bump();
+                                let d = self.reader.current_char();
+                                if self.reader.is_eof() || !d.is_ascii_hexdigit() {
+                                    break;
+                                }
+                                removed += 1;
+                                value = (value << 4) + u64::from(d.to_digit(16).unwrap_or(0));
+                                if !self.esccheck53(&mut buf, value <= 0x10FFFF, "UTF-8 value too large") {
+                                    return LuaTokenKind::TkString;
+                                }
+                            }
+                            let close = self.reader.current_char() == '}';
+                            if !self.esccheck53(&mut buf, close, "missing '}'") {
+                                return LuaTokenKind::TkString;
+                            }
+                            for _ in 0..removed {
+                                buf.pop();
+                            }
+                            buf.push(char::from_u32(value as u32).unwrap_or('\u{fffd}'));
+                        }
+                        '\n' | '\r' => {
+                            self.lex_new_line();
+                            buf.pop();
+                            buf.push('\n');
+                        }
+                        'z' => {
+                            buf.pop();
+                            self.reader.bump();
+                            while matches!(self.reader.current_char(), ' ' | '\t' | '\x0b' | '\x0c' | '\n' | '\r') {
+                                if matches!(self.reader.current_char(), '\n' | '\r') {
+                                    self.lex_new_line();
+                                } else {
+                                    self.reader.bump();
+                                }
+                            }
+                        }
+                        _ => {
+                            if !self.esccheck53(&mut buf, e.is_ascii_digit(), "invalid escape sequence") {
+                                return LuaTokenKind::TkString;
+                            }
+                            let mut value = 0u32;
+                            let mut digits = 0;
+                            while digits < 3 && self.reader.current_char().is_ascii_digit() {
+                                value = value * 10 + self.reader.current_char().to_digit(10).unwrap_or(0);
+                                buf.push(self.reader.current_char());
+                                self.reader.bump();
+                                digits += 1;
+                            }
+                            if !self.esccheck53(&mut buf, value <= 255, "decimal escape too large") {
+                                return LuaTokenKind::TkString;
+                            }
+                            for _ in 0..digits + 1 {
+                                buf.pop();
+                            }
+                            buf.push(char::from(value as u8));
+                        }
+                    }
+                }
+                _ => {
+                    buf.push(c);
+                    self.reader.bump();
+                }
+            }
+        }
+        self.reader.bump();
+        LuaTokenKind::TkString
+    }
+
+    /// llex.c `read_numeral` of Lua 5.3: take every hexadecimal digit, `.` and
+    /// exponent sign, then require the whole text to be one numeral.
+    fn lex_number53(&mut self) -> LuaTokenKind {
+        let first = self.reader.current_char();
+        let mut text = String::new();
+        text.push(first);
+        self.reader.bump();
+        let mut expo = ['e', 'E'];
+        if first == '0' && matches!(self.reader.current_char(), 'x' | 'X') {
+            text.push(self.reader.current_char());
+            self.reader.bump();
+            expo = ['p', 'P'];
+        }
+        loop {
+            let c = self.reader.current_char();
+            if expo.contains(&c) {
+                text.push(c);
+                self.reader.bump();
+                if matches!(self.reader.current_char(), '+' | '-') {
+                    text.push(self.reader.current_char());
+                    self.reader.bump();
+                }
+            }
+            let c = self.reader.current_char();
+            if c.is_ascii_hexdigit() || c == '.' {
+                text.push(c);
+                self.reader.bump();
+            } else {
+                break;
+            }
+        }
+        if !numeral53_is_valid(&text) {
+            self.error(|| format!("malformed number near '{text}'"));
+            return LuaTokenKind::TkFloat;
+        }
+        let hex = text.starts_with("0x") || text.starts_with("0X");
+        let integer = if hex {
+            text[2..].bytes().all(|b| b.is_ascii_hexdigit())
+        } else {
+            text.bytes().all(|b| b.is_ascii_digit())
+        };
+        if integer {
+            LuaTokenKind::TkInt
+        } else {
+            LuaTokenKind::TkFloat
+        }
     }
 
     fn lex_number(&mut self) -> LuaTokenKind {
@@ -762,4 +997,43 @@ fn is_name_start(ch: char, high: bool) -> bool {
 
 fn is_name_continue(ch: char, high: bool) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_' || (high && !ch.is_ascii())
+}
+
+/// Whether `text` is one Lua 5.3 numeral (`luaO_str2num`): decimal digits or
+/// `0x` hexadecimal digits with an optional fraction and a `e`/`p` exponent.
+fn numeral53_is_valid(text: &str) -> bool {
+    let b = text.as_bytes();
+    let hex = b.len() >= 2 && b[0] == b'0' && matches!(b[1], b'x' | b'X');
+    let mut i = if hex { 2 } else { 0 };
+    let digit = |c: u8| if hex { c.is_ascii_hexdigit() } else { c.is_ascii_digit() };
+    let mut digits = 0;
+    while i < b.len() && digit(b[i]) {
+        i += 1;
+        digits += 1;
+    }
+    if i < b.len() && b[i] == b'.' {
+        i += 1;
+        while i < b.len() && digit(b[i]) {
+            i += 1;
+            digits += 1;
+        }
+    }
+    if digits == 0 {
+        return false;
+    }
+    let expo: [u8; 2] = if hex { [b'p', b'P'] } else { [b'e', b'E'] };
+    if i < b.len() && expo.contains(&b[i]) {
+        i += 1;
+        if i < b.len() && matches!(b[i], b'+' | b'-') {
+            i += 1;
+        }
+        let start = i;
+        while i < b.len() && b[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == start {
+            return false;
+        }
+    }
+    i == b.len()
 }

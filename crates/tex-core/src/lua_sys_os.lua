@@ -156,7 +156,11 @@ function os.spawn(...)
     end
   end
   local status, message, code = S.os_spawn(args or {}, run, pairs_list)
-  if status == nil then return nil, message, code end
+  if status == nil then
+    -- a refused command has no errno: luatex returns (nil, message) only
+    if code == nil then return nil, message end
+    return nil, message, code
+  end
   return status
 end
 

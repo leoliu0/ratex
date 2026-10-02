@@ -1,0 +1,5 @@
+none | 2
+true | nil | Command execution disabled via shell_escape='p'
+empty | nil | Command execution disabled via shell_escape='p'
+spawnno | nil | Command execution disabled via shell_escape='p'
+popenno | nil | specific command execution disabled

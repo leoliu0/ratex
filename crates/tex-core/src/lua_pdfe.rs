@@ -184,6 +184,20 @@ fn typed(cb: &mut CallbackLua<'_>, sh: &Shared, doc: &Rc<Doc>, o: &Obj, key: Opt
     push_all(cb, out)
 }
 
+/// The document and stream behind a pdfe stream userdata.
+pub(crate) fn stream_of(v: &Value) -> Option<(Rc<Doc>, Rc<PStream>)> {
+    let u = v.as_userdata::<StreamUd>()?;
+    let b = u.borrow().ok()?;
+    Some((b.doc.clone(), b.stream.clone()))
+}
+
+/// The document and entries behind a pdfe array userdata.
+pub(crate) fn array_of(v: &Value) -> Option<(Rc<Doc>, Rc<Vec<Obj>>)> {
+    let u = v.as_userdata::<ArrayUd>()?;
+    let b = u.borrow().ok()?;
+    Some((b.doc.clone(), b.array.clone()))
+}
+
 fn ud_arg<T: 'static>(cb: &mut CallbackLua<'_>, i: usize) -> Option<UserDataRef<T>> {
     if cb.arg_count() < i {
         return None;
@@ -1059,7 +1073,8 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
     lua.set_global("pdfe", t).map_err(e)?;
     // luaL_openlib registers the library in package.loaded; the Lua error
     // messages name its functions after it ("pdfe.getfromarray")
-    lua.load("package.loaded.pdfe = pdfe").exec().map_err(|err| format!("pdfe: {}", lua.get_error_message(err).message()))
+    lua.load("package.loaded.pdfe = pdfe").exec().map_err(|err| format!("pdfe: {}", lua.get_error_message(err).message()))?;
+    crate::lua_pdfscanner::install(lua)
 }
 
 impl crate::engine::Engine {

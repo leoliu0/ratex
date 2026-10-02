@@ -2871,7 +2871,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
         publish_synctex(&mut eng, &log_path, synctex_mode, expected_synctex.as_deref());
         std::process::exit(if eng.error_count > 0 { 1 } else { 0 });
     }
-    if !eng.pdf_doc.pages.is_empty() {
+    if !eng.pdf_doc.pages.is_empty() || eng.pdf_force_file() {
         let pages = eng.pdf_doc.pages.len();
         let pdf = match tex_core::driver::finish_pdf(&mut eng, optimize_pdf_size) {
             Ok(pdf) => pdf,

@@ -1,0 +1,148 @@
+1 | c1:1: unexpected symbol near '='
+2 | c2:1: <name> expected near <eof>
+3 | c3:1: '=' or 'in' expected near <eof>
+4 | c4:1: ',' expected near <eof>
+5 | c5:1: 'do' expected near <eof>
+6 | c6:1: 'end' expected near <eof>
+7 | c7:1: 'in' expected near <eof>
+8 | c8:1: unexpected symbol near <eof>
+9 | c9:1: unfinished string near <eof>
+10 | c10:1: unfinished string near '"abc'
+11 | c11:1: unfinished long string (starting at line 1) near <eof>
+12 | c12:1: unfinished long string (starting at line 1) near <eof>
+13 | c13:1: no visible label 'foo' for <goto> at line 1
+14 | c14:1: <break> at line 1 not inside a loop
+15 | c15:1: unexpected symbol near '<'
+16 | c16:1: unexpected symbol near '<'
+17 | c17:1: unexpected symbol near <eof>
+18 | c18:1: unexpected symbol near <eof>
+19 | c19:1: malformed number near '0x'
+20 | c20:1: malformed number near '1e'
+21 | c21:1: malformed number near '1e+'
+22 | c22:1: malformed number near '0x'
+23 | c23:1: malformed number near '3..4'
+24 | c24:1: malformed number near '12abc'
+25 | c25:1: label 'a' already defined on line 1
+26 | c26:1: cannot use '...' outside a vararg function near '...'
+27 | c27:1: invalid escape sequence near ''\q'
+28 | c28:1: decimal escape too large near ''\300''
+29 | c29:1: hexadecimal digit expected near ''\x4''
+30 | c30:1: hexadecimal digit expected near ''\xZ'
+31 | c31:1: UTF-8 value too large near ''\u{110000'
+32 | c32:1: hexadecimal digit expected near ''\u{z'
+33 | c33:1: missing '{' near ''\u1'
+34 | c34:1: missing '}' near ''\u{123''
+35 | c35:1: unfinished long comment (starting at line 1) near <eof>
+36 | c36:1: unfinished long comment (starting at line 1) near <eof>
+37 | c37:1: unexpected symbol near '}'
+38 | c38:1: unexpected symbol near <eof>
+39 | c39:1: 'end' expected near <eof>
+40 | c40:1: 'end' expected near <eof>
+41 | c41:1: 'then' expected near <eof>
+42 | c42:1: unexpected symbol near <eof>
+43 | c43:1: unexpected symbol near '@'
+44 | c44:1: function arguments expected near '='
+45 | c45:1: <name> expected near 'end'
+46 | c46:1: unfinished string near ''a'
+47 | c47:1: unexpected symbol near <eof>
+48 | c48:1: 'do' expected near <eof>
+49 | c49:1: 'end' expected near <eof>
+50 | c50:1: 'until' expected near <eof>
+51 | c51:1: 'until' expected near <eof>
+52 | c52:1: unexpected symbol near <eof>
+53 | c53:1: <name> expected near <eof>
+54 | c54:1: '(' expected near <eof>
+55 | c55:1: <name> or '...' expected near <eof>
+56 | c56:1: <name> or '...' expected near <eof>
+57 | c57:1: <name> or '...' expected near ')'
+58 | c58:1: ')' expected near ','
+59 | c59:1: ')' expected near 'b'
+60 | c60:1: <eof> expected near 'end'
+61 | c61:1: <name> expected near <eof>
+62 | c62:1: <name> expected near '1'
+63 | c63:1: <name> expected near <eof>
+64 | c64:1: unexpected symbol near <eof>
+65 | c65:1: unexpected symbol near 'return'
+66 | c66:1: unexpected symbol near <eof>
+67 | c67:1: <name> expected near <eof>
+68 | c68:1: function arguments expected near <eof>
+69 | c69:1: <name> expected near <eof>
+70 | c70:1: syntax error near '.1'
+71 | c71:1: unexpected symbol near <eof>
+72 | c72:1: ']' expected near <eof>
+73 | c73:1: unexpected symbol near <eof>
+74 | c74:1: ']' expected near <eof>
+75 | c75:1: '=' expected near <eof>
+76 | c76:1: unexpected symbol near '}'
+77 | c77:1: unexpected symbol near <eof>
+78 | c78:1: ')' expected near <eof>
+79 | c79:1: unexpected symbol near '2'
+80 | c80:1: syntax error near 'y'
+81 | c81:1: '=' expected near <eof>
+82 | c82:1: unexpected symbol near <eof>
+83 | c83:1: unexpected symbol near '1'
+84 | c84:1: syntax error near '='
+85 | c85:1: syntax error near '='
+86 | c86:1: unexpected symbol near <eof>
+87 | c87:1: unexpected symbol near <eof>
+88 | c88:1: unexpected symbol near <eof>
+89 | c89:1: unexpected symbol near <eof>
+90 | c90:1: unexpected symbol near <eof>
+91 | c91:1: unexpected symbol near <eof>
+92 | c92:1: <name> expected near <eof>
+93 | c93:1: 'end' expected near <eof>
+94 | c94:1: <eof> expected near 'end'
+95 | c95:1: <eof> expected near 'end'
+96 | c96:1: <eof> expected near 'else'
+97 | c97:1: <eof> expected near 'elseif'
+98 | c98:1: <eof> expected near 'until'
+99 | c99:1: unexpected symbol near 'then'
+100 | c100:1: unexpected symbol near 'in'
+101 | c101:1: unexpected symbol near 'and'
+102 | c102:1: '(' expected near <eof>
+103 | c103:1: <name> or '...' expected near <eof>
+104 | c104:1: 'end' expected near <eof>
+105 | c105:1: <eof> expected near 'x'
+106 | c106:1: syntax error near <eof>
+107 | c107:1: <name> expected near <eof>
+108 | c108:1: <name> expected near '1'
+109 | c109:1: <name> expected near <eof>
+110 | c110:1: '::' expected near <eof>
+111 | OK
+112 | OK
+113 | c113:1: <goto a> at line 1 jumps into the scope of local 'x'
+114 | c114:1: unexpected symbol near <eof>
+115 | c115:1: unexpected symbol near '$'
+116 | c116:1: unexpected symbol near '`'
+117 | c117:1: unexpected symbol near '\'
+118 | c118:1: unfinished string near <eof>
+119 | c119:1: unfinished string near <eof>
+120 | c120:1: unfinished string near <eof>
+121 | c121:1: unexpected symbol near '['
+122 | c122:1: invalid long string delimiter near '[='
+123 | c123:1: invalid long string delimiter near '[='
+124 | c124:1: invalid long string delimiter near '[='
+125 | c125:1: unexpected symbol near '<'
+126 | c126:1: unexpected symbol near <eof>
+127 | c127:1: unfinished string near <eof>
+128 | c128:1: unfinished string near <eof>
+129 | c129:1: unexpected symbol near ''b''
+130 | OK
+131 | c131:1: <name> expected near '...'
+132 | c132:1: malformed number near '0x1p'
+133 | c133:1: malformed number near '0x.p1'
+134 | c134:1: unexpected symbol near '.'
+135 | c135:1: unexpected symbol near '..'
+136 | c136:1: syntax error near <eof>
+137 | c137:1: malformed number near '1..2'
+138 | c138:1: <eof> expected near ';'
+139 | OK
+140 | c140:1: <break> at line 1 not inside a loop
+141 | c141:1: <break> at line 1 not inside a loop
+142 | c142:1: <break> at line 1 not inside a loop
+143 | OK
+144 | c144:1: cannot use '...' outside a vararg function near '...'
+145 | c145:1: unexpected symbol near '<'
+146 | c146:1: cannot use '...' outside a vararg function near '...'
+147 | c147:1: syntax error near <eof>
+148 | c148:1: unexpected symbol near '<'

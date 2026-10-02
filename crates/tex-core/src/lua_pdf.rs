@@ -26,6 +26,11 @@ enum Var {
 }
 
 impl Engine {
+    /// `pdf.setforcefile`: the PDF is written although no page was shipped out.
+    pub fn pdf_force_file(&self) -> bool {
+        self.lua_tex.force_file
+    }
+
     fn lua_pdf_var(&self, key: &[u8]) -> Option<Var> {
         match key {
             b"catalog" => return Some(Var::Text("catalog")),
@@ -315,9 +320,52 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
     reg!(lua, p, "creation_date", || -> Result<LuaBytes, String> {
         with_engine(|e| LuaBytes(e.lua_pdf_creation_date().into_bytes()))
     });
-    reg!(lua, p, "print", |text: LuaString| -> Result<(), String> {
+    reg!(lua, p, "print", |mode: i64, text: LuaString| -> Result<(), String> {
         let text = bytes_of(&text);
-        with_engine(|e| e.lua_tex.pdf_print.extend_from_slice(&text))
+        with_engine(|e| e.lua_tex.pdf_print.push((mode as u8, text)))
+    });
+    // `pdf.includefont`: pdf_init_font; a second call is fatal
+    reg!(lua, p, "include_font", |f: i64| -> Result<(), String> {
+        with_engine(|e| {
+            if e.lua_tex.included_fonts.contains(&f) {
+                e.fatal_error(&format!("error:  (pdf backend): font {f} gets initialized twice"));
+                return Ok(());
+            }
+            // font 0 (also what a missing argument means) is the null font: nothing to set up
+            if f != 0 {
+                let ff = e.lua_pdf_font(f)?;
+                e.pdf_init_font(ff);
+            }
+            e.lua_tex.included_fonts.push(f);
+            Ok::<(), String>(())
+        })?
+    });
+    reg!(lua, p, "include_char", |f: i64, c: i64| -> Result<(), String> {
+        with_engine(|e| {
+            let ff = e.lua_pdf_font(f)?;
+            e.pdf_init_font(ff);
+            if let Ok(c) = u8::try_from(c) {
+                e.pdf_doc.record_font_char(ff as usize, c);
+            }
+            Ok::<(), String>(())
+        })?
+    });
+    reg!(lua, p, "set_force_file", |on: bool| -> Result<(), String> { with_engine(|e| e.lua_tex.force_file = on) });
+    reg!(lua, p, "set_type1_wide_mode", |v: i64| -> Result<(), String> { with_engine(|e| e.lua_tex.type1_wide_mode = v as i32) });
+    reg!(lua, p, "reserve_annot", || -> Result<i64, String> {
+        with_engine(|e| {
+            let obj = e.alloc_pdf_obj();
+            e.pdf_last_annot = obj;
+            i64::from(obj)
+        })
+    });
+    reg!(lua, p, "in_late_lua", || -> Result<bool, String> { with_engine(|e| e.lua_tex.in_late_lua) });
+    reg!(lua, p, "register_annot", |n: i64| -> Result<(), String> {
+        with_engine(|e| {
+            if let Ok(n) = i32::try_from(n) {
+                e.lua_tex.late_annots.push(n);
+            }
+        })
     });
 
     lua.set_global("__ratex_pdflib", p).map_err(|e| format!("{e:?}"))?;

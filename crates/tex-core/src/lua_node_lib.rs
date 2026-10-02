@@ -78,6 +78,10 @@ impl Engine {
     }
 }
 
+fn is_mark(h: u32) -> bool {
+    with_engine(|e| e.lua_nodes.valid(h) && e.lua_nodes.id(h) == MARK).unwrap_or(false)
+}
+
 /// `n.<name>` for a userdata node.
 fn ud_get(n: u32, key: &str) -> Option<UdValue> {
     with_engine(|e| {
@@ -93,7 +97,15 @@ impl UserDataTrait for NodeUd {
         "luatex.node"
     }
 
+    fn metatable_name(&self) -> Option<&'static str> {
+        Some("luatex.node")
+    }
+
     fn get_field(&self, key: &str) -> Option<UdValue> {
+        // the `mark` table is built by the metatable (lua_node.lua `mark_get`)
+        if key == "mark" && is_mark(self.h) {
+            return None;
+        }
         ud_get(self.h, key)
     }
 
@@ -115,6 +127,9 @@ impl UserDataTrait for NodeUd {
     }
 
     fn set_field(&mut self, key: &str, value: UdValue) -> Option<Result<(), String>> {
+        if key == "mark" && is_mark(self.h) {
+            return None;
+        }
         let v = match value {
             UdValue::Nil => SetVal::Nil,
             UdValue::Integer(i) => SetVal::Int(i),
@@ -288,6 +303,7 @@ fn dir_string(d: i32) -> UdValue {
 /// Register the natives; returns the table the Lua side consumes.
 pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
     let n: LuaTable = lua.create_table().map_err(|e| format!("{e:?}"))?;
+    crate::lua_ud::install_tokens(lua, &n)?;
 
     // ---- identity, links ----
     nat!(lua, n, "getid", |h: Option<i64>| -> Result<Option<i64>, String> {
@@ -591,6 +607,57 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
         })
     });
 
+    // ---- mark nodes: `mark` is a Lua table of {cmd, chr, cs} (lnodelib.c) ----
+    // The table lists the head of the token list ({0,0,0}) and every token but
+    // the last one, as LuaTeX's loop over the list does.
+    nat!(lua, n, "mark_get", |h: Option<i64>| -> Result<Option<Vec<i64>>, String> {
+        with_engine(|e| {
+            let h = handle32(h);
+            if !e.lua_nodes.valid(h) || e.lua_nodes.id(h) != MARK {
+                return None;
+            }
+            let toks = e.lua_nodes.node(h).ext.as_ref().map(|x| x.toks.clone()).unwrap_or_default();
+            // the count of triples first; an empty token list gives an empty table, else the
+            // head of the list ({0,0,0}) precedes every token but the last
+            if toks.is_empty() {
+                return Some(vec![0]);
+            }
+            let mut flat = vec![toks.len() as i64, 0, 0, 0];
+            for t in toks.iter().take(toks.len() - 1) {
+                let (cmd, chr) = e.lua_cmd_mode(*t);
+                let cs = if t.unfreeze().is_cs() { Engine::lua_tok_value(*t) - 0x1FFF_FFFF } else { 0 };
+                flat.extend([i64::from(cmd), chr, cs]);
+            }
+            Some(flat)
+        })
+    });
+    // `kinds` holds quadruples: (0, packed token, 0, 0), (1, cmd, chr, 0) for a
+    // character token, (2, byte, 0, 0) for one byte of a string
+    nat!(lua, n, "mark_set", |h: Option<i64>, quads: LuaTable| -> Result<(), String> {
+        let quads: Vec<i64> = quads.sequence_values().map_err(|e| format!("{e:?}"))?;
+        with_engine(|e| {
+            let h = handle32(h);
+            if !e.lua_nodes.valid(h) || e.lua_nodes.id(h) != MARK {
+                return;
+            }
+            let mut toks = Vec::new();
+            for q in quads.chunks(4) {
+                match q {
+                    [0, packed, ..] => {
+                        if let Ok(v) = u32::try_from(*packed) {
+                            toks.push(crate::token::Token(v));
+                        }
+                    }
+                    [1, cmd, chr, ..] if (1..=12).contains(cmd) && *cmd != 5 => {
+                        toks.push(crate::token::Token::unicode_char(*cmd as u8, *chr as u32));
+                    }
+                    [2, byte, ..] => toks.extend(Engine::lua_str_toks(&[*byte as u8])),
+                    _ => {}
+                }
+            }
+            e.lua_nodes.node_mut(h).ext.get_or_insert_with(Default::default).toks = toks;
+        })
+    });
     // ---- fields ----
     nat!(lua, n, "getfield", |h: Option<i64>, key: Value| -> Result<UdValue, String> {
         let hh = handle32(h);

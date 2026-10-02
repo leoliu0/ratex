@@ -144,7 +144,7 @@ fn check(fs: &mut FuncState, expected: LuaTokenKind) -> Result<(), String> {
 
 // Port of error_expected from lparser.c
 fn error_expected(fs: &mut FuncState, token: LuaTokenKind) -> Result<(), String> {
-    let msg = format!("'{}' expected", token);
+    let msg = format!("{} expected", token.expected_text());
     Err(fs.token_error(&msg))
 }
 
@@ -448,12 +448,14 @@ pub fn leaveblock(fs: &mut FuncState) -> Result<(), String> {
 
         // lparser.c:757-760: check for undefined gotos at function level
         if !has_previous && !fs.pending_gotos.is_empty() {
-            // Report the first unresolved goto as an error
+            // Report the first unresolved goto as an error (lparser.c undefgoto)
             let gt = &fs.pending_gotos[0];
-            return Err(fs.sem_error(&format!(
-                "no visible label '{}' for <goto> at line {}",
-                gt.name, gt.line
-            )));
+            let msg = if gt.name == "break" {
+                format!("<break> at line {} not inside a loop", gt.line)
+            } else {
+                format!("no visible label '{}' for <goto> at line {}", gt.name, gt.line)
+            };
+            return Err(fs.sem_error(&msg));
         }
 
         // lparser.c:761: current block now is previous one
@@ -596,7 +598,7 @@ fn breakstat(fs: &mut FuncState) -> Result<(), String> {
             break;
         }
     }
-    if !found_loop {
+    if !found_loop && fs.lexer.level != LuaLanguageLevel::Lua53 {
         return Err("break outside loop".to_string());
     }
     // lparser.c:1611: newgotoentry(ls, ls->brkn, line);
@@ -1117,6 +1119,9 @@ fn funcstat(fs: &mut FuncState, line: usize) -> Result<(), String> {
     // funcstat -> FUNCTION funcname body
     fs.lexer.bump(); // skip FUNCTION
 
+    if fs.lexer.current_token() != LuaTokenKind::TkName {
+        return Err(fs.token_error("<name> expected"));
+    }
     // funcname -> NAME {fieldsel} [':' NAME]
     // Parse first name (base variable)
     let mut base = ExpDesc::new_void();
@@ -1168,8 +1173,10 @@ fn localfunc(fs: &mut FuncState) -> Result<(), String> {
 // Port of getvarattribute from lparser.c:1793-1810
 // attrib -> ['<' NAME '>']
 fn getvarattribute(fs: &mut FuncState, default: VarKind) -> Result<VarKind, String> {
-    if fs.lexer.level != LuaLanguageLevel::Lua55 && fs.lexer.current_token() == LuaTokenKind::TkLt {
-        return Err(fs.sem_error("variable attributes are not supported in Lua 5.3"));
+    if fs.lexer.level != LuaLanguageLevel::Lua55 {
+        // Lua 5.3 has no attributes: `<` ends the statement and is then read as an
+        // unexpected symbol
+        return Ok(default);
     }
 
     if testnext(fs, LuaTokenKind::TkLt) {

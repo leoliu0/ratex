@@ -1,0 +1,12 @@
+none | 1
+count0 | 1
+true | 0
+false | 256
+exit3 | 768
+sig | 9
+missing | 32512
+empty | 0
+number | true | 32512
+spawn | 0
+spawnfail | 4
+spawnmissing | nil | zz_no_such_cmd: No such file or directory | 144

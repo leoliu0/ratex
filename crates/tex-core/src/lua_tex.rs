@@ -53,9 +53,22 @@ fn spec_of(t: &LuaTable) -> Result<[i64; 5], String> {
 /// Per-engine state of the Lua-side libraries.
 #[derive(Default)]
 pub(crate) struct TexState {
-    /// Raw PDF page content queued by `pdf.print` for the page being shipped
-    /// out (drained by the page writer).
-    pub pdf_print: Vec<u8>,
+    /// `pdf.print` calls of the running `\latelua`: (literal mode, text), applied
+    /// to the page content by the renderer after the Lua code returned. Modes:
+    /// 0 origin, 1 page, 2 text, 3 direct, 4 raw.
+    pub pdf_print: Vec<(u8, Vec<u8>)>,
+    /// A late Lua call is running (`global_shipping_mode != NOT_SHIPPING`).
+    pub in_late_lua: bool,
+    /// Annotation objects `pdf.registerannot` added to the page being shipped.
+    pub late_annots: Vec<i32>,
+    /// `pdf.setforcefile(true)`: write the PDF file even when no page was shipped.
+    pub force_file: bool,
+    /// `pdf.settypeonewidemode` (an experimental flag of luatex's Type 1 writer).
+    pub type1_wide_mode: i32,
+    /// Image objects by `img` index: index `i` (from 1) is `image_objs[i - 1]`.
+    pub image_objs: Vec<i32>,
+    /// Fonts `pdf.includefont` initialised.
+    pub included_fonts: Vec<i64>,
     /// Current output position (sp) while a late Lua call runs during
     /// shipout, for `pdf.gethpos`/`getvpos`.
     pub pdf_pos: (i32, i32),

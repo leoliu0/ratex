@@ -659,6 +659,8 @@ impl Engine {
         self.pending_display_formula = Some(formula);
         self.math_lists.push(crate::boxes::NodeList::new());
         self.eqno_leqno = Some(leqno);
+        // the tag is scanned in text style (luatex start_eq_no pushes text_style)
+        self.math_style_stack.push(MathStyle::Text);
         self.show.eqno_line = self.nest_line();
     }
 
@@ -878,6 +880,10 @@ impl Engine {
         ));
         self.prev_graf = pg;
         self.math_style_stack.pop();
+        if self.eqno_leqno.is_some() {
+            // the tag's text style
+            self.math_style_stack.pop();
+        }
         // leak guards: state set inside math must not escape it
         self.right_delim = None;
         while self

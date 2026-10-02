@@ -121,6 +121,63 @@ for _, name in pairs(passthrough) do
   if N[name] then direct[name] = N[name] end
 end
 
+-- `mark` fields are tables of {cmd, chr, cs} (lnodelib.c); setting takes a
+-- string, a table of tokens or a table of such triples.
+local mark_get, mark_set = N.mark_get, N.mark_set
+local function mark_table(h)
+  local flat = { mark_get(h) }
+  local count = flat[1]
+  if count == nil then return nil end
+  local t = {}
+  for i = 0, count - 1 do t[i + 1] = { flat[2 + 3 * i], flat[3 + 3 * i], flat[4 + 3 * i] } end
+  return t
+end
+local function mark_assign(h, v)
+  local quads = {}
+  if type(v) == "string" then
+    for i = 1, #v do
+      quads[#quads + 1] = 2
+      quads[#quads + 1] = v:byte(i)
+      quads[#quads + 1] = 0
+      quads[#quads + 1] = 0
+    end
+  elseif type(v) == "table" then
+    for _, e in ipairs(v) do
+      local packed = N.tok_unwrap(e)
+      if packed then
+        quads[#quads + 1] = 0
+        quads[#quads + 1] = packed
+        quads[#quads + 1] = 0
+        quads[#quads + 1] = 0
+      elseif type(e) ~= "table" then
+        error("error:  (token lib): lua <token> expected, not an object with type " .. type(e), 0)
+      else
+        -- a {cmd, chr, cs} triple
+        quads[#quads + 1] = 1
+        quads[#quads + 1] = e[1] or 0
+        quads[#quads + 1] = e[2] or 0
+        quads[#quads + 1] = 0
+      end
+    end
+  end
+  mark_set(h, quads)
+end
+do
+  local getfield0, setfield0 = N.getfield, N.setfield
+  function direct.getfield(n, k)
+    if k == "mark" then
+      local t = mark_table(n)
+      if t then return t end
+    end
+    return getfield0(n, k)
+  end
+  function direct.setfield(n, k, v, ...)
+    if k == "mark" and mark_table(n) then return mark_assign(n, v) end
+    return setfield0(n, k, v, ...)
+  end
+end
+N.mark_table, N.mark_assign = mark_table, mark_assign
+
 function direct.todirect(n)
   if type(n) == "userdata" then return todirect_ud(n) end
   return n
@@ -353,8 +410,31 @@ node.last_node = function() return tonode(N.last_node()) end
 node.write = function(n) return N.write(todirect_ud(n)) end
 function node.prepend_prevdepth(n, prevdepth) return N.prepend_prevdepth(todirect_ud(n), prevdepth, true) end
 node.fix_node_lists = N.fix_node_lists
-node.getfield = N.getfield_ud
-node.setfield = N.setfield_ud
+do
+  local getfield_ud, setfield_ud = N.getfield_ud, N.setfield_ud
+  node.getfield = function(n, k, ...)
+    if k == "mark" and type(n) == "userdata" then
+      local t = mark_table(todirect_ud(n))
+      if t then return t end
+    end
+    return getfield_ud(n, k, ...)
+  end
+  node.setfield = function(n, k, v, ...)
+    if k == "mark" and type(n) == "userdata" and mark_table(todirect_ud(n)) then
+      return mark_assign(todirect_ud(n), v)
+    end
+    return setfield_ud(n, k, v, ...)
+  end
+end
+-- the metatable of node userdata (`luatex.node`): the engine attaches it to every node it
+-- hands out; equality and tostring are the host's, and `mark` tables are built here
+debug.getregistry()["luatex.node"] = {
+  __name = "luatex.node",
+  __eq = function(a, b) return todirect_ud(a) == todirect_ud(b) end,
+  __index = function(n, k) if k == "mark" then return node.getfield(n, k) end end,
+  __newindex = function(n, k, v) if k == "mark" then return node.setfield(n, k, v) end end,
+  __tostring = function(n) return N.tostring_node(todirect_ud(n)) end,
+}
 node.flush_node = function(n) return N.flush_node(todirect_ud(n)) end
 
 -- userdata traversal (nodes in, nodes out)

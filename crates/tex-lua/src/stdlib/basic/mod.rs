@@ -225,14 +225,13 @@ fn lua_select(l: &mut LuaState) -> LuaResult<usize> {
     let total_args = l.arg_count();
     let vararg_count = if total_args > 0 { total_args - 1 } else { 0 };
 
-    // FAST PATH: Check for "#"
+    // lbaselib.c: a string argument whose first character is '#' counts the arguments
     if let Some(s) = index_arg.as_str() {
-        if s == "#" {
+        if s.starts_with('#') {
             let result = LuaValue::integer(vararg_count as i64);
             l.push_value(result)?;
             return Ok(1);
         }
-        return Err(l.error("bad argument #1 to 'select' (number expected)".to_string()));
     }
 
     let index = index_arg

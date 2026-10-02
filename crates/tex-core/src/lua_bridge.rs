@@ -97,6 +97,9 @@ pub(crate) struct ScannerState {
     chr: i32,
 }
 
+/// Error text `tex.finish` raises to stop the running Lua chunk.
+pub(crate) const FINISH_ABORT: &str = "ratex: tex.finish";
+
 impl Engine {
     pub(crate) fn save_scanner(&self) -> ScannerState {
         ScannerState {
@@ -120,6 +123,8 @@ impl Engine {
         &mut self,
         f: impl FnOnce(&mut LuaEngine) -> Result<R, String>,
     ) -> Result<R, String> {
+        // Lua code sees the nest of the routine it runs in
+        self.enter_pending_output();
         if self.lua.is_none() {
             self.lua = Some(Box::new(LuaEngine::new()?));
         }
@@ -144,7 +149,10 @@ impl Engine {
         f: impl FnOnce(&mut LuaEngine) -> Result<(), String>,
     ) -> Result<(), String> {
         let outer = std::mem::take(&mut self.lua_print_queue);
-        let result = self.lua_run(f);
+        let mut result = self.lua_run(f);
+        if self.end_occurred && result.as_ref().is_err_and(|e| e.contains(FINISH_ABORT)) {
+            result = Ok(());
+        }
         self.flush_lua_output();
         self.lua_print_queue = outer;
         result
@@ -267,6 +275,14 @@ impl Engine {
     /// (lnewtokenlib.c `get_command` / `get_mode`).
     pub(crate) fn lua_cmd_mode(&self, t: Token) -> (u8, i64) {
         let t = t.unfreeze();
+        // the parameters of a macro definition (`token.scan_toks(true)`): out_param
+        // (command 5) and match (command 13) tokens
+        if t.is_char() && t.0 >= crate::expand::PAR_REF_FLAG {
+            return (5, i64::from(t.0 & 0xF));
+        }
+        if t.is_char() && t.cc() == 0 {
+            return (13, i64::from(t.chr()));
+        }
         if t.is_char() && t.cc() != 13 {
             return (t.cc(), i64::from(t.chr()));
         }
@@ -852,6 +868,89 @@ impl Engine {
     }
 }
 
+
+impl Engine {
+    /// `token.scan_toks(true, expand)` (tex.web §473 `scan_toks(true, xpand)`):
+    /// the parameter text up to the opening brace and the body, as the token
+    /// list `\def` would store. A parameter `#n` of the text becomes a match
+    /// token (`Token::char(0, '#')`, LuaTeX command 13), the brace ends it with
+    /// the end-match token (`Token::char(14, 0)`, command 14), and `#n` in the
+    /// body is a `PAR_REF` out_param token.
+    pub(crate) fn lua_scan_toks_def(&mut self, expand: bool) -> Vec<Token> {
+        let mut out = Vec::new();
+        let mut params = 0u32;
+        let mut hash_brace = None;
+        loop {
+            let t = self.raw_token();
+            if t == crate::input::EOF_MARKER || t.is_left_brace() {
+                break;
+            }
+            if t.is_right_brace() {
+                self.error("Missing { inserted");
+                break;
+            }
+            if self.is_macro_param(t) {
+                let t2 = self.raw_token();
+                if t2.is_left_brace() {
+                    out.push(t2);
+                    hash_brace = Some(t2);
+                    out.push(Token::char(14, 0));
+                    return self.lua_scan_def_body(expand, out, params, hash_brace);
+                }
+                params += 1;
+                if params > 9 {
+                    self.error("You already have nine parameters");
+                    params = 9;
+                } else if t2.is_char() && t2.chr() != u32::from(b'0') + params {
+                    self.error("Parameters must be numbered consecutively");
+                    self.push_token(t2);
+                }
+                out.push(Token::char(0, t.chr()));
+                continue;
+            }
+            out.push(t);
+        }
+        out.push(Token::char(14, 0));
+        self.lua_scan_def_body(expand, out, params, hash_brace)
+    }
+
+    fn lua_scan_def_body(&mut self, expand: bool, mut out: Vec<Token>, params: u32, hash_brace: Option<Token>) -> Vec<Token> {
+        let mut depth = 1u32;
+        loop {
+            let t = if expand { self.get_x_raw() } else { self.raw_token() };
+            if t == crate::input::EOF_MARKER {
+                break;
+            }
+            if t.is_left_brace() {
+                depth += 1;
+            } else if t.is_right_brace() {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            } else if self.is_macro_param(t) {
+                let t2 = if expand { self.get_x_raw() } else { self.raw_token() };
+                if self.is_macro_param(t2) {
+                    out.push(t);
+                    continue;
+                }
+                let n = if t2.is_char() { t2.chr().wrapping_sub(u32::from(b'0')) } else { u32::MAX };
+                if (1..=params).contains(&n) {
+                    out.push(Token(crate::expand::PAR_REF_FLAG | n));
+                    continue;
+                }
+                self.error("Illegal parameter number in definition of \\");
+                self.push_token(t2);
+                out.push(t);
+                continue;
+            }
+            out.push(t);
+        }
+        out.extend(hash_brace);
+        out
+    }
+}
+
 fn token_arg(packed: i64) -> Result<Token, String> {
     u32::try_from(packed)
         .map(Token)
@@ -1027,6 +1126,14 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
             } else {
                 e.scan_general_text()
             };
+            e.restore_scanner(saved);
+            toks.into_iter().map(|t| i64::from(t.unfreeze().0)).collect()
+        })
+    });
+    reg!(lua, b, "scan_toks_def", |expand: bool| -> Result<Vec<i64>, String> {
+        with_engine(|e| {
+            let saved = e.save_scanner();
+            let toks = e.lua_scan_toks_def(expand);
             e.restore_scanner(saved);
             toks.into_iter().map(|t| i64::from(t.unfreeze().0)).collect()
         })
@@ -1387,6 +1494,10 @@ impl Engine {
         let t = t.unfreeze();
         if t.is_cs() {
             CS_TOKEN_FLAG + i64::from(t.cs_id())
+        } else if t.0 >= crate::expand::PAR_REF_FLAG {
+            5 * (1 << 21) + i64::from(t.0 & 0xF)
+        } else if t.cc() == 0 {
+            13 * (1 << 21) + i64::from(t.chr())
         } else {
             i64::from(t.cc()) * (1 << 21) + i64::from(t.chr())
         }

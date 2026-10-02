@@ -283,6 +283,10 @@ pub struct Fld {
 /// Find field `name` of a node. Handles the aliases `lua_nodelib_fast_getfield`
 /// accepts besides the names of `node.fields`.
 pub fn resolve(id: u8, subtype: u16, name: &str) -> Option<Fld> {
+    // a rule's image transform is not listed by `node.fields` but is readable and settable
+    if id == RULE && name == "transform" {
+        return Some(Fld { slot: 7, kind: K::I });
+    }
     let fields = fields_of(id, subtype);
     let find = |n: &str| fields.iter().position(|(f, _)| *f == n).map(|slot| Fld { slot, kind: fields[slot].1 });
     if let Some(f) = find(name) {

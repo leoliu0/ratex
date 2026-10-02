@@ -557,11 +557,17 @@ impl UserDataTrait for NestUd {
     }
 
     fn get_field(&self, key: &str) -> Option<UdValue> {
-        let j = self.level;
+        let view_index = self.level;
         let r = with_engine(|e| {
-            let top = j >= e.saved_lists.len();
+            let view = e.lua_nest_view();
+            let (mode, line, prev_depth, space_factor, prev_graf, frame) = *view.get(view_index)?;
+            let top = view_index + 1 == view.len();
+            // the engine frame that holds this level's list (none for levels
+            // tex.web has and this engine keeps elsewhere)
+            let j = frame.unwrap_or(usize::MAX);
             Some(match key {
-                "mode" => UdValue::Integer(luatex_mode(e.lua_level_mode(j))),
+                "mode" => UdValue::Integer(luatex_mode(mode)),
+                "head" | "tail" if frame.is_none() => UdValue::Nil,
                 "head" => {
                     let t = e.lua_level_target(j);
                     opt_node(e.lua_list_link(t))
@@ -572,18 +578,14 @@ impl UserDataTrait for NestUd {
                     let i = e.lua_link_index(t)?;
                     opt_node(e.lua_link_tail(i))
                 }
-                "prevgraf" => UdValue::Integer(i64::from(if top { e.prev_graf } else { e.saved_lists[j].4 })),
-                "modeline" => UdValue::Integer(i64::from(if j == 0 {
-                    0
-                } else if top {
-                    e.mode_line()
-                } else {
-                    e.saved_lists[j - 1].5
-                })),
-                "prevdepth" => UdValue::Integer(i64::from(if top { e.prev_depth } else { e.saved_lists[j].2 })),
-                "spacefactor" => UdValue::Integer(i64::from(if top { e.space_factor } else { e.saved_lists[j].3 })),
+                "prevgraf" => UdValue::Integer(i64::from(prev_graf)),
+                "modeline" => UdValue::Integer(i64::from(line)),
+                "prevdepth" => UdValue::Integer(i64::from(prev_depth)),
+                "spacefactor" => UdValue::Integer(i64::from(space_factor)),
                 "mathdir" => UdValue::Boolean(false),
-                "mathstyle" => UdValue::Integer(-1),
+                // the style of the formula being built (`\mathstyle`); only the
+                // current level tracks one
+                "mathstyle" => UdValue::Integer(if top && e.mode.is_m() { i64::from(e.current_style_number()) } else { -1 }),
                 "noad" | "delimptr" | "dirs" => UdValue::Nil,
                 _ => UdValue::Nil,
             })
@@ -602,7 +604,10 @@ impl UserDataTrait for NestUd {
             UdValue::Handle(h) => *h as u32,
             _ => 0,
         };
+        let level = j;
         let r = with_engine(|e| {
+            // only levels with an engine frame can be changed
+            let Some(&(.., Some(j))) = e.lua_nest_view().get(level) else { return };
             let top = j >= e.saved_lists.len();
             match key {
                 "mode" => {
@@ -796,10 +801,10 @@ pub(crate) fn install(lua: &mut Lua, t: &LuaTable) -> Result<(), String> {
     });
 
     // ---- nest ----
-    reg!(lua, t, "nest_ptr", || -> Result<i64, String> { with_engine(|e| e.saved_lists.len() as i64) });
+    reg!(lua, t, "nest_ptr", || -> Result<i64, String> { with_engine(|e| e.lua_nest_view().len() as i64 - 1) });
     reg!(lua, t, "nest_get", |level: i64| -> Result<Variadic<UdValue>, String> {
         with_engine(|e| {
-            let ok = usize::try_from(level).is_ok_and(|l| l <= e.saved_lists.len());
+            let ok = usize::try_from(level).is_ok_and(|l| l < e.lua_nest_view().len());
             Variadic(vec![if ok { UdValue::from_userdata(NestUd { level: level as usize }) } else { UdValue::Nil }])
         })
     });
@@ -811,12 +816,15 @@ pub(crate) fn install(lua: &mut Lua, t: &LuaTable) -> Result<(), String> {
             e.main_loop();
         })
     });
+    // luatex's `tex.finish` ends the run on the spot: the rest of the running
+    // Lua chunk never executes (the error below is swallowed by `lua_run_with_output`).
     reg!(lua, t, "finish", || -> Result<(), String> {
         with_engine(|e| {
             e.lua_sync_links(true);
             e.explicit_end_seen = true;
             e.end_occurred = true;
-        })
+        })?;
+        Err(crate::lua_bridge::FINISH_ABORT.to_string())
     });
     reg!(lua, t, "show_context", || -> Result<(), String> { with_engine(Engine::lua_show_context) });
     reg!(lua, t, "linebreak", |head: i64, params: LuaTable| -> Result<(i64, i64, i64, i64, i64), String> {

@@ -232,3 +232,11 @@ fn collected_documents_do_not_break_live_objects() {
     let _ = std::fs::remove_file(&out);
     assert_eq!(got, "Page 11\n");
 }
+
+// luatex: the content stream scanner on pdfe streams and strings, with its tokenizer quirks
+#[test]
+fn pdfscanner_matches_luatex() {
+    let (got, _e) = run_script("scanner", "", "scanner.lua");
+    let expected = std::fs::read_to_string(format!("{}expected/scanner.txt", fixtures())).unwrap();
+    assert_same("scanner", &got, &expected);
+}

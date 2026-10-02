@@ -1,0 +1,54 @@
+type | userdata | <img a.png : N : N >
+scan | attribute_list=nil;bbox=0,0,16,8;colordepth=8;colorspace=nil;depth=0;filename=a.png;filepath=./a.png;height=526254;imagetype=png;index=-1;keepopen=false;objnum=nil;pagebox=media;page=1;pages=1;ref_count=1;rotation=0;stream=nil;transform=0;visiblefilename=nil;width=1052508;xres=0;xsize=16;yres=0;ysize=8
+w3cm | attribute_list=nil;bbox=0,0,16,8;colordepth=8;colorspace=nil;depth=0;filename=a.png;filepath=./a.png;height=2797020;imagetype=png;index=-1;keepopen=false;objnum=nil;pagebox=media;page=1;pages=1;ref_count=1;rotation=0;stream=nil;transform=0;visiblefilename=nil;width=5594039;xres=0;xsize=16;yres=0;ysize=8
+h | attribute_list=nil;bbox=0,0,16,8;colordepth=8;colorspace=nil;depth=0;filename=a.png;filepath=./a.png;height=11840716;imagetype=png;index=-1;keepopen=false;objnum=nil;pagebox=media;page=1;pages=1;ref_count=1;rotation=0;stream=nil;transform=0;visiblefilename=nil;width=23681432;xres=0;xsize=16;yres=0;ysize=8
+w151499 | attribute_list=nil;bbox=0,0,16,8;colordepth=8;colorspace=nil;depth=0;filename=a.png;filepath=./a.png;height=75750;imagetype=png;index=-1;keepopen=false;objnum=nil;pagebox=media;page=1;pages=1;ref_count=1;rotation=0;stream=nil;transform=0;visiblefilename=nil;width=151499;xres=0;xsize=16;yres=0;ysize=8
+wh | attribute_list=nil;bbox=0,0,16,8;colordepth=8;colorspace=nil;depth=0;filename=a.png;filepath=./a.png;height=12345;imagetype=png;index=-1;keepopen=false;objnum=nil;pagebox=media;page=1;pages=1;ref_count=1;rotation=0;stream=nil;transform=0;visiblefilename=nil;width=151499;xres=0;xsize=16;yres=0;ysize=8
+d | attribute_list=nil;bbox=0,0,16,8;colordepth=8;colorspace=nil;depth=151499;filename=a.png;filepath=./a.png;height=374755;imagetype=png;index=-1;keepopen=false;objnum=nil;pagebox=media;page=1;pages=1;ref_count=1;rotation=0;stream=nil;transform=0;visiblefilename=nil;width=1052508;xres=0;xsize=16;yres=0;ysize=8
+tiny | attribute_list=nil;bbox=0,0,16,8;colordepth=8;colorspace=nil;depth=0;filename=a.png;filepath=./a.png;height=1;imagetype=png;index=-1;keepopen=false;objnum=nil;pagebox=media;page=1;pages=1;ref_count=1;rotation=0;stream=nil;transform=0;visiblefilename=nil;width=1;xres=0;xsize=16;yres=0;ysize=8
+strdim | attribute_list=nil;bbox=0,0,16,8;colordepth=8;colorspace=nil;depth=0;filename=a.png;filepath=./a.png;height=2368143;imagetype=png;index=-1;keepopen=false;objnum=nil;pagebox=media;page=1;pages=1;ref_count=1;rotation=0;stream=nil;transform=0;visiblefilename=nil;width=4736286;xres=0;xsize=16;yres=0;ysize=8
+node | 2 | 2 | 1052508 | 526254 | 0 | 0 | 1
+indexed | 1 | false | number
+node2 | 2 | 2 | 655360 | 327680 | 2
+iw | userdata | true | 3 | 3 | true
+write | userdata | true
+fresh | <img unset : N >
+fresh keys | nil | nil | -1 | 1 | media | 1
+fresh set | a.png | crop | 6 | nil | <img a.png : 1 : N >
+set | width | false | Missing number, treated as zero | false
+set | filename | false | img.filename is now read-only | false
+set | bbox | false | img.bbox is now read-only | false
+set | keepopen | false | img.keepopen is now read-only | false
+set | pagebox | false | img.pagebox is now read-only | false
+set | page | false | img.page is now read-only | false
+set | colorspace | false | img.colorspace is now read-only | false
+set | visiblefilename | false | img.visiblefilename is now read-only | false
+set | stream | false | img.stream can't be used with image.filename | false
+set | index | true | nil | false
+set | ref_count | true | nil | false
+set | rotation | true | nil | false
+set | imagetype | true | nil | false
+set | transform | true | nil | true
+set | bogus | true | nil | false
+copy | false | a.png | 2 | 2 | true
+mul | true | 3 | false
+keys | attribute_list,bbox,colordepth,colorspace,depth,filename,filepath,height,imagetype,index,keepopen,objnum,pagebox,page,pages,ref_count,rotation,stream,transform,visiblefilename,width,xres,xsize,yres,ysize | 7 | none,media,crop,bleed,trim,art
+e1 | false | bad argument #1 to 'node' (image.meta expected, got number)
+e2 | false | img.node() expects an argument
+e3 | false | bad argument #1 to 'write' (image.meta expected, got number)
+e4 | false | bad argument #1 to 'scan' (image.meta expected, got number)
+e5 | false | img.scan needs exactly 1 argument
+e6 | false | bad argument #1 to 'copy' (image.meta expected, got number)
+e7 | false | img.copy needs an image as argument
+e8 | false | img.new needs table as optional argument
+e9 | false | img.immediatewrite() expects two argument
+e10 | false | bad argument #1 to 'immediatewriteobject' (image.meta expected, got number)
+e11 | false | img.immediatewrite() expects an argument
+e12 | false | img.width needs integer or nil value or dimension string
+e13 | false | img.transform needs integer value
+e14 | false | img.bbox table must have exactly 4 elements
+e15 | false | img.pagebox needs string, number or nil value
+e16 | false | img.page needs integer or string value
+e17 | false | img.bbox needs boolean value
+e18 | false | img.filename needs string value
+e19 | true | nil

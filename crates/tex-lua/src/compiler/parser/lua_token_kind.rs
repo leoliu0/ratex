@@ -156,4 +156,18 @@ impl LuaTokenKind {
             _ => "<unknown>",
         }
     }
+
+    /// The token as `error_expected` prints it (`luaX_token2str`): reserved
+    /// words and symbols are quoted, the placeholders `<name>`, `<eof>`... are not.
+    pub fn expected_text(self) -> String {
+        match self {
+            LuaTokenKind::TkInt
+            | LuaTokenKind::TkFloat
+            | LuaTokenKind::TkName
+            | LuaTokenKind::TkString
+            | LuaTokenKind::TkLongString
+            | LuaTokenKind::TkEof => self.to_user_string().to_string(),
+            _ => format!("'{}'", self.to_user_string()),
+        }
+    }
 }

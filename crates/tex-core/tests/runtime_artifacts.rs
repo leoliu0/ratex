@@ -18,8 +18,8 @@ fn compatibility_inputs_stay_in_memory() {
 
     let mut engine = Engine::new(false);
     engine.init_primitives();
-    assert!(engine.input_file("fontspec.sty"));
-    assert_eq!(engine.input.current_file_name(), "<compat:fontspec.sty>");
+    assert!(engine.input_file("graphics.cfg"));
+    assert_eq!(engine.input.current_file_name(), "<compat:graphics.cfg>");
     for path in old_paths {
         assert!(
             !path.exists(),

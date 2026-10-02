@@ -2965,11 +2965,6 @@ fn real_main() -> i32 {
     } else {
         target_engine
     };
-    if using_embedded_engine && target_engine == "xelatex" && (opt.engine.is_some() || !opt.silent) {
-        eprintln!(
-            "texmk: {target_engine} compatibility mode uses Ratex, not the XeTeX runtime."
-        );
-    }
     let job = opt.jobname.clone().unwrap_or_else(|| {
         source
             .file_stem()

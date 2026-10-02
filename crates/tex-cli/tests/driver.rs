@@ -386,8 +386,16 @@ fn copied_texmk_symlink_personalities_need_no_sibling_executables() {
         .count();
     assert_eq!(physical_files, 1);
 
-    for alias in [
-        "ratex", "texmk", "pdflatex", "xelatex", "lualatex", "latexmk",
+    // First line of `--version`, shaped like TeX Live 2026's `xetex --version`
+    // ("XeTeX 3.141592653-2.6-0.999998 (TeX Live 2026)"): XeTeX personalities
+    // name the XeTeX engine, the others stay pdfTeX/LuaTeX with Ratex's label.
+    for (alias, engine) in [
+        ("ratex", "pdfTeX"),
+        ("texmk", "pdfTeX"),
+        ("pdflatex", "pdfTeX"),
+        ("xelatex", "XeTeX 3.141592653-2.6-0.999998"),
+        ("lualatex", "LuaTeX"),
+        ("latexmk", "pdfTeX"),
     ] {
         let output = Command::new(bin.join(alias))
             .arg("--version")
@@ -406,8 +414,8 @@ fn copied_texmk_symlink_personalities_need_no_sibling_executables() {
             "alias {alias} reported a stale version: {stdout}"
         );
         assert!(
-            !stdout.contains("LuaHBTeX") && !stdout.contains("XeTeX 3."),
-            "alias {alias} falsely claimed non-Ratex runtime: {stdout}"
+            stdout.contains(engine) && !stdout.contains("LuaHBTeX"),
+            "alias {alias} reported the wrong engine: {stdout}"
         );
     }
 

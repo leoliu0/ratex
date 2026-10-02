@@ -757,8 +757,8 @@ impl Engine {
             self.recycle_token_vec(toks);
             return true;
         }
-        if self.eqtb.int_params[crate::prim::IntParam::TracingMacros.idx() as usize] > 1
-            && self.engine_kind == crate::engine::EngineKind::XeTeX
+        if self.engine_kind == crate::engine::EngineKind::XeTeX
+            && self.eqtb.int_params[crate::prim::IntParam::TracingMacros.idx() as usize] > 1
         {
             self.trace_token_list(name, &toks);
         }

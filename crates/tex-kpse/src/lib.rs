@@ -26,6 +26,20 @@ pub struct EmbeddedFontFace {
     pub postscript: &'static str,
     pub weight: u16,
     pub italic: bool,
+    /// Family names (name ids 16 else 1), `\u{1f}`-separated, as XeTeX's font manager reads them.
+    pub families: &'static str,
+    /// Style names (name ids 17 else 2).
+    pub styles: &'static str,
+    /// Full names (name id 4).
+    pub fulls: &'static str,
+    /// OS/2 usWidthClass.
+    pub width: u16,
+    /// bit 0 OS/2 REGULAR, bit 1 bold (OS/2 or head.macStyle), bit 2 italic
+    pub flags: u8,
+    /// `1000 * tan(-italicAngle)`
+    pub slant: i32,
+    /// GPOS `size` feature: design size, subfamily id, name id, min, max (deci-points); design 0 when absent.
+    pub opsize: [i32; 5],
 }
 
 /// All native font faces available in the embedded packages archive.

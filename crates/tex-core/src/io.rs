@@ -91,7 +91,7 @@ fn out_name_ok(rel: &str, absolute: bool, choice: &str) -> bool {
 /// A path the way kpathsea sees it on Windows: `\\?\` verbatim and
 /// `\\?\UNC\` prefixes dropped and `IS_DIR_SEP` (both `/` and `\`) read
 /// as `/`.
-fn win_form(path: &str) -> String {
+pub(crate) fn win_form(path: &str) -> String {
     let path = if let Some(unc) = path.strip_prefix("\\\\?\\UNC\\") {
         format!("//{unc}")
     } else if let Some(rest) = path.strip_prefix("\\\\?\\") {
@@ -104,14 +104,14 @@ fn win_form(path: &str) -> String {
 
 /// `kpathsea_absolute_p` on Windows: a leading separator (rooted or UNC)
 /// or a drive letter.
-fn win_is_absolute(form: &str) -> bool {
+pub(crate) fn win_is_absolute(form: &str) -> bool {
     let b = form.as_bytes();
     b.first() == Some(&b'/') || (b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':')
 }
 
 /// `rest` of `full` below `root` (both in `/` form; Windows names compare
 /// case-insensitively).
-fn below_root<'a>(full: &'a str, root: &str, ignore_case: bool) -> Option<&'a str> {
+pub(crate) fn below_root<'a>(full: &'a str, root: &str, ignore_case: bool) -> Option<&'a str> {
     let head = full.get(..root.len())?;
     let same = if ignore_case { head.eq_ignore_ascii_case(root) } else { head == root };
     if !same {

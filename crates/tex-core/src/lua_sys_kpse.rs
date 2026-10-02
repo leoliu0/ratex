@@ -596,14 +596,27 @@ fn path_search(program: &str, path: &str, name: &str, all: bool, must_exist: boo
 
 // ---------------------------------------------------------- name checks ---
 
+/// `kpathsea_absolute_p`: a leading `/`; on Windows also `\` and a drive
+/// letter (`IS_DEVICE_SEP`).
 fn absolute(name: &str) -> bool {
-    name.starts_with('/')
+    if cfg!(windows) {
+        crate::io::win_is_absolute(&crate::io::win_form(name))
+    } else {
+        name.starts_with('/')
+    }
 }
 
-/// `abs_fname_ok`: `name` is `dir` or below it.
+/// `abs_fname_ok`: `name` is `dir` or below it (Windows: `IS_DIR_SEP` both
+/// separators and case-insensitive names).
 fn below(name: &str, dir: Option<String>) -> bool {
     match dir {
         Some(dir) if !dir.is_empty() => {
+            if cfg!(windows) {
+                let (name, dir) = (crate::io::win_form(name), crate::io::win_form(&dir));
+                let dir = dir.trim_end_matches('/');
+                return name.len() == dir.len() && name.eq_ignore_ascii_case(dir)
+                    || crate::io::below_root(&name, dir, true).is_some();
+            }
             name.starts_with(&dir) && (name.len() == dir.len() || name.as_bytes()[dir.len()] == b'/')
         }
         _ => false,

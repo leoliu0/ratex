@@ -2005,6 +2005,7 @@ impl Engine {
                 b"XeTeXglyphname",
                 b"XeTeXpicfile",
                 b"XeTeXpdffile",
+                b"XeTeXpdfpagecount",
                 b"xetexversion",
                 b"xetexrevision",
             ] {

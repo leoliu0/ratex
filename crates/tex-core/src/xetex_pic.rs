@@ -477,7 +477,10 @@ impl Engine {
             pic.do_size_requests();
         }
         let (xmin, xmax, ymin, ymax) = pic.min_max();
-        pic.t.concat(&Transform::translation(-xmin * 72.0 / 72.27, -ymin * 72.0 / 72.27));
+        // TeX Live's `make_translation(.., -xmin * 72 / 72.27, ..)` receives
+        // `xmin`/`ymin` truncated toward zero to whole points (observed on
+        // rotated pictures: the matrix e/f are whole points times 72/72.27).
+        pic.t.concat(&Transform::translation(-xmin.trunc() * 72.0 / 72.27, -ymin.trunc() * 72.0 / 72.27));
 
         match found {
             Some((pict, _)) => {
@@ -681,4 +684,92 @@ fn rotated_bbox([llx, lly, urx, ury]: [f64; 4], rotate: i32) -> [f64; 4] {
         fold(|p| p.0, f64::max),
         fold(|p| p.1, f64::max),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::{EngineKind, InteractionMode};
+
+    const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/xetex_pic");
+
+    fn engine(body: &str) -> Engine {
+        let mut eng = Engine::new_with_kind(EngineKind::XeTeX, true);
+        eng.init_primitives();
+        eng.add_nullfont();
+        eng.set_interaction_mode(InteractionMode::Nonstop);
+        let src = format!("\\catcode`\\{{=1 \\catcode`\\}}=2 \\setbox0\\hbox{{{body}}}\\end\n");
+        eng.input.push_file("test.tex".into(), src.into_bytes());
+        eng.run();
+        eng
+    }
+
+    fn specials(eng: &Engine) -> Vec<String> {
+        let Some(Node::Box { list, .. }) = eng.eqtb.boxed[0].as_ref() else { return Vec::new() };
+        list.iter()
+            .filter_map(|n| match n {
+                Node::Whatsit(w @ WhatIt::XePic { .. }, _) => Some(pic_out_text(w).replace(DIR, ".")),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Expected strings are the `pdf:image` specials TeX Live 2026 `xetex`
+    /// writes to the XDV file for the same input.
+    #[test]
+    fn pic_out_special_matches_xetex_xdv() {
+        let eng = engine(&format!(
+            "\\XeTeXpicfile {DIR}/tmp-1.png width 33.3pt rotated 37.3 \
+             \\XeTeXpdffile {DIR}/multi.pdf page 2 media scaled 700 \
+             \\XeTeXpdffile {DIR}/multi.pdf "
+        ));
+        assert_eq!(
+            specials(&eng),
+            [
+                "pdf:image matrix 0.08232 0.06271 -0.0627 0.08232 14.94395 0.0 page 0 (./tmp-1.png)",
+                "pdf:image matrix 0.7 0.0 0.0 0.7 0.0 0.0 page 2 pagebox mediabox (./multi.pdf)",
+                "pdf:image matrix 1.0 0.0 0.0 1.0 0.0 0.0 page 0 (./multi.pdf)",
+            ]
+        );
+    }
+
+    #[test]
+    fn rotated_pictures_match_xetex_matrices() {
+        let eng = engine(&format!(
+            "\\XeTeXpicfile {DIR}/tmp-1.png rotated 90 \\XeTeXpicfile {DIR}/tmp-1.png rotated -37.3 \
+             \\XeTeXpicfile {DIR}/tmp-1.png rotated 135 \\XeTeXpicfile {DIR}/tmp-1.png rotated 200.7 scaled 333 \
+             \\XeTeXpicfile {DIR}/tmp-1.png width 100.5pt "
+        ));
+        let m = |s: &str| format!("pdf:image matrix {s} page 0 (./tmp-1.png)");
+        assert_eq!(
+            specials(&eng),
+            [
+                m("0.0 1.0 -0.99998 0.0 241.09589 0.0"),
+                m("0.79547 -0.60597 0.60599 0.79547 0.0 193.27522"),
+                m("-0.70709 0.7071 -0.70709 -0.70709 396.51308 170.36115"),
+                m("-0.3115 -0.11769 0.1177 -0.3115 99.6264 112.57784"),
+                m("0.31233 0.0 0.0 0.31233 0.0 0.0"),
+            ]
+        );
+    }
+
+    #[test]
+    fn dpx_images_are_shared_per_file_page_and_box() {
+        let mut eng = engine("");
+        let pdf = format!("{DIR}/multi.pdf");
+        let a = eng.dpx_load_image(&pdf, 2, PDFBOX_CROP).unwrap();
+        let b = eng.dpx_load_image(&pdf, 2, PDFBOX_CROP).unwrap();
+        let c = eng.dpx_load_image(&pdf, 3, PDFBOX_CROP).unwrap();
+        let d = eng.dpx_load_image(&pdf, 0, PDFBOX_NONE).unwrap();
+        assert_eq!(a.obj, b.obj);
+        assert_ne!(a.obj, c.obj);
+        assert_eq!(a.kind, ImageKind::Pdf);
+        // page 2 is 60x100mm
+        assert!((a.bbox[2] - a.bbox[0] - 170.08).abs() < 0.01, "{:?}", a.bbox);
+        assert!((a.bbox[3] - a.bbox[1] - 283.46).abs() < 0.01, "{:?}", a.bbox);
+        assert!((d.bbox[2] - d.bbox[0] - 283.46).abs() < 0.01, "{:?}", d.bbox);
+        let png = eng.dpx_load_image(&format!("{DIR}/tmp-1.png"), 0, 0).unwrap();
+        assert_eq!(png.kind, ImageKind::Png);
+        assert!(png.px_w > 0 && png.px_h > 0 && png.bbox == [0.0; 4]);
+    }
 }

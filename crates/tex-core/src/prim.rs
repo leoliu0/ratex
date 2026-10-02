@@ -1303,6 +1303,8 @@ pub enum Prim {
     U(crate::uprim::UPrim),
     /// LuaTeX `\Umath<param>` (`set_math_param_cmd`), by `math_param_*` number.
     UMath(u8),
+    /// XeTeX `\XeTeXpdfpagecount <file name>`.
+    XeTeXPdfPageCount,
 }
 
 /// Stable wire codes for the format dump (`crate::format`). Unit variants
@@ -1796,6 +1798,7 @@ impl Prim {
             Prim::URight => 654,
             Prim::U(u) => 0x5000 | u.idx(),
             Prim::UMath(id) => 0x5800 | id as u16,
+            Prim::XeTeXPdfPageCount => 655,
             Prim::ScriptScriptStyle => 284,
             Prim::Patterns => 287,
             Prim::Hyphenation => 288,
@@ -2265,6 +2268,7 @@ impl Prim {
             652 => Some(Prim::ULeft),
             653 => Some(Prim::UMiddle),
             654 => Some(Prim::URight),
+            655 => Some(Prim::XeTeXPdfPageCount),
             0x5000..=0x57ff => Some(Prim::U(crate::uprim::UPrim::from_idx(c & 0x07ff)?)),
             0x5800..=0x58ff if (c & 0xff) < crate::uprim::UMATH_NAMES.len() as u16 => {
                 Some(Prim::UMath((c & 0xff) as u8))

@@ -152,6 +152,7 @@ pub fn prepare_latex_job(eng: &mut Engine) {
             b"XeTeXglyphname",
             b"XeTeXpicfile",
             b"XeTeXpdffile",
+            b"XeTeXpdfpagecount",
             b"xetexversion",
             b"xetexrevision",
         ] {

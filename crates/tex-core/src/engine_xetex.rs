@@ -44,6 +44,7 @@ impl Engine {
         d!(self, b"XeTeXvariationname", XeTeXVariationName);
         d!(self, b"XeTeXpicfile", XeTeXPicFile);
         d!(self, b"XeTeXpdffile", XeTeXPdfFile);
+        d!(self, b"XeTeXpdfpagecount", XeTeXPdfPageCount);
         d!(self, b"XeTeXinputnormalization", XeTeXInputNormalization);
         d!(self, b"XeTeXgenerateactualtext", XeTeXGenerateActualText);
         d!(self, b"XeTeXdashbreakstate", XeTeXDashBreakState);
@@ -166,6 +167,7 @@ impl Engine {
     pub fn scan_xetex_int_query(&mut self, p: Prim) -> i32 {
         match p {
             Prim::XeTeXVersion => 0,
+            Prim::XeTeXPdfPageCount => self.xetex_pdf_page_count(),
             Prim::XeTeXUseGlyphMetrics => self.xetex_use_glyph_metrics,
             Prim::XeTeXInterCharTokenState => self.xetex_interchartokenstate,
             Prim::XeTeXInputNormalization => self.xetex_input_normalization,

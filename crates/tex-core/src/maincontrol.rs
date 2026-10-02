@@ -1460,7 +1460,12 @@ impl Engine {
                 }
             }
             XeTeXPicFile | XeTeXPdfFile => {
-                self.do_pdfximage();
+                // xetex.web: report_illegal_case in math mode, else load_picture
+                if self.mode.is_m() {
+                    self.report_illegal_case(id);
+                } else {
+                    self.load_picture(p == XeTeXPdfFile);
+                }
             }
             Ustack => {
                 if self.mode.is_m() {

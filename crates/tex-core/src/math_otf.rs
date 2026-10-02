@@ -897,6 +897,14 @@ pub(crate) struct DelimInfo {
     pub same: u8,
 }
 
+/// `subtype(b) = st` for a box.
+pub(crate) fn with_list_subtype(mut b: Node, st: u8) -> Node {
+    if let Node::Box { subtype, .. } = &mut b {
+        *subtype = st;
+    }
+    b
+}
+
 /// `new_null_box` of the given kind.
 pub(crate) fn null_box(kind: u8) -> Node {
     Node::Box {
@@ -910,7 +918,7 @@ pub(crate) fn null_box(kind: u8) -> Node {
         glue_order: 0,
         glue_set: 0.0,
         lr: 0,
-        dir: 0, attr: crate::boxes::Attr::NONE,
+        dir: 0, attr: crate::boxes::Attr::NONE, subtype: 0,
     }
 }
 
@@ -950,7 +958,8 @@ impl Engine {
     pub(crate) fn char_box(&self, f: FontId, c: u32) -> Node {
         let m = self.mc_metrics(f, c);
         let mut b = null_box(HBOX);
-        if let Node::Box { w, h, d, list, .. } = &mut b {
+        if let Node::Box { w, h, d, list, subtype, .. } = &mut b {
+            *subtype = crate::boxes::list_subtype::MATH_CHAR;
             *w = m.width + m.italic;
             *h = m.height;
             *d = m.depth;
@@ -1033,7 +1042,10 @@ impl Engine {
         min_overlap: i32,
         horizontal: bool,
     ) -> Node {
-        let mut b = null_box(if horizontal { HBOX } else { VBOX });
+        let mut b = with_list_subtype(
+            null_box(if horizontal { HBOX } else { VBOX }),
+            if horizontal { crate::boxes::list_subtype::H_EXTENSIBLE } else { crate::boxes::list_subtype::V_EXTENSIBLE },
+        );
         let mut min_overlap = min_overlap.max(0);
         let mut ext = self.mc_variants(fnt, chr, horizontal).unwrap_or_default();
         let mut num_extenders = 0i32;
@@ -1161,7 +1173,7 @@ impl Engine {
     ) -> (Node, DelimInfo) {
         let mut info = DelimInfo::default();
         if let Some((0, 0, 0, 0)) = d {
-            let mut b = null_box(HBOX);
+            let mut b = with_list_subtype(null_box(HBOX), crate::boxes::list_subtype::V_DELIMITER);
             if !flat {
                 if let Node::Box { w, .. } = &mut b {
                     *w = self.eqtb.dim_params[crate::prim::DimParam::NullDelimiterSpace.idx() as usize];
@@ -1251,7 +1263,7 @@ impl Engine {
                 info.stack = false;
             }
         } else {
-            b = null_box(HBOX);
+            b = with_list_subtype(null_box(HBOX), if flat { crate::boxes::list_subtype::H_DELIMITER } else { crate::boxes::list_subtype::V_DELIMITER });
             if !flat {
                 if let Node::Box { w, .. } = &mut b {
                     *w = self.eqtb.dim_params[crate::prim::DimParam::NullDelimiterSpace.idx() as usize];

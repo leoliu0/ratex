@@ -552,7 +552,7 @@ impl Engine {
                         glue_order: 0,
                         glue_set: 0.0,
                         lr: 0,
-                        dir: 0, attr: self.eqtb.cur_attr,
+                        dir: 0, attr: self.eqtb.cur_attr, subtype: 0,
                     });
                     self.page_append(Node::Glue(crate::boxes::Glue::fil(
                         crate::boxes::GLUE_FILL,

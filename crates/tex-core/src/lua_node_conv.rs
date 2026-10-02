@@ -352,7 +352,7 @@ impl Engine {
     }
 
     fn import_box(&mut self, node: &Node, ctx: &mut LangCtx) -> u32 {
-        let Node::Box { kind, w, h, d, shift, list, glue_sign, glue_order, glue_set, lr, dir, .. } = node else {
+        let Node::Box { kind, w, h, d, shift, list, glue_sign, glue_order, glue_set, lr, dir, subtype, .. } = node else {
             unreachable!()
         };
         let id = if *kind == boxes::HBOX { HLIST } else { VLIST };
@@ -370,9 +370,7 @@ impl Engine {
         nd.f[sl::B_HEAD] = head as i32;
         nd.f[sl::B_LR] = i32::from(*lr);
         nd.f[sl::B_KIND] = i32::from(*kind);
-        if *lr == BOX_LR_DLIST {
-            nd.subtype = 6;
-        }
+        nd.subtype = u16::from(*subtype);
         n
     }
 
@@ -776,7 +774,7 @@ impl Engine {
                     glue_sign: f[sl::B_SIGN] as u8,
                     glue_set: nd.fl,
                     lr: if nd.subtype == 6 { BOX_LR_DLIST } else { f[sl::B_LR] as u8 },
-                    dir: f[sl::B_DIR] as u8, attr: crate::boxes::Attr::NONE,
+                    dir: f[sl::B_DIR] as u8, attr: crate::boxes::Attr::NONE, subtype: nd.subtype as u8,
                 });
             }
             MARK => {
@@ -817,7 +815,7 @@ impl Engine {
                         glue_order: 0,
                         glue_set: 0.0,
                         lr: 0,
-                        dir: 0, attr: crate::boxes::Attr::NONE,
+                        dir: 0, attr: crate::boxes::Attr::NONE, subtype: 0,
                     });
                 if let Node::Box { list: l, .. } = &mut box_node {
                     *l = list;

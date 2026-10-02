@@ -337,7 +337,7 @@ fn scripts_items<'a>(
                 c,
                 class: CL_OP,
                 ..
-            }] if *class == CL_OP && *fam != 255 && origin.id != u64::MAX => {
+            }] if *class == CL_OP && *fam != 255 && origin.id != u32::MAX => {
                 Field::Char(*fam, *c)
             }
             _ => field_of(rest),

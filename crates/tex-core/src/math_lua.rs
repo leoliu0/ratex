@@ -295,7 +295,7 @@ impl Engine {
 use crate::boxes::{HBOX, VBOX};
 use crate::eqtb::UNDEFINED_MATH_PARAMETER;
 use crate::math::{accent_noad_of, den_style, font_size, num_style, sub_style, sup_style, GStyle, DEFAULT_CODE};
-use crate::math_otf::{box_shift, box_whd, half, hpack_nat, null_box, set_shift, vpack_nat, xn_over_d, CharTag};
+use crate::math_otf::{box_shift, box_whd, half, hpack_nat, null_box, set_shift, vpack_nat, with_list_subtype, xn_over_d, CharTag};
 use crate::prim::IntParam as Ip;
 use crate::uprim::mp::*;
 
@@ -338,14 +338,17 @@ impl Engine {
     /// mlist.c `overbar`: kern `ht`, rule `t`, kern `k`, then `b`.
     fn lua_overbar(&mut self, b: Node, k: i32, t: i32, ht: i32, size: usize) -> Node {
         let rule = self.lm_math_rule(t, crate::boxes::RULE_MATH_RADICAL, size);
-        vpack_nat(self, vec![Node::Kern(ht, crate::boxes::Attr::NONE), rule, Node::Kern(k, crate::boxes::Attr::NONE), b])
+        with_list_subtype(
+            vpack_nat(self, vec![Node::Kern(ht, crate::boxes::Attr::NONE), rule, Node::Kern(k, crate::boxes::Attr::NONE), b]),
+            crate::boxes::list_subtype::RADICAL,
+        )
     }
 
     /// `wrapup_over_under_delimiter`: `x` above `y`.
-    fn lua_wrapup(&mut self, x: Node, y: Node, shift_up: i32, shift_down: i32) -> Node {
+    fn lua_wrapup(&mut self, x: Node, y: Node, shift_up: i32, shift_down: i32, st: u8) -> Node {
         let (_, hx, dx) = box_whd(&x);
         let (_, hy, dy) = box_whd(&y);
-        let mut v = null_box(VBOX);
+        let mut v = with_list_subtype(null_box(VBOX), st);
         set_dims(&mut v, None, Some(shift_up + hx), Some(dy + shift_down));
         if let Node::Box { list, .. } = &mut v {
             *list = vec![x, Node::Kern((shift_up - dx) - (hy - shift_down), crate::boxes::Attr::NONE), y];
@@ -435,7 +438,7 @@ impl Engine {
                     6 => if defaults { g | 1 } else { g },
                     _ => g,
                 };
-                let mut n = self.lm_clean_list(body, nuc_style);
+                let mut n = self.lm_clean_list(body, nuc_style, crate::boxes::list_subtype::NUCLEUS);
                 let wd = if width != 0 { width } else { box_whd(&n).0 };
                 let dsize = if subtype >= 5 { size_up } else { size };
                 let (d, info) = self.do_delimiter(dt, dsize, wd, true, g, true, 0);
@@ -452,7 +455,7 @@ impl Engine {
                         if delta > 0 {
                             shift_up += delta;
                         }
-                        let mut v = self.lua_wrapup(n, d, shift_up, 0);
+                        let mut v = self.lua_wrapup(n, d, shift_up, 0, crate::boxes::list_subtype::OVER_DELIMITER);
                         set_dims(&mut v, Some(w_n), None, None);
                         v
                     }
@@ -463,7 +466,7 @@ impl Engine {
                         if delta > 0 {
                             shift_down += delta;
                         }
-                        let mut v = self.lua_wrapup(d, n, 0, shift_down);
+                        let mut v = self.lua_wrapup(d, n, 0, shift_down, crate::boxes::list_subtype::UNDER_DELIMITER);
                         set_dims(&mut v, Some(w_n), None, None);
                         v
                     }
@@ -474,7 +477,7 @@ impl Engine {
                         if actual < clr {
                             shift_up += clr - actual;
                         }
-                        let mut v = self.lua_wrapup(d, n, shift_up, 0);
+                        let mut v = self.lua_wrapup(d, n, shift_up, 0, crate::boxes::list_subtype::OVER_DELIMITER);
                         set_dims(&mut v, Some(w_d), None, None);
                         v
                     }
@@ -485,7 +488,7 @@ impl Engine {
                         if actual < clr {
                             shift_down += clr - actual;
                         }
-                        let mut v = self.lua_wrapup(n, d, 0, shift_down);
+                        let mut v = self.lua_wrapup(n, d, 0, shift_down, crate::boxes::list_subtype::UNDER_DELIMITER);
                         set_dims(&mut v, Some(w_d), None, None);
                         v
                     }
@@ -493,7 +496,7 @@ impl Engine {
             }
             _ => {
                 // \radical, \Uradical, \Uroot
-                let x = self.lm_clean_list(body, g | 1);
+                let x = self.lm_clean_list(body, g | 1, crate::boxes::list_subtype::NUCLEUS);
                 let mut clr = self.mparam_err(MATH_PARAM_RADICAL_VGAP, g);
                 let mut theta = self.mparam(MATH_PARAM_RADICAL_RULE, g);
                 if self.eqtb.int_params[Ip::MathRuleThicknessMode.idx() as usize] > 0 {
@@ -536,7 +539,7 @@ impl Engine {
                 let p = self.lua_overbar(x, clr, theta, kern, size);
                 let mut list = vec![y, p];
                 if let Some(degree) = degree {
-                    let r = self.lm_clean_list(degree, 6);
+                    let r = self.lm_clean_list(degree, 6, crate::boxes::list_subtype::DEGREE);
                     let (wr, _, _) = box_whd(&r);
                     if wr != 0 {
                         let mut r = r;
@@ -585,8 +588,8 @@ impl Engine {
         if thickness == DEFAULT_CODE {
             thickness = self.mparam_err(MATH_PARAM_FRACTION_RULE, g);
         }
-        let mut x = self.lm_clean_list(num, num_style(g));
-        let mut z = self.lm_clean_list(den, den_style(g));
+        let mut x = self.lm_clean_list(num, num_style(g), crate::boxes::list_subtype::NUMERATOR);
+        let mut z = self.lm_clean_list(den, den_style(g), crate::boxes::list_subtype::DENOMINATOR);
         let axis = self.math_axis_size(size);
         let m = if let Some(md) = middle {
             Some(self.do_delimiter(delim_tuple(Some(md)), size, 0, false, g, true, 0).0)
@@ -646,13 +649,13 @@ impl Engine {
             shift_down = shift_up;
             let (wx, _, _) = box_whd(&x);
             let (wz, _, _) = box_whd(&z);
-            let mut xb = null_box(HBOX);
+            let mut xb = with_list_subtype(null_box(HBOX), crate::boxes::list_subtype::NUMERATOR);
             set_dims(&mut xb, Some(wx), Some(hx + shift_up), Some(dx));
             set_shift(&mut xb, -shift_up);
             if let Node::Box { list, .. } = &mut xb {
                 *list = vec![x];
             }
-            let mut zb = null_box(HBOX);
+            let mut zb = with_list_subtype(null_box(HBOX), crate::boxes::list_subtype::DENOMINATOR);
             set_dims(&mut zb, Some(wz), Some(hz), Some(dz + shift_down));
             set_shift(&mut zb, shift_down);
             if let Node::Box { list, .. } = &mut zb {
@@ -673,14 +676,14 @@ impl Engine {
                 total_w = wx + wz + hgap;
                 set_dims(&mut m, Some(0), None, None);
             }
-            let mut vb = null_box(HBOX);
+            let mut vb = with_list_subtype(null_box(HBOX), crate::boxes::list_subtype::FRACTION);
             set_dims(&mut vb, Some(total_w), Some(hh), Some(dd));
             if let Node::Box { list, .. } = &mut vb {
                 *list = vec![xb, Node::Kern(d1, crate::boxes::Attr::NONE), m, Node::Kern(d2, crate::boxes::Attr::NONE), zb];
             }
             v = vb;
         } else {
-            let mut vb = null_box(VBOX);
+            let mut vb = with_list_subtype(null_box(VBOX), crate::boxes::list_subtype::FRACTION);
             let (wx, _, _) = box_whd(&x);
             set_dims(&mut vb, Some(wx), Some(shift_up + hx), Some(dz + shift_down));
             let list = if thickness != 0 && !noad_option::has(options, noad_option::NO_RULE) {
@@ -707,7 +710,7 @@ impl Engine {
         }
         let (l, _) = self.do_delimiter(delim_tuple(left), size, dsize, false, g, true, 0);
         let (r, _) = self.do_delimiter(delim_tuple(right), size, dsize, false, g, true, 0);
-        hpack_nat(self, vec![l, v, r])
+        with_list_subtype(hpack_nat(self, vec![l, v, r]), crate::boxes::list_subtype::FRACTION)
     }
 
     /// mlist.c `make_math_accent` (top, bottom and overlay accents of one
@@ -767,14 +770,11 @@ impl Engine {
                 }
             }
             let mut x = match nucleus_box.take() {
-                Some(b) => {
-                    if box_shift(&b) == 0 {
-                        b
-                    } else {
-                        hpack_nat(self, vec![b])
-                    }
-                }
-                None => self.lm_clean_list(body, g | 1),
+                Some(b) => with_list_subtype(
+                    if box_shift(&b) == 0 { b } else { hpack_nat(self, vec![b]) },
+                    crate::boxes::list_subtype::NUCLEUS,
+                ),
+                None => self.lm_clean_list(body, g | 1, crate::boxes::list_subtype::NUCLEUS),
             };
             let (w, mut h, _) = box_whd(&x);
             if self.assume_new_math(nuc_f) && !s_abs {
@@ -835,7 +835,7 @@ impl Engine {
                     sub: sub.map(<[Node]>::to_vec),
                     options: 0, attr: crate::boxes::Attr::NONE,
                 }];
-                x = self.lm_clean_list(&scripted, g);
+                x = self.lm_clean_list(&scripted, g, crate::boxes::list_subtype::NUCLEUS);
                 let nh = box_whd(&x).1;
                 delta += nh - h;
                 h = nh;
@@ -855,7 +855,7 @@ impl Engine {
             let xw = box_whd(&x).0;
             let top = code & 5 != 0;
             let list = if top { vec![y, Node::Kern(-delta, crate::boxes::Attr::NONE), x] } else { vec![x, y] };
-            let mut r = vpack_nat(self, list);
+            let mut r = with_list_subtype(vpack_nat(self, list), crate::boxes::list_subtype::ACCENT);
             set_dims(&mut r, Some(xw), None, None);
             if top {
                 let hr = box_whd(&r).1;
@@ -873,7 +873,7 @@ impl Engine {
         }
         match nucleus_box {
             Some(b) => (b, consumed),
-            None => (self.lm_clean_list(body, g | 1), false),
+            None => (self.lm_clean_list(body, g | 1, crate::boxes::list_subtype::NUCLEUS), false),
         }
     }
 }

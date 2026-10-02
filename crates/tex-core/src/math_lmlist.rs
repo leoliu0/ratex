@@ -582,7 +582,7 @@ impl Engine {
 
     /// `clean_box` of a script/numerator list (a lone math char becomes an
     /// ord noad).
-    pub(crate) fn lm_clean_list(&mut self, list: &[Node], s: GStyle) -> Node {
+    pub(crate) fn lm_clean_list(&mut self, list: &[Node], s: GStyle, st: u8) -> Node {
         let tmp;
         let list = match list {
             [Node::MathChar { fam, c, origin, class, .. }] if *fam != 255 && *class != CL_ORD => {
@@ -592,16 +592,17 @@ impl Engine {
             _ => list,
         };
         let nodes = self.lm_convert(list, s, false, false);
-        self.lm_finish_clean(nodes)
+        self.lm_finish_clean(nodes, st)
     }
 
-    fn lm_finish_clean(&mut self, nodes: NodeList) -> Node {
+    fn lm_finish_clean(&mut self, nodes: NodeList, st: u8) -> Node {
         let mut x = if matches!(nodes.as_slice(), [Node::Box { shift: 0, .. }]) {
             nodes.into_iter().next().unwrap()
         } else {
             hpack_nat(self, nodes)
         };
-        if let Node::Box { list, .. } = &mut x {
+        if let Node::Box { list, subtype, .. } = &mut x {
+            *subtype = st;
             if list.len() == 2 && is_char_node(&list[0]) && matches!(list[1], Node::Kern(_, _) | Node::ItalicKern(_, _)) {
                 list.pop();
             }
@@ -609,31 +610,34 @@ impl Engine {
         x
     }
 
-    fn lm_clean_nuc(&mut self, nuc: &Nuc, s: GStyle) -> Node {
+    fn lm_clean_nuc(&mut self, nuc: &Nuc, s: GStyle, st: u8) -> Node {
         match nuc {
             Nuc::Char { fam, c, origin } => {
                 let l = [Node::MathChar { fam: *fam, c: *c, class: CL_ORD, origin: origin.clone(), attr: crate::boxes::Attr::NONE }];
                 let nodes = self.lm_convert(&l, s, false, false);
-                self.lm_finish_clean(nodes)
+                self.lm_finish_clean(nodes, st)
             }
             Nuc::Box(b) => {
                 let nodes = vec![b.clone()];
-                self.lm_finish_clean(nodes)
+                self.lm_finish_clean(nodes, st)
             }
             Nuc::Atom(n) => {
                 let nodes = self.convert_atom(n, s, false);
-                self.lm_finish_clean(nodes)
+                self.lm_finish_clean(nodes, st)
             }
             Nuc::Mlist(l) => {
                 let nodes = self.lm_convert(l, s, false, false);
-                self.lm_finish_clean(nodes)
+                self.lm_finish_clean(nodes, st)
             }
             Nuc::Fenced(l) => {
                 let nodes = self.lm_convert(l, s, false, true);
-                self.lm_finish_clean(nodes)
+                self.lm_finish_clean(nodes, st)
             }
             Nuc::None => {
-                let x = null_box(HBOX);
+                let mut x = null_box(HBOX);
+                if let Node::Box { subtype, .. } = &mut x {
+                    *subtype = st;
+                }
                 x
             }
         }
@@ -706,18 +710,19 @@ impl Engine {
     fn lm_make_over(&mut self, slots: &mut Vec<Slot>, i: usize, cur_style: GStyle) {
         let thickness = self.mparam_err(MATH_PARAM_OVERBAR_RULE, cur_style);
         let nuc = self.lm_nuc_of(slots, i);
-        let b = self.lm_clean_nuc(&nuc, cramped(cur_style));
+        let b = self.lm_clean_nuc(&nuc, cramped(cur_style), crate::boxes::list_subtype::NUCLEUS);
         let vgap = self.mparam_err(MATH_PARAM_OVERBAR_VGAP, cur_style);
         let kern = self.mparam_err(MATH_PARAM_OVERBAR_KERN, cur_style);
         // overbar(b, k = vgap, t, ht = kern)
         let v = vpack_nat(self, vec![Node::Kern(kern, crate::boxes::Attr::NONE), self.lm_math_rule(thickness, crate::boxes::RULE_MATH_OVER, size_of_style(cur_style)), Node::Kern(vgap, crate::boxes::Attr::NONE), b]);
+        let v = with_list_subtype(v, crate::boxes::list_subtype::OVER);
         Self::lm_set_nuc_box(slots, i, v);
     }
 
     fn lm_make_under(&mut self, slots: &mut Vec<Slot>, i: usize, cur_style: GStyle) {
         let thickness = self.mparam_err(MATH_PARAM_UNDERBAR_RULE, cur_style);
         let nuc = self.lm_nuc_of(slots, i);
-        let x = self.lm_clean_nuc(&nuc, cur_style);
+        let x = self.lm_clean_nuc(&nuc, cur_style, crate::boxes::list_subtype::NUCLEUS);
         let vgap = self.mparam_err(MATH_PARAM_UNDERBAR_VGAP, cur_style);
         let (_, xh, _) = box_whd(&x);
         let rule = self.lm_math_rule(thickness, crate::boxes::RULE_MATH_UNDER, size_of_style(cur_style));
@@ -725,9 +730,10 @@ impl Engine {
         let kern = self.mparam_err(MATH_PARAM_UNDERBAR_KERN, cur_style);
         let (_, yh, yd) = box_whd(&y);
         let delta = yh + yd + kern;
-        if let Node::Box { h, d, .. } = &mut y {
+        if let Node::Box { h, d, subtype, .. } = &mut y {
             *h = xh;
             *d = delta - xh;
+            *subtype = crate::boxes::list_subtype::UNDER;
         }
         Self::lm_set_nuc_box(slots, i, y);
     }
@@ -878,7 +884,7 @@ impl Engine {
                     }
                     delta = self.mc_metrics(f, cc).italic;
                     let tmp = Nuc::Char { fam, c: cc, origin: origin.clone() };
-                    x = self.lm_clean_nuc(&tmp, cur_style);
+                    x = self.lm_clean_nuc(&tmp, cur_style, crate::boxes::list_subtype::NUCLEUS);
                     if delta != 0 && has_sub && opsub != OP_LIMITS {
                         if let Node::Box { w, .. } = &mut x {
                             *w -= delta;
@@ -888,7 +894,7 @@ impl Engine {
                 }
             } else {
                 delta = self.mc_metrics(f, cc).italic;
-                x = self.lm_clean_nuc(&nuc, cur_style);
+                x = self.lm_clean_nuc(&nuc, cur_style, crate::boxes::list_subtype::NUCLEUS);
                 if delta != 0 && has_sub && opsub != OP_LIMITS {
                     if let Node::Box { w, .. } = &mut x {
                         *w -= delta;
@@ -926,9 +932,9 @@ impl Engine {
                 _ => (None, None),
             };
             let nuc = self.lm_nuc_of(slots, i);
-            let x0 = self.lm_clean_list_opt(sup.as_deref(), sup_style(cur_style));
-            let y0 = self.lm_clean_nuc(&nuc, cur_style);
-            let z0 = self.lm_clean_list_opt(sub.as_deref(), sub_style(cur_style));
+            let x0 = self.lm_clean_list_opt(sup.as_deref(), sup_style(cur_style), crate::boxes::list_subtype::SUP);
+            let y0 = self.lm_clean_nuc(&nuc, cur_style, crate::boxes::list_subtype::NUCLEUS);
+            let z0 = self.lm_clean_list_opt(sub.as_deref(), sub_style(cur_style), crate::boxes::list_subtype::SUB);
             let mut width = box_whd(&y0).0;
             width = width.max(box_whd(&x0).0).max(box_whd(&z0).0);
             let mut x = self.lm_rebox(x0, width);
@@ -971,7 +977,7 @@ impl Engine {
                 list.push(Node::Kern(kern, crate::boxes::Attr::NONE));
                 vd = vd + kern + zh + zd + shift_down;
             }
-            let mut v = vpack_nat(self, list);
+            let mut v = with_list_subtype(vpack_nat(self, list), crate::boxes::list_subtype::LIMITS);
             if let Node::Box { w, h, d, .. } = &mut v {
                 *w = width;
                 *h = vh;
@@ -986,10 +992,16 @@ impl Engine {
         delta
     }
 
-    fn lm_clean_list_opt(&mut self, l: Option<&[Node]>, s: GStyle) -> Node {
+    fn lm_clean_list_opt(&mut self, l: Option<&[Node]>, s: GStyle, st: u8) -> Node {
         match l {
-            Some(l) => self.lm_clean_list(l, s),
-            None => null_box(HBOX),
+            Some(l) => self.lm_clean_list(l, s, st),
+            None => {
+                let mut b = null_box(HBOX);
+                if let Node::Box { subtype, .. } = &mut b {
+                    *subtype = st;
+                }
+                b
+            }
         }
     }
 
@@ -1048,7 +1060,7 @@ impl Engine {
         let x: Node;
         let mut kern_after: Vec<Node> = Vec::new();
         if sup.is_none() {
-            let mut xb = self.lm_clean_list(sub.as_deref().unwrap_or(&[]), sub_style(cur_style));
+            let mut xb = self.lm_clean_list(sub.as_deref().unwrap_or(&[]), sub_style(cur_style), crate::boxes::list_subtype::SUB);
             if let Node::Box { w, .. } = &mut xb {
                 *w += space_after;
             }
@@ -1081,7 +1093,7 @@ impl Engine {
             }
             x = xb;
         } else {
-            let mut xb = self.lm_clean_list(sup.as_deref().unwrap(), sup_style(cur_style));
+            let mut xb = self.lm_clean_list(sup.as_deref().unwrap(), sup_style(cur_style), crate::boxes::list_subtype::SUP);
             if let Node::Box { w, .. } = &mut xb {
                 *w += space_after;
             }
@@ -1116,7 +1128,7 @@ impl Engine {
                 }
                 x = xb;
             } else {
-                let mut yb = self.lm_clean_list(sub.as_deref().unwrap(), sub_style(cur_style));
+                let mut yb = self.lm_clean_list(sub.as_deref().unwrap(), sub_style(cur_style), crate::boxes::list_subtype::SUB);
                 if let Node::Box { w, .. } = &mut yb {
                     *w += space_after;
                 }
@@ -1177,7 +1189,7 @@ impl Engine {
                 let (_, yh, _) = box_whd(&yb);
                 let (_, _, xd) = box_whd(&xb);
                 let gap = (shift_up - xd) - (yh - shift_down);
-                let mut v = vpack_nat(self, vec![xb, Node::Kern(gap, crate::boxes::Attr::NONE), yb]);
+                let mut v = with_list_subtype(vpack_nat(self, vec![xb, Node::Kern(gap, crate::boxes::Attr::NONE), yb]), crate::boxes::list_subtype::SCRIPTS);
                 set_shift(&mut v, shift_down);
                 x = v;
             }

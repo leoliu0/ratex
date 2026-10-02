@@ -1978,8 +1978,9 @@ impl Engine {
             let saved_begin = std::mem::replace(&mut self.pack_begin_line, begin_line);
             self.report_pack_warnings_at(&mut r, source);
             self.pack_begin_line = saved_begin;
-            if indent != 0 {
-                if let Node::Box { shift, .. } = &mut r.node {
+            if let Node::Box { shift, subtype, .. } = &mut r.node {
+                *subtype = crate::boxes::list_subtype::LINE;
+                if indent != 0 {
                     *shift = indent;
                 }
             }

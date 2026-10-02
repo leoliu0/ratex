@@ -171,7 +171,7 @@ impl Engine {
             glue_order: *glue_order,
             glue_set: *glue_set,
             lr: 0,
-            dir: 0, attr: self.eqtb.cur_attr,
+            dir: 0, attr: self.eqtb.cur_attr, subtype: 0,
         })
     }
 
@@ -427,7 +427,7 @@ impl Engine {
                 glue_set,
                 lr,
                 dir,
-                attr,
+                attr, subtype: 0,
             },
             _ => {
                 let mut packed = crate::boxes::hpack(out, None, HBOX, &self.eqtb).node;

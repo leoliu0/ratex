@@ -1003,8 +1003,9 @@ impl Engine {
                 leqno = lq;
                 let th = tag_hlist.unwrap_or_default();
                 let mut ab = hpack(th, None, HBOX, &self.eqtb).node;
-                if let Node::Box { lr, .. } = &mut ab {
+                if let Node::Box { lr, subtype, .. } = &mut ab {
                     *lr = crate::boxes::BOX_LR_DLIST;
+                    *subtype = crate::boxes::list_subtype::EQUATION_NUMBER;
                 }
                 e = self.box_w(&ab) as i64;
                 // q = e + math_quad(text_size): quad of the fam-2 symbols font
@@ -1054,8 +1055,9 @@ impl Engine {
             }
             // §22560: centering displacement; too close to the tag -> center
             // in the remaining space (or honor leading user glue)
-            if let Node::Box { lr, .. } = &mut r0.node {
+            if let Node::Box { lr, subtype, .. } = &mut r0.node {
                 *lr = crate::boxes::BOX_LR_DLIST;
+                *subtype = crate::boxes::list_subtype::EQUATION;
             }
             let mut d = half_sp(z - w);
             if e > 0 && d < 2 * e {
@@ -1156,7 +1158,10 @@ impl Engine {
                         vec![Node::Kern(d as i32, self.eqtb.cur_attr), line, Node::Kern(r, crate::boxes::Attr::NONE), ab]
                     };
                     d = 0;
-                    line = hpack(seq, None, HBOX, &self.eqtb).node;
+                    line = crate::math_otf::with_list_subtype(
+                        hpack(seq, None, HBOX, &self.eqtb).node,
+                        crate::boxes::list_subtype::EQUATION,
+                    );
                 } else {
                     let kern = Node::ExplicitKern((z - w - e - d) as i32, self.eqtb.cur_attr);
                     let (seq, nd) = if leqno {
@@ -1324,7 +1329,7 @@ impl Engine {
             .math_diagnostic_sources
             .len()
             .checked_add(1)
-            .and_then(|id| u64::try_from(id).ok())
+            .and_then(|id| u32::try_from(id).ok())
         else {
             return MathDiagnosticOrigin::default();
         };
@@ -2075,7 +2080,7 @@ impl Engine {
                             class,
                             // a group around one non-ord noad (`\mathop{\sum}`): its
                             // nucleus is a sub-mlist, not the noad's own character
-                            origin: MathDiagnosticOrigin { id: u64::MAX }, attr: self.eqtb.cur_attr,
+                            origin: MathDiagnosticOrigin { id: u32::MAX }, attr: self.eqtb.cur_attr,
                         },
                         other,
                     ];
@@ -2346,7 +2351,7 @@ impl Engine {
             right: rd,
             middle: middle.unwrap_or_default(),
             options: if delimited && self.engine_kind == crate::engine::EngineKind::LuaTeX { options | noad_option::FRAC_DELIMITED } else { options },
-            fam: -1,
+            fam: crate::boxes::FRAC_NO_FAM,
             origin, attr: self.eqtb.cur_attr,
         });
     }
@@ -3338,7 +3343,7 @@ impl Engine {
                         noad_option::has(*options, noad_option::FRAC_DELIMITED).then_some(right),
                         (!middle.is_null()).then_some(middle),
                         *options & !noad_option::FRAC_DELIMITED,
-                        i32::from(*fam),
+                        if *fam == crate::boxes::FRAC_NO_FAM { -1 } else { i32::from(*fam) },
                         style,
                     )]
                 } else {
@@ -5442,7 +5447,7 @@ mod tests {
             glue_order: order,
             glue_set: set,
             lr: 0,
-            dir: 0, attr: crate::boxes::Attr::NONE,
+            dir: 0, attr: crate::boxes::Attr::NONE, subtype: 0,
         }
     }
 
@@ -5466,7 +5471,7 @@ mod tests {
                     glue_order: 0,
                     glue_set: 0.0,
                     lr: 0,
-                    dir: 0, attr: crate::boxes::Attr::NONE,
+                    dir: 0, attr: crate::boxes::Attr::NONE, subtype: 0,
                 },
                 Node::Glue(Glue::spec(su(3.33333), su(1.66666), 0, su(1.11111), 0), crate::boxes::Attr::NONE),
                 Node::Rule {

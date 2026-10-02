@@ -438,7 +438,10 @@ impl<'a> BoxDisplay<'a> {
             Node::Rule {
                 width,
                 height,
-                depth, .. } => self.display_rule(*width, *height, *depth),
+                depth,
+                subtype,
+                ..
+            } => self.display_rule(*width, *height, *depth, *subtype),
             Node::Ins {
                 num,
                 height,
@@ -486,6 +489,7 @@ impl<'a> BoxDisplay<'a> {
                 match *kind {
                     crate::boxes::LEADERS_C => self.out.push(b'c'),
                     crate::boxes::LEADERS_X => self.out.push(b'x'),
+                    crate::boxes::LEADERS_G => self.out.push(b'g'),
                     _ => {}
                 }
                 self.print("leaders ");
@@ -496,11 +500,15 @@ impl<'a> BoxDisplay<'a> {
                         width,
                         height,
                         depth,
+                        subtype,
                     } => {
                         let rule = Node::Rule {
                             width: *width,
                             height: *height,
-                            depth: *depth, attr: crate::boxes::Attr::NONE,
+                            depth: *depth,
+                            subtype: *subtype,
+                            index: 0,
+                            attr: crate::boxes::Attr::NONE,
                         };
                         self.node_list_display(std::slice::from_ref(&rule));
                     }
@@ -678,8 +686,15 @@ impl<'a> BoxDisplay<'a> {
         }
     }
 
-    fn display_rule(&mut self, width: i32, height: i32, depth: i32) {
-        self.print_esc("rule(");
+    fn display_rule(&mut self, width: i32, height: i32, depth: i32, subtype: u8) {
+        // texnodes.c `node_list_display`, rule_node
+        self.print_esc(match subtype {
+            crate::boxes::RULE_EMPTY => "norule(",
+            crate::boxes::RULE_USER => "userrule(",
+            crate::boxes::RULE_BOX => "box(",
+            crate::boxes::RULE_IMAGE => "image(",
+            _ => "rule(",
+        });
         self.print_rule_dimen(height);
         self.out.push(b'+');
         self.print_rule_dimen(depth);
@@ -849,6 +864,55 @@ impl<'a> BoxDisplay<'a> {
                 self.print_esc("pdfsnapycomp");
                 self.out.push(b' ');
                 self.print_int(*r as i64);
+            }
+            WhatIt::Dir { dir, cancel, .. } => {
+                self.print_esc(if *cancel { "enddir" } else { "begindir" });
+                self.out.push(b' ');
+                self.print(["TLT", "TRT", "LTL", "RTT"][usize::from(*dir & 3)]);
+            }
+            WhatIt::Boundary { kind, value } => {
+                match kind {
+                    0 => self.print_esc("noboundary"),
+                    1 => self.print_esc("boundary"),
+                    2 => self.print_esc("protrusionboundary"),
+                    3 => self.print_esc("wordboundary"),
+                    k => {
+                        self.print_esc("boundary");
+                        self.out.push(b':');
+                        self.print_int(i64::from(*k));
+                    }
+                }
+                if *kind != 0 {
+                    self.out.push(b'=');
+                    self.print_int(i64::from(*value));
+                }
+            }
+            WhatIt::LocalPar(lp) => {
+                // texnodes.c show_node: each field goes on its own line, one
+                // level deeper than the node
+                self.print_esc("localpar");
+                self.prefix.push(b'.');
+                self.print_ln();
+                self.out.extend_from_slice(&self.prefix);
+                self.print_esc("localinterlinepenalty");
+                self.out.push(b'=');
+                self.print_int(i64::from(lp.pen_inter));
+                self.print_ln();
+                self.out.extend_from_slice(&self.prefix);
+                self.print_esc("localbrokenpenalty");
+                self.out.push(b'=');
+                self.print_int(i64::from(lp.pen_broken));
+                for (name, list) in [("localleftbox", &lp.left), ("localrightbox", &lp.right)] {
+                    self.print_ln();
+                    self.out.extend_from_slice(&self.prefix);
+                    self.print_esc(name);
+                    if list.is_empty() {
+                        self.print("=null");
+                    } else {
+                        self.node_list_display(list);
+                    }
+                }
+                self.prefix.pop();
             }
             #[allow(unreachable_patterns)]
             _ => self.print("whatsit?"),
@@ -1070,7 +1134,8 @@ impl Engine {
                 clang = clang_above.unwrap_or(self.clang);
                 clang_above = pl.map(|pl| pl.outer_clang);
                 let start = pl.map_or_else(|| self.current_language(), |pl| pl.start);
-                if (start.lhm, start.rhm, start.lang) != (2, 3, 0) {
+                // luatex keeps the language in the glyphs, not in the nest
+                if self.engine_kind != crate::engine::EngineKind::LuaTeX && (start.lhm, start.rhm, start.lang) != (2, 3, 0) {
                     d.print(" (language");
                     d.print_int(i64::from(start.lang));
                     d.print(":hyphenmin");
@@ -1335,7 +1400,8 @@ impl Engine {
                         -1 => "shipout",
                         0 => "leaders",
                         1 => "cleaders",
-                        _ => "xleaders",
+                        2 => "xleaders",
+                        _ => "gleaders",
                     });
                 }
             }

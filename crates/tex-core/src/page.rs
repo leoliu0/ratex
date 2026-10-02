@@ -1508,7 +1508,7 @@ impl Engine {
         }
         usize::try_from(self.eqtb.int_params[IntParam::OutputBox.idx() as usize])
             .ok()
-            .filter(|&n| n < self.eqtb.boxed.len())
+            .filter(|&n| n < crate::eqtb::NUM_REGISTERS)
             .unwrap_or(255)
     }
 
@@ -1544,6 +1544,8 @@ impl Engine {
         // close the save level opened at fire_up (tex.web output_group) BEFORE
         // inspecting box255: a non-global `\setbox255` inside the routine is
         // rolled back by unsave, and the rolled-back value is what TeX checks.
+        // luatex: "this is needed in case the \output executes a \textdir"
+        self.pop_text_dir();
         self.pop_group();
         // tex.web §28650: insert_penalties := 0 at <Resume the page builder>
         self.eqtb.int_params[IntParam::InsertPenalties.idx() as usize] = 0;

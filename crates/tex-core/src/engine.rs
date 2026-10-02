@@ -212,6 +212,12 @@ pub struct Engine {
     /// The luatex group code (index into `lua_callbacks::GROUP_NAMES`) the
     /// paragraph being ended belongs to: what `line_break_context` carries.
     pub(crate) lua_par_group: u8,
+    /// luatex `text_dir_ptr`: (group level, direction) of the `\textdir`
+    /// assignments still in force, innermost last; the bottom entry is the
+    /// default direction at level 0
+    pub(crate) text_dirs: Vec<(u16, u8)>,
+    /// the `text_dirs` of the enclosing groups of the boxes being built
+    pub(crate) text_dir_saves: Vec<Vec<(u16, u8)>>,
     /// `hpack_quality` calls of the lines of the paragraph being broken
     pub(crate) lua_par_lines: crate::lua_callbacks::ParLineState,
     pub prev_depth: i32, // special marker: -1000pt means unset
@@ -1064,6 +1070,8 @@ impl Engine {
             lua_nodes: crate::lua_node::NodeStore::new(),
             lua_cb: [0; crate::lua_callbacks::N_CALLBACKS],
             lua_par_group: 0,
+            text_dirs: vec![(crate::eqtb::LEVEL_ONE, 0)],
+            text_dir_saves: Vec::new(),
             lua_par_lines: Default::default(),
             prev_depth: -1000 * 65536,
             space_factor: 1000,

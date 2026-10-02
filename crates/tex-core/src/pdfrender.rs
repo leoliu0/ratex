@@ -330,6 +330,9 @@ pub struct RenderCtx<'a> {
     pub page_fonts: Vec<(usize, u32)>, // (engine font/binding key, resource number)
     // containing-box context for leaders grids and null-rule sentinels (sp)
     pub left_edge_sp: i64,
+    /// reference point (h, baseline v) of the shipped box: the origin
+    /// `\gleaders` align to (pdf backend `shipbox_refpos`)
+    ship_ref_sp: (i64, i64),
     pub box_w_sp: i64,
     pub box_h_sp: i64,
     pub box_d_sp: i64,
@@ -501,6 +504,7 @@ impl Engine {
             dests: Vec::new(),
             page_fonts: Vec::new(),
             left_edge_sp: 0,
+            ship_ref_sp: (0, 0),
             box_w_sp: 0,
             box_h_sp: 0,
             box_d_sp: 0,
@@ -609,6 +613,7 @@ impl Engine {
         // pdfTeX "Start stream of page/form contents": cur_h/cur_v are the
         // offsets and the box height when the stacks re-emit their colors
         ctx.colorstack_startpage(x0, y0 + ctx.box_h_sp);
+        ctx.ship_ref_sp = (x0, y0 + ctx.box_h_sp);
         if let Node::Box {
             list,
             kind,
@@ -707,6 +712,7 @@ impl Engine {
         ctx.box_w_sp = w as i64;
         ctx.box_h_sp = h as i64;
         ctx.box_d_sp = d as i64;
+        ctx.ship_ref_sp = (0, h as i64);
         ctx.ship_vlist(&vec![node.clone()], 0, 0, 0, 0, 0.0);
         ctx.end_text();
         if let Some(save) = ctx.pos_stack.last() {
@@ -1164,7 +1170,10 @@ impl<'a> RenderCtx<'a> {
                 Node::Rule {
                     width,
                     height,
-                    depth, .. } => {
+                    depth,
+                    subtype,
+                    ..
+                } => {
                     // hrule in a vlist: null width fills the containing box
                     let w_sp = if *width == RULE_FILL {
                         self.box_w_sp
@@ -1173,7 +1182,9 @@ impl<'a> RenderCtx<'a> {
                     };
                     let (rh, rd) = (*height as i64, *depth as i64);
                     let y1 = cur_y + rh; // top of rule
-                    self.emit_rect_sp(if rtl { x - w_sp } else { x }, y1 + rd, w_sp, rh + rd);
+                    if *subtype != crate::boxes::RULE_EMPTY {
+                        self.emit_rect_sp(if rtl { x - w_sp } else { x }, y1 + rd, w_sp, rh + rd);
+                    }
                     cur_y += rh + rd;
                 }
                 Node::Glue(g, _) => {
@@ -1196,24 +1207,28 @@ impl<'a> RenderCtx<'a> {
                     match body {
                         // rule body: one rect spanning the whole advance;
                         // null width fills the containing box
-                        LeaderBody::Rule { width, .. } => {
+                        LeaderBody::Rule { width, subtype, .. } => {
                             let w_sp = if *width == RULE_FILL {
                                 self.box_w_sp
                             } else {
                                 *width as i64
                             };
-                            if w_sp > 0 && adv > 0 {
+                            if w_sp > 0 && adv > 0 && *subtype != crate::boxes::RULE_EMPTY {
                                 let rx = if rtl { x - w_sp } else { x };
                                 self.emit_rect_sp(rx, cur_y + adv, w_sp, adv);
                             }
                         }
                         LeaderBody::Box(b) => {
                             // leader_wd = height + depth of the body box
+                            let (kind, edge) = match *kind {
+                                crate::boxes::LEADERS_G => (crate::boxes::LEADERS_A, self.ship_ref_sp.1),
+                                kind => (kind, self.left_edge_sp),
+                            };
                             let (positions, _, _) = crate::boxes::leader_layout(
-                                *kind,
+                                kind,
                                 (lh + ld) as i64,
                                 adv,
-                                self.left_edge_sp,
+                                edge,
                                 cur_y,
                             );
                             for pos in positions {
@@ -1375,7 +1390,10 @@ impl<'a> RenderCtx<'a> {
                 Node::Rule {
                     width,
                     height,
-                    depth, .. } => {
+                    depth,
+                    subtype,
+                    ..
+                } => {
                     // vrule in an hlist: null height/depth fill the containing box
                     let h_sp = if *height == RULE_FILL {
                         self.box_h_sp
@@ -1388,7 +1406,9 @@ impl<'a> RenderCtx<'a> {
                         *depth as i64
                     };
                     let (rw, rh, rd) = (*width as i64, h_sp, d_sp);
-                    self.emit_rect_sp(cur_x, y + rd, rw, rh + rd);
+                    if *subtype != crate::boxes::RULE_EMPTY {
+                        self.emit_rect_sp(cur_x, y + rd, rw, rh + rd);
+                    }
                     cur_x += rw;
                 }
                 Node::Box {
@@ -1481,7 +1501,7 @@ impl<'a> RenderCtx<'a> {
                     match body {
                         // rule body: one rect over the whole advance; null
                         // height/depth fill the containing box
-                        LeaderBody::Rule { height, depth, .. } => {
+                        LeaderBody::Rule { height, depth, subtype, .. } => {
                             let h_sp = if *height == RULE_FILL {
                                 self.box_h_sp
                             } else {
@@ -1493,7 +1513,7 @@ impl<'a> RenderCtx<'a> {
                                 *depth as i64
                             };
                             let (rh, rd) = (h_sp, d_sp);
-                            if adv > 0 && rh + rd > 0 {
+                            if adv > 0 && rh + rd > 0 && *subtype != crate::boxes::RULE_EMPTY {
                                 self.emit_rect_sp(cur_x, y + rd, adv, rh + rd);
                             }
                         }
@@ -1502,11 +1522,15 @@ impl<'a> RenderCtx<'a> {
                             // 10sp earlier (each copy is then entered at its
                             // right edge by ship_leader_copy)
                             let first = if self.cur_dir == 1 { cur_x - 10 } else { cur_x };
+                            let (kind, edge) = match *kind {
+                                crate::boxes::LEADERS_G => (crate::boxes::LEADERS_A, self.ship_ref_sp.0),
+                                kind => (kind, self.left_edge_sp),
+                            };
                             let (positions, _, _) = crate::boxes::leader_layout(
-                                *kind,
+                                kind,
                                 lw as i64,
                                 adv,
-                                self.left_edge_sp,
+                                edge,
                                 first,
                             );
                             for pos in positions {

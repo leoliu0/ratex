@@ -649,7 +649,7 @@ impl Engine {
     // ================= over / under / vcenter =================
 
     fn lm_rule(t: i32) -> Node {
-        Node::Rule { width: crate::build::RULE_FILL, height: t, depth: 0, attr: crate::boxes::Attr::NONE }
+        Node::Rule { width: crate::build::RULE_FILL, height: t, depth: 0, subtype: crate::boxes::RULE_NORMAL, index: 0, attr: crate::boxes::Attr::NONE }
     }
 
     fn lm_nuc_of(&self, slots: &[Slot], i: usize) -> Nuc {

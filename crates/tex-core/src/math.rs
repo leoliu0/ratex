@@ -462,7 +462,9 @@ impl Engine {
                 // interrupted paragraph is broken and its final line is
                 // measured — before the end-of-paragraph reset clears
                 // \parshape/\hangindent state.
-                let was_empty = self.cur_list.is_empty();
+                let was_empty = self.cur_list.is_empty()
+                    || (self.engine_kind == crate::engine::EngineKind::LuaTeX
+                        && matches!(self.cur_list.as_slice(), [Node::Whatsit(crate::boxes::WhatIt::LocalPar(_), _)]));
                 // tex.web §21764: the interrupted paragraph's final widow
                 // penalty is \displaywidowpenalty, not \widowpenalty
                 if !was_empty {
@@ -487,11 +489,13 @@ impl Engine {
                     let n = shape.len() as i64;
                     let k = (prev_graf + 2).min(n);
                     let e = shape[(k - 1) as usize];
-                    (e.1 as i64, e.0 as i64) // engine stores (indent, width)
+                    // engine stores (indent, width)
+                    (e.1 as i64, self.swap_parshape_indent(e.0, e.1) as i64)
                 } else if hang.0 != 0
                     && ((hang.1 >= 0 && prev_graf + 2 > hang.1) || (prev_graf + 1 < -hang.1))
                 {
-                    (hsize - hang.0.abs(), if hang.0 > 0 { hang.0 } else { 0 })
+                    let used = self.swap_hang_indent(hang.0 as i32) as i64;
+                    (hsize - used.abs(), if used > 0 { used } else { 0 })
                 } else {
                     (hsize, 0)
                 };
@@ -2065,7 +2069,7 @@ impl Engine {
         let rule = Node::Rule {
             width: w,
             height: rt,
-            depth: 0, attr: self.eqtb.cur_attr,
+            depth: 0, subtype: crate::boxes::RULE_NORMAL, index: 0, attr: self.eqtb.cur_attr,
         };
         let mut vlist = Vec::new();
         if under {
@@ -3883,7 +3887,7 @@ impl Engine {
                 Node::Rule {
                     width: w,
                     height: r,
-                    depth: 0, attr: self.eqtb.cur_attr,
+                    depth: 0, subtype: crate::boxes::RULE_NORMAL, index: 0, attr: self.eqtb.cur_attr,
                 },
                 Node::Kern((axis - dr) - (dh - sd), self.eqtb.cur_attr),
                 den_c,
@@ -3961,7 +3965,7 @@ impl Engine {
             Node::Rule {
                 width: xw,
                 height: dh,
-                depth: 0, attr: self.eqtb.cur_attr,
+                depth: 0, subtype: crate::boxes::RULE_NORMAL, index: 0, attr: self.eqtb.cur_attr,
             },
             Node::Kern(clr, self.eqtb.cur_attr),
             x,
@@ -5362,7 +5366,7 @@ mod tests {
                 Node::Rule {
                     width: su(1.0),
                     height: su(0.4),
-                    depth: 0, attr: crate::boxes::Attr::NONE,
+                    depth: 0, subtype: crate::boxes::RULE_NORMAL, index: 0, attr: crate::boxes::Attr::NONE,
                 },
                 Node::Kern(su(0.5), crate::boxes::Attr::NONE),
                 Node::Char { c: b'A', font: cmr, attr: crate::boxes::Attr::NONE },
@@ -5439,12 +5443,13 @@ mod tests {
                 Node::Rule {
                     width: su(1.0),
                     height: 0,
-                    depth: 0, attr: crate::boxes::Attr::NONE,
+                    depth: 0, subtype: crate::boxes::RULE_NORMAL, index: 0, attr: crate::boxes::Attr::NONE,
                 },
                 Node::Leaders {
                     glue: Glue::spec(su(2.0), su(1.0), 2, 0, 0),
                     kind: 0,
                     body: crate::boxes::LeaderBody::Rule {
+                        subtype: crate::boxes::RULE_NORMAL,
                         width: su(2.0),
                         height: 0,
                         depth: 0,
@@ -5464,12 +5469,13 @@ mod tests {
                 Node::Rule {
                     width: su(1.0),
                     height: 0,
-                    depth: 0, attr: crate::boxes::Attr::NONE,
+                    depth: 0, subtype: crate::boxes::RULE_NORMAL, index: 0, attr: crate::boxes::Attr::NONE,
                 },
                 Node::Leaders {
                     glue: Glue::spec(su(2.0), su(1.0), 2, 0, 0),
                     kind: 0,
                     body: crate::boxes::LeaderBody::Rule {
+                        subtype: crate::boxes::RULE_NORMAL,
                         width: su(2.0),
                         height: 0,
                         depth: 0,

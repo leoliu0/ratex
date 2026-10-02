@@ -197,28 +197,8 @@ impl Engine {
             ToksApp | ToksPre | EToksApp | EToksPre | GToksApp | GToksPre | XToksApp | XToksPre => {
                 self.combine_the_toks(p)
             }
-            HRule => {
-                if self.mode == Mode::Horizontal {
-                    self.push_token(Token::from_cs(id));
-                    self.push_token(Token::from_cs(self.ids.par));
-                    return;
-                }
-                if self.mode == Mode::RestrictedHorizontal {
-                    // tex.web head_for_vmode: only leaders may hold a rule
-                    // in restricted horizontal mode
-                    self.error("You can't use `\\hrule' here except with leaders");
-                    return;
-                }
-                self.make_rule(true);
-            }
-            VRule => {
-                if self.mode.is_v() {
-                    self.push_token(Token::from_cs(id));
-                    self.start_paragraph(true);
-                } else {
-                    self.make_rule(false);
-                }
-            }
+            HRule => self.rule_command(id, true, crate::boxes::RULE_NORMAL),
+            VRule => self.rule_command(id, false, crate::boxes::RULE_NORMAL),
             Leaders | CLeaders | XLeaders => {
                 self.begin_leaders(match p {
                     Leaders => 0,

@@ -12,6 +12,8 @@ use crate::token::{CsId, Token};
 pub const RULE_FILL: i32 = i32::MIN; // sentinel: rule dimension from context
 /// box_kinds marker for a \discretionary part group (tex.web disc_group)
 const DISC_GROUP_KIND: u8 = 10;
+/// the box group of `\localleftbox`/`\localrightbox`
+pub(crate) const LOCAL_BOX_KIND: u8 = 12;
 /// box_kinds marker for a `\vadjust pre` group (kind 9 is plain `\vadjust`)
 const VADJUST_PRE_KIND: u8 = 11;
 
@@ -304,6 +306,64 @@ impl Engine {
         let glyph = self.new_lua_glyph(c);
         self.cur_list.push(glyph);
         self.space_factor = self.space_factor_of(c);
+    }
+
+    /// luatex `run_char_ghost` (`\leftghost`, `\rightghost`): the next
+    /// token, when it is a character, becomes a ghost glyph that takes part
+    /// in kerning but is never typeset. A left ghost keeps the kern between
+    /// the preceding character and itself; neither kind kerns with the
+    /// character after it, and no ligature forms across a ghost.
+    pub(crate) fn char_ghost(&mut self, id: CsId, right: bool) {
+        if self.mode.is_v() {
+            self.push_token(Token::from_cs(id));
+            self.start_paragraph(true);
+            return;
+        }
+        let t = self.get_x_raw();
+        let code = if t.is_cs() {
+            match self.eqtb.resolve(t.cs_id()) {
+                Some(crate::eqtb::Equiv::CharDef(c)) => Some(*c as u32),
+                Some(crate::eqtb::Equiv::CharTok(raw)) => {
+                    let raw = Token(*raw);
+                    matches!(raw.cc(), 11 | 12).then(|| raw.chr())
+                }
+                Some(crate::eqtb::Equiv::Prim(Prim::Char)) => Some(0),
+                _ => None,
+            }
+        } else {
+            matches!(t.cc(), 11 | 12).then(|| t.chr())
+        };
+        let Some(c) = code else { return };
+        if !self.mode.is_h() {
+            return;
+        }
+        if self.cur_font_is_lua() {
+            let mut glyph = self.new_lua_glyph(c);
+            if let Node::LuaGlyph(g) = &mut glyph {
+                g.subtype = (crate::lua_node::GLYPH_GHOST | if right { crate::lua_node::GLYPH_RIGHT } else { crate::lua_node::GLYPH_LEFT }) as u8;
+            }
+            self.cur_list.push(glyph);
+            return;
+        }
+        // the ghost ends the character chain without meeting a boundary; a
+        // ghost (or \noboundary) just before it, not the character before
+        // that, is what it would kern with
+        if let Some(f) = self.native_text.lig_chain.take() {
+            self.lig_kern_loop(f, LigStack::default(), None);
+        }
+        let after_break = std::mem::replace(&mut self.native_text.suppress_left_boundary, true);
+        if right || after_break {
+            return;
+        }
+        let f = self.eqtb.cur_font_val;
+        let (Some(font), Ok(g)) = (self.eqtb.fonts.get(f as usize), u8::try_from(c)) else { return };
+        let left = match self.cur_list.last() {
+            Some(Node::Char { c, font: pf, .. } | Node::Ligature { c, font: pf, .. }) if *pf == f => Some(*c),
+            _ => None,
+        };
+        if let Some(LigKernOp::Kern(w)) = left.and_then(|l| lig_kern_step(font, Some(l), g)) {
+            self.cur_list.push(Node::Kern(w, self.eqtb.cur_attr));
+        }
     }
 
     pub fn char_token(&mut self, c: u8, is_letter: bool) {
@@ -1094,7 +1154,7 @@ impl Engine {
 
     /// Width, height and depth of character `c` of font `f`.
     pub(crate) fn glyph_whd(&self, f: u16, c: u32) -> (i32, i32, i32) {
-        crate::boxes::lua_glyph_whd(&self.eqtb.fonts, i32::from(f), c as i32, 0)
+        crate::boxes::lua_glyph_whd(&self.eqtb.fonts, i32::from(f), c as i32, 0, 0)
     }
 
 
@@ -1130,7 +1190,7 @@ impl Engine {
         (width, height, depth)
     }
 
-    pub fn make_rule(&mut self, horizontal: bool) {
+    pub fn make_rule(&mut self, horizontal: bool, subtype: u8) {
         let (mut width, height, depth) = self.scan_rule_dims(horizontal);
         if horizontal {
             // tex.web: an \hrule with null width keeps a RUNNING width in the
@@ -1141,7 +1201,10 @@ impl Engine {
             self.vlist_append(Node::Rule {
                 width,
                 height,
-                depth, attr: self.eqtb.cur_attr,
+                depth,
+                subtype,
+                index: 0,
+                attr: self.eqtb.cur_attr,
             });
             return;
         }
@@ -1151,7 +1214,10 @@ impl Engine {
         let node = Node::Rule {
             width,
             height,
-            depth, attr: self.eqtb.cur_attr,
+            depth,
+            subtype,
+            index: 0,
+            attr: self.eqtb.cur_attr,
         };
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => {
@@ -1317,6 +1383,9 @@ impl Engine {
             }
         };
         self.push_group_level_coded(LevelType::Box, meta);
+        if kind <= 2 {
+            self.begin_box_dirs();
+        }
 
         self.box_targets.push(target);
         if kind <= 2 && self.engine_kind == crate::engine::EngineKind::LuaTeX {
@@ -1396,6 +1465,15 @@ impl Engine {
             }
             _ => None,
         };
+        if kind == 0
+            && self.engine_kind == crate::engine::EngineKind::LuaTeX
+            && self.eqtb.cur_group_code() == crate::eqtb::group_code::HBOX
+        {
+            self.fixup_box_directions();
+        }
+        if kind <= 2 {
+            self.end_box_dirs();
+        }
         let inner = std::mem::replace(&mut self.cur_list, Vec::new());
         let (outer_mode, outer_list, pd, sf, pg, _) = self.saved_lists.pop().unwrap_or((
             // group desync (e.g. runaway end): stay in the current context
@@ -1458,6 +1536,11 @@ impl Engine {
         if kind == DISC_GROUP_KIND {
             self.cur_list = outer_list;
             self.build_discretionary(shift, inner, outer_mode);
+            return;
+        }
+        if kind == LOCAL_BOX_KIND {
+            self.cur_list = outer_list;
+            self.build_local_box(shift != 0, inner, outer_mode);
             return;
         }
         // LuaTeX package(): hyphenation, ligaturing and kerning of the
@@ -1733,6 +1816,7 @@ impl Engine {
                     | Prim::LastBox
                     | Prim::HRule
                     | Prim::VRule
+                    | Prim::U(crate::uprim::UPrim::NoHRule | crate::uprim::UPrim::NoVRule)
             ) {
                 return Some(*p);
             }
@@ -1812,25 +1896,21 @@ impl Engine {
                     self.finish_leaders(kind, LeaderBody::Box(Box::new(b)));
                 }
             }
-            Some(Prim::HRule) => {
-                let (w, h, d) = self.scan_rule_dims(true);
+            Some(
+                p @ (Prim::HRule
+                | Prim::VRule
+                | Prim::U(crate::uprim::UPrim::NoHRule | crate::uprim::UPrim::NoVRule)),
+            ) => {
+                let horizontal = matches!(p, Prim::HRule | Prim::U(crate::uprim::UPrim::NoHRule));
+                let empty = matches!(p, Prim::U(_));
+                let (w, h, d) = self.scan_rule_dims(horizontal);
                 self.finish_leaders(
                     kind,
                     LeaderBody::Rule {
                         width: w,
                         height: h,
                         depth: d,
-                    },
-                );
-            }
-            Some(Prim::VRule) => {
-                let (w, h, d) = self.scan_rule_dims(false);
-                self.finish_leaders(
-                    kind,
-                    LeaderBody::Rule {
-                        width: w,
-                        height: h,
-                        depth: d,
+                        subtype: if empty { boxes::RULE_EMPTY } else { boxes::RULE_NORMAL },
                     },
                 );
             }
@@ -2957,9 +3037,8 @@ impl Engine {
                     return;
                 }
                 if self.engine_kind == crate::engine::EngineKind::LuaTeX {
-                    self.lua_insert_local_par();
-                }
-                if indent {
+                    self.lua_paragraph_start(indent);
+                } else if indent {
                     let pi = self.eqtb.dim_params[DimParam::ParIndent.idx() as usize];
                     let r = boxes::hpack(Vec::new(), Some(pi), boxes::HBOX, &self.eqtb);
                     self.cur_list.push(r.node);
@@ -3007,9 +3086,8 @@ impl Engine {
                     return;
                 }
                 if self.engine_kind == crate::engine::EngineKind::LuaTeX {
-                    self.lua_insert_local_par();
-                }
-                if indent {
+                    self.lua_paragraph_start(indent);
+                } else if indent {
                     let pi = self.eqtb.dim_params[DimParam::ParIndent.idx() as usize];
                     let r = boxes::hpack(Vec::new(), Some(pi), boxes::HBOX, &self.eqtb);
                     self.cur_list.push(r.node);
@@ -3056,6 +3134,10 @@ impl Engine {
     pub(crate) fn resume_after_display(&mut self) {
         self.begin_paragraph_language();
         *self.prev_graf_mut() += 3;
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            // texmath.c: "this needs to be intercepted in the display math start"
+            self.append_local_par(boxes::LocalParMode::Penalty);
+        }
     }
 
     fn run_everypar(&mut self) {
@@ -3091,7 +3173,9 @@ impl Engine {
         // etex.ch end_graf: `if LR_save<>null then flush_list(LR_save)` —
         // init_math's line_break keeps it for the display and the resumption
         let lr_key = self.saved_lists.len();
-        if self.cur_list.is_empty() {
+        if self.cur_list.is_empty()
+            || (self.engine_kind == crate::engine::EngineKind::LuaTeX && Self::only_par_nodes(&self.cur_list))
+        {
             if !self.in_display_init {
                 self.lr_save_take(lr_key);
             }

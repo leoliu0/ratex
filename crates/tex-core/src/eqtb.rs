@@ -16,6 +16,11 @@ use crate::token::{CsId, Token, CAT_OTHER};
 pub const LEVEL_ONE: u16 = 1;
 pub const MAX_GROUP_LEVEL: u16 = u16::MAX;
 pub const NUM_REGISTERS: usize = 32768;
+/// pseudo box registers behind luatex's `\localleftbox` and `\localrightbox`
+/// (`local_left_box_base`, `local_right_box_base`): ordinary save-stack boxes
+/// that no register number reaches
+pub const LOCAL_LEFT_BOX: u16 = NUM_REGISTERS as u16;
+pub const LOCAL_RIGHT_BOX: u16 = NUM_REGISTERS as u16 + 1;
 pub const MAX_SAVE_STACK: usize = 100_000;
 /// LuaTeX's value of an attribute that is not set (`UNUSED_ATTRIBUTE`).
 pub const UNUSED_ATTRIBUTE: i32 = -0x7FFF_FFFF;
@@ -281,6 +286,7 @@ pub mod group_code {
     pub const SEMI_SIMPLE: u8 = 14;
     pub const MATH_SHIFT: u8 = 15;
     pub const MATH_LEFT: u8 = 16;
+    pub const LOCAL_BOX: u8 = 17;
 }
 
 /// What e-TeX keeps in the save stack next to a level boundary (`saved(-2)`
@@ -350,6 +356,7 @@ pub(crate) fn group_description(code: u8, level: u16, line: i32, entered: bool) 
         group_code::MATH => "math",
         group_code::MATH_CHOICE => "math choice",
         group_code::MATH_SHIFT => "math shift",
+        group_code::LOCAL_BOX => "local box",
         _ => "math left",
     };
     let mut text = format!("{name} group (level {level})");
@@ -893,8 +900,8 @@ impl Eqtb {
             muskip_levels: vec![LEVEL_ONE; NUM_REGISTERS],
             toks: vec![Rc::new(Vec::new()); NUM_REGISTERS],
             toks_levels: vec![LEVEL_ONE; NUM_REGISTERS],
-            boxed: vec![None; NUM_REGISTERS],
-            box_levels: vec![LEVEL_ONE; NUM_REGISTERS],
+            boxed: vec![None; NUM_REGISTERS + 2],
+            box_levels: vec![LEVEL_ONE; NUM_REGISTERS + 2],
             cat: cat.to_vec(),
             cat_levels: vec![LEVEL_ONE; 256],
             math_code: math_code.to_vec(),
@@ -1439,6 +1446,19 @@ impl Eqtb {
             |old, ol| SaveItem::Toks(idx, old, ol),
         );
         self.end_assign(TraceSlot::Toks(idx));
+    }
+    /// `eq_define(local_left_box_base / local_right_box_base, box_ref_cmd, p)`
+    pub fn assign_local_box(&mut self, idx: u16, v: Option<Node>) {
+        Self::slot(
+            &mut self.boxed,
+            &mut self.box_levels,
+            idx as usize,
+            v,
+            false,
+            self.cur_level,
+            &mut self.save_stack,
+            |old, ol| SaveItem::Box(idx, old, ol),
+        );
     }
     pub fn assign_box(&mut self, idx: u16, v: Option<Node>, global: bool) {
         let i = idx as usize;

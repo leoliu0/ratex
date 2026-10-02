@@ -371,6 +371,9 @@ pub struct EmbedFont {
     pub t1_keys: std::rc::Rc<crate::pdf_fonts::Type1Keys>,
     /// `pdf_init_font` order of the engine font.
     pub init_order: usize,
+    /// The object number `font_descriptor_objnum_provider` chose for the
+    /// descriptor (0: the writer numbers it).
+    pub desc_obj: i32,
     /// pdfTeX's dictionary of an engine font's own code space (None for
     /// remapped code spaces, which have no pdfTeX counterpart).
     pub pdftex: Option<PdfTexFont>,

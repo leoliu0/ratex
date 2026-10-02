@@ -153,6 +153,7 @@ pub fn make_embed_font(
         t1_preset: [0; crate::pdf_fonts::INT_KEYS_NUM],
         t1_keys: keys,
         init_order: 0,
+        desc_obj: 0,
         pdftex: None,
     };
     set_font_usage(&mut font, used_chars);
@@ -392,6 +393,9 @@ pub fn validate_pdfa_catalog(catalog_str: &str) -> Result<(), String> {
 struct PdfBuilder {
     packable: Vec<bool>,
     objs: Vec<Option<Vec<u8>>>, // index n-1 holds object n
+    /// Numbers the Lua callbacks chose for objects the writer must not
+    /// hand out again.
+    claimed: std::collections::HashSet<usize>,
 }
 
 impl PdfBuilder {
@@ -399,6 +403,7 @@ impl PdfBuilder {
         PdfBuilder {
             objs: Vec::new(),
             packable: Vec::new(),
+            claimed: std::collections::HashSet::new(),
         }
     }
 
@@ -406,8 +411,12 @@ impl PdfBuilder {
         if self.objs.len() >= crate::engine::MAX_PAGE_LIST {
             return self.objs.len().max(1);
         }
-        self.objs.push(None);
-        self.objs.len()
+        loop {
+            self.objs.push(None);
+            if !self.claimed.contains(&self.objs.len()) || self.objs.len() >= crate::engine::MAX_PAGE_LIST {
+                return self.objs.len();
+            }
+        }
     }
 
     fn set(&mut self, num: usize, body: String) {
@@ -1141,6 +1150,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         b.objs.resize(reserved, None);
         b.packable.resize(reserved, false);
     }
+    b.claimed = doc.fonts.iter().filter(|f| f.desc_obj > 0).map(|f| f.desc_obj as usize).collect();
     let catalog_obj = b.alloc(); // after user objects
     let pages_obj = b.alloc();
 
@@ -1507,9 +1517,11 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             let sfnt = is_sfnt(f);
             // writefont.c: fonts of one Type 1 program share its descriptor
             let desc = if sfnt || f.font_file.is_empty() {
-                b.alloc()
+                if f.desc_obj > 0 { f.desc_obj as usize } else { b.alloc() }
             } else {
-                *desc_cache.entry(key).or_insert_with(|| b.alloc())
+                *desc_cache
+                    .entry(key)
+                    .or_insert_with(|| if f.desc_obj > 0 { f.desc_obj as usize } else { b.alloc() })
             };
             let cidfont = if sfnt { Some(b.alloc()) } else { None };
             let encoding = if sfnt {

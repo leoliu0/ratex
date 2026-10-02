@@ -508,6 +508,7 @@ impl Engine {
                                 t1_preset: Default::default(),
                                 t1_keys: Default::default(),
                                 init_order: 0,
+                                desc_obj: 0,
                                 pdftex: None,
                             };
                             self.pdf_doc.fonts.push(ef);
@@ -652,6 +653,7 @@ impl Engine {
                                 t1_preset: Default::default(),
                                 t1_keys: Default::default(),
                                 init_order: 0,
+                                desc_obj: 0,
                                 pdftex: None,
                             };
                             let document_index = self.pdf_doc.fonts.len();
@@ -668,6 +670,16 @@ impl Engine {
         for (fid, tfm_name) in raw_group_members {
             if let Some(&document_index) = raw_group_index.get(&tfm_name) {
                 remap.insert(crate::pdfout::FontBinding::RAW.resource_key(fid), document_index);
+            }
+        }
+        // font_descriptor_objnum_provider: the object a descriptor is written as
+        if !self.lua_res.descriptor_objnums.is_empty() {
+            let mut bindings: Vec<(usize, usize)> = remap.iter().map(|(&k, &v)| (k, v)).collect();
+            bindings.sort_unstable();
+            for (key, index) in bindings {
+                if let Some(&number) = self.lua_res.descriptor_objnums.get(&(key as u16)) {
+                    self.pdf_doc.fonts[index].desc_obj = number;
+                }
             }
         }
         for fonts in self

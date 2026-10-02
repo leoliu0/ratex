@@ -49,6 +49,7 @@ mod lua_sys_lfs;
 mod lua_sys_mime;
 mod lua_sys_os;
 mod lua_sys_status;
+mod show_context;
 mod lua_sys_unicode;
 mod lua_sys_zlib;
 mod lua_cmds;

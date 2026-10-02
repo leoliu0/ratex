@@ -1332,6 +1332,12 @@ impl Engine {
         self.diagnostics.push(diagnostic);
     }
 
+    /// Retain a warning that has already been written to the transcript.
+    pub(crate) fn record_warning(&mut self, message: &str) {
+        let diagnostic = unlocated_diagnostic(DiagnosticSeverity::Warning, message, None);
+        self.diagnostics.push(diagnostic);
+    }
+
     pub(crate) fn flush_diagnostic_repeats(&mut self) {
         if let Some(repeat) = self.diagnostic_repeat.take() {
             if repeat.hidden > 0 {

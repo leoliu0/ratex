@@ -92,6 +92,10 @@ callbacks! {
     ProcessRule = "process_rule",
     InsertLocalPar = "insert_local_par",
     ContributeFilter = "contribute_filter",
+    // luatex runs `call_edit(file, line)` only when `E` is typed at the
+    // `?` prompt of an error in error_stop_mode (errors.c error()). The
+    // engine never reads the terminal, so no error can reach that answer:
+    // the callback can be registered and is never run.
     CallEdit = "call_edit",
     BuildPageInsert = "build_page_insert",
     GlyphStreamProvider = "glyph_stream_provider",
@@ -655,7 +659,7 @@ impl Engine {
             Some(CbRet::Node(h)) => self.lua_nodes_to_engine(i64::from(*h)),
             Some(CbRet::Nil) | None => Vec::new(),
             Some(_) => {
-                self.warning_at("(append to vlist): error: node or nil expected", None);
+                self.lua_warning("append to vlist", "error: node or nil expected");
                 Vec::new()
             }
         };
@@ -818,13 +822,58 @@ impl Engine {
     /// callback the callback (reading `status.lastwarningtag` and
     /// `status.lastwarningstring`) replaces the printed warning.
     pub(crate) fn lua_warning(&mut self, tag: &str, text: &str) {
-        if self.engine_kind == crate::engine::EngineKind::LuaTeX && self.cb_defined(Cb::ShowWarningMessage) {
+        self.lua_warning_in(None, tag, text);
+    }
+
+    /// `normal_warning` while `cur_file_name` is `file`: the warning names
+    /// the file, as map file warnings do.
+    pub(crate) fn lua_warning_in(&mut self, file: Option<&str>, tag: &str, text: &str) {
+        if self.engine_kind != crate::engine::EngineKind::LuaTeX {
+            self.warning_at(&format!("({tag}): {text}"), None);
+            return;
+        }
+        if self.cb_defined(Cb::ShowWarningMessage) {
             self.lua_msgs.last_warning_tag = Some(tag.to_string());
             self.lua_msgs.last_warning = Some(text.to_string());
             let _ = self.lua_cb_call(Cb::ShowWarningMessage, "show_warning_message", Vec::new());
             return;
         }
-        self.warning_at(&format!("({tag}): {text}"), None);
+        // print_ln, "warning ", " (file F)", " (tag)", ": text", print_ln
+        let file = file.map_or_else(String::new, |f| format!(" (file {f})"));
+        let line = format!("warning {file} ({tag}): {text}");
+        self.flush_diagnostic_repeats();
+        for target in [Target::Term, Target::Log] {
+            self.lua_print_line(target, &line);
+        }
+        self.record_warning(&format!("({tag}): {text}"));
+    }
+
+    /// luatex `print_ln(); tprint(line); print_ln()` to the terminal or the log.
+    fn lua_print_line(&mut self, target: Target, line: &str) {
+        let text = format!("\n{line}\n");
+        match target {
+            Target::Term => self.append_term(&text),
+            Target::Log => self.append_log(&text),
+        }
+    }
+
+    /// luatex `print_ignored_err(s)`: an error `\ignoreprimitiveerror` turns
+    /// into a note. With a `show_ignored_error_message` callback the text
+    /// waits in the pending string until the next `error()` (`flush_err`)
+    /// runs the callback; without one it goes to the log and `status` keeps
+    /// the message.
+    pub(crate) fn lua_ignored_error(&mut self, msg: &str) {
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX && self.cb_defined(Cb::ShowIgnoredErrorMessage) {
+            self.lua_msgs.pending_ignored.get_or_insert_with(String::new).push_str(&format!("ignored: {msg}"));
+            return;
+        }
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            self.lua_msgs.last_error = Some(msg.to_string());
+        }
+        if self.file_offset > 0 {
+            self.append_log("\n");
+        }
+        self.append_log(&format!("ignored: {msg}"));
     }
 
     /// luatex `normal_warning("lua", ...)` / `luatex_error`: an error raised
@@ -850,19 +899,36 @@ impl Engine {
         let lua_error = self.lua_msgs.lua_error_pending;
         let message_hook = if lua_error { Cb::ShowLuaErrorHook } else { Cb::ShowErrorMessage };
         let context_hook = self.cb_defined(Cb::ShowErrorHook);
+        if !lua_error && !self.cb_defined(message_hook) {
+            // print_err: `status.lasterrorstring` is what print_err was given
+            let text = if self.diagnostic_use_err_help { "" } else { print_err_text(msg) };
+            self.lua_msgs.last_error = Some(text.to_string());
+        }
+        // flush_err: a pending ignored error is shown first; a
+        // show_error_message callback, which owns the pending string, takes it
+        let mut pending = self.lua_msgs.pending_ignored.take().unwrap_or_default();
+        if !pending.is_empty() && !self.cb_defined(Cb::ShowErrorMessage) {
+            self.lua_msgs.last_error = Some(std::mem::take(&mut pending));
+            self.lua_msgs.in_hook = true;
+            if self.cb_defined(Cb::ShowIgnoredErrorMessage) {
+                let _ = self.lua_cb_call(Cb::ShowIgnoredErrorMessage, "show_ignored_error_message", Vec::new());
+            }
+            self.lua_msgs.in_hook = false;
+        }
         if !self.cb_defined(message_hook) && !context_hook {
             return;
         }
         self.lua_msgs.in_hook = true;
         if self.cb_defined(message_hook) {
             if !lua_error {
-                self.lua_msgs.last_error = Some(format!("! {msg}"));
+                let text = msg.strip_prefix("Undefined control sequence ").map_or(msg, |_| "Undefined control sequence");
+                self.lua_msgs.last_error = Some(format!("{pending}! {text}"));
             }
             let _ = self.lua_cb_call(message_hook, CALLBACK_NAMES[message_hook as usize], Vec::new());
             d.hidden |= HIDE_MESSAGE;
         }
         if context_hook {
-            self.lua_msgs.last_error_context = Some(tex_error_context(d));
+            self.lua_msgs.last_error_context = Some(self.show_context_string(inserted_text(msg)));
             let _ = self.lua_cb_call(Cb::ShowErrorHook, "show_error_hook", Vec::new());
             d.hidden |= HIDE_CONTEXT;
         }
@@ -882,46 +948,73 @@ pub(crate) struct LuaMessages {
     pub last_warning: Option<String>,
     /// an error raised by Lua code is being reported
     pub lua_error_pending: bool,
+    /// text `print_ignored_err` left for a `show_ignored_error_message` callback
+    pub pending_ignored: Option<String>,
     /// a message callback is running (errors in it are not hooked again)
     pub in_hook: bool,
 }
 
-/// TeX's `show_context` (tex.web 311-318) for the file line an error was
-/// found on, as `status.lasterrorcontext` holds it: a newline, `l.<line> `
-/// and the text read so far, a newline, and blanks followed by the rest of the
-/// line, both cut to `half_error_line` / `error_line` (50 / 79). Macro and
-/// token list levels of the input stack are not part of it.
-fn tex_error_context(d: &crate::diagnostics::Diagnostic) -> String {
-    const ERROR_LINE: usize = 79;
-    const HALF_ERROR_LINE: usize = 50;
-    let Some(p) = &d.primary else {
-        return String::new();
-    };
-    let text = p.text.as_bytes();
-    let pos = (p.display_column.saturating_sub(1) + d.highlight_len.max(1)).min(text.len());
-    let (first, rest) = text.split_at(pos);
-    let prefix = format!("l.{} ", p.line);
-    // tex.web counts `l.<line>` only; the blank belongs to the text printed
-    let l = prefix.len() - 1;
-    let (skip, n) = if l + first.len() <= HALF_ERROR_LINE {
-        (0, l + first.len())
-    } else {
-        (l + first.len() - HALF_ERROR_LINE + 3, HALF_ERROR_LINE)
-    };
-    let mut out = Vec::new();
-    out.push(b'\n');
-    out.extend_from_slice(prefix.as_bytes());
-    if skip > 0 {
-        out.extend_from_slice(b"...");
+/// What tex.web's `print_err` is given for an error message: the rest of
+/// the message (a control sequence, a command, ` (n)` of `int_error`) is
+/// printed after it.
+fn print_err_text(msg: &str) -> &str {
+    const OPEN: [&str; 11] = [
+        "Undefined control sequence",
+        "Paragraph ended before ",
+        "Argument of ",
+        "Use of ",
+        "Misplaced ",
+        "You can't use `",
+        "Missing = inserted for ",
+        "Illegal parameter number in definition of ",
+        "Extra \\else",
+        "Extra \\fi",
+        "Extra \\or",
+    ];
+    if msg == "Misplaced \\noalign" || msg == "Misplaced \\omit" {
+        return msg;
     }
-    out.extend_from_slice(&first[skip.min(first.len())..]);
-    out.push(b'\n');
-    out.extend(std::iter::repeat(b' ').take(n));
-    if rest.len() + n <= ERROR_LINE {
-        out.extend_from_slice(rest);
-    } else {
-        out.extend_from_slice(&rest[..ERROR_LINE - n - 3]);
-        out.extend_from_slice(b"...");
+    if msg.starts_with("Extra \\endgroup") {
+        return "Extra ";
     }
-    String::from_utf8_lossy(&out).into_owned()
+    if msg.starts_with("Missing ") && ["} inserted", "\\endgroup inserted", "\\right. inserted"].iter().any(|t| msg.ends_with(t)) {
+        return "Missing ";
+    }
+    for open in OPEN {
+        if msg.starts_with(open) {
+            return if open.starts_with("Extra") { "Extra " } else { open };
+        }
+    }
+    // `int_error`: the message is followed by ` (n)`
+    if let Some(head) = msg.strip_suffix(')') {
+        if let Some((text, number)) = head.rsplit_once(" (") {
+            if number.strip_prefix('-').unwrap_or(number).bytes().all(|b| b.is_ascii_digit()) && !number.is_empty() {
+                return text;
+            }
+        }
+    }
+    msg
+}
+
+#[derive(Clone, Copy)]
+enum Target {
+    Term,
+    Log,
+}
+
+/// How TeX's `ins_error` inserted text for this error message.
+fn inserted_text(msg: &str) -> crate::show_context::Insertion {
+    use crate::show_context::Insertion;
+    if msg.starts_with("Missing $ inserted") {
+        Insertion::Dollar
+    } else if ["Missing } inserted", "Missing \\endgroup inserted", "Missing \\right. inserted", "Forbidden control sequence found"]
+        .iter()
+        .any(|m| msg.starts_with(m))
+    {
+        Insertion::TopPushed
+    } else if msg.starts_with("Argument of ") && msg.ends_with(" has an extra }") {
+        Insertion::Par
+    } else {
+        Insertion::None
+    }
 }

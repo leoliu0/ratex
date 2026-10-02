@@ -1179,8 +1179,8 @@ impl Engine {
                 }
             }
         }
-        self.error("Missing math style, treated as \\displaystyle");
         self.push_token(tok);
+        self.error("Missing math style, treated as \\displaystyle");
         0
     }
 
@@ -1864,8 +1864,8 @@ impl Engine {
             } else {
                 format!("cc{}:{}", t.cc(), t.chr())
             };
-            self.error(&format!("Missing {{ inserted (got {})", got));
             self.push_token(t);
+            self.error(&format!("Missing {{ inserted (got {})", got));
             return false;
         }
     }
@@ -2076,9 +2076,9 @@ impl Engine {
                     *t = t.unfreeze();
                 }
             }
-            self.push_tokens(doubled);
+            self.push_tokens_named(doubled, "<inserted>");
         } else {
-            self.push_tokens(toks);
+            self.push_tokens_named(toks, "<inserted>");
         }
     }
 
@@ -2642,11 +2642,11 @@ impl Engine {
     }
 
     fn push_mark_tokens(&mut self, which: usize) {
-        self.push_tokens(self.mark_tokens_class(which, 0));
+        self.push_tokens_named(self.mark_tokens_class(which, 0), "<mark>");
     }
 
     pub(crate) fn push_mark_tokens_class(&mut self, which: usize, class: i32) {
-        self.push_tokens(self.mark_tokens_class(which, class));
+        self.push_tokens_named(self.mark_tokens_class(which, class), "<mark>");
     }
 
     fn mark_tokens_class(&self, which: usize, class: i32) -> Vec<Token> {

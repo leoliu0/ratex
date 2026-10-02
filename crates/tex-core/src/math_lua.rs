@@ -49,11 +49,11 @@ impl Engine {
             Some(d) => d,
             None => {
                 if report {
-                    self.error_at("Missing delimiter (. inserted)", source.map(|mark| mark.to_context()));
                     // back_error: the offending token is read again
                     if t != crate::input::EOF_MARKER {
                         self.push_token(t);
                     }
+                    self.error_at("Missing delimiter (. inserted)", source.map(|mark| mark.to_context()));
                 }
                 Delim::default()
             }

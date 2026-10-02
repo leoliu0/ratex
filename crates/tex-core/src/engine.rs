@@ -851,7 +851,7 @@ impl Engine {
                 }
             }
             Self::append_transcript_bounded(&mut self.term, text);
-            self.term_offset = crate::tex_print::advance_offset(self.term_offset, text);
+            self.term_offset = crate::tex_print::advance_offset(self.term_offset, text, crate::tex_bytes::is_unicode_xprn(&self.xprn));
         }
     }
 
@@ -875,7 +875,7 @@ impl Engine {
             }
         }
         Self::append_transcript_bounded(&mut self.log, text);
-        self.file_offset = crate::tex_print::advance_offset(self.file_offset, text);
+        self.file_offset = crate::tex_print::advance_offset(self.file_offset, text, crate::tex_bytes::is_unicode_xprn(&self.xprn));
     }
 
     /// The exact bytes of the transcript (the `.log` file).
@@ -1350,6 +1350,7 @@ impl Engine {
             term: String::new(),
             xprn: match engine_kind {
                 EngineKind::PdfTeX => crate::tex_bytes::default_xprn(),
+                EngineKind::XeTeX => crate::tex_bytes::xetex_xprn(),
                 _ => crate::tex_bytes::cp227_xprn(),
             },
             tcx: None,

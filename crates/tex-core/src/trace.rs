@@ -17,8 +17,9 @@ use crate::token::Token;
 
 /// tex.web print of `bytes` for a trace line: printable ASCII as itself,
 /// other bytes in `^^` notation.
-fn push_printable(out: &mut Vec<u8>, bytes: &[u8]) {
-    crate::tex_bytes::push_printable(&crate::tex_bytes::default_xprn(), out, bytes);
+fn push_printable(unicode: bool, out: &mut Vec<u8>, bytes: &[u8]) {
+    let table = if unicode { crate::tex_bytes::xetex_xprn() } else { crate::tex_bytes::default_xprn() };
+    crate::tex_bytes::push_printable(&table, out, bytes);
 }
 
 /// `show_token_list(p,null,32)`: at most this many characters are printed
@@ -109,21 +110,27 @@ impl Engine {
         String::from_utf8_lossy(&out).into_owned()
     }
 
-    fn print_escape(out: &mut Vec<u8>, escape: i32) {
+    /// Trace lines print through the Unicode table in XeTeX and through
+    /// tex.web's own table elsewhere.
+    fn xetex_trace_table(&self) -> bool {
+        self.engine_kind == crate::engine::EngineKind::XeTeX
+    }
+
+    fn print_escape(&self, out: &mut Vec<u8>, escape: i32) {
         if (0..256).contains(&escape) {
-            push_printable(out, &[escape as u8]);
+            push_printable(self.xetex_trace_table(), out, &[escape as u8]);
         }
     }
 
     /// `print_esc(name)` with the escape character of the event.
-    fn print_esc_bytes(out: &mut Vec<u8>, escape: i32, name: &[u8]) {
-        Self::print_escape(out, escape);
-        push_printable(out, name);
+    fn print_esc_bytes(&self, out: &mut Vec<u8>, escape: i32, name: &[u8]) {
+        self.print_escape(out, escape);
+        push_printable(self.xetex_trace_table(), out, name);
     }
 
     fn print_name(&self, out: &mut Vec<u8>, escape: i32, code: u16, unknown: &str) {
         match self.primitive_names.get(&code) {
-            Some(name) => Self::print_esc_bytes(out, escape, name),
+            Some(name) => self.print_esc_bytes(out, escape, name),
             None => out.extend_from_slice(unknown.as_bytes()),
         }
     }
@@ -134,25 +141,25 @@ impl Engine {
         if let Some((bytes, len)) = Self::active_cs_source_bytes(name) {
             out.extend_from_slice(&bytes[..len]);
         } else if name.is_empty() {
-            Self::print_esc_bytes(out, escape, b"csname");
-            Self::print_esc_bytes(out, escape, b"endcsname");
+            self.print_esc_bytes(out, escape, b"csname");
+            self.print_esc_bytes(out, escape, b"endcsname");
         } else {
-            Self::print_esc_bytes(out, escape, name);
+            self.print_esc_bytes(out, escape, name);
         }
     }
 
     fn token_piece(&self, token: Token, escape: i32) -> Vec<u8> {
         let mut piece = Vec::new();
-        push_printable(&mut piece, &self.tokens_to_bytes_esc(&[token], escape));
+        push_printable(self.xetex_trace_table(), &mut piece, &self.tokens_to_bytes_esc(&[token], escape));
         piece
     }
 
     /// `show_token_list(.., null, 32)` over already rendered tokens.
-    fn print_limited(out: &mut Vec<u8>, escape: i32, pieces: impl Iterator<Item = Vec<u8>>) {
+    fn print_limited(&self, out: &mut Vec<u8>, escape: i32, pieces: impl Iterator<Item = Vec<u8>>) {
         let mut tally = 0;
         for piece in pieces {
             if tally >= TOKEN_LIST_LIMIT {
-                Self::print_esc_bytes(out, escape, b"ETC.");
+                self.print_esc_bytes(out, escape, b"ETC.");
                 return;
             }
             tally += piece.len();
@@ -161,7 +168,7 @@ impl Engine {
     }
 
     fn print_token_list_limited(&self, out: &mut Vec<u8>, escape: i32, tokens: &[Token]) {
-        Self::print_limited(out, escape, tokens.iter().map(|&t| self.token_piece(t, escape)));
+        self.print_limited(out, escape, tokens.iter().map(|&t| self.token_piece(t, escape)));
     }
 
     /// print_cmd_chr of an equivalent, then `:` and the replacement text for
@@ -170,13 +177,13 @@ impl Engine {
         match equiv {
             Equiv::Macro(m) => {
                 if m.protected {
-                    Self::print_esc_bytes(out, escape, b"protected");
+                    self.print_esc_bytes(out, escape, b"protected");
                 }
                 if m.long {
-                    Self::print_esc_bytes(out, escape, b"long");
+                    self.print_esc_bytes(out, escape, b"long");
                 }
                 if m.outer {
-                    Self::print_esc_bytes(out, escape, b"outer");
+                    self.print_esc_bytes(out, escape, b"outer");
                 }
                 if m.protected || m.long || m.outer {
                     out.push(b' ');
@@ -190,17 +197,17 @@ impl Engine {
                 }
                 pieces.push(b"->".to_vec());
                 pieces.extend(m.body.iter().map(|&t| self.token_piece(t, escape)));
-                Self::print_limited(out, escape, pieces.into_iter());
+                self.print_limited(out, escape, pieces.into_iter());
             }
             Equiv::Prim(p) => {
-                Self::print_esc_bytes(out, escape, self.prim_name(*p).as_bytes());
+                self.print_esc_bytes(out, escape, self.prim_name(*p).as_bytes());
             }
             Equiv::CharDef(c) => {
-                Self::print_esc_bytes(out, escape, b"char");
+                self.print_esc_bytes(out, escape, b"char");
                 out.extend_from_slice(format!("\"{c:X}").as_bytes());
             }
             Equiv::MathCharDef(c) => {
-                Self::print_esc_bytes(out, escape, b"mathchar");
+                self.print_esc_bytes(out, escape, b"mathchar");
                 out.extend_from_slice(format!("\"{c:X}").as_bytes());
             }
             Equiv::FontRef(f) => {
@@ -215,11 +222,11 @@ impl Engine {
             Equiv::BoxReg(i) => self.print_register(out, escape, b"box", *i),
             Equiv::AttributeReg(i) => self.print_register(out, escape, b"attribute", *i),
             Equiv::UMathCharDef(v) if self.engine_kind == crate::engine::EngineKind::XeTeX => {
-                Self::print_esc_bytes(out, escape, crate::xemath_prims::umathchardef_meaning(*v).as_bytes());
+                self.print_esc_bytes(out, escape, crate::xemath_prims::umathchardef_meaning(*v).as_bytes());
             }
             Equiv::UMathCharDef(v) => {
                 let (class, family, slot) = crate::uprims::decode_umath_num(*v);
-                Self::print_esc_bytes(out, escape, b"Umathchar");
+                self.print_esc_bytes(out, escape, b"Umathchar");
                 out.extend_from_slice(format!("\"{class:X}\"{family:02X}\"{slot:06X}").as_bytes());
             }
             Equiv::LuaCall { slot, protected } => {
@@ -234,7 +241,7 @@ impl Engine {
     }
 
     fn print_register(&self, out: &mut Vec<u8>, escape: i32, name: &[u8], index: u16) {
-        Self::print_esc_bytes(out, escape, name);
+        self.print_esc_bytes(out, escape, name);
         out.extend_from_slice(index.to_string().as_bytes());
     }
 
@@ -245,7 +252,7 @@ impl Engine {
 
     /// `print_esc(font_id_text(f))`: the name verbatim, whatever it is.
     fn sprint_cs_plain(&self, out: &mut Vec<u8>, id: u32, escape: i32) {
-        Self::print_esc_bytes(out, escape, self.cs.name(id));
+        self.print_esc_bytes(out, escape, self.cs.name(id));
     }
 
     fn print_spec_bytes(&self, out: &mut Vec<u8>, glue: &crate::boxes::Glue, unit: &str) {
@@ -301,7 +308,7 @@ impl Engine {
                         let mut pieces = vec![b"{".to_vec()];
                         pieces.extend(t.iter().map(|&tok| self.token_piece(tok, escape)));
                         pieces.push(b"}".to_vec());
-                        Self::print_limited(out, escape, pieces.into_iter());
+                        self.print_limited(out, escape, pieces.into_iter());
                     } else {
                         self.print_token_list_limited(out, escape, t);
                     }
@@ -378,7 +385,7 @@ impl Engine {
                     TraceSlot::PenaltyShape(_) => (b"displaywidowpenalties", true),
                     _ => (b"parshape", false),
                 };
-                Self::print_esc_bytes(out, escape, name);
+                self.print_esc_bytes(out, escape, name);
                 out.push(b'=');
                 if let TraceValue::Shape(n, first, _) = value {
                     if *n == 0 {
@@ -386,7 +393,7 @@ impl Engine {
                     } else if penalties {
                         out.extend_from_slice(format!("{n} {first}").as_bytes());
                         if *n > 1 {
-                            Self::print_esc_bytes(out, escape, b"ETC.");
+                            self.print_esc_bytes(out, escape, b"ETC.");
                         }
                     } else {
                         out.extend_from_slice(n.to_string().as_bytes());
@@ -397,7 +404,7 @@ impl Engine {
     }
 
     fn print_code(&self, out: &mut Vec<u8>, escape: i32, name: &[u8], c: u32, value: i64) {
-        Self::print_esc_bytes(out, escape, name);
+        self.print_esc_bytes(out, escape, name);
         out.extend_from_slice(c.to_string().as_bytes());
         out.push(b'=');
         out.extend_from_slice(value.to_string().as_bytes());
@@ -407,11 +414,11 @@ impl Engine {
 
     /// tex.web print_cmd_chr(if_test, chr): the conditional's name, with the
     /// `\unless` prefix e-TeX adds.
-    fn print_if_name(out: &mut Vec<u8>, escape: i32, kind: u8, unless: bool) {
+    fn print_if_name(&self, out: &mut Vec<u8>, escape: i32, kind: u8, unless: bool) {
         if unless {
-            Self::print_esc_bytes(out, escape, b"unless");
+            self.print_esc_bytes(out, escape, b"unless");
         }
-        Self::print_esc_bytes(out, escape, if_name(kind).as_bytes());
+        self.print_esc_bytes(out, escape, if_name(kind).as_bytes());
     }
 
     /// `begin_diagnostic; print_nl("{")` and the `mode: ` prefix of
@@ -440,7 +447,7 @@ impl Engine {
     pub(crate) fn show_if_start(&mut self, p: Prim) {
         let escape = self.eqtb.int_params[IntParam::EscapeChar as usize];
         let mut out = self.begin_command_trace();
-        Self::print_if_name(&mut out, escape, Self::if_code(p), self.unless_next);
+        self.print_if_name(&mut out, escape, Self::if_code(p), self.unless_next);
         out.extend_from_slice(b": ");
         let level = self.if_stack.len() + 1;
         let line = self.input.current_file_line();
@@ -465,13 +472,13 @@ impl Engine {
             Prim::Or => b"or",
             _ => b"else",
         };
-        Self::print_esc_bytes(&mut out, escape, name);
+        self.print_esc_bytes(&mut out, escape, name);
         out.extend_from_slice(b": ");
         let (kind, unless, line) = self
             .if_stack
             .last()
             .map_or((0, false, 0), |s| (s.kind, s.unless, s.loc_line));
-        Self::print_if_name(&mut out, escape, kind, unless);
+        self.print_if_name(&mut out, escape, kind, unless);
         out.push(b' ');
         out.extend_from_slice(format!("(level {})", self.if_stack.len()).as_bytes());
         if line != 0 {
@@ -564,7 +571,7 @@ impl Engine {
             let (kind, unless, line) = (state.kind, state.unless, state.loc_line);
             let mut out = Vec::new();
             out.extend_from_slice(b"end of ");
-            Self::print_if_name(&mut out, escape, kind, unless);
+            self.print_if_name(&mut out, escape, kind, unless);
             if line != 0 {
                 out.extend_from_slice(format!(" entered on line {line}").as_bytes());
             }
@@ -608,9 +615,9 @@ impl Engine {
         for state in self.if_stack[nest.if_depth.min(self.if_stack.len())..].iter().rev() {
             let mut out = Vec::new();
             out.extend_from_slice(b"end of file when ");
-            Self::print_if_name(&mut out, escape, state.kind, state.unless);
+            self.print_if_name(&mut out, escape, state.kind, state.unless);
             if state.in_else {
-                Self::print_esc_bytes(&mut out, escape, b"else");
+                self.print_esc_bytes(&mut out, escape, b"else");
             }
             if state.loc_line != 0 {
                 out.extend_from_slice(format!(" entered on line {}", state.loc_line).as_bytes());

@@ -139,6 +139,11 @@ impl<'a> BoxDisplay<'a> {
     }
 
     /// tex.web print_nl relative to this display's own text.
+    /// The characters of a native word, each as `print` shows it.
+    fn print_native_text(&mut self, text: &str) {
+        push_printable(&self.e.xprn, &mut self.out, text.as_bytes());
+    }
+
     pub(crate) fn print_nl(&mut self, s: &str) {
         if self.always_nl || self.out.last().is_some_and(|&b| b != b'\n') {
             self.print_ln();
@@ -300,14 +305,16 @@ impl<'a> BoxDisplay<'a> {
         self.out.push(b'{');
         let bytes = &*crate::tex_bytes::text_to_bytes(text);
         let start = self.out.len();
-        for (i, &b) in bytes.iter().enumerate() {
+        let unicode = crate::tex_bytes::is_unicode_xprn(&self.e.xprn);
+        let mut i = 0;
+        while i < bytes.len() {
             if self.out.len() - start >= MARK_LIMIT {
-                if i < bytes.len() {
-                    self.print_esc("ETC.");
-                }
+                self.print_esc("ETC.");
                 break;
             }
-            push_printable(&self.e.xprn, &mut self.out, &[b]);
+            let n = if unicode { crate::tex_bytes::next_unit_len(&bytes[i..]) } else { 1 };
+            push_printable(&self.e.xprn, &mut self.out, &bytes[i..i + n]);
+            i += n;
         }
         self.out.push(b'}');
     }
@@ -370,7 +377,7 @@ impl<'a> BoxDisplay<'a> {
                         self.out.push(b' ');
                         self.font_in_short_display = Some(run.font);
                     }
-                    self.print(&run.text);
+                    self.print_native_text(&run.text);
                 }
                 _ => {}
             }
@@ -755,7 +762,7 @@ impl<'a> BoxDisplay<'a> {
                     self.print(&run.glyphs[0].glyph_id.to_string());
                 } else {
                     self.out.push(b' ');
-                    self.print(&run.text);
+                    self.print_native_text(&run.text);
                 }
             }
             // §690-§698: the cases of show_box that arise in mlists only

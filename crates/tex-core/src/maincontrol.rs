@@ -725,16 +725,27 @@ impl Engine {
             }
             Char => {
                 let (value, source) = self.scan_int_with_source();
-                let maximum = if self.engine_kind == crate::engine::EngineKind::PdfTeX { 255 } else { 0x10ffff };
+                let xetex = self.engine_kind == crate::engine::EngineKind::XeTeX;
+                // xetex.web: `hmode+char_num` scans a USV, `mmode+char_num`
+                // a 16-bit character number
+                let maximum = if xetex {
+                    if self.mode.is_m() { 0xffff } else { 0x10ffff }
+                } else if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                    0x10ffff
+                } else {
+                    255
+                };
                 let character = if (0..=maximum).contains(&value)
                     && char::from_u32(value as u32).is_some()
                 {
                     value as u32
                 } else {
-                    self.error_at(
-                        &format!("Character code {value} is out of range for \\char; expected 0 through {maximum} and used 0"),
-                        source.clone(),
-                    );
+                    let message = if xetex {
+                        format!("Bad character code ({value})")
+                    } else {
+                        format!("Character code {value} is out of range for \\char; expected 0 through {maximum} and used 0")
+                    };
+                    self.error_at(&message, source.clone());
                     0
                 };
                 let previous = std::mem::replace(&mut self.diagnostic_source_override, source);
@@ -1337,48 +1348,25 @@ impl Engine {
             NumExpr | DimExpr | GlueExpr | MuExpr => {
                 let _ = self.expand_prim(p, id);
             }
-            // XeTeX identity probes: \XeTeXversion is an \the-like integer
-            // quantity; \XeTeXrevision expands to its decimal revision
-            // string. hyperref/iftex probe these to select driver code.
-            XeTeXVersion => {
-                for b in b"0" {
-                    self.push_token(crate::token::Token::char(12, *b as u32));
-                }
-            }
-            XeTeXRevision => {
-                for b in b".999998" {
-                    self.push_token(crate::token::Token::char(12, *b as u32));
-                }
-            }
+            // `\XeTeXversion` is an integer quantity, never a command
+            XeTeXVersion => self.report_illegal_case(id),
             XeTeXGlyph => {
                 self.do_xetex_glyph();
             }
-            XeTeXCharClass => {
-                self.do_xetex_charclass_assign();
+            XeTeXLinebreakLocale => {
+                self.reject_assignment_prefixes("\\XeTeXlinebreaklocale");
+                // xetex.web: the area and extension of the file name are
+                // ignored and an empty name clears the locale
+                let name = self.scan_file_name();
+                self.xetex_linebreak_locale = if name.is_empty() { None } else { Some(name) };
             }
-            XeTeXInterCharToks => {
-                self.do_xetex_interchartoks_assign();
-            }
-            XeTeXUseGlyphMetrics => {
-                self.scan_optional_equals();
-                self.xetex_use_glyph_metrics = self.scan_int();
-                self.eqtb.xe_use_glyph_metrics = self.xetex_use_glyph_metrics != 0;
-            }
-            XeTeXInterCharTokenState => {
-                self.scan_optional_equals();
-                self.xetex_interchartokenstate = self.scan_int();
-            }
-            XeTeXInputNormalization => {
-                self.scan_optional_equals();
-                self.xetex_input_normalization = self.scan_int();
-            }
-            XeTeXGenerateActualText => {
-                self.scan_optional_equals();
-                self.xetex_generate_actual_text = self.scan_int();
-            }
-            XeTeXDashBreakState => {
-                self.scan_optional_equals();
-                self.xetex_dash_break_state = self.scan_int();
+            XeTeXInputEncoding | XeTeXDefaultEncoding => {
+                self.reject_assignment_prefixes(if p == XeTeXInputEncoding {
+                    "\\XeTeXinputencoding"
+                } else {
+                    "\\XeTeXdefaultencoding"
+                });
+                self.do_xetex_encoding_command(p == XeTeXInputEncoding);
             }
             CatCodeTable => {
                 let g = self.take_assignment_prefixes("\\catcodetable");

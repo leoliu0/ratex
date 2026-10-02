@@ -744,15 +744,10 @@ impl Engine {
                         | Prim::XeTeXGlyphIndex
                         | Prim::XeTeXCharGlyph
                         | Prim::XeTeXGlyphBounds
-                        | Prim::XeTeXUseGlyphMetrics
-                        | Prim::XeTeXInterCharTokenState
                         | Prim::XeTeXCountFeatures
                         | Prim::XeTeXFeatureCode
                         | Prim::XeTeXCountVariations
-                        | Prim::XeTeXVariation
-                        | Prim::XeTeXInputNormalization
-                        | Prim::XeTeXGenerateActualText
-                        | Prim::XeTeXDashBreakState),
+                        | Prim::XeTeXVariation),
                     ) => {
                         v = self.scan_xetex_int_query(p) as i64;
                         break 'scan_loop;
@@ -2425,9 +2420,6 @@ impl Engine {
             Some(Prim::XeTeXVersion) => {
                 emit_the!(b"0");
             }
-            Some(Prim::XeTeXRevision) => {
-                emit_the!(b".999998");
-            }
             Some(Prim::LuaTeXVersion) => {
                 emit_the!(b"124");
             }
@@ -2454,15 +2446,10 @@ impl Engine {
                 | Prim::XeTeXGlyphIndex
                 | Prim::XeTeXCharGlyph
                 | Prim::XeTeXGlyphBounds
-                | Prim::XeTeXUseGlyphMetrics
-                | Prim::XeTeXInterCharTokenState
                 | Prim::XeTeXCountFeatures
                 | Prim::XeTeXFeatureCode
                 | Prim::XeTeXCountVariations
-                | Prim::XeTeXVariation
-                | Prim::XeTeXInputNormalization
-                | Prim::XeTeXGenerateActualText
-                | Prim::XeTeXDashBreakState),
+                | Prim::XeTeXVariation),
             ) => {
                 let v = self.scan_xetex_int_query(p);
                 emit_the!(v.to_string().as_bytes());

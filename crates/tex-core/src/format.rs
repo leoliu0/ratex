@@ -693,7 +693,7 @@ pub fn save_format_with_encoding(
     write_code_map(&mut w, &q.unicode_cat_codes, |w, v| w.u8(v));
     write_code_map(&mut w, &q.unicode_math_codes, |w, v| w.u32(v));
     write_code_map(&mut w, &q.unicode_del_codes, |w, v| w.u64(v as u64));
-    write_code_map(&mut w, &q.unicode_sf_codes, |w, v| w.u16(v));
+    write_code_map(&mut w, &q.unicode_sf_codes, |w, v| w.u16(v as u16));
     write_code_map(&mut w, &q.attributes, |w, v| w.i32(v));
     write_code_map(&mut w, &q.math_params, |w, v| w.i32(v));
     write_code_map(&mut w, &q.math_glue_params, |w, v| {
@@ -712,6 +712,9 @@ pub fn save_format_with_encoding(
         w.u8(u8::from(t.valid));
         w.buf.extend_from_slice(&t.cat);
         write_code_map(&mut w, &t.unicode, |w, v| w.u8(v));
+    }
+    if eng.engine_kind == crate::engine::EngineKind::XeTeX {
+        write_xetex_state(&mut w, &eng.eqtb);
     }
     // tex.web `format_ident`: the job id of every run that loads this format
     w.str(&eng.format_ident);
@@ -1124,7 +1127,14 @@ pub fn load_format_from(data: &[u8]) -> Result<Engine, String> {
 
 fn load_format_uncompressed(data: &[u8]) -> Result<Engine, String> {
     let mut r = parse_header(data)?;
-    let mut eng = Engine::new(false);
+    // the engine kind follows `cur_font` (u16) in the payload: a XeTeX
+    // format is loaded into an engine with XeTeX's primitive table, so the
+    // repair below fills in exactly the names XeTeX defines
+    let mut eng = if r.b.get(r.p + 2) == Some(&1) {
+        Engine::new_with_kind(crate::engine::EngineKind::XeTeX, false)
+    } else {
+        Engine::new(false)
+    };
     eng.init_primitives();
     // Capture immutable primitive identities before replacing the format
     // state. A second full Engine would allocate another 32768-entry set
@@ -1138,9 +1148,13 @@ fn load_format_uncompressed(data: &[u8]) -> Result<Engine, String> {
     let (lua_table, lua_backend) = eng.resolve_lua_primitives();
     load_state(&mut r, &mut eng).map_err(io_err)?;
     let lua = eng.engine_kind == crate::engine::EngineKind::LuaTeX;
+    // A XeTeX format is dumped by this engine with exactly its primitive
+    // table, so nothing is repaired: a name the format undefined or
+    // redefined stays as the format left it.
+    let repair = !lua && eng.engine_kind != crate::engine::EngineKind::XeTeX;
     // Repair primitive aliases while preserving LaTeX macro redefinitions.
     // A LuaTeX format defines exactly the primitives it enabled.
-    for (name, p) in primitives.into_iter().filter(|_| !lua) {
+    for (name, p) in primitives.into_iter().filter(|_| repair) {
         let did = eng.cs.lookup(&name).unwrap_or_else(|| eng.cs.intern(&name));
         let force = name.as_slice() == b"protected";
         match eng.eqtb.get(did) {
@@ -1154,9 +1168,7 @@ fn load_format_uncompressed(data: &[u8]) -> Result<Engine, String> {
             _ => {}
         }
     }
-    if eng.engine_kind == crate::engine::EngineKind::XeTeX {
-        eng.init_xetex_primitives();
-    } else if lua {
+    if lua {
         eng.install_lua_primitive_table(lua_table, lua_backend);
         if eng.lua.is_none() {
             let lua_eng = crate::engine_lua::LuaEngine::new().map_err(|e| e)?;
@@ -1455,7 +1467,7 @@ fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
     q.unicode_cat_codes = read_code_map(r, |r| r.u8())?;
     q.unicode_math_codes = read_code_map(r, |r| r.u32())?;
     q.unicode_del_codes = read_code_map(r, |r| Ok(r.u64()? as i64))?;
-    q.unicode_sf_codes = read_code_map(r, |r| r.u16())?;
+    q.unicode_sf_codes = read_code_map(r, |r| Ok(u32::from(r.u16()?)))?;
     q.attributes = read_code_map(r, |r| r.i32())?;
     q.refresh_cur_attr();
     q.math_params = read_code_map(r, |r| r.i32())?;
@@ -1492,6 +1504,9 @@ fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
             return Err(bad("invalid catcode table"));
         }
     }
+    if eng.engine_kind == crate::engine::EngineKind::XeTeX {
+        read_xetex_state(r, &mut eng.eqtb)?;
+    }
     eng.format_ident = r.str()?;
     // translation tables: the trailer, or cp227 for dumps without one
     if r.p == r.b.len() {
@@ -1527,6 +1542,53 @@ fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
     // boot-completed production state
     eng.format_done = true;
     eng.ini_mode = false;
+    Ok(())
+}
+
+/// The XeTeX-only part of the eqtb: `\XeTeXcharclass` (the high half of
+/// the sfcode entries) and the `\XeTeXinterchartoks` lists. The XeTeX
+/// parameters are ordinary integer and glue parameters and need nothing
+/// extra.
+fn write_xetex_state(w: &mut W, q: &crate::eqtb::Eqtb) {
+    w.u16s(&q.sf_class);
+    let mut classes: Vec<(u32, u16)> = q
+        .unicode_sf_codes
+        .iter()
+        .filter(|(_, (value, _))| value >> 16 != 0)
+        .map(|(&key, &(value, _))| (key, (value >> 16) as u16))
+        .collect();
+    classes.sort_unstable();
+    w.u32(classes.len() as u32);
+    for (key, class) in classes {
+        w.u32(key);
+        w.u16(class);
+    }
+    let mut lists: Vec<_> = q.inter_char_toks.iter().filter(|(_, (t, _))| !t.is_empty()).collect();
+    lists.sort_unstable_by_key(|(key, _)| **key);
+    w.u32(lists.len() as u32);
+    for (&key, (toks, _)) in lists {
+        w.u32(key);
+        w.toks(toks);
+    }
+}
+
+fn read_xetex_state(r: &mut R, q: &mut crate::eqtb::Eqtb) -> io::Result<()> {
+    r.fill_u16(&mut q.sf_class)?;
+    for _ in 0..r.count()? {
+        let key = r.u32()?;
+        let class = r.u16()?;
+        match q.unicode_sf_codes.get_mut(&key) {
+            Some((value, _)) => *value |= u32::from(class) << 16,
+            None => return Err(bad("class of a character without an sfcode entry")),
+        }
+    }
+    for _ in 0..r.count()? {
+        let key = r.u32()?;
+        let toks = r.toks()?;
+        if q.inter_char_toks.insert(key, (Rc::new(toks), crate::eqtb::LEVEL_ONE)).is_some() {
+            return Err(bad("duplicate inter-character token list"));
+        }
+    }
     Ok(())
 }
 

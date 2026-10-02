@@ -23,4 +23,6 @@ lopdf = { version = "0.44.0", default-features = false }
 png = "0.18.1"
 posix-regex = "0.1.4"
 md5 = "0.8"
+encoding_rs = "0.8"
+unicode-normalization = "0.1"
 libc = { workspace = true }

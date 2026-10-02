@@ -183,3 +183,20 @@ fn content_stream_equals_xdvipdfmx() {
         "q 1 0 0 1 72 27.626 cm 0 G 0 g q 4.9813 w 0 -2.491 m 9.963 -2.491 l S Q 1 0 0 RG 1 0 0 rg q 4.9813 w 0 -7.472 m 9.963 -7.472 l S Q 0 1 1 0 K 0 1 1 0 k q 4.9813 w 0 -12.453 m 9.963 -12.453 l S Q 1 0 0 RG 1 0 0 rg q 4.9813 w 0 -17.435 m 9.963 -17.435 l S Q 0 G 0 g q 4.9813 w 0 -22.416 m 9.963 -22.416 l S Q 0.5 G 0.5 g q 4.9813 w 0 -27.397 m 9.963 -27.397 l S Q 0 G 0 g q 0 1 -1 0 -29.888 -29.888 cm q 4.9813 w 0 -32.379 m 9.963 -32.379 l S Q Q 0 G 0 g q 2 0 0 3 0 69.738 cm q 4.9813 w 0 -37.36 m 9.963 -37.36 l S Q Q 0 G 0 g 1 0 0 1 0 -39.851 cm 0 0 m 1 1 l S 1 0 0 1 0 39.851 cm 2 0 m Q"
     );
 }
+
+/// Rules inside (nested) `pdf:bcontent` are positioned relative to the
+/// translated origin (`dvi_set_compensation`); the stream is TL's.
+#[test]
+fn bcontent_compensates_rule_positions() {
+    let (_, content) = ship(
+        r#"\catcode`\{=1 \catcode`\}=2
+\pdfpagewidth=200pt \pdfpageheight=100pt
+\shipout\vbox{\hbox{\kern20pt\special{pdf:bcontent}\special{pdf:literal 0 0 m 5 5 l S}\raise3pt\hbox{\vrule width 10pt height 2pt}\special{pdf:bcontent}\kern4pt\vrule width 7pt height 6pt\special{pdf:econtent}\special{pdf:econtent}\vrule width 3pt height 6pt}}
+\end
+"#,
+    );
+    assert_eq!(
+        content,
+        "q 1 0 0 1 72 27.626 cm 0 G 0 g q 1 0 0 1 19.925 -5.978 cm 0 0 m 5 5 l S q 1.9925 w 0 3.985 m 9.963 3.985 l S Q q 1 0 0 1 9.963 0 cm q 3.985 0 6.974 5.978 re f Q Q 0 G 0 g Q 0 G 0 g q 2.9888 w 42.341 -5.978 m 42.341 0 l S Q Q"
+    );
+}

@@ -1075,10 +1075,17 @@ impl<'a> RenderCtx<'a> {
         self.dpx_reset_color();
     }
 
-    /// `dvi_set_compensation`: glyph and rule positions inside `bcontent`
-    /// are expressed relative to its origin. Positions here stay absolute
-    /// (the translating `cm` is part of the stream), so the compensation
-    /// needs no state of its own.
+    /// `dvi_set_compensation`: glyph, rule and box positions inside
+    /// `bcontent` are expressed relative to its origin (the `cm` of the
+    /// special moved the origin there). Returns the position (h, v down in
+    /// sp) to subtract from a DVI position, rounded to sp like dvi.c.
+    pub(crate) fn dpx_compensate(&self, h_sp: i64, v_sp: i64) -> (i64, i64) {
+        match self.eng.dpx.coords.last() {
+            Some(&(x, y)) => (h_sp - i64::from(super::bp_to_sp(x)), v_sp + i64::from(super::bp_to_sp(y))),
+            None => (h_sp, v_sp),
+        }
+    }
+
     fn dpx_set_compensation(&mut self) {}
 
     /// `pdf:btrans`
@@ -1195,6 +1202,7 @@ impl<'a> RenderCtx<'a> {
     /// at `x_sp`, `v_down_sp` below the origin. Thin rules are strokes.
     pub(crate) fn dpx_rule(&mut self, x_sp: i64, v_down_sp: i64, w_sp: i64, h_sp: i64) {
         self.end_text();
+        let (x_sp, v_down_sp) = self.dpx_compensate(x_sp, v_down_sp);
         let ypos = -v_down_sp;
         let bp = |sp: i64| p_dtoa(sp_to_bp(sp), PRECISION);
         let thickness = sp_to_bp(w_sp.min(h_sp));
@@ -1229,6 +1237,7 @@ impl<'a> RenderCtx<'a> {
         if !self.dpx_tracking() {
             return;
         }
+        let (h_sp, v_sp) = self.dpx_compensate(h_sp, v_sp);
         let x = sp_to_bp(h_sp);
         let y = -sp_to_bp(v_sp);
         let (w, h, d) = (sp_to_bp(width_sp), sp_to_bp(height_sp), sp_to_bp(depth_sp));

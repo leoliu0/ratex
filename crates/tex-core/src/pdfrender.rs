@@ -2203,6 +2203,12 @@ impl<'a> RenderCtx<'a> {
                 .map_or((0, 0), |ff| (i64::from(ff.char_height(c)), i64::from(ff.char_depth(c))));
             self.dpx_track_box(x_sp, v_sp, adv, h, d);
         }
+        // inside pdf:bcontent positions are relative to its origin
+        let (x_sp, v_sp) = if self.eng.engine_kind == crate::engine::EngineKind::XeTeX {
+            self.dpx_compensate(x_sp, v_sp)
+        } else {
+            (x_sp, v_sp)
+        };
         let self_ratio = self.font_ratio(f);
         let ratio = if self_ratio != 0 {
             self_ratio

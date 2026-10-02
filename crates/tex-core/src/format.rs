@@ -787,10 +787,12 @@ fn write_font_expand(
         Some(_) => w.u8(1),
     }
     let x = x.unwrap();
-    w.i32(x.step);
+    // LuaTeX's limits of a TFM font travel in the slots of pdfTeX's clone
+    // links (a LuaTeX font never has both)
+    w.i32(if x.step != 0 { x.step } else { x.lua_step });
     w.u8(x.auto_expand as u8);
-    w.u16(x.stretch);
-    w.u16(x.shrink);
+    w.u16(if x.stretch != 0 { x.stretch } else { x.lua_stretch as u16 });
+    w.u16(if x.shrink != 0 { x.shrink } else { x.lua_shrink as u16 });
     w.u16(x.elink);
     w.u16(x.blink);
     w.i32(x.ratio);
@@ -831,6 +833,7 @@ fn write_code_table(w: &mut W, t: Option<&CodeTable>, pool: &mut crate::FxHashMa
 fn read_font_expand(
     r: &mut R,
     pool: &mut Vec<Option<CodeTable>>,
+    lua: bool,
 ) -> io::Result<crate::eqtb::FontExpand> {
     let mut x = crate::eqtb::FontExpand::default();
     if r.u8()? == 0 {
@@ -843,6 +846,10 @@ fn read_font_expand(
     x.elink = r.u16()?;
     x.blink = r.u16()?;
     x.ratio = r.i32()?;
+    if lua {
+        (x.lua_step, x.lua_stretch, x.lua_shrink) = (x.step, i32::from(x.stretch), i32::from(x.shrink));
+        (x.step, x.stretch, x.shrink) = (0, 0, 0);
+    }
     let slots = [
         &mut x.ef,
         &mut x.lp,
@@ -1355,7 +1362,7 @@ fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
         q.skew_char.push(r.i32()?);
         q.skew_char_levels.push(r.u16()?);
         q.font_cs.push(r.u32()?);
-        q.expand.push(read_font_expand(r, &mut expand_pool)?);
+        q.expand.push(read_font_expand(r, &mut expand_pool, eng.engine_kind == crate::engine::EngineKind::LuaTeX)?);
     }
 
     // hyphenation

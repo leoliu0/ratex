@@ -2195,7 +2195,7 @@ impl<'a> RenderCtx<'a> {
         };
         // a Lua font is never cloned: the glyph carries its expansion, and
         // the advance the text matrix scales is that of the expanded glyph
-        if ratio != 0 && self.eng.eqtb.fonts.get(f as usize).is_some_and(|font| font.lua.is_some()) {
+        if ratio != 0 && self.eng.engine_kind == crate::engine::EngineKind::LuaTeX {
             advance = round_xn_over_d(advance, 1000 + i64::from(ratio), 1000);
         }
         self.eng.pdf_doc.record_font_char(base_f as usize, c);

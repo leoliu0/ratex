@@ -1373,7 +1373,7 @@ impl Engine {
         if params.len() < 7 {
             params.resize(7, 0);
         }
-        let used = self.lua_fonts.used.contains(&f);
+        let used = self.lua_fonts.used.contains(&f) || self.pdf_doc.font_chars.contains_key(&usize::from(f));
         let lua = match &font.lua {
             Some(lua) => lua.clone(),
             None => {
@@ -1384,6 +1384,17 @@ impl Engine {
                     self.font_loader.vf_fonts.contains_key(&(font.tfm_name.clone(), font.at_size));
                 lf.ftype = if virtual_font { FontType::Virtual } else { FontType::Real };
                 lf.direction = if virtual_font { 0 } else { -1 };
+                // what `\expandglyphsinfont`, `\efcode`, `\lpcode` and `\rpcode` set
+                if let Some(x) = self.eqtb.expand.get(usize::from(f)) {
+                    (lf.step, lf.stretch, lf.shrink) = (x.lua_step, x.lua_stretch, x.lua_shrink);
+                    for (&c, ci) in lf.chars.iter_mut() {
+                        if let Ok(c) = u8::try_from(c) {
+                            ci.expansion_factor = if x.ef.is_some() { x.ef_code(c) } else { ci.expansion_factor };
+                            ci.left_protruding = x.lp_code(c);
+                            ci.right_protruding = x.rp_code(c);
+                        }
+                    }
+                }
                 std::rc::Rc::new(lf)
             }
         };

@@ -207,6 +207,7 @@ fn list_font_expansion<F>(
     mut prev: Option<(FontId, u8)>,
     trailing: Option<&Node>,
     lua_kerns: bool,
+    lua_mode: bool,
     record_expansion: &mut F,
 ) -> (i64, i64, Option<(FontId, u8)>)
 where
@@ -216,6 +217,14 @@ where
     let mut shrink = 0i64;
     for (i, node) in nodes.iter().enumerate() {
         match node {
+            // luatex: every character is a glyph node, TFM fonts included
+            Node::Char { .. } | Node::Ligature { .. } | Node::LuaGlyph(_) if lua_mode => {
+                if let Some(gr) = crate::luaexp::glyph_ref(node).filter(|gr| crate::luaexp::expandable(eqtb, gr.font)) {
+                    record_expansion(gr.font);
+                    stretch += crate::luaexp::char_stretch(eqtb, gr) as i64;
+                    shrink += crate::luaexp::char_shrink(eqtb, gr) as i64;
+                }
+            }
             Node::Char { c, font, .. } | Node::Ligature { c, font, .. } => {
                 record_expansion(*font);
                 stretch += crate::boxes::char_stretch(eqtb, *font, *c) as i64;
@@ -234,11 +243,10 @@ where
                 } else {
                     trailing
                 };
-                if lua_kerns {
-                    if let (Some(Node::LuaGlyph(l)), Some(Node::LuaGlyph(r))) = (i.checked_sub(1).map(|j| &nodes[j]), next) {
-                        if crate::luaexp::expandable(eqtb, l.font) {
-                            let lr = crate::luaexp::GlyphRef { font: l.font, c: l.c };
-                            let rr = crate::luaexp::GlyphRef { font: r.font, c: r.c };
+                if lua_kerns && lua_mode {
+                    let left = i.checked_sub(1).and_then(|j| crate::luaexp::glyph_ref(&nodes[j]));
+                    if let (Some(lr), Some(rr)) = (left, next.and_then(crate::luaexp::glyph_ref)) {
+                        if crate::luaexp::expandable(eqtb, lr.font) {
                             stretch += crate::luaexp::kern_stretch(eqtb, *k, lr, rr) as i64;
                             shrink += crate::luaexp::kern_shrink(eqtb, *k, lr, rr) as i64;
                         }
@@ -1066,6 +1074,23 @@ impl Engine {
             let mut prev_exp_char: Option<(FontId, u8)> = None;
             while i < n {
                 let (w, st, sh, fst, fsh) = match &list[i] {
+                    Node::Char { .. } | Node::Ligature { .. } | Node::LuaGlyph(_) if lua_mode => {
+                        prev_exp_char = None;
+                        let (mut fst, mut fsh) = (0i64, 0i64);
+                        let gr = crate::luaexp::glyph_ref(&list[i]);
+                        if let Some(gr) = gr.filter(|gr| pdf_adjust >= 2 && crate::luaexp::expandable(&self.eqtb, gr.font)) {
+                            record_expansion(gr.font);
+                            fst = i64::from(crate::luaexp::char_stretch(&self.eqtb, gr));
+                            fsh = i64::from(crate::luaexp::char_shrink(&self.eqtb, gr));
+                        }
+                        let wd = match &list[i] {
+                            Node::Char { c, font, .. } => fonts.char_width(*font, *c),
+                            Node::Ligature { lig_width, .. } => *lig_width,
+                            Node::LuaGlyph(g) => crate::boxes::lua_glyph_dims(&self.eqtb, g).0,
+                            _ => 0,
+                        };
+                        (i64::from(wd), [0; 4], [0; 4], fst, fsh)
+                    }
                     Node::Char { c, font, .. } => {
                         record_expansion(*font);
                         prev_exp_char = Some((*font, *c));
@@ -1124,10 +1149,8 @@ impl Engine {
                             _ => None,
                         };
                         let lua_kern = if pdf_adjust == 2 && i > 0 && !lb_dead(i - 1) {
-                            match (&list[i - 1], list.get(i + 1)) {
-                                (Node::LuaGlyph(l), Some(Node::LuaGlyph(r))) if crate::luaexp::expandable(&self.eqtb, l.font) => {
-                                    let lr = crate::luaexp::GlyphRef { font: l.font, c: l.c };
-                                    let rr = crate::luaexp::GlyphRef { font: r.font, c: r.c };
+                            match (crate::luaexp::glyph_ref(&list[i - 1]), list.get(i + 1).and_then(crate::luaexp::glyph_ref)) {
+                                (Some(lr), Some(rr)) if lua_mode && crate::luaexp::expandable(&self.eqtb, lr.font) => {
                                     Some((
                                         i64::from(crate::luaexp::kern_stretch(&self.eqtb, *k, lr, rr)),
                                         i64::from(crate::luaexp::kern_shrink(&self.eqtb, *k, lr, rr)),
@@ -1169,6 +1192,7 @@ impl Engine {
                                 prev_exp_char,
                                 None,
                                 pdf_adjust == 2,
+                                lua_mode,
                                 &mut record_expansion,
                             );
                             disc_pre_fst[i] = pre_fst;
@@ -1180,6 +1204,7 @@ impl Engine {
                                 prev_exp_char,
                                 trailing,
                                 pdf_adjust == 2,
+                                lua_mode,
                                 &mut record_expansion,
                             );
                             fst = no_fst;

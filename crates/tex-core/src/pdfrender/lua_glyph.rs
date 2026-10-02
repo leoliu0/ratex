@@ -36,7 +36,16 @@ impl RenderCtx<'_> {
             return 0;
         };
         let Some(lf) = font.lua.clone() else {
-            return 0;
+            // a character of a TFM font that Lua or the expansion made a glyph
+            // node of
+            let Ok(byte) = u8::try_from(c) else { return 0 };
+            if !font.char_present(byte) {
+                return 0;
+            }
+            let width = crate::luaexp::expanded_width(font.char_width(byte), ex);
+            let (px, py) = (x + i64::from(xoff), y - i64::from(yoff));
+            self.emit_char_sp(f, byte, px, py, ex / 1000);
+            return i64::from(width);
         };
         let Some(ci) = lf.chars.get(&c) else {
             self.eng.lua_glyph_not_found(f, c);

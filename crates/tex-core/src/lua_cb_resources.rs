@@ -199,6 +199,10 @@ impl Engine {
         if self.cb_defined(find) {
             return self.lua_find_file(find, None, name.as_bytes()).flatten().map(|n| lossy(&n));
         }
+        if tex_kpse::embedded_tree::is_embedded_path(name) {
+            // a path `kpse.find_file` reported names the file itself
+            return Some(name.to_string());
+        }
         for &fmt in formats {
             let resolved = self.font_loader.kpse.find(name, fmt);
             self.font_loader.record_lookup_dependency(name, fmt, resolved.as_deref());

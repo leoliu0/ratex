@@ -152,9 +152,11 @@ impl Engine {
             s += 1;
         };
         let hyf_char = self.eqtb.hyphen_char.get(hf as usize).copied().unwrap_or(-1);
-        // a TFM font cannot have a hyphen beyond 255, and without patterns
-        // nothing is found in a TFM word
-        let hyf_char = u8::try_from(hyf_char).ok()?;
+        // biggest_char; above 255 no TFM character is the hyphen, but the
+        // word is still hyphenated
+        if !(0..=65535).contains(&hyf_char) {
+            return None;
+        }
         let trie = ctx.trie?;
         if ctx.lh + ctx.rh > ctx.max_len {
             return None;
@@ -265,7 +267,7 @@ impl Engine {
             hyf_buf,
             hn,
             hyf_bchar,
-            hyf_char,
+            hyf_char as u32,
             first_attr,
         ))
     }

@@ -43,6 +43,19 @@ pub fn cp227_xprn() -> Xprn {
     table
 }
 
+/// XeTeX's printable character codes (observed with TeX Live 2026
+/// `xetex -ini`): 32..126 and 160..255 print as themselves (as the Unicode
+/// scalar of that value), the C0 and C1 controls use `^^` notation.
+pub fn xetex_xprn() -> Xprn {
+    let mut table = default_xprn();
+    for entry in &mut table[160..] {
+        *entry = true;
+    }
+    table[9] = true;
+    table[10] = true;
+    table
+}
+
 /// `-8bit`: every byte prints as itself.
 pub fn eight_bit_xprn() -> Xprn {
     [true; 256]

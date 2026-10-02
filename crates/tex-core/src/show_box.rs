@@ -166,7 +166,18 @@ impl<'a> BoxDisplay<'a> {
         if i32::from(c) == self.e.new_line_char() {
             self.out.push(b'\n');
         } else {
+            let start = self.out.len();
             push_printable(&self.e.xprn, &mut self.out, &[c]);
+            // XeTeX: a printable 8-bit character code is the Unicode
+            // scalar of that value, written as UTF-8
+            if c >= 0x80
+                && self.e.engine_kind == crate::engine::EngineKind::XeTeX
+                && self.out.len() == start + 1
+            {
+                self.out.truncate(start);
+                let mut buf = [0u8; 4];
+                self.out.extend_from_slice(char::from(c).encode_utf8(&mut buf).as_bytes());
+            }
         }
     }
 

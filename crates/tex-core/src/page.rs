@@ -185,6 +185,18 @@ fn page_vert_break(list: &[Node], w: i64, d: i64) -> (Option<usize>, i64) {
                     i += 1;
                     continue;
                 }
+                // xetex.web vert_break: a picture whatsit adds its size
+                Node::Whatsit(crate::boxes::WhatIt::XePic { h, d: pd, .. }, _) => {
+                    cur += prev_dp + *h as i64;
+                    prev_dp = *pd as i64;
+                    if prev_dp > d {
+                        cur += prev_dp - d;
+                        prev_dp = d;
+                    }
+                    prev_breakable = true;
+                    i += 1;
+                    continue;
+                }
                 _ => {
                     if prev_dp > d {
                         cur += prev_dp - d;
@@ -685,6 +697,12 @@ impl Engine {
                     st.ins_ord += 1;
                     self.contribute_ins(&mut st, ord, &node);
                     self.page_list.insert(idx, node);
+                }
+                // xetex.web build_page: page_total += page_depth + height;
+                // page_depth := depth (no box_seen, no \maxdepth cap)
+                Node::Whatsit(crate::boxes::WhatIt::XePic { h, d, .. }, _) => {
+                    st.total += st.depth + *h as i64;
+                    st.depth = *d as i64;
                 }
                 Node::Mark { .. } => {
                     // tex.web: mark nodes contribute without affecting page dimensions;

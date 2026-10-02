@@ -180,7 +180,8 @@ fn get_vpos(nodes: &[Node], cur_v: i64, sign: u8, order: u8, set: f64) -> i64 {
             Node::NativeGlyphRun { height, depth, .. } => (*height + *depth) as i64,
             Node::Whatsit(
                 crate::boxes::WhatIt::PdfRefXImage { h, d, .. }
-                | crate::boxes::WhatIt::PdfRefXForm { h, d, .. },
+                | crate::boxes::WhatIt::PdfRefXForm { h, d, .. }
+                | crate::boxes::WhatIt::XePic { h, d, .. },
             _) => (*h + *d) as i64,
             Node::Glue(g, _) | Node::Leaders { glue: g, .. } => glue_state.advance(g, sign, order, set),
             Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) => *k as i64,
@@ -1263,7 +1264,8 @@ impl<'a> RenderCtx<'a> {
                 Node::Penalty(_, _) | Node::Mark { .. } => {}
                 Node::Whatsit(
                     w @ (crate::boxes::WhatIt::PdfRefXImage { h, d, .. }
-                    | crate::boxes::WhatIt::PdfRefXForm { h, d, .. }),
+                    | crate::boxes::WhatIt::PdfRefXForm { h, d, .. }
+                    | crate::boxes::WhatIt::XePic { h, d, .. }),
                 _) => {
                     cur_y += *h as i64;
                     self.emit_whatsit_sp(w, x, cur_y);
@@ -1561,7 +1563,8 @@ impl<'a> RenderCtx<'a> {
                 Node::Whatsit(w, _) => {
                     self.emit_whatsit_sp(w, cur_x, y);
                     if let crate::boxes::WhatIt::PdfRefXImage { w, .. }
-                    | crate::boxes::WhatIt::PdfRefXForm { w, .. } = w
+                    | crate::boxes::WhatIt::PdfRefXForm { w, .. }
+                    | crate::boxes::WhatIt::XePic { w, .. } = w
                     {
                         cur_x += *w as i64;
                     }
@@ -2882,6 +2885,11 @@ impl<'a> RenderCtx<'a> {
                 self.out_image(*obj, *w, *h + *d, cur_h, cur_v + *d as i64, *transform)
             }
             PdfSnapRefPoint => self.eng.pdf_snap_refpos = (cur_h, cur_v),
+            XePic { .. } => {
+                // xetex.web `pic_out`: the node becomes a `pdf:image` special
+                let text = crate::xetex_pic::pic_out_text(w);
+                self.handle_special(&text, cur_h, cur_v);
+            }
             PdfRefXForm { obj, d, .. } => {
                 if !self.xform_list.contains(obj) {
                     self.xform_list.push(*obj);

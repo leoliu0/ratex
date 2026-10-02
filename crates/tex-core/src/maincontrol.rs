@@ -8,6 +8,42 @@ use crate::prim::*;
 use crate::token::{CsId, Token};
 use std::fmt::Write;
 
+/// Inputs of [`Engine::read_image_file`] (`\pdfximage` after scanning, or
+/// XeTeX's `dpx_load_image`).
+pub(crate) struct ImageReadRequest<'a> {
+    /// the name as written (`/PTEX.FileName`, "not found" messages)
+    pub file: &'a str,
+    /// the name to look up (`find_image_file` callback result)
+    pub lookup: &'a str,
+    pub from_callback: bool,
+    pub attr: Option<String>,
+    pub colorspace: i32,
+    pub named: Option<String>,
+    pub page: i32,
+    pub page_box: i32,
+    pub fixed: crate::engine::PdfFixedParams,
+}
+
+/// A registered image: the `pdf_images` object and the raw values `scale_image` needs.
+pub(crate) struct ImageRead {
+    pub obj: i32,
+    pub info: crate::engine::PdfImageInfo,
+    pub x_res: i32,
+    pub y_res: i32,
+    pub pages: i32,
+    /// pdfTeX warnings issued while reading, fully formatted
+    pub warnings: Vec<String>,
+    /// bp box `[x, y, x+w, y+h]` (pre-/Rotate) of an included PDF page
+    pub page_box: Option<[f64; 4]>,
+}
+
+/// How reading an image failed; `\pdfximage` reports each kind its own way.
+pub(crate) enum ImageFail {
+    Error(String),
+    Fatal(String),
+    LuaRes(String),
+}
+
 const MAX_INSPECTION_BYTES: usize = 8 * 1024;
 const MAX_INSPECTION_FRAMES: usize = 32;
 const INSPECTION_TRUNCATED: &str = "\n… inspection output truncated";
@@ -1935,7 +1971,6 @@ impl Engine {
     /// [named {..} | page <n>] [colorspace <n>] [<box spec>] {<file>})
     /// with `read_image` and `scale_image`; \pdflastximage reports it.
     pub fn do_pdfximage(&mut self) {
-        use crate::engine::{ImageKind, IMAGE_COLOR_B, IMAGE_COLOR_C, IMAGE_COLOR_I};
         use crate::pdf_images::{PDF_BOX_SPEC_ART, PDF_BOX_SPEC_BLEED, PDF_BOX_SPEC_CROP, PDF_BOX_SPEC_MEDIA, PDF_BOX_SPEC_TRIM};
         let origin = self.current_token_source_mark();
         // check_pdfversion: the first PDF object fixes the output parameters
@@ -2024,47 +2059,81 @@ impl Engine {
             Some(None) => return,
             None => (file.clone(), false),
         };
+        let read = match self.read_image_file(ImageReadRequest {
+            file: &file,
+            lookup: &lookup,
+            from_callback,
+            attr,
+            colorspace,
+            named,
+            page,
+            page_box,
+            fixed,
+        }) {
+            Ok(read) => read,
+            Err(failure) => {
+                let context = origin.as_ref().map(crate::input::SourceMark::to_context);
+                match failure {
+                    ImageFail::Error(message) => self.error_at(&message, context),
+                    ImageFail::Fatal(message) => self.fatal_error_at(&message, context),
+                    ImageFail::LuaRes(message) => self.lua_res_error(Some(&file), "pdf backend", &message),
+                }
+                return;
+            }
+        };
+        for warning in &read.warnings {
+            self.warning_at(warning, origin.as_ref().map(crate::input::SourceMark::to_context));
+        }
+        let ImageRead { obj, mut info, x_res, y_res, pages: image_pages, .. } = read;
+        if !self.scale_image(&mut info, (scan_w, scan_h, scan_d), (x_res, y_res), origin.as_ref()) {
+            return;
+        }
+        self.pdf_last_ximage = obj;
+        self.pdf_last_ximage_pages = image_pages;
+        self.pdf_images.insert(obj, info);
+    }
+
+    /// pdfTeX `find_image_file` + `read_image`: reads the image `file` (found
+    /// through `lookup`), registers it as a `pdf_images` object and returns
+    /// its natural size data; `scale_image` is left to the caller. Shared by
+    /// `\pdfximage` and XeTeX's `dpx_load_image`.
+    pub(crate) fn read_image_file(
+        &mut self,
+        req: ImageReadRequest<'_>,
+    ) -> Result<ImageRead, ImageFail> {
+        use crate::engine::{ImageKind, IMAGE_COLOR_B, IMAGE_COLOR_C, IMAGE_COLOR_I};
+        let ImageReadRequest { file, lookup, from_callback, attr, colorspace, named, page, page_box, fixed } = req;
+        let file = file.to_owned();
+        let mut warnings: Vec<String> = Vec::new();
+        let mut page_box_bp: Option<[f64; 4]> = None;
+        let int = |e: &Self, p: IntParam| e.eqtb.int_params[p.idx() as usize];
         let (path, bytes, bundled) = if let Some(bytes) = self.pdfe_memstreams.get(&file).cloned() {
             // registered by `pdfe.new(stream, length, id)`
             (std::path::PathBuf::from(&file), bytes, true)
         } else if tex_kpse::embedded_tree::is_embedded_path(&lookup) {
             let Some(bytes) = tex_kpse::embedded_tree::read(&lookup) else {
-                self.lua_res_error(Some(&file), "pdf backend", &format!("reading image file '{lookup}' failed"));
-                return;
+                return Err(ImageFail::LuaRes(format!("reading image file '{lookup}' failed")));
             };
             (std::path::PathBuf::from(&lookup), bytes, true)
         } else if let Some(path) = self.resolve_input_path(&lookup) {
             let bytes = match tex_kpse::fs::read(&path) {
                 Ok(bytes) => bytes,
                 Err(error) => {
-                    self.error_at(
-                        &format!("Cannot read image `{}`: {error}", path.display()),
-                        origin.as_ref().map(crate::input::SourceMark::to_context),
-                    );
-                    return;
+                    return Err(ImageFail::Error(format!("Cannot read image `{}`: {error}", path.display())));
                 }
             };
             self.record_loaded_bytes(&path, &bytes);
             self.loaded_files.push(path.clone());
             (path, bytes, false)
         } else if from_callback {
-            self.lua_res_error(Some(&file), "pdf backend", &format!("reading image file '{lookup}' failed"));
-            return;
+            return Err(ImageFail::LuaRes(format!("reading image file '{lookup}' failed")));
         } else if !std::path::Path::new(&file).is_absolute() {
             let Some(bytes) = tex_kpse::get_embedded_package(&file) else {
-                self.error_at(
-                    &format!("Image file `{file}` was not found"),
-                    origin.as_ref().map(crate::input::SourceMark::to_context),
-                );
-                return;
+                return Err(ImageFail::Error(format!("Image file `{file}` was not found")));
             };
             (std::path::PathBuf::from(&file), bytes, true)
         } else {
-            self.error_at(
-                &format!("Image file `{file}` was not found"),
-                origin.as_ref().map(crate::input::SourceMark::to_context),
-            );
-            return;
+            return Err(ImageFail::Error(format!("Image file `{file}` was not found")));
         };
         let file_name = self.kpse_found_name(&path, bundled);
         let is_eps = bytes.starts_with(b"%!PS")
@@ -2108,11 +2177,7 @@ impl Engine {
                         &converted[..]
                     }
                     Err(error) => {
-                        self.error_at(
-                            &format!("Cannot parse PostScript/EPS `{file}`: {error}"),
-                            origin.as_ref().map(crate::input::SourceMark::to_context),
-                        );
-                        return;
+                        return Err(ImageFail::Error(format!("Cannot parse PostScript/EPS `{file}`: {error}")));
                     }
                 }
             } else {
@@ -2157,11 +2222,7 @@ impl Engine {
                 Ok(included) => included,
                 Err(error) => {
                     // pdftex_fail: fatal, no output file
-                    self.fatal_error_at(
-                        &format!("pdfTeX error (file {file_name}): {error}"),
-                        origin.as_ref().map(crate::input::SourceMark::to_context),
-                    );
-                    return;
+                    return Err(ImageFail::Fatal(format!("pdfTeX error (file {file_name}): {error}")));
                 }
             };
             // read_pdf_info: a newer PDF than the output is an error, a
@@ -2174,23 +2235,13 @@ impl Engine {
                 );
                 let level = int(self, IntParam::PdfInclusionErrorlevel);
                 if level > 0 {
-                    self.fatal_error_at(
-                        &format!("pdfTeX error (file {file_name}): {message}"),
-                        origin.as_ref().map(crate::input::SourceMark::to_context),
-                    );
-                    return;
+                    return Err(ImageFail::Fatal(format!("pdfTeX error (file {file_name}): {message}")));
                 } else if level == 0 {
-                    self.warning_at(
-                        &format!("pdfTeX warning (file {file_name}): {message}"),
-                        origin.as_ref().map(crate::input::SourceMark::to_context),
-                    );
+                    warnings.push(format!("pdfTeX warning (file {file_name}): {message}"));
                 }
             }
             for warning in &included.warnings {
-                self.warning_at(
-                    &format!("pdfTeX warning (file {file_name}): {warning}"),
-                    origin.as_ref().map(crate::input::SourceMark::to_context),
-                );
+                warnings.push(format!("pdfTeX warning (file {file_name}): {warning}"));
             }
             // writeimg.c bp2int on pdfTeX's single-precision page box
             let bp2int = |bp: f32| (f64::from(bp) * (6_578_176.0 / 100.0)).round() as i32;
@@ -2199,6 +2250,12 @@ impl Engine {
             info.orig_x = bp2int(included.orig_x);
             info.orig_y = bp2int(included.orig_y);
             info.rotate = included.rotate;
+            page_box_bp = Some([
+                f64::from(included.orig_x),
+                f64::from(included.orig_y),
+                f64::from(included.orig_x + included.width),
+                f64::from(included.orig_y + included.height),
+            ]);
             info.group_ref = if included.form.has_group() { -1 } else { 0 };
             info.bbox = [
                 info.orig_x,
@@ -2218,19 +2275,11 @@ impl Engine {
             let jpeg = match crate::pdf_images::jpeg_info(&bytes) {
                 Ok(jpeg) => jpeg,
                 Err(error) => {
-                    self.fatal_error_at(
-                        &format!("pdfTeX error (file {file_name}): {error}"),
-                        origin.as_ref().map(crate::input::SourceMark::to_context),
-                    );
-                    return;
+                    return Err(ImageFail::Fatal(format!("pdfTeX error (file {file_name}): {error}")));
                 }
             };
             if jpeg.progressive && fixed.major_version == 1 && fixed.minor_version <= 2 {
-                self.fatal_error_at(
-                    &format!("pdfTeX error (file {file_name}): cannot use progressive DCT with PDF-1.2"),
-                    origin.as_ref().map(crate::input::SourceMark::to_context),
-                );
-                return;
+                return Err(ImageFail::Fatal(format!("pdfTeX error (file {file_name}): cannot use progressive DCT with PDF-1.2")));
             }
             info.kind = ImageKind::Jpeg;
             info.image_width = i32::from(jpeg.width);
@@ -2269,23 +2318,14 @@ impl Engine {
             x_res = svg.dpi.round() as i32;
             y_res = x_res;
         } else {
-            self.error_at(
-                &format!(
+            return Err(ImageFail::Error(format!(
                     "Unsupported or invalid image `{file}` (expected PDF, JPEG, or PNG); valid SVG is also accepted"
-                ),
-                origin.as_ref().map(crate::input::SourceMark::to_context),
-            );
-            return;
+                )));
         }
         if bundled && info.kind != ImageKind::Pdf {
             info.resource_bytes = Some(std::sync::Arc::new(bytes));
         }
-        if !self.scale_image(&mut info, (scan_w, scan_h, scan_d), (x_res, y_res), origin.as_ref()) {
-            return;
-        }
-        self.pdf_last_ximage = obj;
-        self.pdf_last_ximage_pages = image_pages;
-        self.pdf_images.insert(obj, info);
+        Ok(ImageRead { obj, info, x_res, y_res, pages: image_pages, warnings, page_box: page_box_bp })
     }
 
     /// pdfTeX `scale_image`: the natural size from the pixel size and
@@ -2368,7 +2408,7 @@ impl Engine {
     /// The name kpathsea returns for a found image: relative names get a
     /// leading `./`, files under the document directory are shown
     /// relative to it (pdfTeX writes this as /PTEX.FileName).
-    fn kpse_found_name(&self, path: &std::path::Path, bundled: bool) -> String {
+    pub(crate) fn kpse_found_name(&self, path: &std::path::Path, bundled: bool) -> String {
         if bundled {
             return path.to_string_lossy().into_owned();
         }

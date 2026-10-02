@@ -529,7 +529,31 @@ pub enum WhatIt {
     PdfSnapY(crate::boxes::Glue),
     /// `\pdfsnapycomp <ratio>`: compensate the next `\pdfsnapy` (0..1000).
     PdfSnapYComp(i32),
+    /// XeTeX `pic_node` (`\XeTeXpicfile`, `pdf == false`) / `pdf_node`
+    /// (`\XeTeXpdffile`): xetex.web's picture whatsit. `page` is `pic_page`,
+    /// `pdf_box` a `PDFBOX_*` code (`pic_pdf_box`), `transform` the 16.16
+    /// `D2Fix` values of a, b, c, d, x, y (`pic_transform1..6`), and
+    /// `w`/`h`/`d` the node's `width`/`height`/`depth`.
+    XePic {
+        pdf: bool,
+        path: String,
+        page: i32,
+        pdf_box: u8,
+        transform: [i32; 6],
+        w: i32,
+        h: i32,
+        d: i32,
+    },
 }
+
+/// xetex.web `pdfbox_*` page-box codes (`pic_pdf_box`).
+pub const PDFBOX_CROP: u8 = 1;
+pub const PDFBOX_MEDIA: u8 = 2;
+pub const PDFBOX_BLEED: u8 = 3;
+pub const PDFBOX_TRIM: u8 = 4;
+pub const PDFBOX_ART: u8 = 5;
+/// `\XeTeXpdffile` without a box keyword (a `\XeTeXpicfile` node stores 0).
+pub const PDFBOX_NONE: u8 = 6;
 
 /// leader kinds (tex.web subtypes a_leaders/c_leaders/x_leaders)
 pub const LEADERS_A: u8 = 0;
@@ -1233,7 +1257,8 @@ fn single_dims(n: &Node, eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
         Node::OpLimits { op, .. } => hlist_dims(op, eqtb),
         Node::VCenter { box_node } => single_dims(box_node, eqtb),
         Node::Whatsit(WhatIt::PdfRefXImage { w, h, d, .. }, _)
-        | Node::Whatsit(WhatIt::PdfRefXForm { w, h, d, .. }, _) => (*w, *h, *d),
+        | Node::Whatsit(WhatIt::PdfRefXForm { w, h, d, .. }, _)
+        | Node::Whatsit(WhatIt::XePic { w, h, d, .. }, _) => (*w, *h, *d),
         Node::DelimBox { .. }
         | Node::Accent { .. }
         | Node::Whatsit(_, _)
@@ -1350,6 +1375,12 @@ pub fn vlist_dims(list: &[Node], eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
                 ..
             }, _)
             | Node::Whatsit(WhatIt::PdfRefXForm {
+                w: iw,
+                h: ih,
+                d: id,
+                ..
+            }, _)
+            | Node::Whatsit(WhatIt::XePic {
                 w: iw,
                 h: ih,
                 d: id,
@@ -2178,6 +2209,10 @@ pub fn split_vlist(list: &[Node], target: i64) -> (NodeList, NodeList) {
                 height += depth + h;
                 depth = *d as i64;
                 seen_box = true;
+            }
+            Node::Whatsit(WhatIt::XePic { h, d, .. }, _) => {
+                height += depth + *h as i64;
+                depth = *d as i64;
             }
             Node::Glue(g, _) => {
                 let w = g.width as i64;

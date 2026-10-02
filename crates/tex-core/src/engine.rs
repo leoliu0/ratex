@@ -437,6 +437,8 @@ pub struct Engine {
     pub leader_stack: Vec<(u8, usize)>,
     pub insert_nums: Vec<u16>,
     pub pdf_images: crate::FxHashMap<i32, PdfImageInfo>,
+    /// XeTeX `dpx_load_image` results by (name, page, box).
+    pub(crate) xe_images: crate::FxHashMap<(String, i32, u8), crate::xetex_pic::DpxImage>,
     /// pdfTeX `pdf_page_group_val`: the /Group object of the page (or form)
     /// being shipped; left over between shipouts like pdfTeX's global.
     pub pdf_page_group_val: i32,
@@ -1085,6 +1087,7 @@ impl Engine {
             prev_depth: -1000 * 65536,
             space_factor: 1000,
             pdf_images: crate::FxHashMap::default(),
+            xe_images: crate::FxHashMap::default(),
             pdf_page_group_val: 0,
             transparent_page_group: 0,
             transparent_page_group_written: false,

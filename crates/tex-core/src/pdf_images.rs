@@ -26,7 +26,7 @@ pub struct JpegInfo {
 
 /// writejpg.c `read_APP1_Exif`: X/YResolution and ResolutionUnit of the
 /// first IFD; (0, 0) when the TIFF header is malformed.
-fn exif_resolution(data: &[u8]) -> (i32, i32) {
+pub(crate) fn exif_resolution(data: &[u8]) -> (i32, i32) {
     fn read(data: &[u8], at: usize, len: usize, big: bool) -> Option<i64> {
         let bytes = data.get(at..at.checked_add(len)?)?;
         Some(if big {
@@ -737,6 +737,65 @@ impl PdfSource {
     /// `find_add_document`: parse the file, repairing a damaged xref table.
     pub fn open(bytes: &[u8]) -> Result<Self, String> {
         Ok(PdfSource { doc: load_pdf_document(bytes)?, ids: std::collections::BTreeMap::new() })
+    }
+}
+
+impl PdfSource {
+    /// pplib `ppdoc_page_count`.
+    pub fn page_count(&self) -> i32 {
+        self.doc.get_pages().len() as i32
+    }
+
+    /// XeTeX pdfimage.cpp `pdf_get_rect`'s view of page `page` (1-based): the
+    /// requested box (`PDFBOX_*` code; CropBox, MediaBox, BleedBox, TrimBox,
+    /// ArtBox fall-back order) unclipped, and `/Rotate` mod 360.
+    pub(crate) fn xetex_page_box(&self, page: i32, pdf_box: u8) -> Option<([f64; 4], i32)> {
+        let pages = self.doc.get_pages();
+        let page_id = *pages.get(&(page as u32))?;
+        let doc = &self.doc;
+        let mut chain = vec![page_id];
+        while let Some(parent) = doc
+            .get_dictionary(*chain.last().unwrap())
+            .ok()
+            .and_then(|dict| dict.get(b"Parent").ok()?.as_reference().ok())
+        {
+            if chain.contains(&parent) || chain.len() > 256 {
+                break;
+            }
+            chain.push(parent);
+        }
+        // pplib inherits MediaBox, CropBox and Rotate down the page tree
+        let inherited = |key: &[u8]| {
+            chain.iter().find_map(|&id| {
+                let dict = doc.get_dictionary(id).ok()?;
+                dict.has(key).then_some(dict)
+            })
+        };
+        let get_box = |key: &[u8]| -> Option<[f64; 4]> {
+            let dict = if matches!(key, b"MediaBox" | b"CropBox") {
+                inherited(key)?
+            } else {
+                doc.get_dictionary(page_id).ok()?
+            };
+            read_box(doc, dict, key)
+        };
+        let first: &[u8] = match pdf_box {
+            crate::boxes::PDFBOX_MEDIA => b"MediaBox",
+            crate::boxes::PDFBOX_BLEED => b"BleedBox",
+            crate::boxes::PDFBOX_TRIM => b"TrimBox",
+            crate::boxes::PDFBOX_ART => b"ArtBox",
+            _ => b"CropBox",
+        };
+        let rect = [first, b"CropBox", b"MediaBox", b"BleedBox", b"TrimBox", b"ArtBox"]
+            .into_iter()
+            .find_map(get_box)?;
+        let rotate = inherited(b"Rotate")
+            .and_then(|dict| match dict.get(b"Rotate").ok()? {
+                lopdf::Object::Integer(v) => Some(*v),
+                _ => None,
+            })
+            .unwrap_or(0);
+        Some((rect, rotate.rem_euclid(360) as i32))
     }
 }
 

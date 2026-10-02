@@ -10,6 +10,7 @@ mod nest;
 use crate::boxes::{glue_subtype, Glue, LeaderBody, Node, WhatIt};
 use crate::build::RULE_FILL;
 use crate::engine::{Engine, Mode};
+use crate::lua_callbacks::{Cb, CbArg, CbRet};
 use crate::prim::IntParam;
 use crate::tfm::FontId;
 use crate::tex_bytes::push_printable;
@@ -27,6 +28,34 @@ const MARK_LIMIT: usize = 69;
 /// tex.web `default_code` for a fraction rule thickness.
 const DEFAULT_CODE: i32 = 0x4000_0000;
 
+/// A glyph a box display leaves for the `glyph_info` callback: where its
+/// text goes, the node, and for the letters of a pdfTeX-style ligature
+/// node the 1-based index of the component (0 for the node itself).
+/// `fresh`: the node is in a horizontal list still being built, whose
+/// glyphs luatex has not yet processed (subtype 1, not 0).
+pub(crate) struct GlyphSlot {
+    pub(crate) at: usize,
+    pub(crate) node: Node,
+    pub(crate) letter: usize,
+    pub(crate) fresh: bool,
+}
+
+/// A finished box display: the printed bytes and, with a `glyph_info`
+/// callback registered, the glyph nodes whose character the callback
+/// prints. `glyphs` holds the byte offset in `bytes` where each goes, in
+/// output order.
+#[derive(Default)]
+pub(crate) struct DisplayText {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) glyphs: Vec<GlyphSlot>,
+}
+
+impl From<Vec<u8>> for DisplayText {
+    fn from(bytes: Vec<u8>) -> Self {
+        DisplayText { bytes, glyphs: Vec::new() }
+    }
+}
+
 /// One display in progress: the text plus tex.web's `cur_length` prefix.
 pub(crate) struct BoxDisplay<'a> {
     e: &'a Engine,
@@ -38,6 +67,13 @@ pub(crate) struct BoxDisplay<'a> {
     escape: i32,
     /// tex.web `font_in_short_display` (`null_font` is font 0)
     font_in_short_display: Option<FontId>,
+    /// `glyph_info` is registered in LuaTeX: glyphs are recorded in
+    /// `glyphs` instead of printed, and [`Engine::print_display`] asks the
+    /// callback for them.
+    glyph_cb: bool,
+    glyphs: Vec<GlyphSlot>,
+    /// the horizontal list being displayed is still being built
+    fresh_glyphs: bool,
 }
 
 /// Ratex-internal bookkeeping nodes that tex.web lists do not contain.
@@ -61,6 +97,10 @@ impl<'a> BoxDisplay<'a> {
             breadth_max: if breadth <= 0 { 5 } else { breadth },
             escape: int(IntParam::EscapeChar) as i32,
             font_in_short_display: Some(0),
+            glyph_cb: e.engine_kind == crate::engine::EngineKind::LuaTeX
+                && e.cb_state(crate::lua_callbacks::Cb::GlyphInfo) != 0,
+            glyphs: Vec::new(),
+            fresh_glyphs: false,
         }
     }
 
@@ -78,6 +118,12 @@ impl<'a> BoxDisplay<'a> {
             escape,
             ..Self::new(e)
         }
+    }
+
+    /// The text printed so far with its glyph slots; the display goes on
+    /// from empty.
+    pub(crate) fn take_text(&mut self) -> DisplayText {
+        DisplayText { bytes: std::mem::take(&mut self.out), glyphs: std::mem::take(&mut self.glyphs) }
     }
 
     pub(crate) fn print(&mut self, s: &str) {
@@ -205,14 +251,29 @@ impl<'a> BoxDisplay<'a> {
         }
     }
 
-    fn print_font_and_char(&mut self, f: FontId, c: u32) {
+    /// printing.c `print_character_info`: the character, or the place where
+    /// the `glyph_info` callback's text for `node()` (and its letter, see
+    /// [`GlyphSlot`]) goes.
+    fn print_character_info(&mut self, c: u32, node: impl FnOnce() -> (Node, usize)) {
+        if self.glyph_cb {
+            let (node, letter) = node();
+            // luatex gives the characters typed into a list its subtype 1
+            // until the list is processed; glyphs Lua made keep theirs
+            let fresh = self.fresh_glyphs && matches!(node, Node::Char { .. });
+            self.glyphs.push(GlyphSlot { at: self.out.len(), node, letter, fresh });
+        } else {
+            self.print_unicode(c);
+        }
+    }
+
+    fn print_font_and_char(&mut self, f: FontId, c: u32, node: impl FnOnce() -> (Node, usize)) {
         if (f as usize) < self.e.eqtb.fonts.len() {
             self.print_font_identifier(f);
         } else {
             self.out.push(b'*');
         }
         self.out.push(b' ');
-        self.print_unicode(c);
+        self.print_character_info(c, node);
     }
 
     fn print_token_list(&mut self, tokens: &[Token]) {
@@ -254,10 +315,10 @@ impl<'a> BoxDisplay<'a> {
             let n = &list[i];
             i += 1;
             match n {
-                Node::Char { c, font, .. } => self.short_char(*font, u32::from(*c)),
+                Node::Char { c, font, .. } => self.short_char(*font, u32::from(*c), || (n.clone(), 0)),
                 Node::LuaGlyph(g) => {
                     if g.components.is_empty() {
-                        self.short_char(g.font, g.c);
+                        self.short_char(g.font, g.c, || (n.clone(), 0));
                     } else {
                         self.short_display(&g.components);
                     }
@@ -268,8 +329,8 @@ impl<'a> BoxDisplay<'a> {
                     n_letters,
                     ..
                 } => {
-                    for &c in &letters[..(*n_letters as usize).min(3)] {
-                        self.short_char(*font, u32::from(c));
+                    for (k, &c) in letters[..(*n_letters as usize).min(3)].iter().enumerate() {
+                        self.short_char(*font, u32::from(c), || (n.clone(), k + 1));
                     }
                 }
                 Node::Box { .. }
@@ -310,7 +371,7 @@ impl<'a> BoxDisplay<'a> {
         }
     }
 
-    fn short_char(&mut self, font: FontId, c: u32) {
+    fn short_char(&mut self, font: FontId, c: u32, node: impl FnOnce() -> (Node, usize)) {
         if self.font_in_short_display != Some(font) {
             if (font as usize) < self.e.eqtb.fonts.len() {
                 self.print_font_identifier(font);
@@ -320,7 +381,7 @@ impl<'a> BoxDisplay<'a> {
             self.out.push(b' ');
             self.font_in_short_display = Some(font);
         }
-        self.print_unicode(c);
+        self.print_character_info(c, node);
     }
 
     /// tex.web show_box: the list `p`, then print_ln.
@@ -330,9 +391,12 @@ impl<'a> BoxDisplay<'a> {
     }
 
     fn node_list_display(&mut self, list: &[Node]) {
+        // the contents of a box are finished
+        let fresh = std::mem::take(&mut self.fresh_glyphs);
         self.prefix.push(b'.');
         self.show_node_list(list);
         self.prefix.pop();
+        self.fresh_glyphs = fresh;
     }
 
     pub(crate) fn show_node_list(&mut self, list: &[Node]) {
@@ -344,10 +408,12 @@ impl<'a> BoxDisplay<'a> {
         }
         let mut n = 0i64;
         // A scanned \discretionary keeps its replacement text inside the
-        // node; TeX stores it as the `replace_count` nodes that follow.
+        // node; TeX stores it as the `replace_count` nodes that follow
+        // (LuaTeX shows it with the disc, as its `=` list).
+        let lua = self.e.engine_kind == crate::engine::EngineKind::LuaTeX;
         let flat = list.iter().flat_map(|n| {
             let embedded: &[Node] = match n {
-                Node::Disc(d) if d.replace_count == 0 => &d.no_break,
+                Node::Disc(d) if d.replace_count == 0 && !lua => &d.no_break,
                 _ => &[],
             };
             std::iter::once(n).chain(embedded)
@@ -366,9 +432,9 @@ impl<'a> BoxDisplay<'a> {
 
     fn display_node(&mut self, node: &Node) {
         match node {
-            Node::Char { c, font, .. } => self.print_font_and_char(*font, u32::from(*c)),
+            Node::Char { c, font, .. } => self.print_font_and_char(*font, u32::from(*c), || (node.clone(), 0)),
             Node::LuaGlyph(g) => {
-                self.print_font_and_char(g.font, g.c);
+                self.print_font_and_char(g.font, g.c, || (node.clone(), 0));
                 if u16::from(g.subtype) & crate::lua_node::GLYPH_LIGATURE != 0 {
                     self.print(" (ligature ");
                     if u16::from(g.subtype) & crate::lua_node::GLYPH_LEFT != 0 {
@@ -593,14 +659,14 @@ impl<'a> BoxDisplay<'a> {
                 subtype,
                 ..
             } => {
-                self.print_font_and_char(*font, u32::from(*c));
+                self.print_font_and_char(*font, u32::from(*c), || (node.clone(), 0));
                 self.print(" (ligature ");
                 if *subtype > 1 {
                     self.out.push(b'|');
                 }
                 self.font_in_short_display = Some(*font);
-                for &l in &letters[..(*n_letters as usize).min(3)] {
-                    self.short_char(*font, u32::from(l));
+                for (k, &l) in letters[..(*n_letters as usize).min(3)].iter().enumerate() {
+                    self.short_char(*font, u32::from(l), || (node.clone(), k + 1));
                 }
                 if subtype % 2 == 1 {
                     self.out.push(b'|');
@@ -1017,17 +1083,74 @@ impl Engine {
         let mut d = BoxDisplay::new(self);
         d.print("The following discretionary sublist has been deleted:");
         d.show_box(deleted);
-        let out = d.out;
+        let out = d.take_text();
         self.emit_box_diagnostic(out);
     }
 
     /// `begin_diagnostic; <display>; end_diagnostic(true)` for a display
     /// built by `body` (which starts with tex.web print_nl semantics).
-    pub(crate) fn emit_box_diagnostic(&mut self, display: Vec<u8>) {
+    pub(crate) fn emit_box_diagnostic(&mut self, display: impl Into<DisplayText>) {
         let term = self.diagnostic_to_term();
         self.tex_print_nl(term, true);
-        self.tex_print_printed(term, true, &display);
+        self.print_display(term, true, display.into());
         self.end_diagnostic(term);
+    }
+
+    /// `tex_print_printed` for a box display: with a `glyph_info` callback
+    /// the text is printed up to each glyph, the callback is run for it
+    /// and what it returns goes out in place of the character, so the
+    /// callback's own output lands where luatex's would.
+    pub(crate) fn print_display(&mut self, term: bool, log: bool, text: DisplayText) {
+        if text.glyphs.is_empty() {
+            self.tex_print_printed(term, log, &text.bytes);
+            return;
+        }
+        let mut done = 0;
+        for GlyphSlot { at, node, letter, fresh } in text.glyphs {
+            if at > done {
+                self.tex_print_printed(term, log, &text.bytes[done..at]);
+                done = at;
+            }
+            let info = self.glyph_info_text(node, letter, fresh);
+            self.tex_print_printed(term, log, &info);
+        }
+        self.tex_print_printed(term, log, &text.bytes[done..]);
+    }
+
+    /// printing.c `print_character_info` with a `glyph_info` callback
+    /// (`N->R`): the string it returns, `"<hex>` of the character for nil,
+    /// false or a wrong type (after luatex's complaint on stderr).
+    fn glyph_info_text(&mut self, node: Node, letter: usize, fresh: bool) -> Vec<u8> {
+        let code = match &node {
+            Node::Ligature { letters, .. } if letter > 0 => u32::from(letters[letter - 1]),
+            Node::Char { c, .. } | Node::Ligature { c, .. } => u32::from(*c),
+            Node::LuaGlyph(g) => g.c,
+            _ => 0,
+        };
+        let head = self.lua_nodes_from_engine(vec![node]) as u32;
+        let mut glyph = head;
+        if letter > 0 {
+            // the `letter`th component of the imported ligature
+            glyph = self.lua_nodes.node(head).f[crate::lua_node_conv::sl::C_COMP] as u32;
+            for _ in 1..letter {
+                glyph = self.lua_nodes.next(glyph);
+            }
+        } else if fresh && self.lua_nodes.node(glyph).subtype == 0 {
+            self.lua_nodes.node_mut(glyph).subtype = 1;
+        }
+        let rets = self.lua_cb_call(Cb::GlyphInfo, "glyph_info", vec![CbArg::Node(glyph)]);
+        self.lua_nodes.flush_list(head);
+        match rets.as_deref().and_then(<[CbRet]>::first) {
+            Some(CbRet::Str(s)) => {
+                let newline = self.new_line_char();
+                s.iter().map(|&b| if i32::from(b) == newline { b'\n' } else { b }).collect()
+            }
+            None | Some(CbRet::Nil | CbRet::Bool(false)) => format!("\"{code:X}").into_bytes(),
+            Some(other) => {
+                eprintln!("callback should return a string, false or nil, not: {}", other.type_name());
+                format!("\"{code:X}").into_bytes()
+            }
+        }
     }
 
     /// tex.web §1296 `\showbox`: `> \box<n>=` and the box display.
@@ -1041,7 +1164,7 @@ impl Engine {
             None => d.print("void"),
             Some(b) => d.show_box(std::slice::from_ref(b)),
         }
-        let out = d.out;
+        let out = d.take_text();
         self.emit_box_diagnostic(out);
     }
 
@@ -1074,7 +1197,7 @@ impl Engine {
         self.tex_print_str(true, true, &head);
         let mut d = BoxDisplay::new(self);
         d.show_box(std::slice::from_ref(b));
-        let out = d.out;
+        let out = d.take_text();
         self.emit_box_diagnostic_inline(out);
     }
 
@@ -1096,7 +1219,7 @@ impl Engine {
         } else if !self.in_output {
             d.print_ln();
         }
-        let head = std::mem::take(&mut d.out);
+        let head = d.take_text();
         if self.pack_begin_line < 0 {
             // tex.web §804: the preamble list holds unset nodes, one per column
             let mut preamble = r.clone();
@@ -1111,24 +1234,24 @@ impl Engine {
         } else {
             d.show_box(std::slice::from_ref(r));
         }
-        let display = d.out;
+        let display = d.take_text();
         // print_ln; the header goes to the transcript; the terminal follows
         // Ratex's structured-warning policy for box reports
         self.tex_print_ln(false, true);
-        self.tex_print_printed(false, true, &head);
+        self.print_display(false, true, head);
         self.emit_box_diagnostic_inline(display);
     }
 
     /// `begin_diagnostic; show_box; end_diagnostic(true)` continuing the
     /// current transcript line (no print_nl).
-    fn emit_box_diagnostic_inline(&mut self, display: Vec<u8>) {
+    fn emit_box_diagnostic_inline(&mut self, display: DisplayText) {
         let term = self.diagnostic_to_term();
-        self.tex_print_printed(term, true, &display);
+        self.print_display(term, true, display);
         self.end_diagnostic(term);
     }
 
     /// tex.web §218 show_activities (for `\showlists`).
-    pub(crate) fn show_activities(&self) -> Vec<u8> {
+    pub(crate) fn show_activities(&self) -> DisplayText {
         let mut d = BoxDisplay::new(self);
         // print_nl(""); print_ln
         d.print_ln();
@@ -1194,6 +1317,7 @@ impl Engine {
                 if level.mode == Mode::Vertical && above_is_paragraph && par_index > 0 {
                     par_index -= 1;
                 }
+                d.fresh_glyphs = matches!(level.mode, Mode::Horizontal | Mode::RestrictedHorizontal);
                 if level.prefix.is_empty() {
                     d.show_box(list);
                 } else {
@@ -1201,6 +1325,7 @@ impl Engine {
                     items.extend(nest::plain_items(list));
                     d.show_items_box(&items);
                 }
+                d.fresh_glyphs = false;
             }
             above_is_paragraph = level.mode == Mode::Horizontal;
             match level.mode {
@@ -1240,7 +1365,7 @@ impl Engine {
                 }
             }
         }
-        d.out
+        d.take_text()
     }
 
     /// e-TeX show_save_groups (`\showgroups`).

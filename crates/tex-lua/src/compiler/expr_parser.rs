@@ -316,7 +316,7 @@ fn funcargs(fs: &mut FuncState, f: &mut ExpDesc, line: usize) -> Result<(), Stri
             args = ExpDesc::new_vkstr(string);
         }
         _ => {
-            return Err("function arguments expected".to_string());
+            return Err(fs.token_error("function arguments expected"));
         }
     }
 
@@ -563,7 +563,7 @@ pub fn fieldsel(fs: &mut FuncState, v: &mut ExpDesc) -> Result<(), String> {
 
     // lparser.c:817: codename(ls, &key);
     if fs.lexer.current_token() != LuaTokenKind::TkName {
-        return Err(fs.token_error("expected field name"));
+        return Err(fs.token_error("<name> expected"));
     }
 
     let source_text = fs.lexer.origin_text();
@@ -1047,6 +1047,6 @@ fn expect(fs: &mut FuncState, tk: LuaTokenKind) -> Result<(), String> {
         fs.lexer.bump();
         Ok(())
     } else {
-        Err(fs.token_error(&format!("'{}' expected", tk)))
+        Err(fs.token_error(&format!("{} expected", tk.expected_text())))
     }
 }

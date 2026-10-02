@@ -825,7 +825,7 @@ impl Engine {
 
     /// LuaTeX `print_math_style` value inside math (without cramped
     /// information: the engine tracks only the four base styles at scan time).
-    fn current_style_number(&self) -> u8 {
+    pub(crate) fn current_style_number(&self) -> u8 {
         crate::math::gstyle_of(self.cur_math_style())
     }
 }

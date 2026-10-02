@@ -1,0 +1,13 @@
+P("none", os.execute())
+P("count0", select('#', os.execute("true")))
+P("true", os.execute("true"))
+P("false", os.execute("false"))
+P("exit3", os.execute("exit 3"))
+P("sig", os.execute("kill -9 $$"))
+P("missing", os.execute("exit 127"))
+P("empty", os.execute(""))
+P("number", pcall(os.execute, 5))
+
+P("spawn", os.spawn({"true"}))
+P("spawnfail", os.spawn({"sh","-c","exit 4"}))
+P("spawnmissing", os.spawn({"zz_no_such_cmd"}))

@@ -50,7 +50,14 @@ local methods = {}
 
 local function find_file(self, fname, ...)
   local first = self == nil and 1 or 2
-  local name = checkstring((...), first, fname)
+  local name
+  if self == nil then
+    -- lkpselib.c find_file: the module function insists on a string
+    name = (...)
+    if type(name) ~= "string" then error("not a file name", 0) end
+  else
+    name = checkstring((...), first, fname)
+  end
   local nargs = select("#", ...)
   local ftype, must_exist = index_of.tex, false
   for i = nargs, 2, -1 do

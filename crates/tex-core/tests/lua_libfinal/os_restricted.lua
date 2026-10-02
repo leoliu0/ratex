@@ -1,0 +1,13 @@
+P("none", os.execute())
+P("true", os.execute("true"))
+P("allowed", os.execute("kpsewhich zzzz_no_such_file_zz"))
+P("allowedargs", os.execute("kpsewhich -var-value=TEXMFHOME >/dev/null"))
+P("allowedver", os.execute("kpsewhich --version >/dev/null"))
+P("quote", os.execute("kpsewhich 'a b"))
+P("empty", os.execute(""))
+P("spawnno", os.spawn({"true"}))
+P("spawnyes", os.spawn({"kpsewhich", "zzzz_no_such_file_zz"}))
+P("spawnstr", os.spawn("kpsewhich zzzz_no_such_file_zz"))
+P("popenno", io.popen("true"))
+P("popenyes", (io.popen("kpsewhich -version")) ~= nil)
+

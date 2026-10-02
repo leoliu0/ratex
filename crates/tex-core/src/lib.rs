@@ -36,7 +36,7 @@ mod lua_cb_files;
 mod lua_ligkern;
 mod lua_bridge;
 mod lua_sys;
-pub use lua_sys::set_cache_dir;
+pub use lua_sys::{set_cache_dir, set_shell_escape, ShellEscape};
 mod lua_sys_embedded;
 mod lua_sys_fio;
 mod lua_sys_hash;

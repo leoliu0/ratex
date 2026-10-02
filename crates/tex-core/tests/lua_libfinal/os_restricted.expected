@@ -1,0 +1,12 @@
+none | 2
+true | nil | Command execution disabled via shell_escape='p'
+allowed | 256
+allowedargs | 256
+allowedver | 0
+quote | nil | Quoting error in system command line.
+empty | nil | Command execution disabled via shell_escape='p'
+spawnno | nil | Command execution disabled via shell_escape='p'
+spawnyes | 1
+spawnstr | 1
+popenno | nil | specific command execution disabled
+popenyes | true

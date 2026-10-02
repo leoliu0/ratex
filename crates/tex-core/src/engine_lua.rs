@@ -235,11 +235,13 @@ reg["luatex.token"] = {
   __index = function(t, k) return t[k] end,
   __tostring = function(t) return tostring(t) end,
 }
+-- the one node field the host cannot return directly: a mark's token table
+local node_getfield, node_setfield = node.getfield, node.setfield
 reg["luatex.node"] = {
   __name = "luatex.node",
   __eq = function(a, b) return a == b end,
-  __index = function(n, k) return n[k] end,
-  __newindex = function(n, k, v) n[k] = v end,
+  __index = function(n, k) if k == "mark" then return node_getfield(n, k) end end,
+  __newindex = function(n, k, v) if k == "mark" then return node_setfield(n, k, v) end end,
   __tostring = function(n) return tostring(n) end,
 }
 

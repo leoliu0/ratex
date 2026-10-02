@@ -117,6 +117,23 @@ impl Engine {
         self.expand_math_levels(levels)
     }
 
+    /// The nest as `tex.nest` shows it: tex.web's levels, bottom first, as
+    /// `(mode, mode_line, prev_depth, space_factor, prev_graf, frame)`. Levels
+    /// made up for the display (output routine, alignment rows, math groups) have
+    /// no `frame`; like `push_nest` they repeat the aux field of the level below.
+    pub(crate) fn lua_nest_view(&self) -> Vec<(Mode, i32, i32, i32, i32, Option<usize>)> {
+        let mut out = Vec::new();
+        let (mut pd, mut sf) = (self.prev_depth, 1000);
+        for lvl in self.nest_levels() {
+            if lvl.frame.is_some() {
+                pd = lvl.prev_depth;
+                sf = lvl.space_factor;
+            }
+            out.push((lvl.mode, lvl.line, pd, sf, lvl.prev_graf, lvl.frame));
+        }
+        out
+    }
+
     // ---------------------------------------------------------------
     // alignments (tex.web §768-§812)
     // ---------------------------------------------------------------

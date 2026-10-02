@@ -184,7 +184,7 @@ fn compile_code_with_name_mode(
 
     // Check for proper ending
     if fs.lexer.current_token() != LuaTokenKind::TkEof {
-        return Err(fs.token_error("expected end of file"));
+        return Err(fs.token_error(if fs.lexer.level == LuaLanguageLevel::Lua53 { "<eof> expected" } else { "expected end of file" }));
     }
 
     if let Some(lex_err) = fs.lexer.take_error() {

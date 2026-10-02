@@ -1,0 +1,10 @@
+local cases = {
+ "x = = 1", "for", "for i", "for i=1", "for i=1,2", "for i=1,2 do", "for a,b", "for a,b in", "x = 'abc", "x = \"abc\n\"", "x = [[abc", "x = [==[abc", "goto foo", "break", "local x <const> = 1", "local x <close> = 1",
+ "x = 1 +", "f(", "x = 0x", "x = 1e", "x = 1e+", "x = 0xg", "x = 3..4", "x = 12abc", "::a:: ::a::", "function f() return ... end", "x = '\\q'", "x = '\\300'", "x = '\\x4'", "x = '\\xZZ'", "x = '\\u{110000000}'", "x = '\\u{zz}'", "x = '\\u123'", "x = '\\u{123'",
+ "--[[ unfinished", "--[==[ unfinished", "x = }", "local a = {", "if x then", "if x then else", "if x", "x =", "@", "a.b:c = 1", "local function end", "x = 'a\nb'", "while", "while x", "while x do", "repeat", "repeat x=1", "repeat x=1 until",
+ "function", "function f", "function f(", "function f(a,", "function f(a,)", "function f(...,a) end", "function f(a b) end", "function f() end end", "local", "local 1", "local x,", "local x =", "return return", "return 1,", "x:", "x:y", "x.", "x.1", "x[", "x[1", "x = {1,", "x = {[1", "x = {[1]", "x = {a=}", "x = (", "x = (1", "x = 1 2", "x y", "x, y", "x, y = ", "1 = 2", "f() = 1", "(x) = 1", "x = not", "x = #", "x = -", "x = ~", "x = 1 // ", "x = 1 ~= ", "x = a.b.", "do", "do end end", "end", "else", "elseif", "until", "then", "in", "and", "x = function", "x = function(", "x = function() ", "return 1 x", "break x", "goto", "goto 1", "::", "::a", "::a::", ":: a ::", "goto a; local x; ::a:: print(x)", "x = 1 .. ", "$", "x = `", "x = \\", "x = '\\", "\"", "'", "[", "[=", "[=x", "x = [=x", "local t <const>", "f{", "f'", "f\"", "x = 'a' 'b'", "x = ...", "function f() local ... end", "x = 0x1p", "x = 0x.p1", "x = .", "x = ..", "x = ...x", "x = 1..2", "return;;", "x = 1;;", "local function f() break end", "while true do local function g() break end end", "for i=1,2 do end break", "x = {...}", "function f(a) return ... end", "local x <foo> = 1", "return function() return ... end", "x = a b", "local a, b <const> = 1",
+}
+for i, c in ipairs(cases) do
+  local f, e = load(c, "=c" .. i)
+  P(i, f and "OK" or e)
+end

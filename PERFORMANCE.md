@@ -104,22 +104,27 @@ One prepared single engine pass (fresh cache, auxiliary files restored) of the
 
 | Measurement | Ratex | TeX Live 2026 `pdflatex` |
 | --- | ---: | ---: |
-| User-space instructions | 25.87 G | 4.11 G |
-| CPU time | ~2.05 s | 0.41 s |
+| User-space instructions | 25.87 G | 6.42 G |
+| CPU time | ~2.05 s | ~0.66 s |
 
 Within that Ratex pass, loading the format took about 74 ms and PDF
 serialization plus writing about 41 ms; the remainder was TeX execution,
-including decompression of embedded package and font files.
+including decompression of embedded package and font files. The TeX Live
+column was re-measured with the same counter (median of seven passes); the
+4.11 G and 0.41 s first recorded here could not be reproduced.
 
-<!-- INTEGRATION: fill post-review measurements here -->
-## Post-review measurements
+## Post-review measurements (commit `87e5563`)
 
-Pending: to be filled in by the integration owner with the same method as the
-baseline above.
+Same method and machine, median of seven passes:
 
 | Measurement | Ratex (post-review) | TeX Live 2026 `pdflatex` |
 | --- | ---: | ---: |
-| User-space instructions, `trust_own` single pass | pending | pending |
-| CPU time, `trust_own` single pass | pending | pending |
-| Format load | pending | — |
-| PDF serialize + write | pending | — |
+| User-space instructions, `trust_own` single pass | 7.34 G | 6.42 G |
+| CPU time, `trust_own` single pass | ~0.88 s | ~0.66 s |
+| Format load | ~35 ms | — |
+| PDF serialize + write | ~36 ms | — |
+
+Across the five benchmark documents that build (70, 90, 81, 29 and 49
+pages), a prepared pass now executes 49.3 G instructions in total, down from
+135.2 G at the baseline; their PDFs match TeX Live's in extracted text
+(`pdftotext -layout`) and in 50 dpi page renders.

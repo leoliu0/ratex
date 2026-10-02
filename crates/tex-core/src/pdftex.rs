@@ -247,6 +247,64 @@ impl Engine {
             let Some(font) = self.eqtb.fonts.get(fid as usize).cloned() else {
                 continue;
             };
+            if let (crate::engine::EngineKind::XeTeX, Some(nf)) = (self.engine_kind, font.native.as_ref()) {
+                // xdvipdfmx's Identity-H/V CID font; the writer builds the
+                // program subset, descriptor, widths and ToUnicode
+                let prog = &nf.program;
+                let cur_idx = self.pdf_doc.fonts.len();
+                let is_tt = prog.kind == crate::font_program::FontProgramKind::TrueType;
+                self.pdf_doc.fonts.push(crate::pdfout::EmbedFont {
+                    obj_font: 0,
+                    base_font: prog.postscript_name.clone(),
+                    font_file: prog.data.clone(),
+                    length1: prog.data.len(),
+                    length2: 0,
+                    length3: 0,
+                    is_truetype: is_tt,
+                    subtype: if is_tt {
+                        crate::pdfout::EmbedFontSubtype::TrueType
+                    } else {
+                        crate::pdfout::EmbedFontSubtype::Cff
+                    },
+                    face_index: prog.face_index,
+                    variations: prog.variations.clone(),
+                    allow_subsetting: true,
+                    content_hash: prog.content_hash,
+                    units_per_em: prog.units_per_em,
+                    encoding_diff: None,
+                    first_char: 0,
+                    last_char: 255,
+                    widths: Vec::new(),
+                    font_matrix_scale: 1.0,
+                    font_bbox: [0.0; 4],
+                    italic_angle: 0.0,
+                    ascent: 0.0,
+                    descent: 0.0,
+                    cap_height: 0.0,
+                    stem_v: 0.0,
+                    flags: 4,
+                    to_unicode: Vec::new(),
+                    used_chars: [0; 4],
+                    is_cid: true,
+                    is_native: false,
+                    legacy_cids: Vec::new(),
+                    native_cids: Vec::new(),
+                    used_gids: Default::default(),
+                    to_unicode_2byte: Vec::new(),
+                    font_attr: String::new(),
+                    t1_preset: Default::default(),
+                    t1_keys: Default::default(),
+                    init_order: 0,
+                    desc_obj: 0,
+                    pdftex: None,
+                    xe: Some(crate::pdfout::XeFont {
+                        vertical: nf.vertical,
+                        used: self.pdf_doc.xe_use.get(&fid).cloned().unwrap_or_default(),
+                    }),
+                });
+                remap.insert(crate::pdfout::FontBinding::remapped(0).resource_key(fid), cur_idx);
+                continue;
+            }
             let prog = self.font_loader.program_for_font(&font)?;
             // pdfTeX shares one font dictionary between used fonts with the
             // same TFM, propagating a \pdffontattr set on any of them.
@@ -510,6 +568,7 @@ impl Engine {
                                 init_order: 0,
                                 desc_obj: 0,
                                 pdftex: None,
+                                xe: None,
                             };
                             self.pdf_doc.fonts.push(ef);
                             remap.insert(
@@ -655,6 +714,7 @@ impl Engine {
                                 init_order: 0,
                                 desc_obj: 0,
                                 pdftex: None,
+                                xe: None,
                             };
                             let document_index = self.pdf_doc.fonts.len();
                             self.pdf_doc.fonts.push(embedded);

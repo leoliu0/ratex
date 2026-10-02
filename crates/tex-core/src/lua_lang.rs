@@ -94,6 +94,201 @@ impl Engine {
     pub(crate) fn lang_hyphenation_min(&self, lang: u8) -> usize {
         self.lua_tex.lang.get(&lang).map_or(0, |p| p.hyphenation_min.max(0) as usize)
     }
+
+    /// texlang/textcodes `get_hj_code(lang, c)`: the language's table once
+    /// `\hjcode` created it or `\savinghyphcodes` copied the `\lccode`s into
+    /// it, else the `\lccode`. Characters above 255 have no `\lccode` here:
+    /// their lower case stands in unless `\hjcode` assigned them.
+    pub(crate) fn hj_code_of(&self, lang: u8, c: i32) -> i32 {
+        if c < 0 {
+            return 0;
+        }
+        if let Some(&v) = self.lua_tex.hj_wide.get(&(lang, c)) {
+            return v;
+        }
+        let table = self.hyphen_codes.get(&lang);
+        if c < 256 {
+            return match table {
+                Some(codes) => i32::from(codes[c as usize]),
+                None => i32::from(self.eqtb.lc_code[c as usize]),
+            };
+        }
+        if self.lua_tex.hj_pure.contains(&lang) {
+            return 0;
+        }
+        match char::from_u32(c as u32) {
+            Some(ch) if ch.is_alphabetic() => {
+                let mut lower = ch.to_lowercase();
+                match (lower.next(), lower.next()) {
+                    (Some(l), None) => l as i32,
+                    _ => c,
+                }
+            }
+            _ => 0,
+        }
+    }
+
+    /// textcodes `set_hj_code`: the first assignment of a language creates
+    /// its table with every code 0.
+    pub(crate) fn set_hj_code_of(&mut self, lang: u8, c: i32, v: i32) -> bool {
+        if c < 0 || c > 0x10FFFF || v < 0 {
+            return false;
+        }
+        if !self.hyphen_codes.contains_key(&lang) {
+            self.hyphen_codes.insert(lang, Box::new([0u8; 256]));
+            self.lua_tex.hj_pure.insert(lang);
+        }
+        if c < 256 && v < 256 {
+            self.lua_tex.hj_wide.remove(&(lang, c));
+            if let Some(codes) = self.hyphen_codes.get_mut(&lang) {
+                codes[c as usize] = v as u8;
+            }
+        } else {
+            self.lua_tex.hj_wide.insert((lang, c), v);
+        }
+        true
+    }
+
+    /// llanglib `clean_hyphenation`: the key an exception word is stored
+    /// under (hyphens dropped, `=` as a hyphen letter, only the replacement
+    /// of `{pre}{post}{replace}`), or `None` for a malformed word.
+    pub(crate) fn clean_exception_word(&self, lang: u8, word: &[char]) -> Option<Vec<u8>> {
+        let at = |i: usize| word.get(i).copied().unwrap_or('\0');
+        let mut out = String::new();
+        let store = |out: &mut String, c: char| {
+            let mut x = self.hj_code_of(lang, c as i32);
+            if x <= 32 {
+                x = c as i32;
+            }
+            out.push(char::from_u32(x as u32).unwrap_or(c));
+        };
+        let mut i = 0;
+        while i < word.len() {
+            let u = word[i];
+            i += 1;
+            match u {
+                '-' => {}
+                '=' => store(&mut out, '-'),
+                '{' => {
+                    let mut items = 0;
+                    let mut u = at(i);
+                    i += 1;
+                    while u != '\0' && u != '}' {
+                        u = at(i);
+                        i += 1;
+                    }
+                    if u == '}' {
+                        items += 1;
+                        u = at(i);
+                        i += 1;
+                    }
+                    while u != '\0' && u != '}' {
+                        u = at(i);
+                        i += 1;
+                    }
+                    if u == '}' {
+                        items += 1;
+                        u = at(i);
+                        i += 1;
+                    }
+                    if u == '{' {
+                        u = at(i);
+                        i += 1;
+                    }
+                    while u != '\0' && u != '}' {
+                        store(&mut out, u);
+                        u = at(i);
+                        i += 1;
+                    }
+                    if u == '}' {
+                        items += 1;
+                    }
+                    if items != 3 {
+                        return None;
+                    }
+                    if at(i) == '[' && at(i + 1).is_ascii_digit() && at(i + 2) == ']' {
+                        i += 3;
+                    }
+                }
+                c => store(&mut out, c),
+            }
+        }
+        Some(out.into_bytes())
+    }
+
+    /// llanglib `load_hyphenation`: add the whitespace separated exceptions
+    /// of `text` to `lang`. A word with nothing but `-` hyphens joins the
+    /// language's trie (and so the format); the others are kept as written.
+    pub(crate) fn lua_load_hyphenation(&mut self, lang: u8, text: &[u8]) {
+        let text = String::from_utf8_lossy(text).into_owned();
+        for raw in text.split(|c: char| c.is_ascii_whitespace()).filter(|w| !w.is_empty()) {
+            let chars: Vec<char> = raw.chars().collect();
+            if raw.len() > 64 {
+                self.error("exception too long");
+                continue;
+            }
+            let Some(key) = self.clean_exception_word(lang, &chars) else {
+                self.error("exception syntax error");
+                continue;
+            };
+            let simple = !chars.iter().any(|c| matches!(c, '=' | '{' | '}'));
+            if simple {
+                let mut points = Vec::new();
+                let mut n = 0usize;
+                let mut key_bytes = Vec::new();
+                for &c in &chars {
+                    if c == '-' {
+                        points.push(key_bytes.len());
+                        continue;
+                    }
+                    let mut buf = [0u8; 4];
+                    key_bytes.extend_from_slice(self.exception_letter(lang, c).encode_utf8(&mut buf).as_bytes());
+                    n += 1;
+                }
+                debug_assert_eq!(key_bytes, key);
+                if let Some(map) = self.lua_tex.rich_exceptions.get_mut(&lang) {
+                    map.remove(&key);
+                }
+                if n >= 1 {
+                    self.trie_for_language_mut(lang).exceptions.insert(key, points);
+                }
+            } else {
+                self.trie_for_language_mut(lang).exceptions.remove(&key);
+                self.lua_tex.rich_exceptions.entry(lang).or_default().insert(key, raw.as_bytes().to_vec());
+            }
+        }
+    }
+
+    fn exception_letter(&self, lang: u8, c: char) -> char {
+        let mut x = self.hj_code_of(lang, c as i32);
+        if x <= 32 {
+            x = c as i32;
+        }
+        char::from_u32(x as u32).unwrap_or(c)
+    }
+
+    /// The exception of the cleaned word `word` as it was written (`-` marks
+    /// a syllable break, `=` a hyphen letter), if there is one.
+    pub(crate) fn lua_exception_raw(&self, lang: u8, word: &[u32]) -> Option<Vec<u8>> {
+        let mut key: Vec<u8> = Vec::with_capacity(word.len());
+        for &c in word {
+            let ch = char::from_u32(c).unwrap_or(char::REPLACEMENT_CHARACTER);
+            let mut buf = [0u8; 4];
+            key.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+        }
+        if let Some(raw) = self.lua_tex.rich_exceptions.get(&lang).and_then(|m| m.get(&key)) {
+            return Some(raw.clone());
+        }
+        let points = self.trie_for_language(lang)?.exceptions.get(&key)?;
+        let mut raw = Vec::with_capacity(key.len() + points.len());
+        for (i, &b) in key.iter().enumerate() {
+            if points.contains(&i) && i > 0 {
+                raw.push(b'-');
+            }
+            raw.push(if b == b'-' { b'=' } else { b });
+        }
+        Some(raw)
+    }
 }
 
 pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
@@ -126,38 +321,45 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
     reg!(lua, t, "exceptions_add", |id: i64, text: LuaString| -> Result<(), String> {
         let id = language_id(id)?;
         let text = bytes_of(&text);
-        with_engine(|e| {
-            let trie = e.trie_for_language_mut(id);
-            for word in text.split(|b| b.is_ascii_whitespace()).filter(|w| !w.is_empty()) {
-                trie.add_exception_bytes(word);
-            }
-        })
+        with_engine(|e| e.lua_load_hyphenation(id, &text))
     });
     reg!(lua, t, "exceptions_get", |id: i64| -> Result<Option<LuaBytes>, String> {
         let id = language_id(id)?;
         with_engine(|e| {
-            let trie = e.trie_for_language(id)?;
-            if trie.exceptions.is_empty() {
+            let mut words: Vec<Vec<u8>> = Vec::new();
+            if let Some(trie) = e.trie_for_language(id) {
+                for (word, points) in &trie.exceptions {
+                    let mut raw = Vec::with_capacity(word.len() + points.len());
+                    for (i, byte) in word.iter().enumerate() {
+                        if points.contains(&i) && i > 0 {
+                            raw.push(b'-');
+                        }
+                        raw.push(if *byte == b'-' { b'=' } else { *byte });
+                    }
+                    words.push(raw);
+                }
+            }
+            if let Some(rich) = e.lua_tex.rich_exceptions.get(&id) {
+                words.extend(rich.values().cloned());
+            }
+            if words.is_empty() {
                 return None;
             }
-            let mut words: Vec<(&Vec<u8>, &Vec<usize>)> = trie.exceptions.iter().collect();
             words.sort();
             let mut out = Vec::new();
-            for (word, points) in words {
+            for word in words {
                 out.push(b' ');
-                for (i, byte) in word.iter().enumerate() {
-                    if points.contains(&i) && i > 0 {
-                        out.push(b'-');
-                    }
-                    out.push(*byte);
-                }
+                out.extend_from_slice(&word);
             }
             Some(LuaBytes(out))
         })
     });
     reg!(lua, t, "exceptions_clear", |id: i64| -> Result<(), String> {
         let id = language_id(id)?;
-        with_engine(|e| e.trie_for_language_mut(id).exceptions.clear())
+        with_engine(|e| {
+            e.trie_for_language_mut(id).exceptions.clear();
+            e.lua_tex.rich_exceptions.remove(&id);
+        })
     });
     reg!(lua, t, "param_get", |id: i64, which: String| -> Result<i64, String> {
         let id = language_id(id)?;
@@ -188,27 +390,15 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
     });
     reg!(lua, t, "hjcode_get", |id: i64, c: i64| -> Result<i64, String> {
         let id = language_id(id)?;
-        let c = usize::try_from(c).ok().filter(|c| *c < 256).ok_or("character code out of range")?;
-        with_engine(|e| {
-            let lc = i64::from(e.eqtb.lc_code[c]);
-            e.hyphen_codes.get(&id).map_or(lc, |codes| match codes[c] {
-                0 => lc,
-                code => i64::from(code),
-            })
-        })
+        let c = i32::try_from(c).ok().filter(|c| (0..=0x10FFFF).contains(c)).ok_or("character code out of range")?;
+        with_engine(|e| i64::from(e.hj_code_of(id, c)))
     });
     reg!(lua, t, "hjcode_set", |id: i64, c: i64, v: i64| -> Result<(), String> {
         let id = language_id(id)?;
-        let c = usize::try_from(c).ok().filter(|c| *c < 256).ok_or("character code out of range")?;
-        let v = u8::try_from(v).map_err(|_| "hyphenation code out of range".to_string())?;
+        let c = i32::try_from(c).ok().filter(|c| (0..=0x10FFFF).contains(c)).ok_or("character code out of range")?;
+        let v = i32::try_from(v).ok().filter(|v| *v >= 0).ok_or_else(|| "hyphenation code out of range".to_string())?;
         with_engine(|e| {
-            let lc = e.eqtb.lc_code.clone();
-            let codes = e.hyphen_codes.entry(id).or_insert_with(|| {
-                let mut t = Box::new([0u8; 256]);
-                t.copy_from_slice(&lc[..256]);
-                t
-            });
-            codes[c] = v;
+            e.set_hj_code_of(id, c, v);
         })
     });
     reg!(lua, t, "clean", |word: LuaString| -> Result<Option<LuaBytes>, String> {

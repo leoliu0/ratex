@@ -678,13 +678,26 @@ impl Engine {
         if self.is_luamath() {
             return None;
         }
-        if self.engine_kind != crate::engine_mode::EngineKind::PdfTeX {
+        if !matches!(
+            self.engine_kind,
+            crate::engine_mode::EngineKind::PdfTeX | crate::engine_mode::EngineKind::XeTeX
+        ) {
             return None;
         }
-        // font_params[f] is at least 7 in TeX (the null font has 7)
+        // font_params[f] is at least 7 in TeX (the null font has 7); a new
+        // math font (xetex.web: OpenType MATH table) always suffices, other
+        // native fonts have 8 parameters
         let params = |size: usize, fam: usize| {
-            let fid = self.eqtb.style_fonts[size][fam] as usize;
-            self.eqtb.font_params.get(fid).map_or(0, Vec::len).max(7)
+            let fid = self.eqtb.style_fonts[size][fam];
+            if self.engine_kind == crate::engine_mode::EngineKind::XeTeX {
+                if self.xe_is_new_mathfont(fid) {
+                    return usize::MAX;
+                }
+                if self.font_loader.native_fonts.contains_key(&fid) {
+                    return 8;
+                }
+            }
+            self.eqtb.font_params.get(fid as usize).map_or(0, Vec::len).max(7)
         };
         if (0..3).any(|size| params(size, 2) < 22) {
             Some("Math formula deleted: Insufficient symbol fonts")
@@ -2474,7 +2487,12 @@ impl Engine {
     }
 
     /// font parameter `i` (1-based) of family `fam` at style `g`
-    fn fparam(&self, g: GStyle, fam: u8, i: usize) -> i32 {
+    pub(crate) fn fparam(&self, g: GStyle, fam: u8, i: usize) -> i32 {
+        if self.engine_kind == crate::engine::EngineKind::XeTeX {
+            if let Some(v) = self.xe_family_param(font_size(g), fam, i) {
+                return v;
+            }
+        }
         match self.fam_font(g, fam) {
             Some((fid, f)) => self
                 .eqtb
@@ -2487,7 +2505,12 @@ impl Engine {
     }
     /// font parameter `i` (1-based) of family `fam` at a specific font size
     /// index (0 = text, 1 = script, 2 = scriptscript)
-    fn fparam_idx(&self, size_idx: usize, fam: u8, i: usize) -> i32 {
+    pub(crate) fn fparam_idx(&self, size_idx: usize, fam: u8, i: usize) -> i32 {
+        if self.engine_kind == crate::engine::EngineKind::XeTeX {
+            if let Some(v) = self.xe_family_param(size_idx, fam, i) {
+                return v;
+            }
+        }
         let fid = self.eqtb.style_fonts[size_idx][fam as usize];
         if fid == 0 {
             return 0;
@@ -2509,7 +2532,7 @@ impl Engine {
         self.eqtb.fonts.get(fid as usize).cloned().map(|f| (fid, f))
     }
 
-    fn math_quad(&self, g: GStyle) -> i32 {
+    pub(crate) fn math_quad(&self, g: GStyle) -> i32 {
         let q = self.fparam(g, 2, 6);
         if q != 0 {
             q
@@ -2518,7 +2541,7 @@ impl Engine {
         }
     }
 
-    fn math_x_height(&self, g: GStyle) -> i32 {
+    pub(crate) fn math_x_height(&self, g: GStyle) -> i32 {
         let x = self.fparam(g, 2, 5);
         if x != 0 {
             x
@@ -2529,7 +2552,7 @@ impl Engine {
 
     /// default rule thickness: fontdimen 8 of family 3 (the extension font)
     /// at the current size (tex.web `default_rule_thickness`)
-    fn default_rule_thickness(&self, g: GStyle) -> i32 {
+    pub(crate) fn default_rule_thickness(&self, g: GStyle) -> i32 {
         let r = self.fparam(g, 3, 8);
         if r != 0 {
             r
@@ -2538,7 +2561,7 @@ impl Engine {
         }
     }
 
-    fn axis_height(&self, g: GStyle) -> i32 {
+    pub(crate) fn axis_height(&self, g: GStyle) -> i32 {
         let a = self.fparam(g, 2, 22);
         if a != 0 {
             a
@@ -2658,11 +2681,11 @@ impl Engine {
         }
     }
 
-    fn math_noad_char(n: &Node) -> Option<(u8, u8)> {
+    fn math_noad_char(n: &Node) -> Option<(u8, u32)> {
         match n {
-            Node::MathChar { fam, c, .. } if *fam != 255 => Some((*fam, *c as u8)),
+            Node::MathChar { fam, c, .. } if *fam != 255 => Some((*fam, *c)),
             Node::Scripts { nucleus, .. } if nucleus.len() == 1 => match &nucleus[0] {
-                Node::MathChar { fam, c, .. } if *fam != 255 => Some((*fam, *c as u8)),
+                Node::MathChar { fam, c, .. } if *fam != 255 => Some((*fam, *c)),
                 _ => None,
             },
             _ => None,
@@ -2742,7 +2765,7 @@ impl Engine {
                 let Some((p_fam, p_char)) = Self::math_noad_char(&nodes[i + 1]) else {
                     break;
                 };
-                if q_fam != p_fam || q_fam as usize >= 16 {
+                if q_fam != p_fam || (q_fam as usize >= 16 && self.engine_kind != crate::engine::EngineKind::XeTeX) {
                     break;
                 }
 
@@ -2750,6 +2773,10 @@ impl Engine {
                 // font actually supplies a ligature or kern instruction.
                 math_text[i] = true;
                 let Some((_, font)) = self.fam_font_idx(font_size(style), q_fam) else {
+                    break;
+                };
+                // characters above 255 have no lig/kern program
+                let (Ok(q_char), Ok(p_char)) = (u8::try_from(q_char), u8::try_from(p_char)) else {
                     break;
                 };
                 let Some(ci) = font.chars.get(q_char as usize) else {
@@ -3293,9 +3320,10 @@ impl Engine {
                 origin, .. } => {
                 if *fam == 255 {
                     vec![]
+                } else if let Some(nodes) = self.xe_convert_math_char(*fam, *c, *class, style, math_text_char, origin) {
+                    nodes
                 } else if *class == CL_OP {
-                    let byte = *c as u8;
-                    let (b, _) = self.op_char_box(*fam, byte, style, false, origin);
+                    let (b, _) = self.op_char_box(*fam, *c, style, false, origin);
                     vec![b]
                 } else {
                     let fid = self.eqtb.style_fonts[font_size(style)][*fam as usize];
@@ -3336,10 +3364,11 @@ impl Engine {
                 }
                 if sup.is_some() || sub.is_some() {
                     if let Some((spec, body, origin)) = accent_noad_of(nucleus) {
-                        let accent = spec.top.map_or((0, 0), |(fam, c)| (fam, c as u8));
+                        let accent = spec.top.unwrap_or((0, 0));
                         if matches!(body, [Node::MathChar { fam, .. }] if *fam != 255) {
                             return self.make_accent(
                                 accent,
+                                spec.subtype,
                                 body,
                                 style,
                                 sup.as_deref(),
@@ -3433,8 +3462,8 @@ impl Engine {
                 if self.engine_kind == crate::engine::EngineKind::LuaTeX {
                     vec![self.make_math_accent_lua(spec, body, None, None, style, *attr).0]
                 } else {
-                    let accent = spec.top.map_or((0, 0), |(fam, c)| (fam, c as u8));
-                    self.make_accent(accent, body, style, None, None, origin)
+                    let accent = spec.top.unwrap_or((0, 0));
+                    self.make_accent(accent, spec.subtype, body, style, None, None, origin)
                 }
             }
             Node::DelimBox {
@@ -3491,12 +3520,23 @@ impl Engine {
     fn op_char_box(
         &mut self,
         fam: u8,
-        c: u8,
+        c: u32,
         style: GStyle,
         sub_present: bool,
         origin: &MathDiagnosticOrigin,
     ) -> (Node, i32) {
         let fid = self.eqtb.style_fonts[font_size(style)][fam as usize];
+        if self.engine_kind == crate::engine::EngineKind::XeTeX {
+            self.xe_note_fetch(fid);
+            if self.xe_ot(fid).is_some() {
+                return self.xe_op_char_box(fid, c, style, sub_present, false);
+            }
+            if c > 255 {
+                self.xe_missing_math_char(fid, c, origin);
+                return (Node::Kern(0, self.eqtb.cur_attr), 0);
+            }
+        }
+        let c = c as u8;
         if !self.math_font_has_character_or_warn(fid, c, origin) {
             return (Node::Kern(0, self.eqtb.cur_attr), 0);
         }
@@ -3539,7 +3579,7 @@ impl Engine {
                 if *fam == 255 {
                     (hpack(Vec::new(), None, HBOX, &self.eqtb).node, 0)
                 } else {
-                    self.op_char_box(*fam, *c as u8, style, false, origin)
+                    self.op_char_box(*fam, *c, style, false, origin)
                 }
             }
             [Node::DelimBox {
@@ -3571,7 +3611,7 @@ impl Engine {
     /// otherwise the hlist is packed at natural width. "Simplify a trivial
     /// box" then unlinks a lone character's italic-correction kern AFTER
     /// packing, so the box keeps the corrected width.
-    fn clean_math_box(&mut self, list: &[Node], style: GStyle) -> Node {
+    pub(crate) fn clean_math_box(&mut self, list: &[Node], style: GStyle) -> Node {
         let mut nodes = self.mlist_to_hlist_pen(list, style, false);
         let mut x = if matches!(nodes.as_slice(), [Node::Box { shift: 0, .. }]) {
             nodes.pop().expect("single clean math box")
@@ -3596,7 +3636,7 @@ impl Engine {
         }
     }
 
-    fn make_scripts(
+    pub(crate) fn make_scripts(
         &mut self,
         nucleus: &[Node],
         sup: Option<&[Node]>,
@@ -3624,6 +3664,9 @@ impl Engine {
         let nuc: Node;
         let mut shift_up = 0i32;
         let mut shift_down = 0i32;
+        // XeTeX: a native-font character nucleus is a bare glyph node
+        let mut xe_list: Option<NodeList> = None;
+        let mut xe_glyph: Option<(FontId, u16)> = None;
         match nucleus {
             // A character nucleus keeps its italic correction as a trailing
             // kern unless a subscript is present; then it offsets the sup.
@@ -3640,16 +3683,18 @@ impl Engine {
                     nuc = hpack(Vec::new(), None, HBOX, &self.eqtb).node;
                 } else {
                     let fid = self.eqtb.style_fonts[font_size(style)][*fam as usize];
-                    if self.font_loader.native_fonts.contains_key(&fid) {
-                        if let Some(ch) = char::from_u32(*c) {
-                            if let Ok(nodes) = self.shape_native_slice(fid, &ch.to_string()) {
-                                nuc = hpack(nodes, None, HBOX, &self.eqtb).node;
-                            } else {
-                                nuc = hpack(Vec::new(), None, HBOX, &self.eqtb).node;
-                            }
-                        } else {
-                            nuc = hpack(Vec::new(), None, HBOX, &self.eqtb).node;
-                        }
+                    self.xe_note_fetch(fid);
+                    if self.engine_kind == crate::engine::EngineKind::XeTeX && self.xe_ot(fid).is_some() {
+                        // xetex.web "Create a character node": glyph node and
+                        // italic correction; `p` stays the glyph for math kerning
+                        let (list, d) = self.xe_native_char(fid, *c, false, sub.is_some());
+                        delta = d;
+                        xe_glyph = list.first().and_then(Self::xe_glyph_of);
+                        xe_list = Some(list);
+                        nuc = Node::Empty;
+                    } else if self.engine_kind == crate::engine::EngineKind::XeTeX && *c > 255 {
+                        self.xe_missing_math_char(fid, *c, origin);
+                        nuc = hpack(Vec::new(), None, HBOX, &self.eqtb).node;
                     } else {
                         let byte = *c as u8;
                     if self.math_font_has_character_or_warn(fid, byte, origin) {
@@ -3702,7 +3747,7 @@ impl Engine {
                 if *fam == 255 {
                     nuc = hpack(Vec::new(), None, HBOX, &self.eqtb).node;
                 } else {
-                    let (b, d) = self.op_char_box(*fam, *c as u8, style, sub.is_some(), origin);
+                    let (b, d) = self.op_char_box(*fam, *c, style, sub.is_some(), origin);
                     delta = d;
                     nuc = b;
                 }
@@ -3722,7 +3767,14 @@ impl Engine {
                 shift_down = zd + self.fparam_idx(drop_size, 2, 19);
             }
         }
-        let mut out: NodeList = vec![nuc];
+        let mut out: NodeList = match xe_list {
+            Some(list) => list,
+            None => vec![nuc],
+        };
+        // xetex.web: `is_new_mathfont(cur_f)` for the current font of the last fetch
+        let xe_ot = self.engine_kind == crate::engine::EngineKind::XeTeX && self.xe_cur_f_is_math();
+        let xe_f0 = self.xe_math.cur_f.get();
+        let mut xe_sub_kern = 0i32;
         let sup1 = self.fparam(style, 2, 13);
         let sup2 = self.fparam(style, 2, 14);
         let sup3 = self.fparam(style, 2, 15);
@@ -3752,7 +3804,11 @@ impl Engine {
             if shift_up < clr {
                 shift_up = clr;
             }
-            clr = bd + x / 4;
+            clr = if xe_ot {
+                bd + self.xe_const(xe_f0, crate::math_xetex::k::SUPERSCRIPT_BOTTOM_MIN)
+            } else {
+                bd + x / 4
+            };
             if shift_up < clr {
                 shift_up = clr;
             }
@@ -3765,7 +3821,11 @@ impl Engine {
                 if shift_down < sub1 {
                     shift_down = sub1;
                 }
-                let clr = bh - (x * 4) / 5;
+                let clr = if xe_ot {
+                    bh - self.xe_const(xe_f0, crate::math_xetex::k::SUBSCRIPT_TOP_MAX)
+                } else {
+                    bh - (x * 4) / 5
+                };
                 if shift_down < clr {
                     shift_down = clr;
                 }
@@ -3780,13 +3840,38 @@ impl Engine {
             if shift_down < sub2 {
                 shift_down = sub2;
             }
-            let mut clr = rt * 4 - ((shift_up - sup_d) - (sub_h - shift_down));
+            let mut clr = if xe_ot {
+                self.xe_const(xe_f0, crate::math_xetex::k::SUB_SUPERSCRIPT_GAP_MIN)
+            } else {
+                rt * 4
+            } - ((shift_up - sup_d) - (sub_h - shift_down));
             if clr > 0 {
                 shift_down += clr;
-                clr = (x * 4) / 5 - (shift_up - sup_d);
+                clr = if xe_ot {
+                    self.xe_const(xe_f0, crate::math_xetex::k::SUPERSCRIPT_BOTTOM_MAX_WITH_SUBSCRIPT)
+                } else {
+                    (x * 4) / 5
+                } - (shift_up - sup_d);
                 if clr > 0 {
                     shift_up += clr;
                     shift_down -= clr;
+                }
+            }
+        }
+
+        // xetex.web "Attach subscript/superscript OpenType math kerning"
+        if xe_ot {
+            if let Some((pf, pg)) = xe_glyph {
+                if let Some(sb) = sub {
+                    xe_sub_kern = self.xe_script_kern(pf, pg, sb, style, true, shift_down);
+                } else if let Some(sp) = sup {
+                    let k = self.xe_script_kern(pf, pg, sp, style, false, shift_up);
+                    if k != 0 {
+                        out.push(Node::Kern(k, self.eqtb.cur_attr));
+                    }
+                }
+                if xe_sub_kern != 0 {
+                    out.push(Node::Kern(xe_sub_kern, self.eqtb.cur_attr));
                 }
             }
         }
@@ -3798,7 +3883,7 @@ impl Engine {
                 let k = (shift_up - sup_d) - (sub_h - shift_down);
                 let mut sbs = bs;
                 if let Node::Box { shift, .. } = &mut sbs {
-                    *shift = delta; // superscript offset (tex.web §746)
+                    *shift = delta - xe_sub_kern; // superscript offset (tex.web §746)
                 }
                 let mut vlist: NodeList = vec![sbs];
                 vlist.push(Node::Kern(k, self.eqtb.cur_attr));
@@ -3951,6 +4036,9 @@ impl Engine {
     /// ss_glue (`0pt plus 1fil minus 1fil`) on each side, exactly like
     /// rebox's `new_glue(ss_glue)` wrapping and exact-width hpack.
     fn center_to_w(&self, b: Node, w: i32) -> Node {
+        if self.engine_kind == crate::engine::EngineKind::XeTeX {
+            return self.xe_rebox(b, w);
+        }
         if self.box_w(&b) == w {
             return b;
         }
@@ -4021,6 +4109,10 @@ impl Engine {
         } else {
             self.fparam(style, 2, 12) // denom2
         };
+        // xetex.web: `is_new_mathfont(cur_f)` after the numerator and denominator
+        let xe_ot = self.engine_kind == crate::engine::EngineKind::XeTeX && self.xe_cur_f_is_math();
+        let xe_f0 = self.xe_math.cur_f.get();
+        let xe_mode = self.engine_kind == crate::engine::EngineKind::XeTeX;
         let vlist: NodeList;
         if r == 0 {
             // \atop: symmetric minimum clearance around the numerator/denominator
@@ -4032,9 +4124,19 @@ impl Engine {
                 sd = v;
             }
             let rt = self.default_rule_thickness(style);
-            let clr = self
-                .umath_param(crate::luatex::MATH_PARAM_STACK_VGAP, style)
-                .unwrap_or(if display { rt * 7 } else { rt * 3 });
+            let clr = if xe_ot {
+                self.xe_const(
+                    xe_f0,
+                    if display {
+                        crate::math_xetex::k::STACK_DISPLAY_STYLE_GAP_MIN
+                    } else {
+                        crate::math_xetex::k::STACK_GAP_MIN
+                    },
+                )
+            } else {
+                self.umath_param(crate::luatex::MATH_PARAM_STACK_VGAP, style)
+                    .unwrap_or(if display { rt * 7 } else { rt * 3 })
+            };
             let delta = half_i(clr - ((su - nd) - (dh - sd)));
             if delta > 0 {
                 su += delta;
@@ -4045,12 +4147,27 @@ impl Engine {
             // tex.web §746: the clearance is measured from the axis with the
             // fraction's OWN rule thickness (3x in display style)
             let dr = half_i(r);
-            let clr = if display { 3 * r } else { r };
-            let d1 = clr - ((su - nd) - (axis + dr));
+            let (clr_n, clr_d) = if xe_ot {
+                use crate::math_xetex::k;
+                (
+                    self.xe_const(
+                        xe_f0,
+                        if display { k::FRACTION_NUM_DISPLAY_STYLE_GAP_MIN } else { k::FRACTION_NUMERATOR_GAP_MIN },
+                    ),
+                    self.xe_const(
+                        xe_f0,
+                        if display { k::FRACTION_DENOM_DISPLAY_STYLE_GAP_MIN } else { k::FRACTION_DENOMINATOR_GAP_MIN },
+                    ),
+                )
+            } else {
+                let clr = if display { 3 * r } else { r };
+                (clr, clr)
+            };
+            let d1 = clr_n - ((su - nd) - (axis + dr));
             if d1 > 0 {
                 su += d1;
             }
-            let d2 = clr - ((axis - dr) - (dh - sd));
+            let d2 = clr_d - ((axis - dr) - (dh - sd));
             if d2 > 0 {
                 sd += d2;
             }
@@ -4058,7 +4175,8 @@ impl Engine {
                 num_c,
                 Node::Kern((su - nd) - (axis + dr), self.eqtb.cur_attr),
                 Node::Rule {
-                    width: w,
+                    // xetex.web fraction_rule: a running-width rule
+                    width: if xe_mode { crate::build::RULE_FILL } else { w },
                     height: r,
                     depth: 0, subtype: crate::boxes::RULE_NORMAL, index: 0, attr: self.eqtb.cur_attr,
                 },
@@ -4096,6 +4214,10 @@ impl Engine {
         } else {
             out.push(self.null_delimiter_box(style));
         }
+        if xe_mode {
+            // new_hlist(q) := hpack(x, natural)
+            return vec![hpack(out, None, HBOX, &self.eqtb).node];
+        }
         out
     }
 
@@ -4113,9 +4235,25 @@ impl Engine {
         let body_nodes = self.mlist_to_hlist_pen(body, style | 1, self.math_penalties.get());
         let x = hpack(body_nodes, None, HBOX, &self.eqtb).node;
         let (xw, xh, xd) = box_dims(&x);
-        let rt = self.default_rule_thickness(style);
+        // xetex.web make_radical: `f` is the small family font at this size
+        let xe_f = self.xe_fam_fnt(style, delim.small_fam);
+        let xe_ot = self.engine_kind == crate::engine::EngineKind::XeTeX && self.xe_is_new_mathfont(xe_f);
+        let rt = if xe_ot {
+            self.xe_const(xe_f, crate::math_xetex::k::RADICAL_RULE_THICKNESS)
+        } else {
+            self.default_rule_thickness(style)
+        };
         let x_h = self.math_x_height(style);
-        let mut clr = if style < 2 {
+        let mut clr = if xe_ot {
+            self.xe_const(
+                xe_f,
+                if style < 2 {
+                    crate::math_xetex::k::RADICAL_DISPLAY_STYLE_VERTICAL_GAP
+                } else {
+                    crate::math_xetex::k::RADICAL_VERTICAL_GAP
+                },
+            )
+        } else if style < 2 {
             rt + (x_h / 4).abs()
         } else {
             rt + rt / 4
@@ -4127,16 +4265,24 @@ impl Engine {
         } else {
             hpack(d_nodes, None, HBOX, &self.eqtb).node
         };
+        if xe_ot {
+            // the radical sign is drawn as a rule-thin box hanging down
+            if let Node::Box { h, d, .. } = &mut d_box {
+                *d = *h + *d - rt;
+                *h = rt;
+            }
+        }
         let (_, dh, dd) = box_dims(&d_box);
         let delta = dd - (xh + xd + clr);
         if delta > 0 {
             clr += half_i(delta);
         }
         // overbar(b, k=clr, t=surd height): [kern(t), rule(t), kern(clr), body]
+        let xe_mode = self.engine_kind == crate::engine::EngineKind::XeTeX;
         let vlist = vec![
             Node::Kern(dh, self.eqtb.cur_attr),
             Node::Rule {
-                width: xw,
+                width: if xe_mode { crate::build::RULE_FILL } else { xw },
                 height: dh,
                 depth: 0, subtype: crate::boxes::RULE_NORMAL, index: 0, attr: self.eqtb.cur_attr,
             },
@@ -4150,21 +4296,42 @@ impl Engine {
         let mut out = NodeList::new();
         out.push(d_box);
         out.push(v);
+        if xe_mode {
+            // info(nucleus(q)) := hpack(y, natural)
+            return vec![hpack(out, None, HBOX, &self.eqtb).node];
+        }
         out
     }
 
     fn make_accent(
         &mut self,
-        accent: (u8, u8),
+        accent: (u8, u32),
+        xe_subtype: u8,
         body: &[Node],
         style: GStyle,
         sup: Option<&[Node]>,
         sub: Option<&[Node]>,
         origin: &MathDiagnosticOrigin,
     ) -> NodeList {
-        let (afam, mut ac) = accent;
+        let (afam, ac32) = accent;
         let has_scripts = sup.is_some() || sub.is_some();
         let afid = self.eqtb.style_fonts[font_size(style)][afam as usize];
+        if self.engine_kind == crate::engine::EngineKind::XeTeX {
+            // xetex.web make_math_accent: `fetch(accent_chr(q))`
+            self.xe_note_fetch(afid);
+            if self.xe_ot(afid).is_some() {
+                return self.xe_make_accent(afid, ac32, xe_subtype, body, style, sup, sub);
+            }
+            if ac32 > 255 {
+                self.xe_missing_math_char(afid, ac32, origin);
+                if has_scripts {
+                    return self.make_scripts(body, sup, sub, style);
+                }
+                let body_nodes = self.mlist_to_hlist_pen(body, style | 1, self.math_penalties.get());
+                return vec![hpack(body_nodes, None, HBOX, &self.eqtb).node];
+            }
+        }
+        let mut ac = ac32 as u8;
         if !self.math_font_has_character_or_warn(afid, ac, origin) {
             // TeX keeps the nucleus (and any scripts) when the accent font is
             // unavailable.
@@ -4368,13 +4535,16 @@ impl Engine {
         if d.is_null() {
             return vec![self.null_delimiter_box(style)];
         }
-        let (sf, sc, lf, lc) = (d.small_fam, d.small_char as u8, d.large_fam, d.large_char as u8);
+        let xetex = self.engine_kind == crate::engine::EngineKind::XeTeX;
+        // tex.web delimiters are 8-bit; XeTeX keeps the full character code
+        let byte_code = |c: u32| if xetex { c } else { u32::from(c as u8) };
+        let (sf, sc, lf, lc) = (d.small_fam, byte_code(d.small_char), d.large_fam, byte_code(d.large_char));
         let cur_size = font_size(style);
-        let mut best: Option<(usize, u8, u8)> = None;
-        let mut found: Option<(usize, u8, u8)> = None;
+        let mut best: Option<VarCand> = None;
+        let mut found: Option<VarCand> = None;
         let mut first_missing: Option<(FontId, u8)> = None;
         let mut w = 0i32;
-        'parts: for (fam, first) in [(sf as u8, sc as u8), (lf as u8, lc as u8)] {
+        'parts: for (fam, first) in [(sf, sc), (lf, lc)] {
             if fam == 0 && first == 0 {
                 continue;
             }
@@ -4384,10 +4554,44 @@ impl Engine {
                 // through font_size() and map script sizes back onto the
                 // text/script fonts (style 2/4), not the size sz font.
                 let fid = self.eqtb.style_fonts[sz][fam as usize];
+                if xetex {
+                    if let Some(ot) = self.xe_ot(fid) {
+                        // xetex.web: variants of the glyph, then its assembly
+                        let x = ot.glyph_of_char(first);
+                        w = 0;
+                        best = Some(VarCand::Ot { fid, gid: x, parts: None });
+                        let mut n = 0usize;
+                        loop {
+                            let (y, u) = ot.variant(x, n, false);
+                            if u > w {
+                                w = u;
+                                best = Some(VarCand::Ot { fid, gid: y, parts: None });
+                                if u >= v {
+                                    found = best.clone();
+                                    break 'parts;
+                                }
+                            }
+                            n += 1;
+                            if u < 0 || n > 4096 {
+                                break;
+                            }
+                        }
+                        if let Some(parts) = ot.assembly(x, false) {
+                            found = Some(VarCand::Ot { fid, gid: x, parts: Some(parts) });
+                            break 'parts;
+                        }
+                        continue;
+                    }
+                }
                 let Some((_, f)) = self.fam_font_idx(sz, fam) else {
-                    first_missing.get_or_insert((fid, first));
+                    first_missing.get_or_insert((fid, first as u8));
                     continue;
                 };
+                if first > 255 {
+                    first_missing.get_or_insert((fid, first as u8));
+                    continue;
+                }
+                let first = first as u8;
                 let mut c = first;
                 let mut steps = 0usize;
                 loop {
@@ -4403,15 +4607,15 @@ impl Engine {
                         break;
                     };
                     if ci.tag == TAG_EXT {
-                        found = Some((sz, fam, c));
+                        found = Some(VarCand::Tfm(sz, fam, c));
                         break 'parts;
                     }
                     let u = f.char_height(c) + f.char_depth(c);
                     if u > w {
-                        best = Some((sz, fam, c));
+                        best = Some(VarCand::Tfm(sz, fam, c));
                         w = u;
                         if u >= v {
-                            found = Some((sz, fam, c));
+                            found = best.clone();
                             break 'parts;
                         }
                     }
@@ -4428,7 +4632,7 @@ impl Engine {
             }
         }
         match found.or(best) {
-            Some((sz, fam, c)) => {
+            Some(VarCand::Tfm(sz, fam, c)) => {
                 let f = self
                     .eqtb
                     .fonts
@@ -4445,6 +4649,7 @@ impl Engine {
                     None => vec![self.delim_char_box(sz, fam, c, style)],
                 }
             }
+            Some(VarCand::Ot { fid, gid, parts }) => vec![self.xe_delimiter_box(fid, gid, parts, v, style)],
             None => {
                 if let Some((font, character)) = first_missing {
                     let _ = self.math_font_has_character_or_warn(font, character, origin);
@@ -4546,17 +4751,26 @@ impl Engine {
     }
 }
 
+/// A delimiter variant candidate of `var_delimiter`
+#[derive(Clone)]
+enum VarCand {
+    /// TFM character `c` of family `fam` at font size index `sz`
+    Tfm(usize, u8, u8),
+    /// glyph `gid` (or the assembly `parts` built around it) of a native font
+    Ot { fid: FontId, gid: u16, parts: Option<Vec<crate::math_xetex::Part>> },
+}
+
 // ---------- small local helpers ----------
 
 /// tex.web `half` on a scaled value (see `half_sp`)
 #[inline]
-fn half_i(x: i32) -> i32 {
+pub(crate) fn half_i(x: i32) -> i32 {
     half_sp(i64::from(x)) as i32
 }
 
 /// (width, height, depth) of a box
 #[inline]
-fn box_dims(n: &Node) -> (i32, i32, i32) {
+pub(crate) fn box_dims(n: &Node) -> (i32, i32, i32) {
     match n {
         Node::Box { w, h, d, .. } => (*w, *h, *d),
         _ => (0, 0, 0),

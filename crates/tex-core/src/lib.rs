@@ -78,6 +78,7 @@ pub mod math;
 mod math_lua;
 mod lua_math_conv;
 pub mod math_otf;
+pub mod math_xetex;
 pub mod math_lmlist;
 pub mod native_font;
 pub mod native_layout;

@@ -737,8 +737,14 @@ impl<'a> BoxDisplay<'a> {
             }
             Node::NativeGlyphRun { run, .. } => {
                 self.print_font_identifier(run.font);
-                self.out.push(b' ');
-                self.print(&run.text);
+                if run.glyphs.len() == 1 && run.glyphs[0].cluster_start == run.glyphs[0].cluster_end {
+                    // xetex.web glyph_node: `\font glyph#n`
+                    self.print(" glyph#");
+                    self.print(&run.glyphs[0].glyph_id.to_string());
+                } else {
+                    self.out.push(b' ');
+                    self.print(&run.text);
+                }
             }
             // §690-§698: the cases of show_box that arise in mlists only
             Node::Style(s, _) => self.print_style(*s),

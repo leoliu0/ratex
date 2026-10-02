@@ -2481,7 +2481,10 @@ impl<'a> RenderCtx<'a> {
                 j += 1;
             }
             let cluster_glyph_count = j - idx;
-            let extraction = if (c_start as usize) < run.text.len()
+            let extraction = if c_start == c_end && run.glyphs.len() == 1 {
+                // a single-glyph node (XeTeX `glyph_node`) reports its own text
+                &run.text[..]
+            } else if (c_start as usize) < run.text.len()
                 && (c_end as usize) <= run.text.len()
                 && c_start <= c_end
             {

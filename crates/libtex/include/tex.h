@@ -11,7 +11,7 @@ typedef struct TexResult tex_result;
 typedef struct { const uint8_t *data; size_t len; } tex_bytes;
 enum tex_status {
     TEX_SUCCESS = 0, TEX_COMPILATION_ERROR = 1, TEX_INVALID_INPUT = 2,
-    TEX_NO_CONVERGENCE = 3, TEX_INTERNAL_ERROR = 4, TEX_UNSUPPORTED_ENGINE = 5
+    TEX_NO_CONVERGENCE = 3, TEX_INTERNAL_ERROR = 4
 };
 
 /* Paths are UTF-8 relative project paths with / separators. Inputs are copied.

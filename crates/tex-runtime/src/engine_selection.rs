@@ -43,12 +43,14 @@ pub fn detect_program_directive(source: &str) -> Option<EngineKind> {
 }
 
 /// Packages that only work under LuaTeX.
-///
-/// texmk runs documents needing a Unicode engine (fontspec, xeCJK, ctex,
-/// unicode-math, polyglossia) as `ratex xelatex`, which is the pdfTeX engine
-/// and format with Ratex's native-font packages. The library's PdfTeX engine
-/// is that same engine and format, so those packages need no rule here.
 const LUATEX_PACKAGES: &[&str] = &["luatexja", "luacode", "luatextra"];
+
+/// Packages and classes which TeX Live compiles only with a Unicode engine
+/// (XeTeX or LuaTeX). A document that requires one and no LuaTeX-only package
+/// runs under XeTeX, as `texmk` runs it as `xelatex` (keep the lists in sync
+/// with `UNICODE_ENGINE_PACKAGES`/`UNICODE_ENGINE_CLASSES` in `texmk.rs`).
+const UNICODE_ENGINE_PACKAGES: &[&str] = &["ctex", "xeCJK", "fontspec", "unicode-math", "polyglossia"];
+const UNICODE_ENGINE_CLASSES: &[&str] = &["ctexart", "ctexbook", "ctexrep", "ctexbeamer"];
 
 /// The text of a line before its first unescaped `%`.
 fn strip_comment(line: &str) -> &str {
@@ -91,8 +93,8 @@ fn command_arguments<'a>(text: &'a str, command: &str) -> Vec<&'a str> {
     out
 }
 
-/// Inspect the preamble for packages and primitives that require LuaTeX,
-/// after any explicit program directive.
+/// Inspect the preamble for packages and primitives that require LuaTeX or a
+/// Unicode engine, after any explicit program directive.
 pub fn detect_required_engine_from_source(source: &str) -> Option<EngineKind> {
     if let Some(engine) = detect_program_directive(source) {
         return Some(engine);
@@ -107,15 +109,25 @@ pub fn detect_required_engine_from_source(source: &str) -> Option<EngineKind> {
         preamble.push_str(code);
         preamble.push('\n');
     }
-    let lua_package = ["\\usepackage", "\\RequirePackage"]
+    let packages = |names: &[&str]| {
+        ["\\usepackage", "\\RequirePackage"]
+            .iter()
+            .flat_map(|cmd| command_arguments(&preamble, cmd))
+            .any(|package| names.contains(&package))
+    };
+    if packages(LUATEX_PACKAGES) || preamble.contains("\\directlua") {
+        return Some(EngineKind::LuaTeX);
+    }
+    let unicode_class = command_arguments(&preamble, "\\documentclass")
         .iter()
-        .flat_map(|cmd| command_arguments(&preamble, cmd))
-        .any(|package| LUATEX_PACKAGES.contains(&package));
-    (lua_package || preamble.contains("\\directlua")).then_some(EngineKind::LuaTeX)
+        .any(|class| UNICODE_ENGINE_CLASSES.contains(class));
+    (unicode_class || packages(UNICODE_ENGINE_PACKAGES)).then_some(EngineKind::XeTeX)
 }
 
 /// Inspect a failed pass's log and diagnostics for an engine requirement the
-/// library can meet by switching to LuaTeX (it cannot run XeTeX).
+/// library can meet by switching engines: a package that names XeTeX (alone
+/// or beside LuaTeX) moves a pdfTeX run to XeTeX, one that needs LuaTeX moves
+/// a pdfTeX or XeTeX run to LuaTeX. A LuaTeX run never switches.
 pub fn detect_engine_switch_need(
     current: EngineKind,
     log: &str,
@@ -125,17 +137,20 @@ pub fn detect_engine_switch_need(
         return None;
     }
     let combined = format!("{log}\n{diagnostics}").to_ascii_lowercase();
-    [
-        "xetex or luatex is required",
-        "you must use xelatex or lualatex",
-        "cannot run with pdflatex",
-        "luatex is required",
-        "requires luatex",
-        "directlua",
-    ]
-    .iter()
-    .any(|signal| combined.contains(signal))
-    .then_some(EngineKind::LuaTeX)
+    let mentions = |signals: &[&str]| signals.iter().any(|signal| combined.contains(signal));
+    if current == EngineKind::PdfTeX
+        && mentions(&[
+            "xetex or luatex is required",
+            "requires either xetex or luatex",
+            "you must use xelatex or lualatex",
+            "cannot run with pdflatex",
+            "requires xetex",
+            "xetex is required",
+        ])
+    {
+        return Some(EngineKind::XeTeX);
+    }
+    mentions(&["luatex is required", "requires luatex", "directlua"]).then_some(EngineKind::LuaTeX)
 }
 
 #[cfg(test)]
@@ -156,15 +171,23 @@ mod tests {
     }
 
     #[test]
-    fn unicode_engine_packages_run_on_the_pdftex_engine_like_ratex_xelatex() {
+    fn unicode_engine_packages_and_classes_select_xetex_like_texmk() {
         for pre in [
             r"\documentclass{ctexart}",
-            r"\documentclass{article}\usepackage{fontspec}",
+            r"\documentclass[a4paper]{ctexbook}",
+            r"\documentclass{article}\usepackage{ctex}",
+            r"\documentclass{article}\usepackage[no-math]{fontspec}",
             r"\documentclass{article}\usepackage{xeCJK}",
-            r"\documentclass{article}\usepackage{unicode-math}",
+            r"\documentclass{article}\usepackage{amsmath,unicode-math}",
+            r"\documentclass{article}\RequirePackage{polyglossia}",
         ] {
-            assert_eq!(detect(&format!("{pre}\\begin{{document}}x\\end{{document}}")), None, "{pre}");
+            assert_eq!(detect(&format!("{pre}\\begin{{document}}x\\end{{document}}")), Some(EngineKind::XeTeX), "{pre}");
         }
+        // a LuaTeX-only package wins over a package both Unicode engines run
+        assert_eq!(
+            detect("\\documentclass{article}\\usepackage{fontspec,luacode}\\begin{document}\\end{document}"),
+            Some(EngineKind::LuaTeX)
+        );
     }
 
     #[test]
@@ -174,6 +197,9 @@ mod tests {
         assert_eq!(detect("\\documentclass{article}\n\\begin{document}\\usepackage{luacode}\\end{document}"), None);
         assert_eq!(detect("\\documentclass{article}\\usepackage{luacodex}\\usepackage@x{luacode}\\begin{document}\\end{document}"), None);
         assert_eq!(detect("\\documentclass{article}\\usepackage{amsmath}\\begin{document}100\\% luacode\\end{document}"), None);
+        assert_eq!(detect("\\documentclass{article}\n% \\usepackage{fontspec}\n\\begin{document}\\end{document}"), None);
+        assert_eq!(detect("\\documentclass{article}\\usepackage{fontspecx,ctex-xecjk}\\usepackage@x{fontspec}\\begin{document}\\end{document}"), None);
+        assert_eq!(detect("\\documentclass{ctexartx}\\begin{document}\\usepackage{xeCJK}\\end{document}"), None);
     }
 
     #[test]
@@ -183,11 +209,24 @@ mod tests {
     }
 
     #[test]
-    fn engine_switches_only_ever_target_luatex() {
-        let switch = |log: &str| detect_engine_switch_need(EngineKind::PdfTeX, log, "");
-        assert_eq!(switch("! Package foo Error: XeTeX or LuaTeX is required"), Some(EngineKind::LuaTeX));
-        assert_eq!(switch("Package bar Error: this requires XeTeX"), None);
-        assert_eq!(switch("! Undefined control sequence. \\directlua"), Some(EngineKind::LuaTeX));
+    fn engine_switches_follow_the_engine_a_package_names() {
+        let from_pdftex = |log: &str| detect_engine_switch_need(EngineKind::PdfTeX, log, "");
+        // TeX Live's fontspec error under pdflatex names both Unicode engines; XeTeX is texmk's choice.
+        assert_eq!(
+            from_pdftex("! Package fontspec Error: The fontspec package requires either XeTeX or LuaTeX."),
+            Some(EngineKind::XeTeX)
+        );
+        assert_eq!(from_pdftex("! Package foo Error: XeTeX or LuaTeX is required"), Some(EngineKind::XeTeX));
+        assert_eq!(from_pdftex("Package bar Error: this requires XeTeX"), Some(EngineKind::XeTeX));
+        assert_eq!(from_pdftex("! Package baz Error: LuaTeX is required"), Some(EngineKind::LuaTeX));
+        assert_eq!(from_pdftex("! Undefined control sequence. \\directlua"), Some(EngineKind::LuaTeX));
+        assert_eq!(from_pdftex("! Undefined control sequence. \\foo"), None);
+        // an XeTeX run only moves on to LuaTeX; a LuaTeX run never switches
+        assert_eq!(
+            detect_engine_switch_need(EngineKind::XeTeX, "! Package foo Error: LuaTeX is required", ""),
+            Some(EngineKind::LuaTeX)
+        );
+        assert_eq!(detect_engine_switch_need(EngineKind::XeTeX, "this requires XeTeX", ""), None);
         assert_eq!(detect_engine_switch_need(EngineKind::LuaTeX, "luatex is required", ""), None);
     }
 }

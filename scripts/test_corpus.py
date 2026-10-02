@@ -377,7 +377,7 @@ def classify_failure_kind(run: dict, pdf_stat: dict, errors: list[str],
                           log_text: str = "",
                           font_errors: list[str] | None = None) -> str:
     """Classify failure kind distinctly:
-    - unsupported-engine: required engine feature/engine unavailable (luacode, luatexja, ptex, fontspec on pdflatex, opentype math)
+    - unsupported-engine: required engine feature/engine unavailable (luacode, luatexja, ptex, fontspec on pdflatex)
     - missing-asset: missing file/font/package (.sty, .cls, .ttf, .pfb, .tfm, etc.)
     - compilation: general syntax/macro error
     - extraction: PDF valid but text extraction/layer failed
@@ -418,8 +418,6 @@ def classify_failure_kind(run: dict, pdf_stat: dict, errors: list[str],
         "requires LuaTeX", "requires either XeTeX or LuaTeX", "requires XeLaTeX",
         "cannot run in pdfTeX", "luacode", "luatexja.sty not found",
         "Package fontspec Error: The fontspec package requires",
-        "Ratex does not implement OpenType MATH",
-        "Use classic LaTeX math fonts, or compile with a full XeTeX or LuaTeX engine",
         "This package requires LuaTeX", "XeTeX is required",
         "LaTeX Error: This package requires LuaTeX",
     )):

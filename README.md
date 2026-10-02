@@ -4,10 +4,9 @@
 [![Release](https://github.com/leoliu0/ratex/actions/workflows/release.yml/badge.svg)](https://github.com/leoliu0/ratex/actions/workflows/release.yml)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
 
-**ratex** is a self-contained TeX toolchain written in Rust: a
-pdfTeX-compatible engine with XeTeX- and LuaTeX-style modes, a latexmk-style
-build driver, BibTeX, and an embedded TeX package archive, shipped as one
-executable named `ratex`.
+**ratex** is a self-contained TeX toolchain written in Rust: pdfTeX-, XeTeX-
+and LuaTeX-compatible engines, a latexmk-style build driver, BibTeX, and an
+embedded TeX package archive, shipped as one executable named `ratex`.
 
 ## Verification
 
@@ -131,8 +130,11 @@ Other options (`ratex --help` prints the full list): `-aux-directory DIR`,
 `--cache-directory DIR`, `-jobname NAME`, `--keep-intermediates`/`-k`,
 `--keep-logs`, `--optimize-pdf-size`, `-interaction=MODE` (default
 `nonstopmode`), `-halt-on-error`, `--verbose`/`-V`, and the engine selectors
-`-pdf`, `-xelatex`, `-lualatex`. Without a selector the pdfLaTeX-compatible
-mode is used. Other options starting with `-` are passed to the engine.
+`-pdf`, `-xelatex`, `-lualatex`. Without a selector, a document whose preamble
+loads `fontspec`, `xeCJK`, `ctex` (or a `ctex` class), `unicode-math`, or
+`polyglossia` runs as XeLaTeX (a Unicode engine is required, as in TeX Live);
+any other document runs as pdfLaTeX. Other options starting with `-` are
+passed to the engine.
 
 Exit status: 0 when the build converged, 1 on an engine or BibTeX failure or
 no convergence, 2 on a usage error.
@@ -264,8 +266,9 @@ Harano Aji, Arphic Chinese, Korean UHC/Un-fonts and Nanum, `stmaryrd`, and
 Exact package versions, hashes, and resource paths are in
 [`packages.lock.json`](crates/tex-kpse/assets/packages.lock.json).
 
-Ratex's `fontspec` and `xeCJK` support selects real native fonts, also in the
-default pdfLaTeX-compatible mode:
+Documents that use `fontspec`, `xeCJK`, `ctex`, `unicode-math`, or `polyglossia`
+run on the XeTeX engine (see *Engine modes and limits* below) with the
+upstream TeX Live packages, so native fonts behave as in TeX Live's `xelatex`:
 
 ```latex
 \documentclass{article}
@@ -278,20 +281,23 @@ Roman text, \textbf{bold}, \textit{italic}, and 日本語のテスト。
 \end{document}
 ```
 
-Supported commands include `\setmainfont`, `\setsansfont`, `\setmonofont`,
-`\fontspec`, `\newfontfamily`, `\newfontface`, `\defaultfontfeatures`,
-`\addfontfeatures`, the corresponding CJK family selectors, and NFSS
-family/style/size switching. Selection options include `Path`, `Extension`,
-explicit style files, `FontIndex`, numeric `Scale`, `Script`, `Language`,
-ligatures, kerning, number features, `RawFeature`, and variation coordinates.
-Face options (`UprightFont`, `BoldFont`, `ItalicFont`, `BoldItalicFont`,
-`SlantedFont`, `BoldSlantedFont`, `SmallCapsFont`, including the `*` shorthand)
-select faces as in fontspec. When a family has no face for a requested shape
-(IPAex fonts, for example, have no bold or italic), Ratex follows fontspec under
-XeTeX: it uses the nearest available shape and prints a font-shape warning.
-Missing font files or families, unsupported features, missing glyphs, and
-forbidden embedding remain errors.
-Use project-local font files or bundled names; Ratex does not search OS font stores.
+The font syntax of XeTeX (`"Family/B:feature"`, `"[file.otf]:+liga"`,
+`mapping=tex-text`, `color=`, `embolden=`, ...) and fontspec's whole interface
+(`\setmainfont`, `\newfontfamily`, `\setCJKmainfont`, `Path`, `Extension`,
+`BoldFont`, `FontIndex`, `Scale`, OpenType features, ...) are the upstream
+implementations. Their diagnostics are TeX Live's as well: a missing font ends
+the run with fontspec's `The font "..." cannot be found` error, a missing
+shape produces `Font shape ... undefined`, and a character that a font lacks
+is reported as `Missing character: There is no ...`.
+Fonts are hermetic: a font is found among the project's files, the bundled
+font archive (by file name, or by family, PostScript, or full name from the
+bundled font index), and nothing else. Ratex does not search OS font stores,
+so a document that selects a system font by name (`Times New Roman`) fails
+where TeX Live with that font installed succeeds; ship the font file with the
+project and select it with `Path=./`. The bundled OpenType fonts include
+Latin Modern (text and math), TeX Gyre (text and math), STIX Two, XITS,
+Libertinus, Harano Aji, IPAex, Fandol (the default fonts of `ctex`), and
+the other families listed in the lock file.
 
 Mapped TrueType, CFF OpenType, and collection faces are embedded as CID fonts
 with glyph addressing and Unicode extraction maps. Subsets are shared across
@@ -300,14 +306,19 @@ Font licenses, notices, and required corresponding sources ship under
 `share/tex-suite/texmf/doc/fonts`; the engine's MIT/Apache license does not
 replace those licenses.
 
-**Engine modes and limits:** `-xelatex` runs Ratex's XeTeX-compatible mode with
-the embedded XeLaTeX format; it is not the XeTeX program and says so on the
-terminal. `-lualatex` runs the LuaTeX-compatible mode with the embedded
-LuaLaTeX format and an in-tree Lua VM, so `\directlua` works. `unicode-math`
-(OpenType math), `luatexja`, and `ctex` font sets do not currently compile in
-any mode; use classic LaTeX mathematics and `CJKutf8` or the native font
-selectors above. Native fonts must be selected after loading a format; dumping
-native font state is rejected rather than silently losing it.
+**Engine modes and limits:** `-xelatex` (or a link named `xelatex`) runs the
+XeTeX engine, version 3.141592653-2.6-0.999998 as in TeX Live 2026, with the
+embedded XeLaTeX format built from TeX Live's `xelatex.ini`; the terminal
+banner reads `This is XeTeX, Version 3.141592653-2.6-0.999998 (Ratex x.y.z)`.
+Output goes to the PDF directly, without an XDV file: `\special`s are
+interpreted as `xdvipdfmx` does, pages default to A4 unless `\pdfpagewidth`
+and `\pdfpageheight` are set, and the PDF carries xdvipdfmx's producer data.
+Shell escape (`\write18`) is never run. pdfLaTeX has no native fonts: loading
+`fontspec` there fails with fontspec's own engine error, as in TeX Live.
+`-lualatex` runs the LuaTeX-compatible mode with the embedded LuaLaTeX format
+and an in-tree Lua VM, so `\directlua` works. `luatexja` and a few LuaTeX-only
+packages do not compile in any mode. Native fonts are loaded after the format
+is read, as in XeTeX; dumping native font state is rejected.
 
 The Lua VM (`tex-lua`) is an ordinary Rust library (`rlib`). Native Lua C
 modules loaded with `require`/`package.loadlib` resolve the `lua_*`/`luaL_*`

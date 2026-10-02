@@ -32,8 +32,8 @@ Typesetting algorithms are documented in the module comments of
 ## Executables and dispatch
 
 `crates/tex-cli` defines these Cargo binaries: `ratex`, `texmk`, `pdflatex`,
-`xelatex`, `lualatex`, `tex-bibtex`, and `latexdiff`. Releases ship only
-`ratex`.
+`tex-bibtex`, and `latexdiff`; the `xelatex` and `lualatex` personalities exist
+only as links to `ratex` (or `texmk`). Releases ship only `ratex`.
 
 - `ratex` (`src/bin/ratex.rs`) is `texmk::main`. It decides what to run in this
   order:
@@ -51,9 +51,13 @@ Typesetting algorithms are documented in the module comments of
   **not** set `TEX_RS_HERMETIC`, so it also searches `TEXINPUTS`, `TEXMFHOME`,
   executable-relative `texmf` trees, and system TeX trees. Use `ratex` through
   a link named `pdflatex` to reproduce shipped behavior.
-- The `xelatex` and `lualatex` Cargo binaries are the small launcher in
-  `src/bin/launcher.rs`: it re-executes the sibling `texmk` executable with
-  `TEXMK_INTERNAL_MODE` and `TEX_SUITE_PROGRAM_NAME` set.
+- The engine kind follows the program name: `pdflatex` runs pdfTeX, `xelatex`
+  runs XeTeX, `lualatex` runs LuaTeX. Each program loads its own format
+  (`default.fmt.zst`, `xelatex.fmt.zst`, `lualatex.fmt.zst` under
+  `crates/tex-cli/assets`, rebuilt by `scripts/build_formats.py` from TeX
+  Live's `pdflatex.ini`, `xelatex.ini`, `lualatex.ini`), unless `-fmt` names
+  another dump, which must have been made by the same engine. An empty
+  asset boots the format from the sources on every run.
 - `crates/tex-kpse` has a `tex-index OUTPUT_DIRECTORY TEXMF_ROOT...` binary
   that prebuilds filename indexes for `ls-R` databases of system TeX trees
   (non-hermetic use only). The engine looks for indexes in `TEX_INDEX_DIR`, or
@@ -67,8 +71,9 @@ to inject tools.
 ## Build driver algorithm (`src/bin/texmk.rs`)
 
 1. Parse options, set `TEX_RS_HERMETIC=1`, convert EPS figures in the source
-   directory, and select the engine (`-pdf`/`-xelatex`/`-lualatex`, otherwise
-   pdfLaTeX). Locate the per-job cache directory and take its lock.
+   directory, and select the engine (`-pdf`/`-xelatex`/`-lualatex`; otherwise
+   `xelatex` when the preamble loads `fontspec`, `xeCJK`, `ctex`, a `ctex`
+   class, `unicode-math`, or `polyglossia`, else pdfLaTeX). Locate the per-job cache directory and take its lock.
 2. Each pass (at most `MAX_PASSES = 5`): snapshot every file in the auxiliary
    directory (size and hash), run the engine child with
    `-interaction=nonstopmode` unless the user chose a mode, and stream its

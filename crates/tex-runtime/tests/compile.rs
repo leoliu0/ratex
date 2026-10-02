@@ -250,6 +250,9 @@ Regular Roman text. \textbf{Bold Roman glyphs.} \textit{Italic Roman shapes.}
 \end{document}",
     );
     let r = s.compile("main.tex");
+    // Expectations of this and the following tests come from TeX Live 2026
+    // `xelatex` on the same documents; fontspec routes them to XeTeX.
+    assert_eq!(r.selected_engine, EngineKind::XeTeX);
     assert_eq!(r.status, Status::Success, "{}\n{}", r.diagnostics, r.log);
     assert!(r.pdf.starts_with(b"%PDF-"));
     let mut pdf = lopdf::Document::load_mem(&r.pdf).unwrap();
@@ -265,6 +268,16 @@ Regular Roman text. \textbf{Bold Roman glyphs.} \textit{Italic Roman shapes.}
     assert!(text.contains("Bold Roman glyphs"), "{text}");
     assert!(text.contains("Sans Serif text"), "{text}");
     assert!(text.contains("Monospace typewriter text"), "{text}");
+    let fonts = embedded_font_names(&pdf);
+    for family in [
+        "LMRoman10-Regular",
+        "LMRoman10-Bold",
+        "LMRoman10-Italic",
+        "LMSans10-Regular",
+        "LMMono10-Regular",
+    ] {
+        assert!(fonts.iter().any(|f| f == family), "{family} in {fonts:?}");
+    }
 }
 
 #[test]
@@ -279,13 +292,14 @@ Should fail because font is missing.
     );
     let r = s.compile("main.tex");
     assert_eq!(r.status, Status::CompilationError);
+    assert_eq!(r.selected_engine, EngineKind::XeTeX);
     assert!(r.pdf.is_empty());
+    // fontspec's own error, as TeX Live's xelatex reports it
     assert!(
-        r.diagnostics.contains("NonexistentPhantomFont12345")
-            || r.log.contains("NonexistentPhantomFont12345")
-            || r.diagnostics.contains("font")
-            || r.log.contains("font"),
-        "diagnostics: {}\nlog: {}",
+        r.log.contains("! Package fontspec Error:")
+            && r.log
+                .contains("The font \"NonexistentPhantomFont12345\" cannot be"),
+        "{}\n{}",
         r.diagnostics,
         r.log
     );
@@ -366,15 +380,16 @@ fn missing_native_shapes_fall_back_like_fontspec_under_xetex() {
     );
     let r = s.compile("main.tex");
     assert_eq!(r.status, Status::Success, "{}\n{}", r.diagnostics, r.log);
+    assert_eq!(r.selected_engine, EngineKind::XeTeX);
+    // fontspec's warning for the italic shape IPAexMincho lacks
     assert!(
-        r.log.contains(
-            "Font shape `Italic` is not available for native font `IPAexMincho`; using `Regular` instead"
-        ),
+        r.log
+            .contains("LaTeX Font Warning: Font shape `TU/IPAexMincho(0)/m/it' undefined"),
         "{}",
         r.log
     );
     // BoldFont= declares the bold sans shape, so it is not a substitution.
-    assert!(!r.log.contains("native font `IPAexGothic`"), "{}", r.log);
+    assert!(!r.log.contains("TU/IPAexGothic(0)/b/n' undefined"), "{}", r.log);
     let mut pdf = lopdf::Document::load_mem(&r.pdf).unwrap();
     let fonts = embedded_font_names(&pdf);
     assert!(fonts.iter().any(|f| f == "IPAexGothic"), "{fonts:?}");
@@ -443,15 +458,35 @@ fn table_of_contents_is_not_mistaken_for_a_converged_first_pass() {
 }
 
 #[test]
-fn unsupported_explicit_profile_is_not_run_as_pdftex() {
+fn xetex_engine_compilation_succeeds() {
     let s = session(HELLO);
     let mut request = CompileRequest::new("main.tex");
     request.engine = EngineChoice::Explicit(EngineKind::XeTeX);
     let result = s.compile_request(request);
-    assert_eq!(result.status, Status::UnsupportedEngine);
+    assert_eq!(result.status, Status::Success, "{}\n{}", result.diagnostics, result.log);
     assert_eq!(result.selected_engine, EngineKind::XeTeX);
-    assert_eq!(result.passes, 0);
-    assert!(result.pdf.is_empty());
+    assert!(result.pdf.starts_with(b"%PDF-"));
+}
+
+#[test]
+fn ctex_documents_run_under_xetex_with_the_bundled_fandol_fonts() {
+    // TeX Live 2026 xelatex embeds FandolSong-Regular for the Chinese text
+    // and Latin Modern for the Latin text of this document.
+    let s = session(
+        r"\documentclass{ctexart}
+\begin{document}
+你好，世界。Hello.
+\end{document}",
+    );
+    let r = s.compile("main.tex");
+    assert_eq!(r.status, Status::Success, "{}\n{}", r.diagnostics, r.log);
+    assert_eq!(r.selected_engine, EngineKind::XeTeX);
+    let mut pdf = lopdf::Document::load_mem(&r.pdf).unwrap();
+    let fonts = embedded_font_names(&pdf);
+    assert!(fonts.iter().any(|f| f == "FandolSong-Regular"), "{fonts:?}");
+    assert!(fonts.iter().any(|f| f == "LMRoman10-Regular"), "{fonts:?}");
+    let text = native_text(&mut pdf);
+    assert!(text.contains("你好，世界。"), "{text}");
 }
 
 #[test]

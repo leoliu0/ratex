@@ -218,7 +218,7 @@ fn push_file_error(
     l.push_value(LuaValue::nil())?;
     let message = l.create_string(&message)?;
     l.push_value(message)?;
-    l.push_value(LuaValue::integer(error.raw_os_error().unwrap_or(0) as i64))?;
+    l.push_value(LuaValue::integer(file::error_code(error)))?;
     Ok(3)
 }
 
@@ -761,7 +761,7 @@ fn f_seek(l: &mut LuaState) -> LuaResult<usize> {
     let position = match whence {
         0 => {
             if offset < 0 {
-                return push_file_error(l, &invalid_argument(), None);
+                return push_file_error(l, &file::einval(), None);
             }
             SeekFrom::Start(offset as u64)
         }
@@ -774,17 +774,6 @@ fn f_seek(l: &mut LuaState) -> LuaResult<usize> {
             Ok(1)
         }
         Err(error) => push_file_error(l, &error, None),
-    }
-}
-
-fn invalid_argument() -> std::io::Error {
-    #[cfg(unix)]
-    {
-        std::io::Error::from_raw_os_error(libc::EINVAL)
-    }
-    #[cfg(not(unix))]
-    {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid argument")
     }
 }
 

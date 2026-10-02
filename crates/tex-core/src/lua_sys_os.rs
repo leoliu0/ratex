@@ -82,12 +82,12 @@ fn split_command(cmd: &[u8]) -> Option<Vec<Vec<u8>>> {
 }
 
 fn spawn_error_code(error: &std::io::Error) -> i64 {
-    match error.raw_os_error() {
-        Some(7) => INVALID_RET_E2BIG,
-        Some(2) => INVALID_RET_ENOENT,
-        Some(8) => INVALID_RET_ENOEXEC,
-        Some(12) => INVALID_RET_ENOMEM,
-        Some(26) => INVALID_RET_ETXTBSY,
+    match crate::lua_sys::errno_of(error) {
+        7 => INVALID_RET_E2BIG,
+        2 => INVALID_RET_ENOENT,
+        8 => INVALID_RET_ENOEXEC,
+        12 => INVALID_RET_ENOMEM,
+        26 => INVALID_RET_ETXTBSY,
         _ => INVALID_RET_UNKNOWN,
     }
 }
@@ -147,7 +147,7 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
     });
     sys_reg!(lua, s, "os_selfdir", || -> LuaBytes {
         let exe = std::env::current_exe().ok().and_then(|p| std::fs::canonicalize(p).ok()).unwrap_or_default();
-        LuaBytes(crate::lua_sys::path_bytes(exe.parent().unwrap_or(std::path::Path::new(""))))
+        LuaBytes(crate::lua_sys::kpse_path(exe.parent().unwrap_or(std::path::Path::new(""))).into_bytes())
     });
     sys_reg!(lua, s, "os_gettimeofday", || -> f64 {
         SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
@@ -175,7 +175,11 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
             };
             vec![field(&uts.sysname), field(&uts.machine), field(&uts.release), field(&uts.version), field(&uts.nodename)]
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            win32::uname().into_iter().map(LuaBytes).collect()
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             Vec::new()
         }
@@ -188,7 +192,13 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
             let tick = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f64;
             vec![t.tms_utime as f64 / tick, t.tms_stime as f64 / tick, t.tms_cutime as f64 / tick, t.tms_cstime as f64 / tick]
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            // Windows has no `times(2)`: user and kernel time of this process
+            // in seconds, none for children.
+            win32::process_times().to_vec()
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             Vec::new()
         }
@@ -208,8 +218,26 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
         }
         #[cfg(not(unix))]
         {
-            let _ = template;
-            (None, Some(LuaBytes(b"Function not implemented".to_vec())))
+            // loslibext.c's do_mkdtemp, which builds without mkdtemp(3)
+            const REPLACEMENTS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+            let mut name = bytes_of(&template);
+            let tail = name.len() - 6;
+            let clock = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
+            let mut value = clock ^ std::process::id();
+            for _ in 0..36 * 36 * 36 {
+                let mut v = value;
+                for slot in &mut name[tail..] {
+                    *slot = REPLACEMENTS[(v % 36) as usize];
+                    v /= 36;
+                }
+                match std::fs::create_dir(os_str(&name)) {
+                    Ok(()) => return (Some(LuaBytes(name)), None),
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(e) => return (None, Some(LuaBytes(crate::lua_sys::strerror(&e).into_bytes()))),
+                }
+                value = value.wrapping_add(8413);
+            }
+            (None, Some(LuaBytes(crate::lua_sys::strerror_no(17).into_bytes())))
         }
     });
     // `os.execute(cmd)`: (status | nil, message); without a command, the
@@ -334,4 +362,144 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
         }
     );
     Ok(())
+}
+
+/// `os.uname()` of the Windows build of LuaTeX (loslibext.c): the system
+/// name from the version, `build N`, the processor architecture and the
+/// computer name.
+#[cfg(windows)]
+mod win32 {
+    #[repr(C)]
+    #[allow(dead_code)]
+    struct OsVersionInfoW {
+        size: u32,
+        major: u32,
+        minor: u32,
+        build: u32,
+        platform: u32,
+        csd_version: [u16; 128],
+    }
+
+    #[repr(C)]
+    #[allow(dead_code)]
+    struct SystemInfo {
+        processor_architecture: u16,
+        reserved: u16,
+        page_size: u32,
+        minimum_application_address: *mut std::ffi::c_void,
+        maximum_application_address: *mut std::ffi::c_void,
+        active_processor_mask: usize,
+        number_of_processors: u32,
+        processor_type: u32,
+        allocation_granularity: u32,
+        processor_level: u16,
+        processor_revision: u16,
+    }
+
+    #[link(name = "ntdll")]
+    extern "system" {
+        // GetVersionEx reports 6.2 to programs without a manifest; this does not.
+        fn RtlGetVersion(info: *mut OsVersionInfoW) -> i32;
+    }
+
+    #[repr(C)]
+    struct FileTime {
+        low: u32,
+        high: u32,
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetCurrentProcess() -> *mut std::ffi::c_void;
+        fn GetProcessTimes(
+            process: *mut std::ffi::c_void,
+            creation: *mut FileTime,
+            exit: *mut FileTime,
+            kernel: *mut FileTime,
+            user: *mut FileTime,
+        ) -> i32;
+        fn GetSystemInfo(info: *mut SystemInfo);
+        fn GetComputerNameW(buffer: *mut u16, size: *mut u32) -> i32;
+    }
+
+    const VER_PLATFORM_WIN32_NT: u32 = 2;
+    const PROCESSOR_ARCHITECTURE_INTEL: u16 = 0;
+    const PROCESSOR_ARCHITECTURE_ARM: u16 = 5;
+    const PROCESSOR_ARCHITECTURE_IA64: u16 = 6;
+    const PROCESSOR_ARCHITECTURE_AMD64: u16 = 9;
+    const PROCESSOR_ARCHITECTURE_ARM64: u16 = 12;
+
+    fn system_name(info: &OsVersionInfoW) -> &'static str {
+        if info.platform != VER_PLATFORM_WIN32_NT {
+            return "Windows";
+        }
+        match (info.major, info.minor) {
+            (..=3, _) => "Windows NT 3",
+            (4, _) => "Windows NT 4",
+            (5, 0) => "Windows 2000",
+            (5, 1) => "Windows XP",
+            (5, 2) => "Windows XP 64-Bit",
+            (6, 0) => "Windows Vista",
+            (6, 1) => "Windows 7",
+            (6, 2) => "Windows 8",
+            (6, 3) => "Windows 8.1",
+            (10, _) => "Windows 10",
+            _ => "",
+        }
+    }
+
+    /// `[sysname, machine, release, version, nodename]`
+    pub(super) fn uname() -> Vec<Vec<u8>> {
+        let mut os: OsVersionInfoW = unsafe { std::mem::zeroed() };
+        os.size = std::mem::size_of::<OsVersionInfoW>() as u32;
+        unsafe { RtlGetVersion(&mut os) };
+        let mut system: SystemInfo = unsafe { std::mem::zeroed() };
+        unsafe { GetSystemInfo(&mut system) };
+
+        let csd_len = os.csd_version.iter().position(|&c| c == 0).unwrap_or(os.csd_version.len());
+        let csd = String::from_utf16_lossy(&os.csd_version[..csd_len]);
+        let mut version = format!("{}.{:02}", os.major, os.minor);
+        if !csd.is_empty() {
+            version.push(' ');
+            version.push_str(&csd);
+        }
+        let release = format!("build {}", os.build & 0xFFFF);
+        let machine = match system.processor_architecture {
+            PROCESSOR_ARCHITECTURE_AMD64 => "amd64".to_string(),
+            PROCESSOR_ARCHITECTURE_ARM => "arm".to_string(),
+            PROCESSOR_ARCHITECTURE_ARM64 => "arm64".to_string(),
+            PROCESSOR_ARCHITECTURE_IA64 => "ia64".to_string(),
+            PROCESSOR_ARCHITECTURE_INTEL if os.platform == VER_PLATFORM_WIN32_NT => format!("i{}86", system.processor_level),
+            _ => "unknown".to_string(),
+        };
+        let mut name = [0u16; 65];
+        let mut length = (name.len() - 1) as u32;
+        let nodename = if unsafe { GetComputerNameW(name.as_mut_ptr(), &mut length) } != 0 {
+            String::from_utf16_lossy(&name[..length as usize])
+        } else {
+            String::new()
+        };
+        vec![
+            system_name(&os).as_bytes().to_vec(),
+            machine.into_bytes(),
+            release.into_bytes(),
+            version.into_bytes(),
+            nodename.into_bytes(),
+        ]
+    }
+
+    /// `[utime, stime, cutime, cstime]` in seconds.
+    pub(super) fn process_times() -> [f64; 4] {
+        let mut creation = FileTime { low: 0, high: 0 };
+        let mut exit = FileTime { low: 0, high: 0 };
+        let mut kernel = FileTime { low: 0, high: 0 };
+        let mut user = FileTime { low: 0, high: 0 };
+        let ok = unsafe { GetProcessTimes(GetCurrentProcess(), &mut creation, &mut exit, &mut kernel, &mut user) };
+        if ok == 0 {
+            return [0.0; 4];
+        }
+        // FILETIME counts 100 ns ticks
+        let seconds = |t: &FileTime| ((u64::from(t.high) << 32) | u64::from(t.low)) as f64 / 1e7;
+        [seconds(&user), seconds(&kernel), 0.0, 0.0]
+    }
 }

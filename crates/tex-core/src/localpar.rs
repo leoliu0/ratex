@@ -147,8 +147,9 @@ impl Engine {
         if indent {
             let pi = self.eqtb.dim_params[crate::prim::DimParam::ParIndent.idx() as usize];
             let mut r = crate::boxes::hpack(Vec::new(), Some(pi), crate::boxes::HBOX, &self.eqtb).node;
-            if let Node::Box { dir, .. } = &mut r {
+            if let Node::Box { dir, subtype, .. } = &mut r {
                 *dir = par_dir;
+                *subtype = crate::boxes::list_subtype::INDENT;
             }
             self.cur_list.push(r);
         }

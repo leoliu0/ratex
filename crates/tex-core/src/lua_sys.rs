@@ -41,6 +41,31 @@ pub(crate) fn path_of(bytes: &[u8]) -> PathBuf {
     PathBuf::from(os_str(bytes))
 }
 
+/// A path as Kpathsea hands it to Lua: on Windows `kpathsea_normalize_path`
+/// turns every `\\` into `/` (and the `\\?\` of a canonical path is not
+/// shown). Lua source that embeds such a path, or splits it at `/`
+/// (`lfs.mkdirp`), then works the same on every platform.
+pub(crate) fn kpse_path(path: &std::path::Path) -> String {
+    let text = path.to_string_lossy().into_owned();
+    #[cfg(windows)]
+    {
+        normalize_windows_path(&text)
+    }
+    #[cfg(not(windows))]
+    {
+        text
+    }
+}
+
+#[cfg(any(windows, test))]
+fn normalize_windows_path(text: &str) -> String {
+    let text = match text.strip_prefix(r"\\?\UNC\") {
+        Some(unc) => format!(r"\\{unc}"),
+        None => text.strip_prefix(r"\\?\").unwrap_or(text).to_string(),
+    };
+    text.replace('\\', "/")
+}
+
 /// File name bytes of a path (a Lua string).
 pub(crate) fn path_bytes(path: &std::path::Path) -> Vec<u8> {
     os_bytes(path.as_os_str())
@@ -62,13 +87,39 @@ pub(crate) fn bytes_of(s: &LuaString) -> Vec<u8> {
     s.as_bytes().map(|b| b.to_vec()).unwrap_or_default()
 }
 
-/// `errno` of an I/O error (0 when the error did not come from the OS).
+/// `errno` of an I/O error (0 when the error did not come from the OS). On
+/// Windows the value of the C runtime's `errno` for the failure (`_dosmaperr`
+/// of the Win32 code), as LuaTeX's libraries report it.
 pub(crate) fn errno_of(error: &io::Error) -> i64 {
-    i64::from(error.raw_os_error().unwrap_or(0))
+    #[cfg(windows)]
+    {
+        i64::from(crt_errno(error))
+    }
+    #[cfg(not(windows))]
+    {
+        i64::from(error.raw_os_error().unwrap_or(0))
+    }
+}
+
+#[cfg(windows)]
+fn crt_errno(error: &io::Error) -> i32 {
+    match error.raw_os_error() {
+        Some(code) => crate::lua_sys_crt::errno_from_win32(code as u32),
+        None => crate::lua_sys_crt::errno_from_kind(error.kind()),
+    }
 }
 
 /// `strerror(errno)`: Rust appends " (os error N)" to OS errors; C does not.
+/// On Windows the text is the C runtime's one for the mapped `errno`, not the
+/// Win32 message.
 pub(crate) fn strerror(error: &io::Error) -> String {
+    #[cfg(windows)]
+    {
+        let errno = crt_errno(error);
+        if errno != 0 {
+            return crate::lua_sys_crt::strerror(errno).to_string();
+        }
+    }
     let text = error.to_string();
     match text.find(" (os error ") {
         Some(at) => text[..at].to_string(),
@@ -76,8 +127,16 @@ pub(crate) fn strerror(error: &io::Error) -> String {
     }
 }
 
+/// `strerror` of a C `errno` value (not a Win32 code).
 pub(crate) fn strerror_no(errno: i32) -> String {
-    strerror(&io::Error::from_raw_os_error(errno))
+    #[cfg(windows)]
+    {
+        crate::lua_sys_crt::strerror(errno).to_string()
+    }
+    #[cfg(not(windows))]
+    {
+        strerror(&io::Error::from_raw_os_error(errno))
+    }
 }
 
 /// How much of the system the Lua libraries may reach, as set by
@@ -230,4 +289,16 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
     }
     lua.execute("__ratex_sys = nil").map_err(|e| format!("{e:?}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_windows_path;
+
+    #[test]
+    fn windows_paths_reach_lua_with_forward_slashes() {
+        assert_eq!(normalize_windows_path(r"C:\Users\RUNNER~1\cache\texmf-var"), "C:/Users/RUNNER~1/cache/texmf-var");
+        assert_eq!(normalize_windows_path(r"\\?\C:\a\b/c"), "C:/a/b/c");
+        assert_eq!(normalize_windows_path(r"\\?\UNC\host\share\x"), "//host/share/x");
+    }
 }

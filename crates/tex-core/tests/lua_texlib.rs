@@ -23,7 +23,7 @@ fn run_script(pre: &str, script: &str) -> String {
 #[test]
 fn tex_registers_and_codes_match_luatex() {
     let script = r####"local function p(...) local t={} for i=1,select("#",...) do t[i]=tostring((select(i,...))) end texio.write_nl(table.concat(t,"\t")) end
-local function T(name, f) local ok,e=pcall(f) if not ok then p(name,"ERR",(tostring(e):gsub("^[^:]*:%d+: ",""))) end end
+local function T(name, f) local ok,e=pcall(f) if not ok then p(name,"ERR",(tostring(e):gsub("^.-:%d+: ",""))) end end
 tex.hsize = 100*65536
 p("hsize", tex.hsize, tex.get("hsize"), tex.hsize == tex.get("hsize"))
 tex.hsize = "3pt" p("hsize str", tex.hsize)
@@ -63,7 +63,7 @@ tex.catcode[65] = 12 p("catcode", tex.catcode[65])
 #[test]
 fn tex_pure_functions_match_luatex() {
     let script = r####"local function p(...) local t={} for i=1,select("#",...) do t[i]=tostring((select(i,...))) end texio.write_nl(table.concat(t,"\t")) end
-local function T(name, f) local ok,e=pcall(f) if not ok then p(name,"ERR",(tostring(e):gsub("^[^:]*:%d+: ",""))) end end
+local function T(name, f) local ok,e=pcall(f) if not ok then p(name,"ERR",(tostring(e):gsub("^.-:%d+: ",""))) end end
 p("number", tex.number(12), tex.romannumeral(1994), tex.romannumeral(0), tex.romannumeral(5000))
 p("round", tex.round(3.5), tex.round(-3.5), tex.round(2.4), tex.round(0.5), tex.round(-0.5))
 p("scale", tex.scale(10, 3), tex.scale(5, 0.5), tex.scale(1.5, 1.5))
@@ -95,7 +95,7 @@ p("version", tex.luatexversion, tex.luatexrevision)
 #[test]
 fn lang_library_matches_luatex() {
     let script = r####"local function p(...) local t={} for i=1,select("#",...) do t[i]=tostring((select(i,...))) end texio.write_nl(table.concat(t,"\t")) end
-local function T(name, f) local ok,e=pcall(f) if not ok then p(name,"ERR",(tostring(e):gsub("^[^:]*:%d+: ",""))) end end
+local function T(name, f) local ok,e=pcall(f) if not ok then p(name,"ERR",(tostring(e):gsub("^.-:%d+: ",""))) end end
 local function words(s) if not s then return "nil" end local t={} for w in s:gmatch("%S+") do t[#t+1]=w end table.sort(t) return table.concat(t,"|") end
 local l = lang.new() p(type(l), lang.id(l), lang.id(lang.new()), lang.id(lang.new(7)), lang.id(lang.new()))
 T("id number", function() return lang.id(7) end)
@@ -129,7 +129,7 @@ p("hyphenationmin", lang.hyphenationmin(l3)) lang.hyphenationmin(l3, 4) p("hyphe
 #[test]
 fn token_objects_match_luatex() {
     let script = r####"local function p(...) local t={} for i=1,select("#",...) do t[i]=tostring((select(i,...))) end texio.write_nl(table.concat(t,"\t")) end
-local function T(name, f) local ok,e=pcall(f) if not ok then p(name,"ERR",(tostring(e):gsub("^[^:]*:%d+: ",""))) end end
+local function T(name, f) local ok,e=pcall(f) if not ok then p(name,"ERR",(tostring(e):gsub("^.-:%d+: ",""))) end end
 local function show(t) local r={} for _,k in ipairs{"command","cmdname","csname","index","mode","active","expandable","protected"} do r[#r+1]=k.."="..tostring(t[k]) end return table.concat(r," ") end
 p(type(token.create("relax")), show(token.create("relax")))
 p(show(token.create("par")))
@@ -160,7 +160,7 @@ token.set_char("ch", 65) p(show(token.create("ch")))
 #[test]
 fn pdf_library_matches_luatex() {
     let script = r####"local function p(...) local t={} for i=1,select("#",...) do t[i]=tostring((select(i,...))) end texio.write_nl(table.concat(t,"\t")) end
-local function T(name, f) local ok,e=pcall(f) if not ok then p(name,"ERR",(tostring(e):gsub("^[^:]*:%d+: ",""))) end end
+local function T(name, f) local ok,e=pcall(f) if not ok then p(name,"ERR",(tostring(e):gsub("^.-:%d+: ",""))) end end
 p("defaults", pdf.getcompresslevel(), pdf.getobjcompresslevel(), pdf.getdecimaldigits(), pdf.getmajorversion(), pdf.getminorversion())
 p("text defaults", pdf.getcatalog(), pdf.getinfo(), pdf.getnames(), pdf.gettrailer(), pdf.getpageresources(), pdf.getpageattributes())
 pdf.setcompresslevel(5) p("compresslevel", pdf.getcompresslevel())

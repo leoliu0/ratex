@@ -210,7 +210,6 @@ fn test_lua53_contract_matches_texlua() {
         assert(e == 'error in error handling', e)
         -- luaL_loadfilex errors
         assert(select(2, loadfile('/nonexistent/x.lua')) == 'cannot open /nonexistent/x.lua: No such file or directory')
-        assert(select(2, loadfile('/')) == 'cannot read /: Is a directory')
         -- a load reader cannot yield
         local co = coroutine.wrap(function() return load(function() coroutine.yield(1) end) end)
         local f, m = co()
@@ -234,7 +233,6 @@ fn test_lua55_contract_matches_lua() {
         assert(select(2, pcall(function() return t + 1 end)):find("(metamethod 'add')", 1, true))
         local ok, m = pcall(load("for x in 1 do end"))
         assert(m:find("(for iterator 'for iterator')", 1, true), m)
-        assert(select(2, loadfile('/')) == 'cannot read /')
         local p = select(2, package.searchpath('x', 'a?;;b?'))
         assert(p == "no file 'ax'\n\tno file ''\n\tno file 'bx'", p)
         -- 'then' gets no line event of its own
@@ -245,6 +243,21 @@ fn test_lua55_contract_matches_lua() {
         debug.sethook()
         assert(table.concat(lines, ',') == '2,4,7', table.concat(lines, ','))
         "#,
+    );
+}
+
+/// Reading a directory fails at `fread` with `EISDIR` on POSIX systems; on
+/// Windows `fopen` of a directory fails already.
+#[cfg(unix)]
+#[test]
+fn test_loadfile_directory_errors() {
+    run_debug_level(
+        crate::LuaLanguageLevel::Lua53,
+        "assert(select(2, loadfile('/')) == 'cannot read /: Is a directory')",
+    );
+    run_debug_level(
+        crate::LuaLanguageLevel::Lua55,
+        "assert(select(2, loadfile('/')) == 'cannot read /')",
     );
 }
 

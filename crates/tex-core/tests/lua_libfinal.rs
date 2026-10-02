@@ -3,6 +3,7 @@
 //! `NAME.lua`, which the engine runs here with `P(...)` collecting lines.
 
 use tex_core::engine::{Engine, EngineKind};
+#[cfg(unix)]
 use tex_core::{set_shell_escape, ShellEscape};
 
 fn boot_lua() -> Engine {
@@ -34,13 +35,13 @@ fn run_fixture(name: &str) -> String {
     let out = base.join(format!("{name}.out"));
     let script = format!(
         "lfs.chdir('{}')\nlocal out = {{}}\nfunction P(...) local t = table.pack(...) for i = 1, t.n do t[i] = tostring(t[i]) end out[#out+1] = table.concat(t, ' | ') end\n{fixture}\nlocal f = io.open('{name}.out', 'wb') f:write(table.concat(out, '\\n')) f:close()\n",
-        base.display()
+        base.display().to_string().replace('\\', "/")
     );
     let file = base.join(format!("{name}.script.lua"));
     std::fs::write(&file, script).unwrap();
     let cwd = std::env::current_dir().unwrap();
     let mut e = boot_lua();
-    e.input.push_file("t.tex".to_string(), format!("\\directlua{{dofile('{}')}}\\end\n", file.display()).into_bytes());
+    e.input.push_file("t.tex".to_string(), format!("\\directlua{{dofile('{}')}}\\end\n", file.display().to_string().replace('\\', "/")).into_bytes());
     e.run();
     std::env::set_current_dir(cwd).unwrap();
     assert_eq!(e.error_count, 0, "errors: {:?}, term: {}", e.diagnostics, e.term);

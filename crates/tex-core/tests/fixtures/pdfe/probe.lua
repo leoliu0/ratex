@@ -18,7 +18,7 @@ local function fmt(v)
   else return type(v)..":"..tostring(v) end
 end
 local function show(tag,...) local t=table.pack(...) local o={} for i=1,t.n do o[i]=fmt(t[i]) end P(tag, t.n, table.concat(o," | ")) end
-local function try(tag,f,...) local r=table.pack(pcall(f,...)) if r[1] then show(tag,table.unpack(r,2,r.n)) else P(tag,"ERR",(tostring(r[2]):gsub("^[^:]*:%d+: ",""))) end end
+local function try(tag,f,...) local r=table.pack(pcall(f,...)) if r[1] then show(tag,table.unpack(r,2,r.n)) else P(tag,"ERR",(tostring(r[2]):gsub("^.-:%d+: ",""))) end end
 local function walk(tag,o,depth)
   local ty=pdfe.type(o)
   if depth>(DEPTH or 2) then return end

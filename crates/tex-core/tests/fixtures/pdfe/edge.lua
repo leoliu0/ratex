@@ -6,7 +6,7 @@ local function fmt(v)
   elseif type(v)=="number" then return (math.type(v)=="integer" and "i" or "f")..string.format("%.14g",v)
   elseif type(v)=="table" then local ks={} for k in pairs(v) do ks[#ks+1]=k end table.sort(ks,function(a,b) return tostring(a)<tostring(b) end) local o={} for _,k in ipairs(ks) do o[#o+1]=tostring(k).."="..fmt(v[k]) end return "{"..table.concat(o,",").."}"
   else return type(v)..":"..tostring(v) end end
-local function try(tag,f,...) local r=table.pack(pcall(f,...)) local o={} if r[1] then for i=2,r.n do o[#o+1]=fmt(r[i]) end OUTF:write(tag,"\t",r.n-1,"\t",table.concat(o," | "),"\n") else OUTF:write(tag,"\tERR\t",(tostring(r[2]):gsub("^[^:]*:%d+: ",""):gsub("0x%x+","PTR")),"\n") end end
+local function try(tag,f,...) local r=table.pack(pcall(f,...)) local o={} if r[1] then for i=2,r.n do o[#o+1]=fmt(r[i]) end OUTF:write(tag,"\t",r.n-1,"\t",table.concat(o," | "),"\n") else OUTF:write(tag,"\tERR\t",(tostring(r[2]):gsub("^.-:%d+: ",""):gsub("0x%x+","PTR")),"\n") end end
 local d=pdfe.open(FIXDIR.."obj.pdf")
 local page=pdfe.getpage(d,1)
 local cat=pdfe.getcatalog(d)

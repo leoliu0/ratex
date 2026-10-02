@@ -29,7 +29,7 @@ fn tex_boxes_nest_lists_and_math_match_luatex() {
 \setbox6\vbox{\hrule height 10pt\penalty-100\hrule height 20pt\penalty-100 \hrule height 5pt}
 "####;
     let script = r####"local function p(...) local t={} for i=1,select("#",...) do t[i]=tostring((select(i,...))) end texio.write_nl(table.concat(t,"\t")) end
-local function E(name, f, ...) local ok,e=pcall(f, ...) p(name, ok, (tostring(e):gsub("^[^:]*:%d+: ",""))) end
+local function E(name, f, ...) local ok,e=pcall(f, ...) p(name, ok, (tostring(e):gsub("^.-:%d+: ",""))) end
 local top = tex.nest.top
 p("nest", tex.nest.ptr, top.mode, top.modeline, top.prevdepth, top.spacefactor, top.prevgraf)
 p("head", node.type(top.head.id), top.tail == top.head, top.head.next)

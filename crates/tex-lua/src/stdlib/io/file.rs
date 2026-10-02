@@ -52,6 +52,100 @@ pub struct LuaFile {
     bufsize: usize,
     /// Reusable buffer for building read results.
     scratch: Vec<u8>,
+    /// Text-mode translation of a `popen` read pipe (the C runtime of
+    /// Windows turns CR LF into LF there).
+    #[cfg(windows)]
+    text: CrlfDecoder,
+}
+
+/// CR LF to LF, as the C runtime does for streams in text mode. A CR at
+/// the end of a chunk is held back until the next chunk shows whether an
+/// LF follows.
+#[cfg(any(windows, test))]
+#[derive(Default)]
+struct CrlfDecoder {
+    held_cr: bool,
+    /// Decoded bytes not yet handed out.
+    ready: std::collections::VecDeque<u8>,
+}
+
+#[cfg(any(windows, test))]
+impl CrlfDecoder {
+    fn push(&mut self, chunk: &[u8]) {
+        for &byte in chunk {
+            if self.held_cr {
+                self.held_cr = false;
+                if byte != b'\n' {
+                    self.ready.push_back(b'\r');
+                }
+            }
+            if byte == b'\r' {
+                self.held_cr = true;
+            } else {
+                self.ready.push_back(byte);
+            }
+        }
+    }
+
+    /// End of input: a held CR was a lone CR.
+    fn finish(&mut self) {
+        if std::mem::take(&mut self.held_cr) {
+            self.ready.push_back(b'\r');
+        }
+    }
+
+    fn take(&mut self, buf: &mut [u8]) -> usize {
+        let n = buf.len().min(self.ready.len());
+        for (slot, byte) in buf.iter_mut().zip(self.ready.drain(..n)) {
+            *slot = byte;
+        }
+        n
+    }
+}
+
+/// An error carrying a C `errno` and its `strerror` text, for platforms
+/// whose OS error numbers are not the C library's (and for conditions
+/// that never reach the OS).
+#[cfg(not(unix))]
+#[derive(Debug)]
+struct CError(i32, &'static str);
+
+#[cfg(not(unix))]
+impl std::fmt::Display for CError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.1)
+    }
+}
+
+#[cfg(not(unix))]
+impl std::error::Error for CError {}
+
+#[cfg(not(unix))]
+fn c_error(kind: io::ErrorKind, code: i32, text: &'static str) -> io::Error {
+    io::Error::new(kind, CError(code, text))
+}
+
+/// The C `errno` and `strerror` text of an error that is not a plain OS
+/// error of this platform's C library (Windows' native error numbers are
+/// not `errno` values).
+#[cfg(not(unix))]
+fn c_errno(error: &io::Error) -> Option<(i32, &'static str)> {
+    use io::ErrorKind as K;
+    if let Some(custom) = error.get_ref().and_then(|inner| inner.downcast_ref::<CError>()) {
+        return Some((custom.0, custom.1));
+    }
+    Some(match error.kind() {
+        K::NotFound => (2, "No such file or directory"),
+        K::PermissionDenied => (13, "Permission denied"),
+        K::AlreadyExists => (17, "File exists"),
+        K::NotADirectory => (20, "Not a directory"),
+        K::IsADirectory => (21, "Is a directory"),
+        K::InvalidInput => (22, "Invalid argument"),
+        K::StorageFull => (28, "No space left on device"),
+        K::BrokenPipe => (32, "Broken pipe"),
+        K::DirectoryNotEmpty => (41, "Directory not empty"),
+        _ => return None,
+    })
 }
 
 fn ebadf() -> io::Error {
@@ -61,7 +155,7 @@ fn ebadf() -> io::Error {
     }
     #[cfg(not(unix))]
     {
-        io::Error::other("Bad file descriptor")
+        c_error(io::ErrorKind::Other, 9, "Bad file descriptor")
     }
 }
 
@@ -72,13 +166,29 @@ fn espipe() -> io::Error {
     }
     #[cfg(not(unix))]
     {
-        io::Error::other("Illegal seek")
+        c_error(io::ErrorKind::Other, 29, "Illegal seek")
+    }
+}
+
+/// `EINVAL`.
+pub(crate) fn einval() -> io::Error {
+    #[cfg(unix)]
+    {
+        io::Error::from_raw_os_error(libc::EINVAL)
+    }
+    #[cfg(not(unix))]
+    {
+        c_error(io::ErrorKind::InvalidInput, 22, "Invalid argument")
     }
 }
 
 /// The text C's `strerror` gives for an I/O error (Rust appends
 /// " (os error N)" to OS errors; Lua messages do not have it).
 pub(crate) fn error_message(error: &io::Error) -> String {
+    #[cfg(not(unix))]
+    if let Some((_, text)) = c_errno(error) {
+        return text.to_owned();
+    }
     let text = error.to_string();
     match error.raw_os_error() {
         Some(code) => {
@@ -87,6 +197,15 @@ pub(crate) fn error_message(error: &io::Error) -> String {
         }
         None => text,
     }
+}
+
+/// The C `errno` of an I/O error (`luaL_fileresult`'s third result).
+pub(crate) fn error_code(error: &io::Error) -> i64 {
+    #[cfg(not(unix))]
+    if let Some((code, _)) = c_errno(error) {
+        return code as i64;
+    }
+    error.raw_os_error().unwrap_or(0) as i64
 }
 
 /// `fopen` mode check of liolib.c: `[rwa]%+?b*`.
@@ -115,6 +234,8 @@ impl LuaFile {
             mode,
             bufsize: BUFFER_SIZE,
             scratch: Vec::new(),
+            #[cfg(windows)]
+            text: CrlfDecoder::default(),
         }
     }
 
@@ -282,7 +403,30 @@ impl LuaFile {
                 Some(Stream::File(file)) => file.read(buf),
                 Some(Stream::Stdin) => io::stdin().lock().read(buf),
                 #[cfg(not(target_arch = "wasm32"))]
-                Some(Stream::PipeRead(_, pipe)) => pipe.read(buf),
+                Some(Stream::PipeRead(_, pipe)) => {
+                    #[cfg(windows)]
+                    {
+                        let mut chunk = [0u8; 4096];
+                        loop {
+                            let n = self.text.take(buf);
+                            if n > 0 || buf.is_empty() {
+                                return Ok(n);
+                            }
+                            match pipe.read(&mut chunk) {
+                                Ok(0) => {
+                                    self.text.finish();
+                                    if self.text.ready.is_empty() {
+                                        return Ok(0);
+                                    }
+                                }
+                                Ok(read) => self.text.push(&chunk[..read]),
+                                Err(error) => return Err(error),
+                            }
+                        }
+                    }
+                    #[cfg(not(windows))]
+                    pipe.read(buf)
+                }
                 _ => Err(ebadf()),
             };
             match result {
@@ -595,5 +739,30 @@ impl UserDataTrait for LuaFile {
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CrlfDecoder;
+
+    fn decode(chunks: &[&[u8]]) -> Vec<u8> {
+        let mut decoder = CrlfDecoder::default();
+        for chunk in chunks {
+            decoder.push(chunk);
+        }
+        decoder.finish();
+        let mut out = vec![0; decoder.ready.len()];
+        let n = decoder.take(&mut out);
+        out.truncate(n);
+        out
+    }
+
+    #[test]
+    fn crlf_becomes_lf_even_across_chunks_and_lone_cr_stays() {
+        assert_eq!(decode(&[b"a\r\nb\r\n"]), b"a\nb\n");
+        assert_eq!(decode(&[b"a\r", b"\nb"]), b"a\nb");
+        assert_eq!(decode(&[b"a\r", b"b\r"]), b"a\rb\r");
+        assert_eq!(decode(&[b"\r\r\n"]), b"\r\n");
     }
 }

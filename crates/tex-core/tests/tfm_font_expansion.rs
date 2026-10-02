@@ -14,7 +14,10 @@ static HERMETIC: std::sync::Once = std::sync::Once::new();
 fn run_luatex(body: &str) -> Engine {
     HERMETIC.call_once(|| {
         std::env::set_var("TEX_RS_HERMETIC", "1");
-        std::env::set_var("TEXMFOUTPUT", std::env::temp_dir());
+        // kpathsea's `abs_fname_ok` wants a file name below TEXMFOUTPUT to
+        // continue with a separator right after it: macOS's $TMPDIR ends in
+        // `/`, which `temp_dir()` keeps, so no name would be below it.
+        std::env::set_var("TEXMFOUTPUT", std::env::temp_dir().components().collect::<std::path::PathBuf>());
     });
     let mut e = Engine::new_with_kind(EngineKind::LuaTeX, true);
     e.init_primitives();

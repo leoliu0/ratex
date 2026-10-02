@@ -783,7 +783,7 @@ impl Engine {
             .map(|(m, ..)| *m == Mode::Horizontal)
             .unwrap_or(false);
         let inline_hlist = if !was_display {
-            Some(self.mlist_to_hlist_pen(&mlist, 2, is_outer_horiz))
+            Some(self.run_mlist_to_hlist(&mlist, 2, is_outer_horiz))
         } else {
             None
         };
@@ -949,7 +949,7 @@ impl Engine {
             // s = \displayindent, b = the formula at natural width
             let z = self.pre_display_l;
             let s = self.pre_display_s;
-            let fh = self.mlist_to_hlist_pen(&formula, 0, false);
+            let fh = self.run_mlist_to_hlist(&formula, 0, false);
             // tex.web §22507: the display's hpack runs with adjust_tail
             // non-null (§22507 `adjust_tail:=adjust_head`), so §12956-12957
             // strips every ins/mark/adjust node out of the formula hlist;
@@ -971,7 +971,7 @@ impl Engine {
             let mut q = 0i64;
             if let Some((tl, lq)) = tag {
                 leqno = lq;
-                let th = self.mlist_to_hlist_pen(&tl, 2, false);
+                let th = self.run_mlist_to_hlist(&tl, 2, false);
                 let mut ab = hpack(th, None, HBOX, &self.eqtb).node;
                 if let Node::Box { lr, .. } = &mut ab {
                     *lr = crate::boxes::BOX_LR_DLIST;
@@ -2742,7 +2742,7 @@ impl Engine {
     /// `pen`: insert \binoppenalty/\relpenalty breakpoints after Bin/Rel
     /// atoms (tex.web pass 2, mlist_penalties = mode>0 i.e. inline text math
     /// only — never in displays or \hbox)
-    fn mlist_to_hlist_pen(&mut self, list: &[Node], start: GStyle, pen: bool) -> NodeList {
+    pub(crate) fn mlist_to_hlist_pen(&mut self, list: &[Node], start: GStyle, pen: bool) -> NodeList {
         self.mlist_to_hlist_full(list, start, pen, false)
     }
 

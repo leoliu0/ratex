@@ -568,3 +568,152 @@ fn luatex_math_noads_show_lists_like_luatex() {
         assert_eq!(got, want, "{formula}");
     }
 }
+
+const LUA_NOAD_HELPERS: &str = r##"
+\setbox9\hbox{$x$}
+\directlua{
+function mc(fam,c) local n=node.new("math_char") n.fam=fam n.char=c return n end
+function noad(fam,c,sub) local n=node.new("noad") n.nucleus=mc(fam,c) if sub then n.subtype=sub end return n end
+function mlist(...) local t={...} for i,v in ipairs(t) do if t[i+1] then v.next=t[i+1] end end return t[1] end
+function sm(head) local s=node.new("sub_mlist") s.head=head return s end
+function show(head, style) local h=node.mlist_to_hlist(head, style or "text", false) tex.box[0]=node.hpack(h) end
+function dump(n, ind)
+  while n do
+    local s = ind..node.type(n.id).." "..tostring(n.subtype)
+    if n.id==23 or n.id==26 then s = s.." fam="..n.fam.." char="..n.char end
+    if n.id==20 then s = s.." width="..tostring(n.width) end
+    texio.write_nl("["..s.."]")
+    if n.id==18 or n.id==19 or n.id==21 then
+      for _,k in ipairs({"nucleus","sub","sup"}) do if n[k] then texio.write_nl("["..ind.." ."..k..":]") dump(n[k], ind.."  ") end end
+    elseif n.id==20 then
+      for _,k in ipairs({"num","denom"}) do if n[k] then texio.write_nl("["..ind.." ."..k..":]") dump(n[k], ind.."  ") end end
+    elseif n.id==25 or n.id==24 then
+      dump(n.head, ind.."  ")
+    elseif n.id==22 then
+      if n.delim then texio.write_nl("["..ind.."  delim "..n.delim.small_fam.." "..n.delim.small_char.."]") end
+    end
+    n = n.next
+  end
+end
+}
+\def\r{\t{[\the\wd0:\the\ht0:\the\dp0]}}
+"##;
+
+#[test]
+fn lua_built_noads_typeset_like_luatex() {
+    let cases: [&str; 8] = [
+        r##"local a=noad(1,97) a.sup=mc(1,98) a.sub=mc(1,99) show(mlist(a, noad(1,100,4), noad(1,101)))"##,
+        r##"local fr=node.new("fraction") fr.num=sm(noad(1,97)) fr.denom=sm(noad(1,98)) fr.width=0x40000000 show(mlist(fr))"##,
+        r##"local r=node.new("radical") r.subtype=1 r.nucleus=sm(noad(1,120)) local d=node.new("delim") d.small_fam=3 d.small_char=0x70 r.left=d show(mlist(r))"##,
+        r##"local ac=node.new("accent") ac.nucleus=mc(1,98) ac.top_accent=mc(0,0x5E) show(mlist(ac))"##,
+        r##"local f1=node.new("fence") f1.subtype=1 local d1=node.new("delim") d1.small_fam=0 d1.small_char=40 f1.delim=d1 local f2=node.new("fence") f2.subtype=3 local d2=node.new("delim") d2.small_fam=0 d2.small_char=41 f2.delim=d2 local inner=node.new("noad") inner.subtype=9 inner.nucleus=sm(mlist(f1, noad(1,97), f2)) show(mlist(inner))"##,
+        r##"local st=node.new("style") st.style="script" show(mlist(noad(1,97), st, noad(1,98)))"##,
+        r##"local o=noad(1,115,2) o.sup=mc(1,49) o.sub=mc(1,48) show(mlist(o), "display")"##,
+        r##"local r=node.new("radical") r.subtype=2 r.nucleus=sm(noad(1,120)) r.degree=sm(noad(1,97)) local d=node.new("delim") d.small_fam=3 d.small_char=0x70 r.left=d show(mlist(r))"##,
+    ];
+    let mut body = String::from(MATH_FONTS);
+    body.push_str(LUA_NOAD_HELPERS);
+    for c in cases {
+        body.push_str(&format!("\\directlua{{{c}}}\\r\n"));
+    }
+    let expected: [&str; 8] = [
+        "[20.5556pt:10.57336pt:2.47217pt]",
+        "[5.55557pt:8.24286pt:5.04442pt]",
+        "[15.27782pt:9.00278pt:3.39731pt]",
+        "[5.55557pt:9.58334pt:0.0pt]",
+        "[12.77782pt:7.5pt:2.5pt]",
+        "[10.55559pt:6.94444pt:0.0pt]",
+        "[5.00002pt:14.0972pt:9.1111pt]",
+        "[17.50005pt:9.00278pt:3.39731pt]",
+    ];
+    let out = run(&body);
+    assert_eq!(out.len(), expected.len());
+    for (i, (got, want)) in out.iter().zip(expected).enumerate() {
+        assert_eq!(got, want, "case {i}: {}", cases[i]);
+    }
+}
+
+const LUA_NOAD_FORMULA: &str = r##"
+\directlua{ callback.register("mlist_to_hlist", function(head, style, pen) dump(head, "") texio.write_nl("[style="..style.." pen="..tostring(pen).."]") return node.mlist_to_hlist(head, style, pen) end) }
+\setbox0\hbox{$x^2 \mathop{a}\limits \left( b \right)_1 {a\over b} \mathchoice{a}{b}{c}{d} \scriptstyle \overline{c} \radical"161 y \Uroot 3 "70 {a}{x} \mathaccent"7162 z \Umathaccent bottom 0 0 "62 {b}^2 \Uvextensible ( \mathrel{q} \mathop{d}\nolimits^1 \vcenter{\hbox{v}}$}
+\directlua{callback.register("mlist_to_hlist", nil)}
+"##;
+
+#[test]
+fn engine_noads_reach_the_mlist_to_hlist_callback_like_luatex() {
+    let want: [&str; 71] = [
+        "[noad 0]",
+        "[ .nucleus:]",
+        "[ math_char 0 fam=1 char=120]",
+        "[ .sup:]",
+        "[ math_char 0 fam=0 char=50]",
+        "[noad 2]",
+        "[ .nucleus:]",
+        "[ math_char 0 fam=1 char=97]",
+        "[noad 9]",
+        "[ .nucleus:]",
+        "[ sub_mlist 0]",
+        "[  fence 1]",
+        "[   delim 0 40]",
+        "[  noad 0]",
+        "[   .nucleus:]",
+        "[   math_char 0 fam=1 char=98]",
+        "[  fence 3]",
+        "[   delim 0 41]",
+        "[ .sub:]",
+        "[ math_char 0 fam=0 char=49]",
+        "[noad 0]",
+        "[ .nucleus:]",
+        "[ sub_mlist 0]",
+        "[  fraction 0 width=1073741824]",
+        "[   .num:]",
+        "[   sub_mlist 0]",
+        "[    noad 0]",
+        "[     .nucleus:]",
+        "[     math_char 0 fam=1 char=97]",
+        "[   .denom:]",
+        "[   sub_mlist 0]",
+        "[    noad 0]",
+        "[     .nucleus:]",
+        "[     math_char 0 fam=1 char=98]",
+        "[choice 0]",
+        "[style 4]",
+        "[noad 11]",
+        "[ .nucleus:]",
+        "[ math_char 0 fam=1 char=99]",
+        "[radical 0]",
+        "[ .nucleus:]",
+        "[ math_char 0 fam=1 char=121]",
+        "[radical 2]",
+        "[ .nucleus:]",
+        "[ math_char 0 fam=1 char=120]",
+        "[accent 0]",
+        "[ .nucleus:]",
+        "[ math_char 0 fam=1 char=122]",
+        "[accent 0]",
+        "[ .nucleus:]",
+        "[ math_char 0 fam=1 char=98]",
+        "[ .sup:]",
+        "[ math_char 0 fam=0 char=50]",
+        "[noad 9]",
+        "[ .nucleus:]",
+        "[ sub_mlist 0]",
+        "[  fence 4]",
+        "[   delim 0 40]",
+        "[noad 5]",
+        "[ .nucleus:]",
+        "[ math_char 0 fam=1 char=113]",
+        "[noad 3]",
+        "[ .nucleus:]",
+        "[ math_char 0 fam=1 char=100]",
+        "[ .sup:]",
+        "[ math_char 0 fam=0 char=49]",
+        "[noad 12]",
+        "[ .nucleus:]",
+        "[ sub_box 0]",
+        "[  vlist 0]",
+        "[style=text pen=false]",
+    ];
+    let out = run(&format!("{MATH_FONTS}{LUA_NOAD_HELPERS}{LUA_NOAD_FORMULA}"));
+    assert_eq!(out, want);
+}

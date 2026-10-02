@@ -161,7 +161,10 @@ impl Engine {
         i64::from(head)
     }
 
-    fn import_list(&mut self, list: &[Node], ctx: &mut LangCtx) -> (u32, u32) {
+    pub(crate) fn import_list(&mut self, list: &[Node], ctx: &mut LangCtx) -> (u32, u32) {
+        if list.iter().any(crate::lua_math_conv::is_math_node) {
+            return self.import_math_list(list, ctx, false);
+        }
         let mut head = 0u32;
         let mut tail = 0u32;
         let mut i = 0;
@@ -570,7 +573,7 @@ impl Engine {
         }
     }
 
-    fn export_sub(&mut self, head: i32) -> NodeList {
+    pub(crate) fn export_sub(&mut self, head: i32) -> NodeList {
         let mut v = Vec::new();
         self.export_list(head as u32, &mut v);
         v
@@ -789,9 +792,12 @@ impl Engine {
                     out.push(o);
                 }
             }
+            STYLE | CHOICE | NOAD | RADICAL | FRACTION | ACCENT | FENCE | MATH_CHAR | MATH_TEXT_CHAR | SUB_BOX | SUB_MLIST => {
+                self.export_math_node(n, out)
+            }
             _ => {
                 // a node the engine has no use for (glue_spec, attribute, ...)
-                // is dropped; math noads are converted by `mlist_to_hlist`
+                // is dropped
             }
         }
     }

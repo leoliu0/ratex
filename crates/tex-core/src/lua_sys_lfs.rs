@@ -55,6 +55,11 @@ fn failure<T>(error: &io::Error, info: Option<String>) -> Tri<T> {
     (None, Some(LuaBytes(message.into_bytes())), Some(errno_of(error)))
 }
 
+/// Failing with the C `errno` value `errno` (not a Win32 code).
+fn failure_errno<T>(errno: i32) -> Tri<T> {
+    (None, Some(LuaBytes(strerror_no(errno).into_bytes())), Some(i64::from(errno)))
+}
+
 fn done(result: io::Result<()>) -> Tri<bool> {
     match result {
         Ok(()) => (Some(true), None, None),
@@ -214,7 +219,7 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
     sys_reg!(lua, s, "lfs_mkdir", |path: LuaString| -> Tri<bool> {
         let bytes = bytes_of(&path);
         if embedded_path(&bytes).is_some() {
-            return failure(&io::Error::from_raw_os_error(EROFS), None);
+            return failure_errno(EROFS);
         }
         let p = path_of(&bytes);
         #[cfg(unix)]

@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use tex_lua::{Lua, LuaApi, LuaBytes, LuaString};
 
 use crate::lua_bridge::with_engine;
-use crate::lua_sys::{bytes_of, path_bytes, path_of, shell_escape, sys_reg, ShellEscape};
+use crate::lua_sys::{bytes_of, kpse_path, path_bytes, path_of, shell_escape, sys_reg, ShellEscape};
 
 pub(crate) const PRELUDE: &str = include_str!("lua_sys_kpse.lua");
 
@@ -191,21 +191,21 @@ fn raw_var(program: &str, name: &str) -> Option<String> {
     match name {
         "progname" => return Some(program.to_string()),
         "engine" => return Some(crate::lua_sys_status::engine_name().to_string()),
-        "SELFAUTOLOC" => return Some(exe_dirs().0.to_string_lossy().into_owned()),
-        "SELFAUTODIR" => return Some(exe_dirs().1.to_string_lossy().into_owned()),
-        "SELFAUTOPARENT" => return Some(exe_dirs().2.to_string_lossy().into_owned()),
+        "SELFAUTOLOC" => return Some(kpse_path(&exe_dirs().0)),
+        "SELFAUTODIR" => return Some(kpse_path(&exe_dirs().1)),
+        "SELFAUTOPARENT" => return Some(kpse_path(&exe_dirs().2)),
         "SELFAUTOGRANDPARENT" => {
             let (_, _, parent) = exe_dirs();
-            return Some(parent.parent().unwrap_or(Path::new("")).to_string_lossy().into_owned());
+            return Some(kpse_path(parent.parent().unwrap_or(Path::new(""))));
         }
         // The per-user cache: font databases and caches live below it.
         "TEXMFVAR" | "TEXMFSYSVAR" => {
-            return Some(crate::lua_sys::cache_dir().join("texmf-var").to_string_lossy().into_owned())
+            return Some(kpse_path(&crate::lua_sys::cache_dir().join("texmf-var")))
         }
         "TEXMFCACHE" => return Some("$TEXMFVAR".to_string()),
         // The search roots of the engine, then the bundled archive.
         "TEXMF" => {
-            let mut list: Vec<String> = roots().iter().map(|r| r.to_string_lossy().into_owned()).collect();
+            let mut list: Vec<String> = roots().iter().map(|r| kpse_path(r)).collect();
             list.push(tex_kpse::embedded_tree::ROOT.to_string());
             return Some(format!("{{{}}}", list.join(",")));
         }
@@ -806,7 +806,7 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
                     Some(guess_format(&name).unwrap_or_else(|| FORMATS.iter().position(|f| f.name == "tex").expect("tex")))
                 };
                 match index.and_then(|i| FORMATS.get(i)) {
-                    Some(fmt) => find_one(&name, fmt).map(|p| p.to_string_lossy().into_owned()).into_iter().collect(),
+                    Some(fmt) => find_one(&name, fmt).map(|p| kpse_path(&p)).into_iter().collect(),
                     None => Vec::new(),
                 }
             };
@@ -889,12 +889,12 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
         let sub = ["", "/share/texmf-local/web2c", "/share/texmf-dist/web2c", "/share/texmf/web2c", "/texmf-local/web2c", "/texmf-dist/web2c", "/texmf/web2c"];
         for base in [&loc, &dir] {
             for suffix in sub {
-                dirs.push(format!("{}{suffix}", base.display()));
+                dirs.push(format!("{}{suffix}", kpse_path(base)));
             }
         }
-        dirs.push(format!("{}/texmf-local/web2c", parent.display()));
+        dirs.push(format!("{}/texmf-local/web2c", kpse_path(&parent)));
         for suffix in sub {
-            dirs.push(format!("{}{suffix}", parent.display()));
+            dirs.push(format!("{}{suffix}", kpse_path(&parent)));
         }
         format!("{{{}}}", dirs.join(","))
     });

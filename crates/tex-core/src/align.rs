@@ -1224,25 +1224,22 @@ impl Engine {
         }
         // tex.web §15514: \noalign runs in internal vertical mode inheriting the
         // preceding row's depth (or ignore_depth if at the alignment start).
-        self.prev_depth = self
-            .lua_align_noalign_depth()
-            .or_else(|| self.align_rows
-            .last()
-            .and_then(|r| {
-                if r.len() == 1 && r[0].span == NOALIGN_SPAN {
-                    match &r[0].packed {
-                        Some(Node::Box { shift, .. }) => Some(*shift),
-                        _ => None,
-                    }
-                } else {
-                    // fin_row's natural hpack starts from depth 0
-                    Some(r.iter().fold(0, |d, c| match &c.packed {
-                        Some(Node::Box { d: cd, .. }) => d.max(*cd),
-                        _ => d,
-                    }))
+        let tex_depth = self.align_rows.last().and_then(|r| {
+            if r.len() == 1 && r[0].span == NOALIGN_SPAN {
+                match &r[0].packed {
+                    Some(Node::Box { shift, .. }) => Some(*shift),
+                    _ => None,
                 }
-            }))
-            .unwrap_or(outer_pd);
+            } else {
+                // fin_row's natural hpack starts from depth 0
+                Some(r.iter().fold(0, |d, c| match &c.packed {
+                    Some(Node::Box { d: cd, .. }) => d.max(*cd),
+                    _ => d,
+                }))
+            }
+        });
+        // with Lua shaping the rows the depth comes from what it left
+        self.prev_depth = self.lua_align_noalign_depth().or(tex_depth).unwrap_or(outer_pd);
         self.align_pushed_base = self.pushed.len();
         // The consumed `{` is the no_align_group itself: its `}` is routed
         // to align_finish_noalign_now by align_close_noalign_brace.

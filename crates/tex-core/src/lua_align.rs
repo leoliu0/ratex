@@ -114,7 +114,7 @@ impl Engine {
                     Some(CbRet::Node(h)) => *h,
                     Some(CbRet::Nil) | None => 0,
                     Some(_) => {
-                        self.warning_at("(append to vlist): error: node or nil expected", None);
+                        self.lua_warning("append to vlist", "error: node or nil expected");
                         0
                     }
                 };

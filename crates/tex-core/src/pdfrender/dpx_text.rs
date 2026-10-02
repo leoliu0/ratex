@@ -460,8 +460,6 @@ impl<'a> RenderCtx<'a> {
         });
         let idx = self.dpxt_locate_font(fid, &nf, sptsize);
         let f = self.dpxt.fonts[idx];
-        let dvi_h = cur_x - self.dpxt.org_sp.0;
-        let dvi_v = y - self.dpxt.org_sp.1;
 
         let actual_text = run.actual_text && !run.is_glyph_node();
         if actual_text {
@@ -510,8 +508,10 @@ impl<'a> RenderCtx<'a> {
                     self.dpx_track_box(cur_x + xloc, y - i64::from(g.y_offset), advance, ascent, -descent);
                 }
             }
-            let yloc = -i64::from(g.y_offset);
-            self.dpxt_set_string(dvi_h + xloc, -dvi_v - yloc, gid, advance, idx);
+            // dvi_set_compensation: inside pdf:bcontent the position is relative
+            // to the content origin (applied after the tracking box)
+            let (ch, cv) = self.dpx_compensate(cur_x + xloc, y - i64::from(g.y_offset));
+            self.dpxt_set_string(ch - self.dpxt.org_sp.0, -(cv - self.dpxt.org_sp.1), gid, advance, idx);
             xloc += i64::from(g.x_advance);
         }
         if colored {

@@ -1475,6 +1475,11 @@ impl Engine {
     }
 
     fn append_mathchar_with_origin(&mut self, mc: u16, origin: MathDiagnosticOrigin) {
+        if self.engine_kind == crate::engine::EngineKind::XeTeX {
+            // xetex.web §26546: a tex.web mathchar in XeTeX's own layout
+            self.xe_append_math_char(crate::xemath_prims::legacy_to_packed(i32::from(mc)), origin);
+            return;
+        }
         let mut class = (mc >> 12) as u8;
         let mut fam = ((mc >> 8) & 0xF) as u8;
         let c = (mc & 0xFF) as u8;
@@ -1988,10 +1993,16 @@ impl Engine {
             return self.scan_math_group_braced(owner.unwrap_or(ScanKind::Brace));
         }
         // single token: run it into a temporary math list
+        let xe_char = self.engine_kind == crate::engine::EngineKind::XeTeX
+            && self.xe_scan_math_char_token(t);
         self.begin_math_scan(owner.unwrap_or(ScanKind::Brace));
         self.run_math_token(t);
         self.flush_math_limits();
-        self.end_math_scan()
+        let mut field = self.end_math_scan();
+        if xe_char {
+            crate::xemath_prims::xe_char_field(&mut field);
+        }
+        field
     }
 
     /// Execute tokens up to the matching `}` as a nested math list.
@@ -2074,6 +2085,10 @@ impl Engine {
     }
 
     pub(crate) fn do_math_accent_at(&mut self, mc: u16, source: Option<crate::input::SourceMark>) {
+        if self.engine_kind == crate::engine::EngineKind::XeTeX {
+            self.do_xe_math_accent(crate::xemath_prims::legacy_to_packed(i32::from(mc)), 0, source);
+            return;
+        }
         let origin = self.math_diagnostic_origin_at(source);
         let mut fam = ((mc >> 8) & 0xF) as u8;
         let c = (mc & 0xFF) as u8;
@@ -2101,10 +2116,10 @@ impl Engine {
         });
     }
 
-    pub(crate) fn do_radical_at(&mut self, delim: i32, source: Option<crate::input::SourceMark>) {
+    pub(crate) fn do_radical_at(&mut self, delim: Delim, source: Option<crate::input::SourceMark>) {
         let origin = self.math_diagnostic_origin_at(source);
         self.show.scan_owner = Some(ScanKind::Radical {
-            delim: Delim::from_code(delim),
+            delim,
             subtype: 0,
             width: 0,
             options: 0,
@@ -2113,7 +2128,7 @@ impl Engine {
         let group = self.scan_math_group_or_token();
         self.append_mlist_node(Node::Radical {
             body: group,
-            delim: Delim::from_code(delim),
+            delim,
             subtype: 0,
             width: 0,
             options: 0,
@@ -2259,6 +2274,9 @@ impl Engine {
                 } else {
                     (i64::from(sf & 0xF) << 20) | (i64::from(sc & 0xFF) << 12) | (i64::from(lf & 0xF) << 8) | i64::from(lc & 0xFF)
                 }
+            } else if self.engine_kind == crate::engine::EngineKind::XeTeX {
+                // xetex.web §26749: `del_code(cur_chr)` for every USV
+                i64::from(self.eqtb.xe_del_code(t.chr()))
             } else {
                 self.eqtb.delimiter_code_for(t.chr())
             }
@@ -2266,6 +2284,15 @@ impl Engine {
             && matches!(self.eqtb.resolve(t.cs_id()), Some(Equiv::Prim(Prim::Delimiter)))
         {
             return self.scan_delimiter_code("\\delimiter");
+        } else if t.is_cs()
+            && matches!(
+                self.eqtb.resolve(t.cs_id()),
+                Some(Equiv::Prim(Prim::XeMath(crate::xemath_prims::XeMath::Delimiter)))
+            )
+        {
+            // `\Udelimiter <class> <fam> <usv>`: the class is discarded (§26751)
+            self.scan_xe_math_class();
+            return self.scan_xe_fam_usv_delcode();
         } else {
             -1
         };
@@ -2286,6 +2313,9 @@ impl Engine {
     }
 
     pub(crate) fn scan_delimiter_code(&mut self, command: &str) -> i32 {
+        if self.engine_kind == crate::engine::EngineKind::XeTeX {
+            return self.scan_xe_delimiter_int();
+        }
         let (value, source) = self.scan_int_with_source();
         if (0..0x0800_0000).contains(&value) {
             value
@@ -3295,6 +3325,11 @@ impl Engine {
                 // (control.rs has no arm for the equiv), so materialize them here
                 Some(Equiv::MathCharDef(v)) if self.mode.is_m() && self.engine_kind == crate::engine::EngineKind::LuaTeX => {
                     self.math_given_command(i32::from(v), false, t.cs_id());
+                    return;
+                }
+                Some(Equiv::UMathCharDef(v)) if self.mode.is_m() && self.engine_kind == crate::engine::EngineKind::XeTeX => {
+                    let source = self.current_token_source_mark();
+                    self.xe_set_math_char_at(i64::from(v as u32), v as u32, source);
                     return;
                 }
                 Some(Equiv::UMathCharDef(v)) if self.mode.is_m() => {

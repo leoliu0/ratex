@@ -102,6 +102,10 @@ pub enum MathStyle {
 /// `top_accent_chr`, `bot_accent_chr`, `overlay_accent_chr`, `accentfraction`
 /// and the subtype). A missing accent is `None`; `subtype` is 0 (both
 /// stretchable), 1 (top fixed), 2 (bottom fixed) or 3 (both fixed).
+/// A XeTeX accent noad (`\mathaccent`, `\Umathaccent`) has only `top`, the
+/// accent character in any of the 256 families, and its `subtype` is
+/// xetex.web's: 0, `fixed_acc` 1, `bottom_acc` 2 (the accent sits below), or
+/// `bottom_acc + fixed_acc` 3.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AccentSpec {
     pub top: Option<(u8, u32)>,
@@ -153,6 +157,22 @@ impl Delim {
             small_char: (c >> 12) & 0xFF,
             large_fam: ((c >> 8) & 0xF) as u8,
             large_char: c & 0xFF,
+        }
+    }
+
+    /// The delimiter of a XeTeX delimiter code (xetex.web `scan_delimiter`,
+    /// §26763): `0x40000000 + fam * 0x200000 + usv` is an extended code with
+    /// one size only, any other value a tex.web 27-bit code.
+    pub fn from_xetex_code(code: i32) -> Delim {
+        if code >= 0x4000_0000 {
+            Delim {
+                small_fam: ((code / 0x20_0000) % 0x100) as u8,
+                small_char: (code % 0x20_0000) as u32,
+                large_fam: 0,
+                large_char: 0,
+            }
+        } else {
+            Delim::from_code(code)
         }
     }
 

@@ -343,8 +343,8 @@ pub struct Engine {
     /// State of the file/resource callbacks (`lua_cb_resources.rs`).
     pub(crate) lua_res: crate::lua_cb_resources::LuaResources,
     pub native_text: crate::native_layout::NativeTextState,
-    pub(crate) native_utf8_bytes: [u8; 4],
-    pub(crate) native_utf8_len: usize,
+    /// `\\XeTeXlinebreaklocale` (None when unset)
+    pub xetex_linebreak_locale: Option<String>,
 
     pub job_running: bool,
     pub end_occurred: bool,
@@ -501,14 +501,9 @@ pub struct Engine {
     /// resolve here before falling back to the TDS (matches running TeX from
     /// the document's own directory).
     pub main_dir: Option<std::path::PathBuf>,
-    pub xetex_char_classes: crate::FxHashMap<u32, u8>,
-    pub xetex_interchar_toks: crate::FxHashMap<(u8, u8), Vec<crate::token::Token>>,
-    pub xetex_last_char_class: Option<u8>,
-    pub xetex_interchartokenstate: i32,
-    pub xetex_use_glyph_metrics: i32,
-    pub xetex_generate_actual_text: i32,
-    pub xetex_input_normalization: i32,
-    pub xetex_dash_break_state: i32,
+    pub xetex_last_char_class: Option<u16>,
+    /// `\XeTeXdefaultencoding` (xetex.web `XeTeX_default_input_mode`).
+    pub xetex_default_encoding: crate::xetex_input::EncSpec,
     pub asset_fingerprint: u64,
     pub job_ended_by_end: bool,
     pub align_preamble: Vec<crate::align::ColSpec>,
@@ -1152,8 +1147,7 @@ impl Engine {
             lua_fonts: Default::default(),
             lua_res: Default::default(),
             native_text: crate::native_layout::NativeTextState::default(),
-            native_utf8_bytes: [0; 4],
-            native_utf8_len: 0,
+            xetex_linebreak_locale: None,
             job_running: true,
             end_occurred: false,
             explicit_end_seen: false,
@@ -1247,14 +1241,8 @@ impl Engine {
             allow_missing_main_aux: false,
             main_dir: None,
             job_ended_by_end: false,
-            xetex_char_classes: crate::FxHashMap::default(),
-            xetex_interchar_toks: crate::FxHashMap::default(),
             xetex_last_char_class: None,
-            xetex_interchartokenstate: 0,
-            xetex_use_glyph_metrics: 1,
-            xetex_generate_actual_text: 0,
-            xetex_input_normalization: 0,
-            xetex_dash_break_state: 0,
+            xetex_default_encoding: crate::xetex_input::EncSpec::Auto,
             asset_fingerprint: 0,
             align_preamble: Vec::new(),
             align_tabskip_0: crate::boxes::Glue::zero(),
@@ -1738,10 +1726,6 @@ impl Engine {
         d!(eng, b"fontchardp", FontCharDp);
         d!(eng, b"fontcharic", FontCharIc);
         d!(eng, b"noboundary", NoBoundary);
-        d!(eng, b"RatexUnicodeVersion", RatexUnicodeVersion);
-        d!(eng, b"RatexNativeTextMode", RatexNativeTextMode);
-        d!(eng, b"RatexUTFviii", RatexUtfEight);
-        d!(eng, b"RatexLiteralChar", RatexLiteralChar);
         d!(eng, b"ratexcjktext", RatexCjkText);
         d!(eng, b"hskip", HSkip);
         d!(eng, b"vskip", VSkip);
@@ -1992,24 +1976,6 @@ impl Engine {
                 }
             }
         }
-        if eng.engine_kind != EngineKind::XeTeX {
-            for name in [
-                b"XeTeXversion" as &[u8],
-                b"XeTeXrevision",
-                b"XeTeXfonttype",
-                b"XeTeXglyph",
-                b"XeTeXglyphindex",
-                b"XeTeXglyphname",
-                b"XeTeXpicfile",
-                b"XeTeXpdffile",
-                b"xetexversion",
-                b"xetexrevision",
-            ] {
-                if let Some(id) = eng.cs.lookup(name) {
-                    eng.eqtb.undefine(id, true);
-                }
-            }
-        }
         if eng.engine_kind != EngineKind::LuaTeX {
             for name in [
                 b"luatexversion" as &[u8],
@@ -2095,7 +2061,6 @@ impl Engine {
         eng.eqtb.dim_params[DimParam::PdfVOrigin.idx() as usize] = sp_in;
         eng.eqtb.dim_params[DimParam::PdfPageWidth.idx() as usize] = 0;
         eng.eqtb.dim_params[DimParam::PdfPageHeight.idx() as usize] = 0;
-        eng.init_xetex_primitives();
         // pdfTeX / e-TeX engine primitives (prim codes 400-413). Only the
         // ones with implemented semantics are registered.
         d!(eng, b"ifpdfabsnum", IfPdfAbsNum);
@@ -2152,6 +2117,7 @@ impl Engine {
         }
         eng.primitive_table = table;
         eng.init_luatex_primitives();
+        eng.init_xetex_primitives();
     }
     /// SyncTeX records are taken while `\synctex` is nonzero (synctex.c
     /// `SYNCTEX_VALUE`).

@@ -8,7 +8,7 @@ directory with hermetic resource lookup (embedded packages only) and a fixed
 dump is recompressed with `zstd -19` and written next to the other assets.
 
 Usage:
-  scripts/build_formats.py [--binary PATH] [--engine pdflatex|lualatex ...]
+  scripts/build_formats.py [--binary PATH] [--engine pdflatex|xelatex|lualatex ...]
                            [--check] [--epoch N] [--keep DIR]
 
 `--check` rebuilds each format twice and compares the two dumps (determinism)
@@ -33,12 +33,16 @@ ASSETS = REPO / "crates" / "tex-cli" / "assets"
 # engine program name -> embedded asset
 FORMATS = {
     "pdflatex": "default.fmt.zst",
+    "xelatex": "xelatex.fmt.zst",
     "lualatex": "lualatex.fmt.zst",
 }
-# extra `-ini` options per engine: pdfTeX formats carry TeX Live's cp227
-# character translation (printable 8-bit characters)
+# extra `-ini` options per engine, as TeX Live's fmtutil.cnf passes them:
+# pdfTeX formats carry the cp227 character translation (printable 8-bit
+# characters); the XeTeX format is made in e-TeX mode
+# (`xelatex xetex language.dat -etex xelatex.ini`).
 EXTRA_ARGS = {
     "pdflatex": ["-translate-file=cp227.tcx"],
+    "xelatex": ["-etex"],
 }
 DEFAULT_EPOCH = "1700000000"
 ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"

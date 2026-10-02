@@ -39,6 +39,7 @@ pub(crate) enum ListType {
     Mark,
     EveryEof,
     Write,
+    InterCharToks,
 }
 
 impl ListType {
@@ -60,6 +61,7 @@ impl ListType {
             ListType::Mark => "<mark> ",
             ListType::EveryEof => "<everyeof> ",
             ListType::Write => "<write> ",
+            ListType::InterCharToks => "<XeTeXinterchartoks> ",
         }
     }
 
@@ -79,6 +81,7 @@ impl ListType {
             "<mark>" => ListType::Mark,
             "<output>" => ListType::Output,
             "<write>" => ListType::Write,
+            "<XeTeXinterchartoks>" => ListType::InterCharToks,
             "<inserted>" => ListType::Inserted,
             "<endoutput>" => return None,
             _ => ListType::BackedUp,

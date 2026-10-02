@@ -3299,7 +3299,7 @@ impl Engine {
                     vec![b]
                 } else {
                     let fid = self.eqtb.style_fonts[font_size(style)][*fam as usize];
-                    if self.font_loader.native_fonts.contains_key(&fid) {
+                    if self.is_native_font(fid) {
                         if let Some(ch) = char::from_u32(*c) {
                             if let Ok(nodes) = self.shape_native_slice(fid, &ch.to_string()) {
                                 return nodes;
@@ -3640,7 +3640,7 @@ impl Engine {
                     nuc = hpack(Vec::new(), None, HBOX, &self.eqtb).node;
                 } else {
                     let fid = self.eqtb.style_fonts[font_size(style)][*fam as usize];
-                    if self.font_loader.native_fonts.contains_key(&fid) {
+                    if self.is_native_font(fid) {
                         if let Some(ch) = char::from_u32(*c) {
                             if let Ok(nodes) = self.shape_native_slice(fid, &ch.to_string()) {
                                 nuc = hpack(nodes, None, HBOX, &self.eqtb).node;

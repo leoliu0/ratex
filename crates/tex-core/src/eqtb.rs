@@ -16,6 +16,11 @@ use crate::token::{CsId, Token, CAT_OTHER};
 pub const LEVEL_ONE: u16 = 1;
 pub const MAX_GROUP_LEVEL: u16 = u16::MAX;
 pub const NUM_REGISTERS: usize = 32768;
+/// xetex.web `char_class_limit`: classes are 0..=4096; 4096 is "ignored"
+/// (`char_class_ignored`) and 4095 the word boundary (`char_class_boundary`).
+pub const CHAR_CLASS_LIMIT: u32 = 0x1000;
+pub const CHAR_CLASS_IGNORED: u16 = 0x1000;
+pub const CHAR_CLASS_BOUNDARY: u16 = 0x0FFF;
 /// pseudo box registers behind luatex's `\localleftbox` and `\localrightbox`
 /// (`local_left_box_base`, `local_right_box_base`): ordinary save-stack boxes
 /// that no register number reaches
@@ -390,13 +395,19 @@ pub enum SaveItem {
     MathCode(u8, u16, u16),
     DelCode(u8, i32, u16),
     LcCode(u8, u8, u16),
-    SfCode(u8, u16, u16),
+    /// (character, `class << 16 | sfcode`, old level): xetex.web keeps the
+    /// \XeTeXcharclass in the high half of the sfcode entry, so both are
+    /// saved, restored and made global together.
+    SfCode(u8, u32, u16),
     UcCode(u8, u8, u16),
     UnicodeCase(bool, u32, Option<(u32, u16)>),
     UnicodeCat(i32, u32, Option<(u8, u16)>),
     UnicodeMath(u32, Option<(u32, u16)>),
     UnicodeDel(u32, Option<(i64, u16)>),
-    UnicodeSf(u32, Option<(u16, u16)>),
+    UnicodeSf(u32, Option<(u32, u16)>),
+    /// `\XeTeXinterchartoks` entry (`class1 * 4096 + class2`) before a local
+    /// assignment.
+    InterCharToks(u32, Option<(Rc<Vec<Token>>, u16)>),
     /// LuaTeX `\attribute n` before a local assignment.
     Attribute(u32, Option<(i32, u16)>),
     /// LuaTeX `\Umath` parameter (`param * 8 + style`) before a local assignment.
@@ -445,6 +456,8 @@ pub(crate) enum TraceSlot {
     LcCode(u32),
     UcCode(u32),
     SfCode(u32),
+    /// xetex.web's `show_sa` prints an `\XeTeXinterchartoks` element as `?=?`.
+    InterCharToks,
     CurFont,
     /// (style 0=text 1=script 2=scriptscript, family)
     StyleFont(u8, u16),
@@ -593,13 +606,19 @@ pub struct Eqtb {
     pub lc_levels: Vec<u16>,
     pub sf_code: Vec<u16>,
     pub sf_levels: Vec<u16>,
+    /// `\XeTeXcharclass` of characters below 256 (high half of the sfcode
+    /// entry; shares `sf_levels`).
+    pub sf_class: Vec<u16>,
     pub uc_code: Vec<u8>,
     pub uc_levels: Vec<u16>,
     /// Sparse Unicode overrides; the byte tables remain the pdfTeX hot path.
     pub unicode_cat_codes: crate::FxHashMap<u32, (u8, u16)>,
     pub unicode_math_codes: crate::FxHashMap<u32, (u32, u16)>,
     pub unicode_del_codes: crate::FxHashMap<u32, (i64, u16)>,
-    pub unicode_sf_codes: crate::FxHashMap<u32, (u16, u16)>,
+    /// Sparse sfcode entries above 255, packed `class << 16 | sfcode`.
+    pub unicode_sf_codes: crate::FxHashMap<u32, (u32, u16)>,
+    /// `\XeTeXinterchartoks` token lists, keyed `class1 * 4096 + class2`.
+    pub inter_char_toks: crate::FxHashMap<u32, (Rc<Vec<Token>>, u16)>,
     pub unicode_case_codes: crate::FxHashMap<(bool, u32), (u32, u16)>,
     /// LuaTeX: id of the current catcode table and its assignment level.
     pub cat_table: i32,
@@ -631,6 +650,8 @@ pub struct Eqtb {
     pub style_font_levels: [[u16; 256]; 3],
 
     pub fonts: Vec<Rc<Font>>,
+    /// A native (XeTeX) font was loaded: gates the native-word work in `hpack`.
+    pub has_native_fonts: bool,
     /// mutable copy of font params (\fontdimen), per font
     pub font_params: Vec<Vec<i32>>,
     pub font_param_levels: Vec<Vec<u16>>,
@@ -921,6 +942,7 @@ impl Eqtb {
             lc_levels: vec![LEVEL_ONE; 256],
             sf_code: sf_code.to_vec(),
             sf_levels: vec![LEVEL_ONE; 256],
+            sf_class: vec![0; 256],
             uc_code: uc_code.to_vec(),
             uc_levels: vec![LEVEL_ONE; 256],
             unicode_case_codes: crate::FxHashMap::default(),
@@ -928,6 +950,7 @@ impl Eqtb {
             unicode_math_codes: crate::FxHashMap::default(),
             unicode_del_codes: crate::FxHashMap::default(),
             unicode_sf_codes: crate::FxHashMap::default(),
+            inter_char_toks: crate::FxHashMap::default(),
             cat_table: 0,
             cat_table_level: LEVEL_ONE,
             cat_tables: crate::FxHashMap::default(),
@@ -941,6 +964,7 @@ impl Eqtb {
             style_fonts: [[0; 256]; 3],
             style_font_levels: [[LEVEL_ONE; 256]; 3],
             fonts: Vec::new(),
+            has_native_fonts: false,
             font_params: Vec::new(),
             font_param_levels: Vec::new(),
             hyphen_char: Vec::new(),
@@ -1160,7 +1184,8 @@ impl Eqtb {
             TraceSlot::DelCode(c) => TraceValue::Int(self.delimiter_code_for(c)),
             TraceSlot::LcCode(c) => TraceValue::Int(self.case_code(c, false).into()),
             TraceSlot::UcCode(c) => TraceValue::Int(self.case_code(c, true).into()),
-            TraceSlot::SfCode(c) => TraceValue::Int(self.space_factor_code(c).into()),
+            TraceSlot::SfCode(c) => TraceValue::Int(self.sf_entry(c).into()),
+            TraceSlot::InterCharToks => TraceValue::Int(0),
             TraceSlot::CurFont => TraceValue::Font(self.cur_font_val),
             TraceSlot::StyleFont(s, f) => {
                 TraceValue::Font(self.style_fonts[s as usize][f as usize])
@@ -1576,20 +1601,26 @@ impl Eqtb {
         self.end_assign(slot);
     }
     pub fn assign_sf_code(&mut self, c: u8, v: u16, global: bool) {
+        let class = self.sf_class[c as usize];
+        self.assign_sf_entry(c, class, v, global);
+    }
+    /// tex.web `define(sf_code_base + c, data, ...)` of the packed
+    /// `class << 16 | sfcode` entry (a reassignment of the same entry is
+    /// not saved).
+    fn assign_sf_entry(&mut self, c: u8, class: u16, v: u16, global: bool) {
+        let i = c as usize;
         let slot = TraceSlot::SfCode(c.into());
-        if !self.begin_assign(global, self.sf_code[c as usize] == v, slot) {
+        let old = (u32::from(self.sf_class[i]) << 16) | u32::from(self.sf_code[i]);
+        let new = (u32::from(class) << 16) | u32::from(v);
+        if !self.begin_assign(global, old == new, slot) {
             return;
         }
-        Self::slot(
-            &mut self.sf_code,
-            &mut self.sf_levels,
-            c as usize,
-            v,
-            global,
-            self.cur_level,
-            &mut self.save_stack,
-            |old, ol| SaveItem::SfCode(c, old, ol),
-        );
+        if !global && self.sf_levels[i] < self.cur_level {
+            self.save_stack.push(SaveItem::SfCode(c, old, self.sf_levels[i]));
+        }
+        self.sf_code[i] = v;
+        self.sf_class[i] = class;
+        self.sf_levels[i] = if global { LEVEL_ONE } else { self.cur_level };
         self.end_assign(slot);
     }
     pub fn assign_uc_code(&mut self, c: u8, v: u8, global: bool) {
@@ -1996,12 +2027,30 @@ impl Eqtb {
         self.end_assign(slot);
     }
 
+    /// The packed sfcode entry of `character`: `\XeTeXcharclass << 16 |
+    /// \sfcode`.
+    pub fn sf_entry(&self, character: u32) -> u32 {
+        if let Some(&(value, _)) = self.unicode_sf_codes.get(&character) {
+            return value;
+        }
+        match self.sf_code.get(character as usize) {
+            Some(&sf) => (u32::from(self.sf_class[character as usize]) << 16) | u32::from(sf),
+            None => 1000,
+        }
+    }
+
     pub fn space_factor_code(&self, character: u32) -> u16 {
         self.unicode_sf_codes
             .get(&character)
-            .map(|&(value, _)| value)
+            .map(|&(value, _)| value as u16)
             .or_else(|| self.sf_code.get(character as usize).copied())
             .unwrap_or(1000)
+    }
+
+    /// `\XeTeXcharclass` of `character` (0 when unset; 4096 would mean
+    /// "ignored").
+    pub fn char_class(&self, character: u32) -> u16 {
+        (self.sf_entry(character) >> 16) as u16
     }
 
     pub fn assign_space_factor_code(&mut self, character: u32, value: u16, global: bool) {
@@ -2009,19 +2058,68 @@ impl Eqtb {
             self.assign_sf_code(character, value, global);
             return;
         }
+        let class = self.char_class(character);
+        self.assign_sparse_sf_entry(character, class, value, global);
+    }
+
+    /// xetex.web `\XeTeXcharclass <usv> = <class>`: the class keeps the
+    /// entry's \sfcode.
+    pub fn assign_char_class(&mut self, character: u32, class: u16, global: bool) {
+        let sf = self.space_factor_code(character);
+        if let Ok(small) = u8::try_from(character) {
+            self.assign_sf_entry(small, class, sf, global);
+        } else {
+            self.assign_sparse_sf_entry(character, class, sf, global);
+        }
+    }
+
+    fn assign_sparse_sf_entry(&mut self, character: u32, class: u16, value: u16, global: bool) {
         let slot = TraceSlot::SfCode(character);
-        if !self.begin_assign(global, self.space_factor_code(character) == value, slot) {
+        let packed = (u32::from(class) << 16) | u32::from(value);
+        if !self.begin_assign(global, self.sf_entry(character) == packed, slot) {
             return;
         }
         Self::sparse_slot(
             &mut self.unicode_sf_codes,
             character,
-            value,
+            packed,
             global,
             self.cur_level,
             &mut self.save_stack,
             |old| SaveItem::UnicodeSf(character, old),
         );
+        self.end_assign(slot);
+    }
+
+    /// `\XeTeXinterchartoks <c1> <c2>`; `None` when nothing (or an empty
+    /// list) is set.
+    pub fn inter_char_toks(&self, c1: u16, c2: u16) -> Option<&Rc<Vec<Token>>> {
+        let key = u32::from(c1) * CHAR_CLASS_LIMIT + u32::from(c2);
+        self.inter_char_toks
+            .get(&key)
+            .map(|(toks, _)| toks)
+            .filter(|toks| !toks.is_empty())
+    }
+
+    /// xetex.web `sa_define` of an inter-character element (an empty list
+    /// reverts to "unset").
+    pub fn assign_inter_char_toks(&mut self, c1: u16, c2: u16, toks: Rc<Vec<Token>>, global: bool) {
+        let key = u32::from(c1) * CHAR_CLASS_LIMIT + u32::from(c2);
+        let old = self.inter_char_toks.get(&key).cloned();
+        let same = match &old {
+            Some((t, _)) => Rc::ptr_eq(t, &toks) || (t.is_empty() && toks.is_empty()),
+            None => toks.is_empty(),
+        };
+        let slot = TraceSlot::InterCharToks;
+        if !self.begin_assign(global, same, slot) {
+            return;
+        }
+        let old_level = old.as_ref().map_or(LEVEL_ONE, |(_, level)| *level);
+        if !global && old_level < self.cur_level {
+            self.save_stack.push(SaveItem::InterCharToks(key, old));
+        }
+        let level = if global { LEVEL_ONE } else { self.cur_level };
+        self.inter_char_toks.insert(key, (toks, level));
         self.end_assign(slot);
     }
 
@@ -2398,7 +2496,8 @@ impl Eqtb {
                 SaveItem::SfCode(c, v, l) => {
                     let restored = self.sf_levels[c as usize] > LEVEL_ONE;
                     if restored {
-                        self.sf_code[c as usize] = v;
+                        self.sf_code[c as usize] = v as u16;
+                        self.sf_class[c as usize] = (v >> 16) as u16;
                         self.sf_levels[c as usize] = l;
                     }
                     self.trace_restore(restored, TraceSlot::SfCode(c.into()));
@@ -2478,6 +2577,11 @@ impl Eqtb {
                     let restored = Self::sparse_is_local(&self.unicode_sf_codes, character);
                     Self::restore_sparse(&mut self.unicode_sf_codes, character, old);
                     self.trace_restore(restored, TraceSlot::SfCode(character));
+                }
+                SaveItem::InterCharToks(key, old) => {
+                    let restored = Self::sparse_is_local(&self.inter_char_toks, key);
+                    Self::restore_sparse(&mut self.inter_char_toks, key, old);
+                    self.trace_restore(restored, TraceSlot::InterCharToks);
                 }
                 SaveItem::StyleFont(style, fam, v, l) => {
                     let (s, f) = (style as usize, fam as usize);

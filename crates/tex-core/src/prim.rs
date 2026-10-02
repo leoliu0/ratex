@@ -271,9 +271,24 @@ pub enum IntParam {
     /// local_par and dir nodes the group appended
     NoLocalWhatsits,
     NoLocalDirs,
+    /// XeTeX integer parameters (xetex.web `int_pars` and the `eTeX_state`
+    /// integers XeTeX adds); all are ordinary scoped eqtb integers.
+    XeTeXLinebreakPenalty,
+    XeTeXProtrudeChars,
+    XeTeXUpwardsMode,
+    XeTeXUseGlyphMetrics,
+    XeTeXInterCharTokenState,
+    XeTeXDashBreakState,
+    XeTeXInputNormalization,
+    XeTeXTracingFonts,
+    XeTeXInterwordSpaceShaping,
+    XeTeXGenerateActualText,
+    XeTeXHyphenatableLength,
+    /// TeX Live `\tracingstacklevels`.
+    TracingStackLevels,
 }
 
-pub const NUM_INT_PARAMS: usize = 140 + 54;
+pub const NUM_INT_PARAMS: usize = 140 + 54 + 12;
 
 impl IntParam {
     #[inline]
@@ -476,6 +491,18 @@ impl IntParam {
         IntParam::PageDirection,
         IntParam::NoLocalWhatsits,
         IntParam::NoLocalDirs,
+        IntParam::XeTeXLinebreakPenalty,
+        IntParam::XeTeXProtrudeChars,
+        IntParam::XeTeXUpwardsMode,
+        IntParam::XeTeXUseGlyphMetrics,
+        IntParam::XeTeXInterCharTokenState,
+        IntParam::XeTeXDashBreakState,
+        IntParam::XeTeXInputNormalization,
+        IntParam::XeTeXTracingFonts,
+        IntParam::XeTeXInterwordSpaceShaping,
+        IntParam::XeTeXGenerateActualText,
+        IntParam::XeTeXHyphenatableLength,
+        IntParam::TracingStackLevels,
     ];
 
     pub fn from_idx(i: u16) -> Option<Self> {
@@ -704,9 +731,11 @@ pub enum GlueParam {
     ThickMuSkip,
     /// LuaTeX `\mathsurroundskip`.
     MathSurroundSkip,
+    /// XeTeX `\XeTeXlinebreakskip`.
+    XeTeXLinebreakSkip,
 }
 
-pub const NUM_GLUE_PARAMS: usize = 18;
+pub const NUM_GLUE_PARAMS: usize = 19;
 
 impl GlueParam {
     #[inline]
@@ -1088,8 +1117,6 @@ pub enum Prim {
     XeTeXGlyph,
     XeTeXGlyphIndex,
     XeTeXGlyphBounds,
-    XeTeXUseGlyphMetrics,
-    XeTeXInterCharTokenState,
     XeTeXCharClass,
     XeTeXInterCharToks,
     EtxRevision,
@@ -1150,10 +1177,6 @@ pub enum Prim {
     PdfRandomSeed,
     PdfSetRandomSeed,
     NoBoundary,
-    RatexUnicodeVersion,
-    RatexNativeTextMode,
-    RatexUtfEight,
-    RatexLiteralChar,
     RatexCjkText,
     XeTeXCountGlyphs,
     XeTeXGlyphName,
@@ -1166,12 +1189,9 @@ pub enum Prim {
     XeTeXVariationName,
     XeTeXPicFile,
     XeTeXPdfFile,
-    XeTeXInputNormalization,
-    XeTeXGenerateActualText,
     LuaTeXVersion,
     LuaTeXRevision,
     LuaTeXBanner,
-    XeTeXDashBreakState,
     CatCodeTable,
     InitCatCodeTable,
     SaveCatCodeTable,
@@ -1303,6 +1323,15 @@ pub enum Prim {
     U(crate::uprim::UPrim),
     /// LuaTeX `\Umath<param>` (`set_math_param_cmd`), by `math_param_*` number.
     UMath(u8),
+    /// XeTeX `\XeTeXinputencoding` / `\XeTeXdefaultencoding` (extension
+    /// commands that take effect immediately) and `\Uchar`.
+    XeTeXInputEncoding,
+    XeTeXDefaultEncoding,
+    XeTeXUchar,
+    /// XeTeX `\XeTeXlinebreaklocale <name>`.
+    XeTeXLinebreakLocale,
+    /// XeTeX font queries without a variant of their own (slice XeText).
+    XeTeXQuery(crate::xetex_query::XeQuery),
 }
 
 /// Stable wire codes for the format dump (`crate::format`). Unit variants
@@ -1637,8 +1666,6 @@ impl Prim {
             Prim::XeTeXGlyph => 296,
             Prim::XeTeXGlyphIndex => 297,
             Prim::XeTeXGlyphBounds => 298,
-            Prim::XeTeXUseGlyphMetrics => 299,
-            Prim::XeTeXInterCharTokenState => 300,
             Prim::XeTeXCharClass => 301,
             Prim::XeTeXInterCharToks => 302,
             Prim::EtxRevision => 303,
@@ -1687,10 +1714,6 @@ impl Prim {
             Prim::PdfRandomSeed => 346,
             Prim::PdfSetRandomSeed => 347,
             Prim::NoBoundary => 348,
-            Prim::RatexUnicodeVersion => 349,
-            Prim::RatexNativeTextMode => 350,
-            Prim::RatexUtfEight => 351,
-            Prim::RatexLiteralChar => 352,
             Prim::RatexCjkText => 353,
             Prim::XeTeXCountGlyphs => 354,
             Prim::XeTeXGlyphName => 355,
@@ -1703,12 +1726,9 @@ impl Prim {
             Prim::XeTeXVariationName => 362,
             Prim::XeTeXPicFile => 363,
             Prim::XeTeXPdfFile => 364,
-            Prim::XeTeXInputNormalization => 365,
-            Prim::XeTeXGenerateActualText => 366,
             Prim::LuaTeXVersion => 367,
             Prim::LuaTeXRevision => 368,
             Prim::LuaTeXBanner => 369,
-            Prim::XeTeXDashBreakState => 371,
             Prim::CatCodeTable => 372,
             Prim::InitCatCodeTable => 373,
             Prim::SaveCatCodeTable => 374,
@@ -1796,9 +1816,14 @@ impl Prim {
             Prim::URight => 654,
             Prim::U(u) => 0x5000 | u.idx(),
             Prim::UMath(id) => 0x5800 | id as u16,
+            Prim::XeTeXQuery(q) => 0x5900 | q.idx(),
             Prim::ScriptScriptStyle => 284,
             Prim::Patterns => 287,
             Prim::Hyphenation => 288,
+            Prim::XeTeXInputEncoding => 1100,
+            Prim::XeTeXDefaultEncoding => 1101,
+            Prim::XeTeXUchar => 1102,
+            Prim::XeTeXLinebreakLocale => 1103,
             Prim::IntP(p) => 0x1000 | p.idx(),
             Prim::DimP(p) => 0x2000 | p.idx(),
             Prim::GlueP(p) => 0x3000 | p.idx(),
@@ -2108,8 +2133,6 @@ impl Prim {
             296 => Some(Prim::XeTeXGlyph),
             297 => Some(Prim::XeTeXGlyphIndex),
             298 => Some(Prim::XeTeXGlyphBounds),
-            299 => Some(Prim::XeTeXUseGlyphMetrics),
-            300 => Some(Prim::XeTeXInterCharTokenState),
             301 => Some(Prim::XeTeXCharClass),
             302 => Some(Prim::XeTeXInterCharToks),
             303 => Some(Prim::EtxRevision),
@@ -2158,10 +2181,6 @@ impl Prim {
             346 => Some(Prim::PdfRandomSeed),
             347 => Some(Prim::PdfSetRandomSeed),
             348 => Some(Prim::NoBoundary),
-            349 => Some(Prim::RatexUnicodeVersion),
-            350 => Some(Prim::RatexNativeTextMode),
-            351 => Some(Prim::RatexUtfEight),
-            352 => Some(Prim::RatexLiteralChar),
             353 => Some(Prim::RatexCjkText),
             354 => Some(Prim::XeTeXCountGlyphs),
             355 => Some(Prim::XeTeXGlyphName),
@@ -2174,12 +2193,9 @@ impl Prim {
             362 => Some(Prim::XeTeXVariationName),
             363 => Some(Prim::XeTeXPicFile),
             364 => Some(Prim::XeTeXPdfFile),
-            365 => Some(Prim::XeTeXInputNormalization),
-            366 => Some(Prim::XeTeXGenerateActualText),
             367 => Some(Prim::LuaTeXVersion),
             368 => Some(Prim::LuaTeXRevision),
             369 => Some(Prim::LuaTeXBanner),
-            371 => Some(Prim::XeTeXDashBreakState),
             372 => Some(Prim::CatCodeTable),
             373 => Some(Prim::InitCatCodeTable),
             374 => Some(Prim::SaveCatCodeTable),
@@ -2265,10 +2281,15 @@ impl Prim {
             652 => Some(Prim::ULeft),
             653 => Some(Prim::UMiddle),
             654 => Some(Prim::URight),
+            1100 => Some(Prim::XeTeXInputEncoding),
+            1101 => Some(Prim::XeTeXDefaultEncoding),
+            1102 => Some(Prim::XeTeXUchar),
+            1103 => Some(Prim::XeTeXLinebreakLocale),
             0x5000..=0x57ff => Some(Prim::U(crate::uprim::UPrim::from_idx(c & 0x07ff)?)),
             0x5800..=0x58ff if (c & 0xff) < crate::uprim::UMATH_NAMES.len() as u16 => {
                 Some(Prim::UMath((c & 0xff) as u8))
             }
+            0x5900..=0x59ff => Some(Prim::XeTeXQuery(crate::xetex_query::XeQuery::from_idx(c & 0xff)?)),
             0x1000..=0x1fff => {
                 let i = c & 0x0fff;
                 Some(Prim::IntP(IntParam::from_idx(i)?))
@@ -2301,6 +2322,7 @@ impl Prim {
                     15 => GlueParam::MedMuSkip,
                     16 => GlueParam::ThickMuSkip,
                     17 => GlueParam::MathSurroundSkip,
+                    18 => GlueParam::XeTeXLinebreakSkip,
                     _ => return None,
                 }))
             }

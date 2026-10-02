@@ -136,7 +136,15 @@ impl Engine {
                 matches!(t.cc(), 11 | 12)
             };
             if !continues_character {
-                self.finish_native_utf8();
+                if self.engine_kind == crate::engine::EngineKind::XeTeX {
+                    if self.xe_check_post_char(t) {
+                        self.flush_native_text();
+                        self.end_char_chain();
+                        self.xe_end_run();
+                        return;
+                    }
+                    self.xe_end_run();
+                }
                 self.flush_native_text();
                 self.end_char_chain();
             }
@@ -414,36 +422,7 @@ impl Engine {
             self.start_paragraph(true);
             return;
         }
-        if !token.is_unicode_char()
-            && !self.mode.is_m()
-            && (token.chr() >= 128 || self.native_utf8_len != 0)
-            && self.native_text_active()
-        {
-            self.native_utf8_bytes[self.native_utf8_len] = token.chr() as u8;
-            self.native_utf8_len += 1;
-            match std::str::from_utf8(&self.native_utf8_bytes[..self.native_utf8_len]) {
-                Ok(text) => {
-                    let scalar = text.chars().next().unwrap() as u32;
-                    self.native_utf8_len = 0;
-                    self.unicode_char_token(scalar, token.cc() == 11);
-                }
-                Err(error) if error.error_len().is_none() && self.native_utf8_len < 4 => {}
-                Err(_) => {
-                    self.native_utf8_len = 0;
-                    self.error("Invalid UTF-8 sequence in native text");
-                }
-            }
-            return;
-        }
-        self.finish_native_utf8();
         self.unicode_char_token(token.chr(), token.cc() == 11);
-    }
-
-    fn finish_native_utf8(&mut self) {
-        if self.native_utf8_len != 0 {
-            self.native_utf8_len = 0;
-            self.error("Incomplete UTF-8 sequence in native text");
-        }
     }
 
     pub(crate) fn unicode_char_token(&mut self, scalar: u32, is_letter: bool) {
@@ -459,33 +438,8 @@ impl Engine {
             self.append_lua_glyph(scalar);
             return;
         }
-        if !self.mode.is_m() && self.xetex_interchartokenstate > 0 {
-            let cur_class = self.xetex_char_classes.get(&scalar).copied().unwrap_or(0);
-            if let Some(prev_class) = self.xetex_last_char_class {
-                if let Some(toks) = self.xetex_interchar_toks.get(&(prev_class, cur_class)).cloned() {
-                    if !toks.is_empty() {
-                        self.xetex_last_char_class = Some(cur_class);
-                        self.push_token(Token::unicode_char(if is_letter { 11 } else { 12 }, scalar));
-                        self.push_tokens(toks);
-                        return;
-                    }
-                }
-            }
-            self.xetex_last_char_class = Some(cur_class);
-        }
-        // Resolve the scoped CJK face only when a CJK character actually uses
-        // it. A Latin-only bold heading must not require a CJK bold face.
-        if !self.mode.is_m() && char::from_u32(scalar).is_some_and(crate::native_layout::is_cjk) {
-            if let Some(cs) = self.cs.lookup(b"ratex@cjkfont") {
-                if matches!(self.eqtb.resolve(cs), Some(Equiv::Macro(_))) {
-                    self.push_token(Token::unicode_char(if is_letter { 11 } else { 12 }, scalar));
-                    self.push_token(Token::from_cs(cs));
-                    return;
-                }
-            }
-        }
-        if !self.mode.is_m() && self.append_native_char(scalar) {
-            self.space_factor = self.space_factor_of(scalar);
+        if self.engine_kind == crate::engine::EngineKind::XeTeX && !self.mode.is_m() {
+            self.xetex_main_char(scalar, is_letter);
             return;
         }
         if let Ok(byte) = u8::try_from(scalar) {
@@ -783,6 +737,12 @@ impl Engine {
                 // tex.web §1224: the target is made \relax before the value is scanned
                 self.eqtb.assign(t, Equiv::Prim(Prim::Relax), g);
                 self.scan_optional_equals();
+                if self.engine_kind == crate::engine::EngineKind::XeTeX {
+                    let v = self.scan_usv_num();
+                    self.eqtb.assign(t, Equiv::CharDef(v), g);
+                    self.clear_prefixes();
+                    return true;
+                }
                 let (v, value_source) = self.scan_int_with_source();
                 if u32::try_from(v).ok().and_then(char::from_u32).is_none() {
                     self.error_at(
@@ -1040,6 +1000,14 @@ impl Engine {
                 let g = self.take_global();
                 self.eqtb.assign_toks_param(tp, toks, g);
                 self.clear_prefixes();
+                true
+            }
+            XeTeXCharClass => {
+                self.do_xetex_charclass_assign();
+                true
+            }
+            XeTeXInterCharToks => {
+                self.do_xetex_interchartoks_assign(id);
                 true
             }
             p @ (EfCode | LpCode | RpCode | TagCode | KnBsCode | StBsCode | ShBsCode | KnBcCode
@@ -1968,6 +1936,9 @@ impl Engine {
                 Some(Equiv::ToksReg(i)) => return (*self.eqtb.toks[i as usize]).clone(),
                 Some(Equiv::Prim(Prim::ToksP(p))) => {
                     return (*self.eqtb.tok_params[p.idx() as usize]).clone()
+                }
+                Some(Equiv::Prim(Prim::XeTeXInterCharToks)) => {
+                    return self.scan_xetex_interchartoks_the();
                 }
                 Some(Equiv::Prim(Prim::Toks)) => {
                     let i = self.scan_reg_num();

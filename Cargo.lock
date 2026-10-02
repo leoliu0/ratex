@@ -886,6 +886,7 @@ name = "tex-core"
 version = "0.4.7"
 dependencies = [
  "crc32fast",
+ "encoding_rs",
  "flate2",
  "libc",
  "lopdf",
@@ -901,7 +902,9 @@ dependencies = [
  "tex-mplib",
  "tex-ps",
  "ttf-parser",
+ "unicode-bidi",
  "unicode-linebreak",
+ "unicode-normalization",
  "unicode-properties",
  "unicode-segmentation",
 ]

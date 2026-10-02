@@ -10,6 +10,20 @@ use tex_core::driver::png_embed_options;
 /// Precompiled formats containing standard LaTeX packages, baked into the binary.
 static EMBEDDED_DEFAULT_FMT: &[u8] = include_bytes!("../../assets/default.fmt.zst");
 static EMBEDDED_LUALATEX_FMT: &[u8] = include_bytes!("../../assets/lualatex.fmt.zst");
+static EMBEDDED_XELATEX_FMT: &[u8] = include_bytes!("../../assets/xelatex.fmt.zst");
+/// `\XeTeXrevision` and the version of the XeTeX engine Ratex implements
+/// (TeX Live 2026), as in `xetex --version`.
+const XETEX_VERSION: &str = "3.141592653-2.6-0.999998";
+
+/// The file name of a program's built-in format, which a file of that name
+/// in the working directory or beside the executable overrides.
+fn builtin_format_file_name(program: &str) -> &'static str {
+    match program {
+        "lualatex" => "lualatex.fmt",
+        "xelatex" => "xelatex.fmt",
+        _ => "pdflatex.fmt",
+    }
+}
 const DEPCACHE_MAX_BYTES: u64 = 512 * 1024 * 1024;
 const DEPCACHE_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(30 * 24 * 60 * 60);
 const DEPCACHE_GC_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
@@ -293,7 +307,7 @@ fn depcache_path(
     let program = program_name();
     let cwd = absolute_path(std::path::Path::new("."));
     let cwd = encode_record_path(&cwd);
-    let format_overrides = format_override_identity(format);
+    let format_overrides = format_override_identity(&program, format);
     let clock = effective_clock_identity();
     let key = stable_hash(&[
         source.as_bytes(),
@@ -322,15 +336,16 @@ fn depcache_path(
 }
 
 /// Identity of the format files a job may load: the selected `-fmt` file,
-/// or the `pdflatex.fmt` overrides of the built-in format.
-fn format_override_identity(format: &SelectedFormat) -> String {
+/// or the `<program>.fmt` overrides of the built-in format.
+fn format_override_identity(program: &str, format: &SelectedFormat) -> String {
     let mut candidates = match format {
         SelectedFormat::File(path) => vec![path.clone()],
         SelectedFormat::BuiltIn => {
-            let cwd = absolute_path(std::path::Path::new("pdflatex.fmt"));
+            let file_name = builtin_format_file_name(program);
+            let cwd = absolute_path(std::path::Path::new(file_name));
             let executable = std::env::current_exe()
                 .ok()
-                .and_then(|path| path.parent().map(|dir| dir.join("pdflatex.fmt")));
+                .and_then(|path| path.parent().map(|dir| dir.join(file_name)));
             let mut candidates = vec![cwd];
             if let Some(path) = executable {
                 candidates.push(path);
@@ -1679,7 +1694,7 @@ fn lua_locate_format(
 
 /// The format a job loads.
 enum SelectedFormat {
-    /// This program's built-in format (or its `pdflatex.fmt` override).
+    /// This program's built-in format (or its `<program>.fmt` override).
     BuiltIn,
     /// A Ratex format dump selected by name.
     File(std::path::PathBuf),
@@ -1695,7 +1710,7 @@ fn select_format(
     progname: Option<&str>,
 ) -> Result<SelectedFormat, String> {
     let resolve = |name: &str| {
-        if name == program || name == "pdflatex" {
+        if name == program {
             Some(SelectedFormat::BuiltIn)
         } else {
             format_file(name).map(SelectedFormat::File)
@@ -2428,7 +2443,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
         } else if matches!(opt, "-v" | "-version") {
             let version = env!("CARGO_PKG_VERSION");
             if program == "xelatex" {
-                println!("Ratex {version} (xelatex compatibility mode; pdfTeX-2h 1.40.29-rs)");
+                println!("XeTeX {XETEX_VERSION} (Ratex {version})");
             } else if program == "lualatex" {
                 println!("LuaTeX 1.24.0 (Ratex {version})");
             } else {
@@ -2618,11 +2633,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
         banner_replaced = eng.lua_start_run();
     }
     if !plain && !ini {
-        let fmt_file_name = match program.as_str() {
-            "lualatex" => "lualatex.fmt",
-            "xelatex" => "xelatex.fmt",
-            _ => "pdflatex.fmt",
-        };
+        let fmt_file_name = builtin_format_file_name(&program);
         let exe_fmt = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|d| d.join(fmt_file_name)));
@@ -2658,6 +2669,19 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
                 // load in place: the engine (and its kpse/ls-R setup) is reused
                 match tex_core::format::load_format_into(&cand, &mut eng) {
                     Ok(()) => {
+                        // web2c: a format belongs to the engine that dumped it.
+                        if eng.engine_kind != engine_kind {
+                            emit_cli_message(
+                                interaction_mode,
+                                format_args!(
+                                    "{program}: fatal format file error: {} was made by {}, not {}",
+                                    cand.display(),
+                                    eng.engine_kind.command_name(),
+                                    engine_kind.command_name()
+                                ),
+                            );
+                            std::process::exit(1);
+                        }
                         // Sanity: a dump taken from a broken boot (zeroed
                         // catcodes etc.) silently poisons every later run.
                         // Detect and fall through to a fresh boot.
@@ -2712,7 +2736,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
         }
         let embedded_fmt: &[u8] = match program.as_str() {
             "lualatex" => EMBEDDED_LUALATEX_FMT,
-            "xelatex" => &[],
+            "xelatex" => EMBEDDED_XELATEX_FMT,
             _ => EMBEDDED_DEFAULT_FMT,
         };
         if !loaded && !embedded_fmt.is_empty() {
@@ -2764,14 +2788,14 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
                     FormatBootFailure::Errors(count) => emit_cli_message(
                         eng.interaction_mode,
                         format_args!(
-                            "{program}: cannot compile {file}: LaTeX format boot reported {count} error{}; fix the diagnostic above or install a valid pdflatex.fmt{transcript_note}",
+                            "{program}: cannot compile {file}: LaTeX format boot reported {count} error{}; fix the diagnostic above or install a valid {fmt_file_name}{transcript_note}",
                             if count == 1 { "" } else { "s" },
                         ),
                     ),
                     FormatBootFailure::Incomplete { file, line } => emit_cli_message(
                         eng.interaction_mode,
                         format_args!(
-                            "{program}: cannot compile the document: LaTeX format boot ended before \\dump at {file}:{line}; install a valid pdflatex.fmt or fix the format sources{transcript_note}"
+                            "{program}: cannot compile the document: LaTeX format boot ended before \\dump at {file}:{line}; install a valid {fmt_file_name} or fix the format sources{transcript_note}"
                         ),
                     ),
                 }
@@ -2780,12 +2804,16 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
                 }
                 std::process::exit(1);
             }
-            // XeTeX-mode development: the xelatex format is booted from
-            // sources on every run until its embedded asset exists, so a
-            // rebuilt engine never loads a stale dump.
-            let dump_target = exe_fmt.unwrap_or_else(|| std::path::PathBuf::from("pdflatex.fmt"));
-            if program == "xelatex" {
-            } else if let Err(error) = tex_core::format::save_format_compressed(&eng, &dump_target) {
+            // A binary without an embedded format for this program (the asset
+            // is an empty placeholder until regenerated) boots from the
+            // sources every run, so a rebuilt engine never loads a stale dump.
+            let dump_target = exe_fmt.unwrap_or_else(|| std::path::PathBuf::from(fmt_file_name));
+            let cached = if embedded_fmt.is_empty() {
+                Ok(())
+            } else {
+                tex_core::format::save_format_compressed(&eng, &dump_target).map(drop)
+            };
+            if let Err(error) = cached {
                 emit_cli_message(
                     eng.interaction_mode,
                     format_args!(
@@ -2857,7 +2885,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     }
     let engine_banner = match program.as_str() {
         "xelatex" => format!(
-            "This is pdfTeX-2h 1.40.29-rs (Ratex {})\nRatex note: xelatex / -xelatex is a compatibility invocation flag, not the XeTeX runtime.\n",
+            "This is XeTeX, Version {XETEX_VERSION} (Ratex {})\n",
             env!("CARGO_PKG_VERSION")
         ),
         "lualatex" => format!(

@@ -264,9 +264,9 @@ pub(crate) enum FoundInputFile {
     Bytes(Vec<u8>),
 }
 
-/// Engine-owned package adapters and small bootstrap inputs of the pdfTeX
-/// engine and its XeTeX-profile packages. LuaTeX runs the upstream
-/// packages (real fontspec/luaotfload, `graphics.cfg`, `tuenc.def`).
+/// Engine-owned bootstrap inputs and adapters of the pdfTeX engine. XeTeX and
+/// LuaTeX run the upstream packages (real fontspec, `graphics.cfg`,
+/// `tuenc.def`, and `xelatex.ini`/`lualatex.ini`).
 /// They are immutable virtual files: keeping them in `InputStack`'s byte
 /// cache avoids fixed names and repeated writes in the process temp folder.
 fn compatibility_input(name: &str, kind: crate::engine::EngineKind) -> Option<&'static [u8]> {
@@ -289,16 +289,6 @@ fn compatibility_input(name: &str, kind: crate::engine::EngineKind) -> Option<&'
 \input latex.ltx
 \endinput
 ",
-        "xelatex.ini" => br"\begingroup
-  \catcode`\{=1
-  \catcode`\}=2
-  \catcode`\#=6
-  \csname protected\endcsname\gdef\pdfmapfile#1{\special{pdf:mapfile #1}}
-  \csname protected\endcsname\gdef\pdfmapline#1{\special{pdf:mapline #1}}
-\endgroup
-\input latex.ltx
-\endinput
-",
         "graphics.cfg" => br"\ProvidesFile{graphics.cfg}[2026/01/01 v1.0 Ratex graphics configuration]
 \ExecuteOptions{pdftex}
 \AtEndOfPackage{
@@ -310,9 +300,6 @@ fn compatibility_input(name: &str, kind: crate::engine::EngineKind) -> Option<&'
 }
 \endinput
 ",
-        "fontspec.sty" => include_bytes!("../assets/ratex-fontspec.sty"),
-        "xeCJK.sty" => include_bytes!("../assets/ratex-xeCJK.sty"),
-        "tuenc.def" => include_bytes!("../assets/ratex-tuenc.def"),
         "UTF8.chr" => include_bytes!("../assets/ratex-UTF8.chr"),
         _ => return None,
     })

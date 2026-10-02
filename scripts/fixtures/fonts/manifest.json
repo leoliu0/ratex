@@ -578,38 +578,28 @@
   },
   {
     "name": "error_missing_font",
-    "description": "Negative case: Missing font must produce a clear error and no valid PDF",
+    "description": "Negative case (TeX Live xelatex: fontspec error \"The font ... cannot be found\"): a missing font family stops the run and publishes no PDF",
     "dir": "error_missing_font",
     "main_tex": "main.tex",
     "engine": "xelatex",
     "reference_engine": "xelatex",
     "expect_failure": true,
     "expected_error_substrings": [
-      "not found",
-      "cannot find font",
-      "unknown font",
-      "unable to load font",
-      "font not found"
+      "The font \"NonexistentPhantomFont12345\" cannot be"
     ],
     "check_type": "negative_error"
   },
   {
-    "name": "error_restricted_font",
-    "description": "Negative case: Font with restricted license embedding (fsType) must be rejected",
+    "name": "restricted_font_embeds",
+    "description": "TeX Live xelatex (xdvipdfmx) embeds a font whose OS/2 fsType forbids embedding without complaint; Ratex matches it",
     "dir": "error_restricted_font",
     "main_tex": "main.tex",
     "engine": "xelatex",
     "reference_engine": "xelatex",
-    "expect_failure": true,
-    "expected_error_substrings": [
-      "restricted",
-      "embedding",
-      "forbidden",
-      "permission",
-      "not allowed",
-      "fstype"
-    ],
-    "check_type": "negative_error"
+    "required_fonts": ["RatexRestrictedMincho"],
+    "expected_text": ["Restricted font embedding test"],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 200
   },
   {
     "name": "cache_invalidation",
@@ -625,92 +615,69 @@
     "min_ink_pixels": 400
   },
   {
-    "name": "error_missing_used_glyph",
-    "description": "Negative case: Missing used glyph must produce a clear error and no valid PDF",
+    "name": "missing_used_glyph_warns",
+    "description": "TeX Live xelatex typesets a character the font lacks as nothing and warns \"Missing character: There is no ...\" (U+E000 here); the PDF is still produced",
     "dir": "error_missing_used_glyph",
     "main_tex": "main.tex",
     "engine": "xelatex",
     "reference_engine": "xelatex",
-    "expect_failure": true,
-    "expected_error_substrings": [
-      "missing glyph",
-      "glyph not found",
-      "unmappable",
-      "undefined glyph",
-      "missing used glyph",
-      "not in font"
+    "required_fonts": ["LMRoman"],
+    "expected_text": ["Testing"],
+    "expected_output_substrings": [
+      "Missing character: There is no",
+      "(U+E000) in font [./test_cff.otf]"
     ],
-    "check_type": "negative_error"
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 100
   },
   {
     "name": "error_bad_font_index",
-    "description": "Negative case: Collection FontIndex out of bounds must produce a clear error",
+    "description": "Negative case (TeX Live xelatex: fontspec cannot load FontIndex=99 of a collection and reports the font as not found): no PDF",
     "dir": "error_bad_font_index",
     "main_tex": "main.tex",
     "engine": "xelatex",
     "reference_engine": "xelatex",
     "expect_failure": true,
     "expected_error_substrings": [
-      "fontindex",
-      "face index",
-      "out of bounds",
-      "invalid face",
-      "collection",
-      "index"
+      "The font \"collection\" cannot be"
     ],
     "check_type": "negative_error"
   },
   {
     "name": "error_malformed_font",
-    "description": "Negative case: Malformed or corrupt font program must produce an actionable diagnostic",
+    "description": "Negative case (TeX Live xelatex: fontspec reports a malformed font file as not found): no PDF",
     "dir": "error_malformed_font",
     "main_tex": "main.tex",
     "engine": "xelatex",
     "reference_engine": "xelatex",
     "expect_failure": true,
     "expected_error_substrings": [
-      "malformed",
-      "invalid font",
-      "corrupt",
-      "table",
-      "parse",
-      "sfnt",
-      "failed to load"
+      "The font \"malformed\" cannot be"
     ],
     "check_type": "negative_error"
   },
   {
-    "name": "error_unsupported_option",
-    "description": "Negative case: Unsupported engine capability or font option must produce an explicit diagnostic",
+    "name": "bare_feature_passes_through",
+    "description": "TeX Live xelatex accepts a bare [Vertical] font option as a raw OpenType feature name (fontspec only passes it on); the document typesets normally",
     "dir": "error_unsupported_option",
     "main_tex": "main.tex",
     "engine": "xelatex",
     "reference_engine": "xelatex",
-    "expect_failure": true,
-    "expected_error_substrings": [
-      "unsupported",
-      "vertical",
-      "capability",
-      "not supported",
-      "invalid option"
-    ],
-    "check_type": "negative_error"
+    "required_fonts": ["LMRoman"],
+    "expected_text": ["Testing unsupported vertical option"],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 200
   },
   {
     "name": "error_unavailable_style",
-    "description": "Negative case: Requesting an unavailable real style without synthetic fallback must produce an error",
+    "description": "Negative case (TeX Live xelatex: fontspec reports the missing BoldFont file as not found): no PDF",
     "dir": "error_unavailable_style",
     "main_tex": "main.tex",
     "engine": "xelatex",
     "reference_engine": "xelatex",
     "expect_failure": true,
     "expected_error_substrings": [
-      "unavailable",
-      "style",
-      "bold",
-      "face",
-      "not found",
-      "cannot find"
+      "The font \"dynamic-bold.ttf\" cannot be"
     ],
     "check_type": "negative_error"
   }

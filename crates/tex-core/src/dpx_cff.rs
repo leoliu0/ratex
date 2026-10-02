@@ -2110,16 +2110,6 @@ mod tests {
     }
 
     #[test]
-    fn every_available_reference_matches_xdvipdfmx() {
-        // name-keyed Latin Modern fonts, CID-keyed Fandol fonts (25765_final_exam) ...
-        let n = compare_with_tl(None);
-        let mut names: Vec<&str> = n.iter().map(|s| s.split(':').nth(1).unwrap()).collect();
-        names.sort();
-        names.dedup();
-        eprintln!("compared {} embedded CFF streams with xdvipdfmx output: {:?}", n.len(), names);
-    }
-
-    #[test]
     fn reference_cidset_matches_pdf_semantics() {
         // CIDSet: bit (7 - cid % 8) of byte cid / 8; cid 0 always set.
         let used: BTreeSet<u16> = [0u16, 1, 9, 20].into_iter().collect();

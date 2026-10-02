@@ -127,6 +127,11 @@ pub trait UserDataTrait: 'static {
 
     /// Returns the type name displayed in error messages and `type()` calls.
     fn type_name(&self) -> &'static str;
+    /// Registry key of the metatable every userdata created from this value (a
+    /// `UserdataOwned` return) gets, when the registry holds a table under it.
+    fn metatable_name(&self) -> Option<&'static str> {
+        None
+    }
     /// Visit embedded Lua values so the collector can retain userdata-owned references.
     fn trace_lua_values(&self, _visit: &mut LuaValueVisitor<'_>) {}
 
@@ -472,8 +477,17 @@ pub fn udvalue_to_lua_value(lua_state: &mut LuaState, udv: UdValue) -> LuaResult
         UdValue::Handle(_) => Ok(LuaValue::nil()),
         UdValue::Function(f) => Ok(LuaValue::cfunction(f.0)),
         UdValue::UserdataOwned(ud) => {
+            let meta_name = ud.metatable_name();
             let userdata = LuaUserdata::from_boxed(ud);
-            lua_state.create_userdata(userdata)
+            let value = lua_state.create_userdata(userdata)?;
+            if let Some(name) = meta_name
+                && let Some(meta) = lua_state.global_state_mut().registry_get(name)?
+                && meta.as_table_ptr().is_some()
+                && let Some(ptr) = value.as_userdata_ptr()
+            {
+                ptr.as_mut_ref().data.set_metatable(meta);
+            }
+            Ok(value)
         }
     }
 }

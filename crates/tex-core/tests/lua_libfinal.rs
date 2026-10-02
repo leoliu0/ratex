@@ -6,6 +6,8 @@ use tex_core::engine::{Engine, EngineKind};
 use tex_core::{set_shell_escape, ShellEscape};
 
 fn boot_lua() -> Engine {
+    // no TeX installation: fonts and files come from the embedded archive
+    std::env::set_var("TEX_RS_HERMETIC", "1");
     let mut e = Engine::new_with_kind(EngineKind::LuaTeX, true);
     e.init_primitives();
     e.eqtb.cat[b'{' as usize] = 1;
@@ -55,6 +57,7 @@ fn check(name: &str) {
 }
 
 // luatex --shell-escape
+#[cfg(unix)]
 #[test]
 fn os_execute_returns_the_wait_status() {
     set_shell_escape(ShellEscape::Enabled);
@@ -73,6 +76,7 @@ fn status_reports_the_destination_table_size() {
 }
 
 // luatex default policy (shell_escape=p): only the shell_escape_commands list runs
+#[cfg(unix)]
 #[test]
 fn os_commands_follow_the_restricted_policy() {
     set_shell_escape(ShellEscape::Restricted);

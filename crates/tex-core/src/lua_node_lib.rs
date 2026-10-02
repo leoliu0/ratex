@@ -97,6 +97,10 @@ impl UserDataTrait for NodeUd {
         "luatex.node"
     }
 
+    fn metatable_name(&self) -> Option<&'static str> {
+        Some("luatex.node")
+    }
+
     fn get_field(&self, key: &str) -> Option<UdValue> {
         // the `mark` table is built by the metatable (lua_node.lua `mark_get`)
         if key == "mark" && is_mark(self.h) {
@@ -299,6 +303,7 @@ fn dir_string(d: i32) -> UdValue {
 /// Register the natives; returns the table the Lua side consumes.
 pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
     let n: LuaTable = lua.create_table().map_err(|e| format!("{e:?}"))?;
+    crate::lua_ud::install_tokens(lua, &n)?;
 
     // ---- identity, links ----
     nat!(lua, n, "getid", |h: Option<i64>| -> Result<Option<i64>, String> {
@@ -612,8 +617,13 @@ pub(crate) fn install(lua: &mut Lua) -> Result<LuaTable, String> {
                 return None;
             }
             let toks = e.lua_nodes.node(h).ext.as_ref().map(|x| x.toks.clone()).unwrap_or_default();
-            let mut flat = vec![0, 0, 0];
-            for t in toks.iter().take(toks.len().saturating_sub(1)) {
+            // the count of triples first; an empty token list gives an empty table, else the
+            // head of the list ({0,0,0}) precedes every token but the last
+            if toks.is_empty() {
+                return Some(vec![0]);
+            }
+            let mut flat = vec![toks.len() as i64, 0, 0, 0];
+            for t in toks.iter().take(toks.len() - 1) {
                 let (cmd, chr) = e.lua_cmd_mode(*t);
                 let cs = if t.unfreeze().is_cs() { Engine::lua_tok_value(*t) - 0x1FFF_FFFF } else { 0 };
                 flat.extend([i64::from(cmd), chr, cs]);

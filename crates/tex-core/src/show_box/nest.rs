@@ -126,7 +126,11 @@ impl Engine {
         let (mut pd, mut sf) = (self.prev_depth, 1000);
         for lvl in self.nest_levels() {
             if lvl.frame.is_some() {
-                pd = lvl.prev_depth;
+                // a horizontal or math list repeats the prev_depth of the level below
+                // (push_nest leaves the aux field alone)
+                if lvl.mode.is_v() {
+                    pd = lvl.prev_depth;
+                }
                 sf = lvl.space_factor;
             }
             out.push((lvl.mode, lvl.line, pd, sf, lvl.prev_graf, lvl.frame));

@@ -69,35 +69,42 @@ impl Engine {
         // belong to the transcript like any other output
         self.flush_trace_events();
     }
-    pub fn dispatch(&mut self, t: Token) {
-        if self.output_pending {
-            self.output_pending = false;
-            let ignore_depth = self.ignore_depth();
-            let saved = std::mem::replace(&mut self.prev_depth, ignore_depth);
-            let saved_pg = std::mem::replace(&mut self.prev_graf, 0);
-            // tex.web fire_up (§28633-28637) `push_nest; mode:=-vmode`: the
-            // output routine runs in INTERNAL vertical mode on a fresh list,
-            // NOT in outer vertical mode. Mode::Vertical here would let the
-            // page builder keep contributing routine-side material to the
-            // contribution list and fire nested routines mid-routine.
-            // The interrupted nest's cur_list/space_factor park in
-            // output_nest; finish_output splices the routine's own cur_list
-            // ahead of the contribution remainder, then restores mode +
-            // parked list (pop_nest).
-            let saved_mode = std::mem::replace(&mut self.mode, Mode::InternalVertical);
-            let parked_list = std::mem::take(&mut self.cur_list);
-            let parked_sf = std::mem::replace(&mut self.space_factor, 1000);
-            self.output_nest = Some((parked_list, parked_sf));
-            // <Resume the page builder> §28652-28661 splices the routine's
-            // list AFTER the held-over insertions (which fire_up moved to the
-            // head of the contribution list, count = \insertpenalties) and
-            // BEFORE the remainder: the cursor starts at that index.
-            let n_carry = self.eqtb.int_params
-                [crate::prim::IntParam::InsertPenalties.idx() as usize]
-                .max(0) as usize;
-            self.output_tail = Some((n_carry, saved, saved_pg, saved_mode));
-            self.output_nest_mark = (self.saved_lists.len(), -self.nest_line());
+    /// tex.web fire_up's `push_nest` for a routine just fired: done by the first command the
+    /// routine runs (or the first Lua call, which sees the nest through `tex.nest`).
+    pub(crate) fn enter_pending_output(&mut self) {
+        if !self.output_pending {
+            return;
         }
+        self.output_pending = false;
+        let ignore_depth = self.ignore_depth();
+        let saved = std::mem::replace(&mut self.prev_depth, ignore_depth);
+        let saved_pg = std::mem::replace(&mut self.prev_graf, 0);
+        // tex.web fire_up (§28633-28637) `push_nest; mode:=-vmode`: the
+        // output routine runs in INTERNAL vertical mode on a fresh list,
+        // NOT in outer vertical mode. Mode::Vertical here would let the
+        // page builder keep contributing routine-side material to the
+        // contribution list and fire nested routines mid-routine.
+        // The interrupted nest's cur_list/space_factor park in
+        // output_nest; finish_output splices the routine's own cur_list
+        // ahead of the contribution remainder, then restores mode +
+        // parked list (pop_nest).
+        let saved_mode = std::mem::replace(&mut self.mode, Mode::InternalVertical);
+        let parked_list = std::mem::take(&mut self.cur_list);
+        let parked_sf = std::mem::replace(&mut self.space_factor, 1000);
+        self.output_nest = Some((parked_list, parked_sf));
+        // <Resume the page builder> §28652-28661 splices the routine's
+        // list AFTER the held-over insertions (which fire_up moved to the
+        // head of the contribution list, count = \insertpenalties) and
+        // BEFORE the remainder: the cursor starts at that index.
+        let n_carry = self.eqtb.int_params
+            [crate::prim::IntParam::InsertPenalties.idx() as usize]
+            .max(0) as usize;
+        self.output_tail = Some((n_carry, saved, saved_pg, saved_mode));
+        self.output_nest_mark = (self.saved_lists.len(), -self.nest_line());
+    }
+
+    pub fn dispatch(&mut self, t: Token) {
+        self.enter_pending_output();
         if t == crate::input::EOF_MARKER {
             return;
         }

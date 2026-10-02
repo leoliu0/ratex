@@ -123,6 +123,8 @@ impl Engine {
         &mut self,
         f: impl FnOnce(&mut LuaEngine) -> Result<R, String>,
     ) -> Result<R, String> {
+        // Lua code sees the nest of the routine it runs in
+        self.enter_pending_output();
         if self.lua.is_none() {
             self.lua = Some(Box::new(LuaEngine::new()?));
         }

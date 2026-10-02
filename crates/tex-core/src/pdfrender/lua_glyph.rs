@@ -103,6 +103,7 @@ impl RenderCtx<'_> {
                 x_offset: 0,
                 y_offset: 0,
             }],
+            actual_text: false,
         });
         self.display_list.push(crate::boxes::DisplayItem::NativeGlyphRun {
             run,

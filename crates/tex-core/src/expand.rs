@@ -1172,9 +1172,6 @@ impl Engine {
                 | RightMarginKern
                 | UcharCat
                 | XeTeXUchar
-                | RatexUnicodeVersion
-                | RatexNativeTextMode
-                | RatexUtfEight
                 | FileSize
                 | PdfMatch
                 | PdfLastMatch
@@ -1192,6 +1189,7 @@ impl Engine {
                 | Prim::XeTeXGlyphName
                 | Prim::XeTeXFeatureName
                 | Prim::XeTeXVariationName
+                | Prim::XeTeXQuery(crate::xetex_query::XeQuery::SelectorName)
                 | Prim::LuaTeXRevision
                 | Prim::LuaTeXBanner
                 | PdfVariable
@@ -1292,7 +1290,7 @@ impl Engine {
                 }
                 Prim::IfFontChar => {
                     let f = self.scan_font_id();
-                    let c = if self.font_loader.native_fonts.contains_key(&f) {
+                    let c = if self.is_native_font(f) {
                         self.scan_unicode_character_code("\\iffontchar")
                     } else {
                         self.scan_character_code("\\iffontchar") as u32
@@ -1685,7 +1683,13 @@ impl Engine {
             }
             Prim::FontName => {
                 let f = self.scan_font_id();
-                let text = self.font_display_name(f);
+                let mut text = self.font_display_name(f);
+                // xetex.web: the name of a native font is quoted
+                if self.is_native_font(f) {
+                    let name = self.eqtb.fonts[f as usize].tfm_name.clone();
+                    let q = if name.contains('"') { '\'' } else { '"' };
+                    text = text.replacen(&name, &format!("{q}{name}{q}"), 1);
+                }
                 self.exp_string(text.as_bytes());
                 None
             }
@@ -2075,52 +2079,6 @@ impl Engine {
                 self.exp_string(if self.engine_kind == crate::engine::EngineKind::LuaTeX { b".2" } else { b".6" });
                 None
             }
-            RatexUnicodeVersion => {
-                self.exp_string(b"1");
-                None
-            }
-            RatexNativeTextMode => {
-                self.exp_string(if self.native_text_active() && !self.mode.is_m() {
-                    b"1"
-                } else {
-                    b"0"
-                });
-                None
-            }
-            RatexUtfEight => {
-                let tokens = self.scan_general_text();
-                let mut bytes = [0u8; 4];
-                let mut valid = (2..=4).contains(&tokens.len());
-                for (token, byte) in tokens.iter().zip(bytes.iter_mut()) {
-                    let value = if token.is_cs() {
-                        let name = self.cs.name(token.cs_id());
-                        (name.len() == 1).then(|| name[0] as u32)
-                    } else {
-                        Some(token.chr())
-                    };
-                    match value.and_then(|value| u8::try_from(value).ok()) {
-                        Some(value) => *byte = value,
-                        None => valid = false,
-                    }
-                }
-                let scalar = if valid {
-                    std::str::from_utf8(&bytes[..tokens.len()])
-                        .ok()
-                        .and_then(|text| {
-                            let mut chars = text.chars();
-                            let scalar = chars.next()?;
-                            chars.next().is_none().then_some(scalar)
-                        })
-                } else {
-                    None
-                };
-                if let Some(scalar) = scalar {
-                    Some(Token::unicode_char(12, scalar as u32))
-                } else {
-                    self.error("Invalid UTF-8 sequence in native text");
-                    None
-                }
-            }
             XeTeXUchar => {
                 let c = self.scan_usv_num();
                 let token = if c == 32 { Token::space() } else { Token::unicode_char(12, c) };
@@ -2474,6 +2432,10 @@ impl Engine {
             }
             Prim::XeTeXRevision | Prim::XeTeXGlyphName | Prim::XeTeXFeatureName | Prim::XeTeXVariationName => {
                 self.expand_xetex_query(p);
+                None
+            }
+            Prim::XeTeXQuery(crate::xetex_query::XeQuery::SelectorName) => {
+                self.expand_xetex_selector_name();
                 None
             }
             Prim::LuaTeXRevision => {

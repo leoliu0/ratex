@@ -158,6 +158,7 @@ fn main() {
                     let postscript = best_name(&face, 6).unwrap_or_default();
                     let weight = face.weight().to_number();
                     let italic = face.is_italic();
+                    let xe = xetex_face_info(&face, &data);
                     font_faces.push((
                         name.to_owned(),
                         face_idx,
@@ -166,6 +167,7 @@ fn main() {
                         postscript,
                         weight,
                         italic,
+                        xe,
                     ));
                 }
             }
@@ -265,11 +267,12 @@ fn main() {
         "static EMBEDDED_FONT_FACES: &[EmbeddedFontFace] = &["
     )
     .unwrap();
-    for (file, face_index, family, subfamily, postscript, weight, italic) in font_faces {
+    for (file, face_index, family, subfamily, postscript, weight, italic, xe) in font_faces {
         writeln!(
             generated,
-            "    EmbeddedFontFace {{ file: {:?}, face_index: {}, family: {:?}, subfamily: {:?}, postscript: {:?}, weight: {}, italic: {} }},",
-            file, face_index, family, subfamily, postscript, weight, italic
+            "    EmbeddedFontFace {{ file: {:?}, face_index: {}, family: {:?}, subfamily: {:?}, postscript: {:?}, weight: {}, italic: {}, families: {:?}, styles: {:?}, fulls: {:?}, width: {}, flags: {}, slant: {}, opsize: {:?} }},",
+            file, face_index, family, subfamily, postscript, weight, italic,
+            xe.families, xe.styles, xe.fulls, xe.width, xe.flags, xe.slant, xe.opsize
         )
         .unwrap();
     }
@@ -881,4 +884,127 @@ fn best_name(face: &ttf_parser::Face, name_id: u16) -> Option<String> {
         }
     }
     best_match.map(|(_, s)| s)
+}
+
+/// What XeTeX's font manager (`XeTeXFontMgr_FC::readNames`,
+/// `getOpSizeRecAndStyleFlags`) learns from a font file.
+struct XeFaceInfo {
+    families: String,
+    styles: String,
+    fulls: String,
+    width: u16,
+    /// bit 0: OS/2 REGULAR, bit 1: bold, bit 2: italic
+    flags: u8,
+    slant: i32,
+    /// design size, subfamily id, name id, min, max (deci-points); design 0 = no `size` feature
+    opsize: [i32; 5],
+}
+
+fn xetex_face_info(face: &ttf_parser::Face, data: &[u8]) -> XeFaceInfo {
+    let list = |ids: &[u16]| -> String {
+        // later ids in `ids` are used only when the earlier (preferred) one is absent
+        for &id in ids {
+            let mut out: Vec<String> = Vec::new();
+            for record in face.names() {
+                if record.name_id != id {
+                    continue;
+                }
+                let mac = record.platform_id == ttf_parser::PlatformId::Macintosh
+                    && record.encoding_id == 0
+                    && record.language_id == 0;
+                let ok = mac
+                    || matches!(
+                        record.platform_id,
+                        ttf_parser::PlatformId::Unicode | ttf_parser::PlatformId::Windows
+                    );
+                if !ok {
+                    continue;
+                }
+                let Some(s) = record.to_string() else { continue };
+                if mac {
+                    out.retain(|x| *x != s);
+                    out.insert(0, s);
+                } else if !out.contains(&s) {
+                    out.push(s);
+                }
+            }
+            if !out.is_empty() {
+                return out.join("\u{1f}");
+            }
+        }
+        String::new()
+    };
+    let (mut flags, mut width) = (0u8, 0u16);
+    if let Some(os2) = face.raw_face().table(ttf_parser::Tag::from_bytes(b"OS/2")) {
+        if os2.len() >= 64 {
+            width = u16::from_be_bytes([os2[6], os2[7]]);
+            let sel = u16::from_be_bytes([os2[62], os2[63]]);
+            if sel & (1 << 6) != 0 {
+                flags |= 1;
+            }
+            if sel & (1 << 5) != 0 {
+                flags |= 2;
+            }
+            if sel & 1 != 0 {
+                flags |= 4;
+            }
+        }
+    }
+    // head.macStyle (offset 44)
+    if let Some(head) = face.raw_face().table(ttf_parser::Tag::from_bytes(b"head")) {
+        if head.len() >= 46 {
+            let ms = u16::from_be_bytes([head[44], head[45]]);
+            if ms & 1 != 0 {
+                flags |= 2;
+            }
+            if ms & 2 != 0 {
+                flags |= 4;
+            }
+        }
+    }
+    let slant = face
+        .italic_angle()
+        .map(|a| (1000.0 * (-(a as f64) * std::f64::consts::PI / 180.0).tan()) as i32)
+        .unwrap_or(0);
+    XeFaceInfo {
+        families: list(&[16, 1]),
+        styles: list(&[17, 2]),
+        fulls: list(&[4]),
+        width,
+        flags,
+        slant,
+        opsize: gpos_size_params(face, data),
+    }
+}
+
+/// `hb_ot_layout_get_size_params`: the `size` feature parameters of GPOS.
+fn gpos_size_params(face: &ttf_parser::Face, _data: &[u8]) -> [i32; 5] {
+    let Some(gpos) = face.raw_face().table(ttf_parser::Tag::from_bytes(b"GPOS")) else {
+        return [0; 5];
+    };
+    let u16at = |t: &[u8], o: usize| -> Option<usize> {
+        t.get(o..o + 2).map(|b| u16::from_be_bytes([b[0], b[1]]) as usize)
+    };
+    let Some(flo) = u16at(gpos, 6) else { return [0; 5] };
+    let Some(count) = gpos.get(flo..).and_then(|t| u16at(t, 0)) else { return [0; 5] };
+    for i in 0..count {
+        let rec = flo + 2 + i * 6;
+        let Some(tag) = gpos.get(rec..rec + 4) else { break };
+        if tag != b"size" {
+            continue;
+        }
+        let Some(off) = u16at(gpos, rec + 4) else { break };
+        let ft = flo + off;
+        let Some(po) = u16at(gpos, ft) else { break };
+        if po == 0 {
+            break;
+        }
+        let p = ft + po;
+        let g = |o| u16at(gpos, p + o).map(|v| v as i32);
+        if let (Some(d), Some(s), Some(n), Some(lo), Some(hi)) = (g(0), g(2), g(4), g(6), g(8)) {
+            return [d, s, n, lo, hi];
+        }
+        break;
+    }
+    [0; 5]
 }

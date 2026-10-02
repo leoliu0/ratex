@@ -902,6 +902,7 @@ dependencies = [
  "tex-mplib",
  "tex-ps",
  "ttf-parser",
+ "unicode-bidi",
  "unicode-linebreak",
  "unicode-normalization",
  "unicode-properties",

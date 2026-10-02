@@ -85,17 +85,13 @@ pub struct FontLoader {
     pub vf_bases: crate::FxHashMap<u16, Vec<u16>>,
     /// Tracked fonts created by \letterspacefont: derived font id -> TrackedFont
     pub tracked_fonts: crate::FxHashMap<u16, TrackedFont>,
-    /// Registry of native fonts by engine font id.
-    pub native_fonts: crate::FxHashMap<crate::tfm::FontId, Rc<crate::native_font::NativeFont>>,
+    /// XeTeX's installed-font name manager (embedded font index).
+    pub font_mgr: crate::xetex_fontmgr::FontMgr,
     /// Shared parsed font programs by (content_hash, face_index, canonical_variations).
     pub program_cache:
         crate::FxHashMap<([u8; 16], u32, Vec<(u32, u32)>), Rc<crate::font_program::FontProgram>>,
     /// Raw program bytes cache by resolved filename or embedded name.
     pub file_bytes_cache: crate::FxHashMap<String, Rc<Vec<u8>>>,
-    /// Native font instance reuse cache: (canonical selector/options spec, at_size) -> FontId.
-    pub native_instances: crate::FxHashMap<(String, i32), crate::tfm::FontId>,
-    /// Native font specs whose NFSS shape substitution was already reported.
-    pub substituted_shape_warnings: crate::FxHashSet<String>,
     /// `\pdffontattr`: extra font dictionary entries by engine font id.
     pub pdf_font_attrs: crate::FxHashMap<u16, String>,
     /// `\pdfnobuiltintounicode`: engine fonts whose generated /ToUnicode
@@ -148,11 +144,9 @@ impl FontLoader {
             vf_fonts: crate::FxHashMap::default(),
             vf_bases: crate::FxHashMap::default(),
             tracked_fonts: crate::FxHashMap::default(),
-            native_fonts: crate::FxHashMap::default(),
+            font_mgr: Default::default(),
             program_cache: crate::FxHashMap::default(),
             file_bytes_cache: crate::FxHashMap::default(),
-            native_instances: crate::FxHashMap::default(),
-            substituted_shape_warnings: crate::FxHashSet::default(),
             pdf_font_attrs: crate::FxHashMap::default(),
             nobuiltin_tounicode: crate::FxHashSet::default(),
             map_loaded: false,
@@ -490,247 +484,6 @@ impl FontLoader {
         Ok(rc)
     }
 
-    /// Resolve a native font selector and options into the face fontspec
-    /// declares for the requested NFSS shape. An undeclared shape falls back
-    /// along NFSS substitution rules to a declared one, as under XeTeX.
-    pub fn resolve_native_font(
-        &mut self,
-        selector: &str,
-        options: &crate::native_font::NativeFontOptions,
-    ) -> Result<ResolvedNativeFace, String> {
-        use crate::native_font::{expand_font_wildcard, FaceShape};
-        let requested = FaceShape::requested(options);
-        if requested == FaceShape::REGULAR && is_small_caps(options) {
-            if let Some(name) = options.small_caps_font.as_deref() {
-                if !name.is_empty() {
-                    let program = self.load_named_face(
-                        &expand_font_wildcard(name, selector),
-                        selector,
-                        options,
-                    )?;
-                    return Ok(ResolvedNativeFace {
-                        program,
-                        substituted: None,
-                    });
-                }
-            }
-        }
-        let mut shape = requested;
-        while shape != FaceShape::REGULAR {
-            if let Some(program) = self.declared_shape_face(selector, options, shape)? {
-                return Ok(ResolvedNativeFace {
-                    program,
-                    substituted: (shape != requested).then_some(shape),
-                });
-            }
-            shape = shape.nfss_fallback();
-        }
-        let program =
-            self.load_named_face(&upright_font_name(selector, options), selector, options)?;
-        Ok(ResolvedNativeFace {
-            program,
-            substituted: (requested != FaceShape::REGULAR).then_some(FaceShape::REGULAR),
-        })
-    }
-
-    /// The face fontspec declares for a non-regular shape, or `None` when the
-    /// shape stays undeclared. Explicit face options are loaded as named;
-    /// otherwise fontspec probes related faces with XeTeX's `/B`, `/I` and
-    /// `/BI` modifiers and keeps a probe only when it yields a different face.
-    fn declared_shape_face(
-        &mut self,
-        selector: &str,
-        options: &crate::native_font::NativeFontOptions,
-        shape: crate::native_font::FaceShape,
-    ) -> Result<Option<Rc<crate::font_program::FontProgram>>, String> {
-        use crate::native_font::{expand_font_wildcard, FaceSlope};
-        let named =
-            |name: &Option<String>| name.as_deref().map(|n| expand_font_wildcard(n, selector));
-        let upright = Some(upright_font_name(selector, options));
-        let bold = shape.weight >= 600;
-        let (explicit, probes) = match (shape.slope, bold) {
-            (FaceSlope::Upright, true) => (named(&options.bold_font), vec![(upright, Probe::Bold)]),
-            (FaceSlope::Upright, false) => (None, vec![(upright, Probe::Bold)]),
-            (FaceSlope::Italic, false) => {
-                (named(&options.italic_font), vec![(upright, Probe::Italic)])
-            }
-            (FaceSlope::Italic, true) => (
-                named(&options.bold_italic_font),
-                vec![
-                    (named(&options.italic_font), Probe::Bold),
-                    (named(&options.bold_font), Probe::Italic),
-                    (upright, Probe::BoldItalic),
-                ],
-            ),
-            // fontspec has no automatic slanted face; Ratex still selects a
-            // face of the same family whose style is named Slanted or Oblique.
-            (FaceSlope::Slanted, false) => (
-                named(&options.slanted_font),
-                vec![(upright, Probe::Slanted)],
-            ),
-            (FaceSlope::Slanted, true) => (
-                named(&options.bold_slanted_font),
-                vec![
-                    (named(&options.slanted_font), Probe::Bold),
-                    (upright, Probe::Slanted),
-                ],
-            ),
-        };
-        if let Some(name) = explicit {
-            // An empty face option (`BoldFont={}`) leaves the shape undeclared.
-            if name.is_empty() {
-                return Ok(None);
-            }
-            return self.load_named_face(&name, selector, options).map(Some);
-        }
-        let disabled = |name: &Option<String>| name.as_deref() == Some("");
-        if shape.slope == FaceSlope::Italic
-            && bold
-            && (disabled(&options.bold_font) || disabled(&options.italic_font))
-        {
-            return Ok(None);
-        }
-        for (base, probe) in probes {
-            let Some(base) = base.filter(|name| !name.is_empty()) else {
-                continue;
-            };
-            if let Some(face) = self.probe_face(&base, selector, options, shape, probe)? {
-                return self.load_embedded_face(face, &base, options).map(Some);
-            }
-        }
-        Ok(None)
-    }
-
-    /// Apply a XeTeX style modifier to the face `base` names. Fonts loaded
-    /// from files have no family to search, so probes on them never succeed.
-    fn probe_face(
-        &mut self,
-        base: &str,
-        selector: &str,
-        options: &crate::native_font::NativeFontOptions,
-        shape: crate::native_font::FaceShape,
-        probe: Probe,
-    ) -> Result<Option<&'static tex_kpse::EmbeddedFontFace>, String> {
-        let NamedFace::Embedded(base_face) = self.locate_named_face(base, selector, options)?
-        else {
-            return Ok(None);
-        };
-        let (weight, italic, slanted) = match probe {
-            Probe::Bold => (shape.weight, base_face.italic, is_slanted_face(base_face)),
-            Probe::Italic => (base_face.weight, true, false),
-            Probe::BoldItalic => (shape.weight, true, false),
-            Probe::Slanted => (shape.weight, true, true),
-        };
-        let family = normalize_font_name(base_face.family);
-        let candidates: Vec<_> = tex_kpse::embedded_font_faces()
-            .iter()
-            .filter(|face| {
-                normalize_font_name(face.family) == family
-                    && face.italic == italic
-                    && (face.weight >= 600) == (weight >= 600)
-                    && (!matches!(probe, Probe::Slanted) || is_slanted_face(face))
-                    && !same_embedded_face(face, base_face)
-            })
-            .collect();
-        pick_family_face(&candidates, weight, slanted, base)
-    }
-
-    /// Load the face a fontspec font name refers to, exactly as named.
-    fn load_named_face(
-        &mut self,
-        name: &str,
-        selector: &str,
-        options: &crate::native_font::NativeFontOptions,
-    ) -> Result<Rc<crate::font_program::FontProgram>, String> {
-        match self.locate_named_face(name, selector, options)? {
-            NamedFace::File(bytes) => {
-                self.load_program(bytes, options.font_index, options.variations.clone())
-            }
-            NamedFace::Embedded(face) => self.load_embedded_face(face, name, options),
-        }
-    }
-
-    fn load_embedded_face(
-        &mut self,
-        face: &'static tex_kpse::EmbeddedFontFace,
-        name: &str,
-        options: &crate::native_font::NativeFontOptions,
-    ) -> Result<Rc<crate::font_program::FontProgram>, String> {
-        let bytes = self.read_program_bytes(face.file).ok_or_else(|| {
-            format!(
-                "Font file `{}` for `{name}` not found in project or embedded assets",
-                face.file
-            )
-        })?;
-        let face_index = if options.font_index > 0 {
-            options.font_index
-        } else {
-            face.face_index
-        };
-        self.load_program(bytes, face_index, options.variations.clone())
-    }
-
-    /// Resolve a font name the way fontspec passes it to XeTeX: `Path` and
-    /// `Extension` or a file-like name select a font file; otherwise a
-    /// project font file, then an embedded family, PostScript or full name.
-    /// A family given as a file name lends its extension to every face name,
-    /// as fontspec's external-font handling does.
-    fn locate_named_face(
-        &mut self,
-        name: &str,
-        selector: &str,
-        options: &crate::native_font::NativeFontOptions,
-    ) -> Result<NamedFace, String> {
-        let extension = options
-            .extension
-            .as_deref()
-            .or_else(|| font_file_extension(selector));
-        if options.path.is_some() || extension.is_some() {
-            let mut path = name.to_string();
-            if let Some(p) = &options.path {
-                if !path.starts_with(p) {
-                    if !p.ends_with('/')
-                        && !p.ends_with('\\')
-                        && !path.starts_with('/')
-                        && !path.starts_with('\\')
-                    {
-                        path = format!("{p}/{path}");
-                    } else {
-                        path = format!("{p}{path}");
-                    }
-                }
-            }
-            if let Some(ext) = extension {
-                if !path
-                    .to_ascii_lowercase()
-                    .ends_with(&ext.to_ascii_lowercase())
-                {
-                    path.push_str(ext);
-                }
-            }
-            return self
-                .read_program_bytes(&path)
-                .map(NamedFace::File)
-                .ok_or_else(|| format!("Font file `{path}` not found"));
-        }
-        let lower = name.to_ascii_lowercase();
-        let is_direct_file = name.contains('/')
-            || name.contains('\\')
-            || [".otf", ".ttf", ".ttc", ".otc", ".dfont"]
-                .iter()
-                .any(|ext| lower.ends_with(ext));
-        if is_direct_file {
-            return self
-                .read_program_bytes(name)
-                .map(NamedFace::File)
-                .ok_or_else(|| format!("Font file `{name}` not found"));
-        }
-        if let Some(bytes) = self.read_program_bytes(name) {
-            return Ok(NamedFace::File(bytes));
-        }
-        embedded_named_face(name).map(NamedFace::Embedded)
-    }
-
     /// Resolve the actual font program for any Font (native or classic mapped).
     /// Records lookup dependencies; missing required outlines are errors.
     pub fn program_for_font(
@@ -742,9 +495,8 @@ impl FontLoader {
                 return self.lua_font_program(lua);
             }
         }
-        if crate::native_font::is_native_font_spec(&font.tfm_name) {
-            let (selector, options) = crate::native_font::parse_native_font_spec(&font.tfm_name)?;
-            return Ok(self.resolve_native_font(&selector, &options)?.program);
+        if let Some(native) = &font.native {
+            return Ok(native.program.clone());
         }
 
         // 2. Check font.type1_path (set for mapped TFM fonts with PFB/TTF/OTF)
@@ -785,189 +537,6 @@ impl FontLoader {
         ))
     }
 
-    /// Restore a native font binding after format load without allocating new IDs.
-    pub fn restore_native_font(
-        &mut self,
-        fid: crate::tfm::FontId,
-        font: &crate::tfm::Font,
-    ) -> Result<(), String> {
-        if !crate::native_font::is_native_font_spec(&font.tfm_name) {
-            return Ok(());
-        }
-        let (selector, options) = crate::native_font::parse_native_font_spec(&font.tfm_name)?;
-        let options = options.effective_options();
-        let program = self.resolve_native_font(&selector, &options)?.program;
-        let native_font = crate::native_font::NativeFont {
-            program,
-            script: options.script,
-            language: options.language,
-            features: options.features,
-            tex_ligatures: options.tex_ligatures,
-            vertical: options.vertical,
-        };
-        self.native_fonts.insert(fid, Rc::new(native_font));
-        self.native_instances
-            .insert((font.tfm_name.clone(), font.at_size), fid);
-        Ok(())
-    }
-}
-
-/// A native face resolved for one NFSS shape of a fontspec family.
-pub struct ResolvedNativeFace {
-    pub program: Rc<crate::font_program::FontProgram>,
-    /// The shape actually used when the requested one was undeclared and
-    /// NFSS substitution chose another.
-    pub substituted: Option<crate::native_font::FaceShape>,
-}
-
-/// Where a fontspec font name points: a font file, or an embedded face
-/// whose family can be searched for related styles.
-enum NamedFace {
-    File(Rc<Vec<u8>>),
-    Embedded(&'static tex_kpse::EmbeddedFontFace),
-}
-
-/// XeTeX style modifier fontspec applies to a base font name while probing
-/// for automatic shapes (`/B`, `/I`, `/BI`), plus Ratex's slanted lookup.
-#[derive(Clone, Copy)]
-enum Probe {
-    Bold,
-    Italic,
-    BoldItalic,
-    Slanted,
-}
-
-fn is_small_caps(options: &crate::native_font::NativeFontOptions) -> bool {
-    options
-        .style
-        .as_deref()
-        .is_some_and(|s| s.eq_ignore_ascii_case("smallcaps") || s.eq_ignore_ascii_case("sc"))
-        || options
-            .features
-            .iter()
-            .any(|f| f.tag == ttf_parser::Tag::from_bytes(b"smcp"))
-}
-
-/// The font-file extension fontspec recognizes at the end of a family name.
-fn font_file_extension(name: &str) -> Option<&str> {
-    [".otf", ".ttf", ".ttc", ".dfont"].iter().find_map(|ext| {
-        let start = name.len().checked_sub(ext.len())?;
-        name.get(start..)
-            .filter(|suffix| suffix.eq_ignore_ascii_case(ext))
-    })
-}
-
-/// fontspec's upright font name: `UprightFont` (with `*` expanded) or the family argument.
-fn upright_font_name(selector: &str, options: &crate::native_font::NativeFontOptions) -> String {
-    options
-        .upright_font
-        .as_deref()
-        .map(|name| crate::native_font::expand_font_wildcard(name, selector))
-        .unwrap_or_else(|| selector.to_string())
-}
-
-fn is_slanted_face(face: &tex_kpse::EmbeddedFontFace) -> bool {
-    let subfamily = normalize_font_name(face.subfamily);
-    subfamily.contains("slanted") || subfamily.contains("oblique")
-}
-
-fn same_embedded_face(a: &tex_kpse::EmbeddedFontFace, b: &tex_kpse::EmbeddedFontFace) -> bool {
-    a.file == b.file && a.face_index == b.face_index
-}
-
-/// Pick the candidate closest to `weight`, preferring slanted/oblique style
-/// names only when `slanted` and otherwise conventional style names. A tie
-/// between different faces is ambiguous rather than silently arbitrary.
-fn pick_family_face(
-    candidates: &[&'static tex_kpse::EmbeddedFontFace],
-    weight: u16,
-    slanted: bool,
-    name: &str,
-) -> Result<Option<&'static tex_kpse::EmbeddedFontFace>, String> {
-    let rank = |face: &tex_kpse::EmbeddedFontFace| {
-        let conventional = matches!(
-            normalize_font_name(face.subfamily).as_str(),
-            "regular" | "bold" | "italic" | "bolditalic"
-        );
-        (
-            face.weight.abs_diff(weight),
-            is_slanted_face(face) != slanted,
-            !conventional,
-        )
-    };
-    let Some(best) = candidates.iter().copied().min_by_key(|face| rank(face)) else {
-        return Ok(None);
-    };
-    if candidates
-        .iter()
-        .any(|face| rank(face) == rank(best) && !same_embedded_face(face, best))
-    {
-        return Err(format!(
-            "Ambiguous font family `{name}`; select an exact face name or font file"
-        ));
-    }
-    Ok(Some(best))
-}
-
-/// The embedded face a name selects without style modifiers: the family's
-/// regular face (else its closest upright weight), or the face with that
-/// PostScript name or full name.
-fn embedded_named_face(name: &str) -> Result<&'static tex_kpse::EmbeddedFontFace, String> {
-    let faces = tex_kpse::embedded_font_faces();
-    let wanted = normalize_font_name(name);
-    let family: Vec<_> = faces
-        .iter()
-        .filter(|face| normalize_font_name(face.family) == wanted)
-        .collect();
-    let upright: Vec<_> = family.iter().copied().filter(|face| !face.italic).collect();
-    let default_faces = if upright.is_empty() { family } else { upright };
-    if let Some(face) = pick_family_face(&default_faces, 400, false, name)? {
-        return Ok(face);
-    }
-    let mut exact_faces = faces
-        .iter()
-        .filter(|face| face.postscript.eq_ignore_ascii_case(name));
-    if let Some(face) = exact_faces.next() {
-        if exact_faces.any(|other| !same_embedded_face(other, face)) {
-            return Err(format!(
-                "Ambiguous face name `{name}`; select an explicit font file"
-            ));
-        }
-        return Ok(face);
-    }
-    let full_names: Vec<_> = faces
-        .iter()
-        .filter(|face| {
-            normalize_font_name(face.postscript) == wanted
-                || normalize_font_name(&format!("{}{}", face.family, face.subfamily)) == wanted
-        })
-        .collect();
-    if let Some(face) = full_names.first() {
-        if full_names
-            .iter()
-            .any(|other| !same_embedded_face(other, face))
-        {
-            return Err(format!(
-                "Ambiguous face name `{name}`; select an explicit font file"
-            ));
-        }
-        return Ok(face);
-    }
-    Err(format!("Font family or face `{name}` not found"))
-}
-
-fn normalize_font_name(s: &str) -> String {
-    let norm: String = s
-        .chars()
-        .filter(|c| !c.is_whitespace() && *c != '-' && *c != '_')
-        .flat_map(|c| c.to_lowercase())
-        .collect();
-    match norm.as_str() {
-        "lmroman" | "lmroman10" => "latinmodernroman".to_string(),
-        "lmsans" | "lmsans10" => "latinmodernsans".to_string(),
-        "lmmono" | "lmmono10" => "latinmodernmono".to_string(),
-        _ => norm,
-    }
 }
 
 /// Strip PostScript `%`-to-end-of-line comments, keeping string literals
@@ -1505,6 +1074,7 @@ impl Engine {
             map_fontname: None,
             encoding: None,
             lua: None,
+            native: None,
         };
         self.eqtb.fonts.push(std::rc::Rc::new(nf));
         self.eqtb.font_params.push(Vec::new());
@@ -1535,6 +1105,10 @@ impl Engine {
         // and size are scanned (they may expand it).
         self.eqtb.assign(cs, Equiv::FontRef(0), global);
         self.scan_optional_equals();
+        if self.engine_kind == crate::engine::EngineKind::XeTeX {
+            self.xetex_do_font(cs, global, declaration_source);
+            return;
+        }
         let Some(name) = self.scan_font_name(declaration_source.as_ref()) else {
             return;
         };
@@ -1629,151 +1203,6 @@ impl Engine {
         declaration_source: Option<crate::input::SourceContext>,
         global: bool,
     ) {
-        if crate::native_font::is_native_font_spec(name) {
-            let cs_name = String::from_utf8_lossy(self.cs.name(cs)).to_string();
-            let (selector, options) = match crate::native_font::parse_native_font_spec(name) {
-                Ok(res) => res,
-                Err(error) => {
-                    self.error_at(
-                        &format!(
-                            "Cannot parse native font specification `{name}` for \\{cs_name}: {error}"
-                        ),
-                        declaration_source,
-                    );
-                    return;
-                }
-            };
-            let options = options.effective_options();
-
-            let base_at = if at > 0 { at } else { 10 * 65536 };
-            let at_size = if options.scale > 0.0 && options.scale != 1.0 {
-                (base_at as f64 * options.scale).round() as i32
-            } else {
-                base_at
-            };
-
-            // Check reuse cache: if this exact (name, at_size) was already loaded, reuse its font ID
-            for (k, existing) in self.eqtb.fonts.iter().enumerate().skip(1) {
-                if existing.tfm_name == name && existing.at_size == at_size {
-                    self.eqtb.font_cs[k] = cs;
-                    self.eqtb.assign(cs, Equiv::FontRef(k as u16), global);
-                    return;
-                }
-            }
-
-            let program = match self.font_loader.resolve_native_font(&selector, &options) {
-                Ok(resolved) => {
-                    if let Some(used) = resolved.substituted {
-                        if self
-                            .font_loader
-                            .substituted_shape_warnings
-                            .insert(name.to_string())
-                        {
-                            let requested = crate::native_font::FaceShape::requested(&options);
-                            self.warning_at(
-                                &format!(
-                                    "Font shape `{requested}` is not available for native font `{selector}`; using `{used}` instead"
-                                ),
-                                declaration_source.clone(),
-                            );
-                        }
-                    }
-                    resolved.program
-                }
-                Err(error) => {
-                    self.error_at(
-                        &format!("Cannot resolve native font `{name}` for \\{cs_name}: {error}"),
-                        declaration_source,
-                    );
-                    return;
-                }
-            };
-
-            let face = match program.face() {
-                Ok(f) => f,
-                Err(error) => {
-                    self.error_at(
-                        &format!(
-                            "Cannot instantiate native font face `{name}` for \\{cs_name}: {error}"
-                        ),
-                        declaration_source,
-                    );
-                    return;
-                }
-            };
-            if let Err(error) =
-                crate::native_font::validate_face_features(&face, &selector, &options)
-            {
-                self.error_at(
-                    &format!("Cannot configure native font `{name}` for \\{cs_name}: {error}"),
-                    declaration_source,
-                );
-                return;
-            }
-
-            // Calculate fontdimens from actual face metrics
-            let upem = face.units_per_em() as i64;
-            let scale_val = |v: i16| -> i32 { ((v as i64 * at_size as i64) / upem) as i32 };
-
-            let quad = at_size; // \fontdimen6: 1 em
-            let space = face
-                .glyph_index(' ')
-                .and_then(|gid| face.glyph_hor_advance(gid))
-                .map(|adv| ((adv as i64 * at_size as i64) / upem) as i32)
-                .unwrap_or(at_size / 3); // \fontdimen2: interword space
-            let stretch = space / 2; // \fontdimen3: space stretch
-            let shrink = space / 3; // \fontdimen4: space shrink
-            let xheight = face.x_height().map(scale_val).unwrap_or(at_size * 43 / 100); // \fontdimen5: x-height
-            let slant = face
-                .italic_angle()
-                .map(|deg| ((-deg.to_radians()).tan() * 65536.0) as i32)
-                .unwrap_or(0); // \fontdimen1: slant
-            let extra_space = shrink; // \fontdimen7: extra space
-
-            let params = vec![slant, space, stretch, shrink, xheight, quad, extra_space];
-
-            let font = crate::tfm::Font {
-                name: cs_name,
-                tfm_name: name.to_string(), // Full reloadable native declaration spec preserved here
-                at_size,
-                dsize: base_at,
-                chars: Vec::new(), // Real glyph metrics live in the native pipeline, not synthesized 256-slot glyphs
-                bc: 1,
-                ec: 0,
-                lig_kern: Vec::new(),
-                kerns: Vec::new(),
-                ext: Vec::new(),
-                params,
-                hyphen_char: 45,
-                skew_char: -1,
-                bchar: None,
-                type1_path: None,
-                enc_name: None,
-                map_fontname: Some(program.postscript_name.clone()),
-                encoding: None,
-                lua: None,
-            };
-
-            let native_font = crate::native_font::NativeFont {
-                program,
-                script: options.script,
-                language: options.language,
-                features: options.features,
-                tex_ligatures: options.tex_ligatures,
-                vertical: options.vertical,
-            };
-
-            let id = self.push_engine_font(std::rc::Rc::new(font), cs);
-            self.eqtb.assign(cs, Equiv::FontRef(id), global);
-            self.font_loader
-                .native_fonts
-                .insert(id, std::rc::Rc::new(native_font));
-            self.font_loader
-                .native_instances
-                .insert((name.to_string(), at_size), id);
-
-            return;
-        }
         let Some(font) = self.font_loader.load_tfm(name, at) else {
             self.error_at(
                 &format!(
@@ -2895,21 +2324,5 @@ mod tests {
             .load_tfm("cmr10.tfm", 655360)
             .expect("cmr10.tfm should resolve to cmr10");
         assert_eq!(f10tfm.tfm_name, "cmr10");
-    }
-
-    #[test]
-    fn later_named_style_selects_the_real_italic_face() {
-        let (selector, options) = crate::native_font::parse_native_font_spec(
-            "ratex:{Latin Modern Roman}:{Style=Bold,,Style=Italic,}",
-        )
-        .unwrap();
-        let mut loader = FontLoader::new();
-        let program = loader
-            .resolve_native_font(&selector, &options)
-            .unwrap()
-            .program;
-        let face = program.face().unwrap();
-        assert!(face.is_italic());
-        assert!(!face.is_bold());
     }
 }

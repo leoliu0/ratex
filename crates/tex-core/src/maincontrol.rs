@@ -723,19 +723,14 @@ impl Engine {
                 self.emit_box_diagnostic(display);
                 self.report_logged_inspection("\\showifs", source);
             }
-            Char | RatexLiteralChar => {
-                if p == RatexLiteralChar && self.mode.is_v() {
-                    self.push_token(Token::from_cs(id));
-                    self.start_paragraph(true);
-                    return;
-                }
+            Char => {
                 let (value, source) = self.scan_int_with_source();
                 let xetex = self.engine_kind == crate::engine::EngineKind::XeTeX;
                 // xetex.web: `hmode+char_num` scans a USV, `mmode+char_num`
                 // a 16-bit character number
                 let maximum = if xetex {
                     if self.mode.is_m() { 0xffff } else { 0x10ffff }
-                } else if self.native_text_active() || self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                } else if self.engine_kind == crate::engine::EngineKind::LuaTeX {
                     0x10ffff
                 } else {
                     255
@@ -754,12 +749,7 @@ impl Engine {
                     0
                 };
                 let previous = std::mem::replace(&mut self.diagnostic_source_override, source);
-                if p != RatexLiteralChar
-                    || self.mode.is_m()
-                    || !self.append_native_literal_char(character)
-                {
-                    self.unicode_char_token(character, false);
-                }
+                self.unicode_char_token(character, false);
                 self.diagnostic_source_override = previous;
             }
             RatexCjkText => {
@@ -1361,7 +1351,7 @@ impl Engine {
             // `\XeTeXversion` is an integer quantity, never a command
             XeTeXVersion => self.report_illegal_case(id),
             XeTeXGlyph => {
-                self.do_xetex_glyph();
+                self.do_xetex_glyph(id);
             }
             XeTeXLinebreakLocale => {
                 self.reject_assignment_prefixes("\\XeTeXlinebreaklocale");

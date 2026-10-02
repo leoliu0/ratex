@@ -1177,10 +1177,6 @@ pub enum Prim {
     PdfRandomSeed,
     PdfSetRandomSeed,
     NoBoundary,
-    RatexUnicodeVersion,
-    RatexNativeTextMode,
-    RatexUtfEight,
-    RatexLiteralChar,
     RatexCjkText,
     XeTeXCountGlyphs,
     XeTeXGlyphName,
@@ -1334,6 +1330,8 @@ pub enum Prim {
     XeTeXUchar,
     /// XeTeX `\XeTeXlinebreaklocale <name>`.
     XeTeXLinebreakLocale,
+    /// XeTeX font queries without a variant of their own (slice XeText).
+    XeTeXQuery(crate::xetex_query::XeQuery),
 }
 
 /// Stable wire codes for the format dump (`crate::format`). Unit variants
@@ -1716,10 +1714,6 @@ impl Prim {
             Prim::PdfRandomSeed => 346,
             Prim::PdfSetRandomSeed => 347,
             Prim::NoBoundary => 348,
-            Prim::RatexUnicodeVersion => 349,
-            Prim::RatexNativeTextMode => 350,
-            Prim::RatexUtfEight => 351,
-            Prim::RatexLiteralChar => 352,
             Prim::RatexCjkText => 353,
             Prim::XeTeXCountGlyphs => 354,
             Prim::XeTeXGlyphName => 355,
@@ -1822,6 +1816,7 @@ impl Prim {
             Prim::URight => 654,
             Prim::U(u) => 0x5000 | u.idx(),
             Prim::UMath(id) => 0x5800 | id as u16,
+            Prim::XeTeXQuery(q) => 0x5900 | q.idx(),
             Prim::ScriptScriptStyle => 284,
             Prim::Patterns => 287,
             Prim::Hyphenation => 288,
@@ -2186,10 +2181,6 @@ impl Prim {
             346 => Some(Prim::PdfRandomSeed),
             347 => Some(Prim::PdfSetRandomSeed),
             348 => Some(Prim::NoBoundary),
-            349 => Some(Prim::RatexUnicodeVersion),
-            350 => Some(Prim::RatexNativeTextMode),
-            351 => Some(Prim::RatexUtfEight),
-            352 => Some(Prim::RatexLiteralChar),
             353 => Some(Prim::RatexCjkText),
             354 => Some(Prim::XeTeXCountGlyphs),
             355 => Some(Prim::XeTeXGlyphName),
@@ -2298,6 +2289,7 @@ impl Prim {
             0x5800..=0x58ff if (c & 0xff) < crate::uprim::UMATH_NAMES.len() as u16 => {
                 Some(Prim::UMath((c & 0xff) as u8))
             }
+            0x5900..=0x59ff => Some(Prim::XeTeXQuery(crate::xetex_query::XeQuery::from_idx(c & 0xff)?)),
             0x1000..=0x1fff => {
                 let i = c & 0x0fff;
                 Some(Prim::IntP(IntParam::from_idx(i)?))

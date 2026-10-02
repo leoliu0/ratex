@@ -358,6 +358,8 @@ impl<'a> BoxDisplay<'a> {
                     self.short_display(&d.post_break);
                     i += d.replace_count;
                 }
+                // xetex.web: a glyph node shows as `[]` in a short display
+                Node::NativeGlyphRun { run, .. } if run.is_glyph_node() => self.print("[]"),
                 Node::NativeGlyphRun { run, .. } => {
                     if self.font_in_short_display != Some(run.font) {
                         self.print_font_identifier(run.font);
@@ -734,6 +736,12 @@ impl<'a> BoxDisplay<'a> {
                 self.print_esc("vadjust");
                 self.print(" pre ");
                 self.node_list_display(list);
+            }
+            // xetex.web: `\font glyph#N` for a glyph node
+            Node::NativeGlyphRun { run, start, .. } if run.is_glyph_node() => {
+                self.print_font_identifier(run.font);
+                self.print(" glyph#");
+                self.print_int(i64::from(run.glyphs[*start].glyph_id));
             }
             Node::NativeGlyphRun { run, .. } => {
                 self.print_font_identifier(run.font);

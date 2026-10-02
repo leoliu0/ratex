@@ -14,6 +14,7 @@ ruzstd = { workspace = true }
 rustybuzz = { workspace = true }
 ttf-parser = { workspace = true }
 subsetter = "0.2.6"
+unicode-bidi = "0.3"
 unicode-linebreak = "0.1"
 unicode-properties = { version = "0.1", default-features = false, features = ["general-category"] }
 unicode-segmentation = "1.12"

@@ -370,6 +370,7 @@ impl Engine {
             map_fontname: None,
             encoding: None,
             lua: Some(Rc::new(LuaFont::default())),
+            native: None,
         }
     }
 
@@ -488,6 +489,7 @@ impl Engine {
             map_fontname: lua.psname.as_ref().map(|p| String::from_utf8_lossy(p).into_owned()),
             encoding: None,
             lua: None,
+            native: None,
         };
         // The one-byte view of the font: metrics for `\fontcharwd`, the
         // `/Widths` of one-byte PDF fonts and the TeX character range.

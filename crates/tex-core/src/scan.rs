@@ -752,6 +752,10 @@ impl Engine {
                         v = self.scan_xetex_int_query(p) as i64;
                         break 'scan_loop;
                     }
+                    Some(Prim::XeTeXQuery(q)) => {
+                        v = self.scan_xetex_query(q) as i64;
+                        break 'scan_loop;
+                    }
                     Some(Prim::LuaTeXVersion) => {
                         v = 124;
                         break 'scan_loop;
@@ -1394,6 +1398,11 @@ impl Engine {
                     frac_f = 0;
                     direct = Some(self.scan_font_char_dimen(p));
                 }
+                Some(Prim::XeTeXGlyphBounds) => {
+                    int_part = 1;
+                    frac_f = 0;
+                    direct = Some(self.scan_xetex_int_query(Prim::XeTeXGlyphBounds));
+                }
                 Some(Prim::FontDimen) => {
                     let idx = self.scan_int();
                     let f = self.scan_font_id();
@@ -1711,6 +1720,9 @@ impl Engine {
             Some(Equiv::Prim(
                 p @ (Prim::FontCharWd | Prim::FontCharHt | Prim::FontCharDp | Prim::FontCharIc),
             )) => self.scan_font_char_dimen(p),
+            Some(Equiv::Prim(Prim::XeTeXGlyphBounds)) => {
+                self.scan_xetex_int_query(Prim::XeTeXGlyphBounds)
+            }
             Some(Equiv::Prim(Prim::FontDimen)) => {
                 let idx = self.scan_int();
                 let f = self.scan_font_id();
@@ -2445,13 +2457,20 @@ impl Engine {
                 | Prim::XeTeXCountGlyphs
                 | Prim::XeTeXGlyphIndex
                 | Prim::XeTeXCharGlyph
-                | Prim::XeTeXGlyphBounds
                 | Prim::XeTeXCountFeatures
                 | Prim::XeTeXFeatureCode
                 | Prim::XeTeXCountVariations
                 | Prim::XeTeXVariation),
             ) => {
                 let v = self.scan_xetex_int_query(p);
+                emit_the!(v.to_string().as_bytes());
+            }
+            Some(Prim::XeTeXGlyphBounds) => {
+                let v = self.scan_xetex_int_query(Prim::XeTeXGlyphBounds);
+                emit_the!(self.scaled_to_string(v).as_bytes());
+            }
+            Some(Prim::XeTeXQuery(q)) => {
+                let v = self.scan_xetex_query(q);
                 emit_the!(v.to_string().as_bytes());
             }
             Some(Prim::Dimen) => {

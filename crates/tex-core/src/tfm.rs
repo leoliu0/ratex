@@ -60,6 +60,8 @@ pub struct Font {
     /// Set for fonts defined from Lua (`font.define`), which are indexed by
     /// Unicode scalar values instead of the 8-bit `chars` table.
     pub lua: Option<std::rc::Rc<crate::lua_font::LuaFont>>,
+    /// Set for XeTeX native (OpenType/TrueType) fonts.
+    pub native: Option<std::rc::Rc<crate::native_font::NativeFont>>,
 }
 
 impl Font {
@@ -410,6 +412,7 @@ pub fn parse_tfm(data: &[u8], tfm_name: &str, at_size: i32) -> Result<Font, Stri
         map_fontname: None,
         encoding: None,
         lua: None,
+        native: None,
     })
 }
 

@@ -369,9 +369,7 @@ impl Engine {
     pub fn char_token(&mut self, c: u8, is_letter: bool) {
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => {
-                if !self.append_native_char(c as u32) {
-                    self.append_char(c);
-                }
+                self.append_char(c);
                 self.space_factor = self.space_factor_of(u32::from(c));
             }
             Mode::Vertical | Mode::InternalVertical => {
@@ -892,6 +890,11 @@ impl Engine {
     /// `stack` the characters to its right and `cur_r` the next character
     /// (None: non_char). An empty stack means the chain is ending and the
     /// right boundary is `cur_r`.
+    /// Close the open character chain of `f` with no right boundary.
+    pub(crate) fn lig_kern_loop_end(&mut self, f: u16) {
+        self.lig_kern_loop(f, LigStack::default(), None);
+    }
+
     fn lig_kern_loop(&mut self, f: u16, stack: LigStack, cur_r: Option<u8>) {
         let (cur_l, lig_present) = match self.cur_list.last() {
             Some(Node::Char { c, font, .. }) if *font == f => (*c, false),

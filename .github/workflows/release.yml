@@ -185,6 +185,19 @@ jobs:
           # that gutted tree would only evict useful caches.
           save-if: ${{ matrix.platform != 'macos' }}
 
+      # The macOS 15 arm64 image starts with about 43 GiB free, less than the
+      # debug workspace tests need: every test binary that links tex-kpse
+      # carries the embedded package archive (about 0.7 GB each, 50 GB in all).
+      # Simulator runtimes and the Android SDK are unused here.
+      - name: Free runner disk space (macos)
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          df -h /
+          xcrun simctl runtime delete all
+          sudo rm -rf "$HOME/Library/Android/sdk"
+          df -h /
+
       # Only ratex ships (scripts/package_dist.py BINARIES); the tests below build
       # the rest of the workspace in the test profile.
       - name: Build release binary

@@ -524,7 +524,10 @@ impl<'a> BoxDisplay<'a> {
             }
             Node::ExplicitKern(k, _) => {
                 self.print_esc("kern");
-                self.out.push(b' ');
+                // luatex show_box leaves out the blank of tex.web
+                if self.e.engine_kind != crate::engine::EngineKind::LuaTeX {
+                    self.out.push(b' ');
+                }
                 self.print_scaled(*k);
             }
             Node::ItalicKern(k, _) => {
@@ -534,9 +537,14 @@ impl<'a> BoxDisplay<'a> {
             }
             Node::AccentKern(k, _) => {
                 self.print_esc("kern");
-                self.out.push(b' ');
-                self.print_scaled(*k);
-                self.print(" (for accent)");
+                if self.e.engine_kind == crate::engine::EngineKind::LuaTeX {
+                    self.print_scaled(*k);
+                    self.print(" (accent)");
+                } else {
+                    self.out.push(b' ');
+                    self.print_scaled(*k);
+                    self.print(" (for accent)");
+                }
             }
             Node::MathKern(k, 0, _) => {
                 self.print_esc("mkern");

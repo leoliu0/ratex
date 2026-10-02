@@ -97,3 +97,18 @@ callback.register('show_lua_error_hook', function() texio.write_nl('LE['..(tostr
     assert!(t.contains("EH[\nl.7 \\undefinedcs\n               ]"), "{t}");
     assert!(t.contains("LE[[\\directlua]:1: boom]"), "{t}");
 }
+
+/// luatex's box display: accent kerns read `(accent)` and explicit kerns have
+/// no blank after `\kern` (`luatex --ini`: `.\kern-5.00002 (accent)`,
+/// `.\kern1.0`).
+#[test]
+fn kern_display_follows_luatex() {
+    let e = run(r#"\scrollmode\showboxbreadth100 \showboxdepth100
+\directlua{local t=font.read_tfm('cmr10',655360) t.name='mycmr' font.current(font.define(t))}
+\setbox0\hbox{\accent18 a\kern1pt e}\showbox0"#);
+    let t = format!("{} {}", e.term, e.log).replace('\n', " ");
+    assert!(t.contains("\\kern0.0 (accent)"), "{t}");
+    assert!(t.contains("\\kern-5.00002 (accent)"), "{t}");
+    assert!(t.contains("\\kern1.0"), "{t}");
+    assert!(!t.contains("(for accent)"), "{t}");
+}

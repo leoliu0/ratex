@@ -71,7 +71,7 @@ fn half_sp(x: i64) -> i64 {
 
 /// font table index (text/script/scriptscript) for a style: D,T -> 0; S -> 1; SS -> 2
 #[inline]
-fn font_size(g: GStyle) -> usize {
+pub(crate) fn font_size(g: GStyle) -> usize {
     match g {
         0 | 1 | 2 | 3 => 0,
         4 | 5 => 1,
@@ -82,7 +82,7 @@ fn font_size(g: GStyle) -> usize {
 /// denominator style: next level up (tex.web §738:
 /// `num_style = #+2-2*(# div 6)`, `denom_style = 2*(# div 2)+cramped+2-2*(# div 6)`)
 #[inline]
-fn num_style(g: GStyle) -> GStyle {
+pub(crate) fn num_style(g: GStyle) -> GStyle {
     if g < 6 {
         g + 2
     } else {
@@ -91,7 +91,7 @@ fn num_style(g: GStyle) -> GStyle {
 }
 
 #[inline]
-fn den_style(g: GStyle) -> GStyle {
+pub(crate) fn den_style(g: GStyle) -> GStyle {
     2 * (g / 2) + 3 - 2 * (g / 6)
 }
 
@@ -194,6 +194,7 @@ pub(crate) fn finish_math_group(mut inner: NodeList, flatten: i32) -> Node {
         nucleus,
         sup: None,
         sub: None,
+        options: 0,
     }
 }
 
@@ -230,7 +231,7 @@ fn is_bin_forbidden_right(c: u8) -> bool {
 // explicit negative `\above` thickness is legal).
 
 /// tex.web `default_code`: "denotes default_rule_thickness"
-const DEFAULT_CODE: i32 = 0x4000_0000;
+pub(crate) const DEFAULT_CODE: i32 = 0x4000_0000;
 
 /// texmath.c `math_fraction` codes: `\above` (0), `\over` (1), `\atop` (2)
 /// and the LuaTeX-only `\Uskewed` (3); `withdelims` adds 4.
@@ -1515,7 +1516,14 @@ impl Engine {
 
     /// `^` / `_`: scan the following group-or-token and attach it to the last
     /// atom of the current math list (tex.web "scripts on the tail noad").
-    pub fn append_script(&mut self, sup: bool, _c: u8) {
+    pub fn append_script(&mut self, sup: bool, c: u8) {
+        self.append_script_opt(sup, c, false);
+    }
+
+    /// texmath.c `do_sub_sup(no)`: `no_script` marks the noad with
+    /// `noad_option_no_sub_script`/`no_super_script` (`\Unosubscript`,
+    /// `\Unosuperscript`): that script is typeset in the style of the noad.
+    pub fn append_script_opt(&mut self, sup: bool, _c: u8, no_script: bool) {
         let limits_req = self.math_limits.take();
         if self.script_repeats(sup) {
             // tex.web sub_sup: a second script of the same kind goes on a fresh noad
@@ -1528,6 +1536,7 @@ impl Engine {
                 nucleus: Vec::new(),
                 sup: None,
                 sub: None,
+                options: 0,
             });
         }
         self.show.scan_owner = Some(ScanKind::Script { sup, limits: limits_req });
@@ -1560,6 +1569,7 @@ impl Engine {
                     nucleus: choice_nodes,
                     sup: None,
                     sub: None,
+                    options: 0,
                 })
             } else {
                 l.pop()
@@ -1574,6 +1584,7 @@ impl Engine {
                 nucleus: Vec::new(),
                 sup: None,
                 sub: None,
+                options: 0,
             },
         };
         match top {
@@ -1581,6 +1592,7 @@ impl Engine {
                 mut nucleus,
                 sup: s,
                 sub: x,
+                options: opts,
             } => {
                 // a `\mathop{...}` group atom is stored as a null-MathChar-
                 // prefixed Scripts node. tex.web keeps the limits subtype ON
@@ -1661,10 +1673,16 @@ impl Engine {
                     } else {
                         (s, Some(group))
                     };
+                    let no_bit = match (no_script, sup) {
+                        (false, _) => 0,
+                        (true, true) => crate::boxes::noad_option::NO_SUPER_SCRIPT,
+                        (true, false) => crate::boxes::noad_option::NO_SUB_SCRIPT,
+                    };
                     self.append_mlist_node(Node::Scripts {
                         nucleus,
                         sup: ns,
                         sub: nx,
+                        options: opts | no_bit,
                     });
                 }
             }
@@ -1731,6 +1749,7 @@ impl Engine {
                         nucleus: vec![atom],
                         sup: sup_g,
                         sub: sub_g,
+                        options: 0,
                     });
                 }
             }
@@ -1762,10 +1781,11 @@ impl Engine {
                 mut nucleus,
                 sup,
                 sub,
+                options,
             } => {
                 let head_op = matches!(nucleus.first(), Some(Node::MathChar { class: CL_OP, .. }));
                 if !head_op {
-                    *tail = Node::Scripts { nucleus, sup, sub };
+                    *tail = Node::Scripts { nucleus, sup, sub, options };
                     return;
                 }
                 if st == 2 {
@@ -1782,7 +1802,7 @@ impl Engine {
                     {
                         *c = 2;
                     }
-                    *tail = Node::Scripts { nucleus, sup, sub };
+                    *tail = Node::Scripts { nucleus, sup, sub, options };
                     return;
                 }
                 set_limits_subtype(&mut nucleus, st);
@@ -1793,7 +1813,7 @@ impl Engine {
                         below: sub,
                     };
                 } else {
-                    *tail = Node::Scripts { nucleus, sup, sub };
+                    *tail = Node::Scripts { nucleus, sup, sub, options };
                 }
             }
             Node::OpLimits {
@@ -1969,6 +1989,7 @@ impl Engine {
             subtype: 0,
             width: 0,
             options: 0,
+            degree: None,
         });
         let group = self.scan_math_group_or_token();
         self.append_mlist_node(Node::Radical {
@@ -2021,6 +2042,7 @@ impl Engine {
                         nucleus: nuc,
                         sup: None,
                         sub: None,
+                        options: 0,
                     }
                 }
             }
@@ -2045,6 +2067,7 @@ impl Engine {
                 nucleus: nuc,
                 sup: None,
                 sub: None,
+                options: 0,
             }
         };
         self.append_mlist_node(node);
@@ -2272,8 +2295,11 @@ impl Engine {
         self.set_pending_fraction(thickness, ld, rd);
         let den = self.scan_math_rest_of_group();
         let num = self.take_pending_numerator();
-        let left = (!ld.is_null()).then_some(ld);
-        let right = (!rd.is_null()).then_some(rd);
+        // luatex scans a delimiter node for `withdelims` (a null one is
+        // typeset as an unshifted empty box); plain fractions have none
+        let lua_mode = self.engine_kind == crate::engine::EngineKind::LuaTeX;
+        let left = if lua_mode { delimited.then_some(ld) } else { (!ld.is_null()).then_some(ld) };
+        let right = if lua_mode { delimited.then_some(rd) } else { (!rd.is_null()).then_some(rd) };
         self.append_mlist_node(Node::Frac {
             num,
             den,
@@ -2479,7 +2505,7 @@ impl Engine {
             origin: MathDiagnosticOrigin::default(),
         });
         nucleus.extend(inner);
-        self.append_mlist_node(Node::Scripts { nucleus, sup: None, sub: None });
+        self.append_mlist_node(Node::Scripts { nucleus, sup: None, sub: None, options: 0 });
     }
 
     /// 1mu = quad of family 2 at the current math size / 18 (tex.web §767).
@@ -2694,12 +2720,12 @@ impl Engine {
                         let p = nodes.remove(i + 1);
                         math_text.remove(i + 1);
                         Self::set_math_noad_char(&mut nodes[i], replacement);
-                        if let Node::Scripts { sup, sub, .. } = p {
+                        if let Node::Scripts { sup, sub, options, .. } = p {
                             let nucleus = match nodes[i].clone() {
                                 Node::Scripts { nucleus, .. } => nucleus,
                                 q => vec![q],
                             };
-                            nodes[i] = Node::Scripts { nucleus, sup, sub };
+                            nodes[i] = Node::Scripts { nucleus, sup, sub, options };
                         }
                     }
                 }
@@ -2848,7 +2874,7 @@ impl Engine {
                         origin,
                         ..
                     } => Some((*small, *large, None, None, origin)),
-                    Node::Scripts { nucleus, sup, sub } => match nucleus.as_slice() {
+                    Node::Scripts { nucleus, sup, sub, .. } => match nucleus.as_slice() {
                         [Node::DelimBox {
                             size: 1,
                             small,
@@ -3187,10 +3213,20 @@ impl Engine {
                     out
                 }
             }
-            Node::Scripts { nucleus, sup, sub } => {
+            Node::Scripts { nucleus, sup, sub, .. } => {
                 // TeX make_math_accent: scripts on a single-character accent
                 // attach to the character, not the taller accent box. Ordinary
                 // groups containing a lone accent preserve that noad identity.
+                if self.engine_kind == crate::engine::EngineKind::LuaTeX && (sup.is_some() || sub.is_some()) {
+                    if let Some((spec, body, _)) = accent_noad_of(nucleus) {
+                        let (b, consumed) =
+                            self.make_math_accent_lua(&spec, body, sup.as_deref(), sub.as_deref(), style);
+                        if consumed {
+                            return vec![b];
+                        }
+                        return self.make_scripts(&[b], sup.as_deref(), sub.as_deref(), style);
+                    }
+                }
                 if sup.is_some() || sub.is_some() {
                     if let Some((spec, body, origin)) = accent_noad_of(nucleus) {
                         let accent = spec.top.map_or((0, 0), |(fam, c)| (fam, c as u8));
@@ -3247,15 +3283,47 @@ impl Engine {
                 thickness,
                 left,
                 right,
+                middle,
+                options,
                 origin,
-                ..
-            } => self.make_fraction(num, den, *thickness, (*left, *right), style, origin),
+            } => {
+                if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                    vec![self.make_fraction_lua(
+                        num,
+                        den,
+                        *thickness,
+                        left.as_ref(),
+                        right.as_ref(),
+                        middle.as_ref(),
+                        *options,
+                        style,
+                    )]
+                } else {
+                    self.make_fraction(num, den, *thickness, (*left, *right), style, origin)
+                }
+            }
             Node::Radical {
-                body, delim, origin, ..
-            } => self.make_radical(body, *delim, style, origin),
+                body,
+                delim,
+                subtype,
+                width,
+                options,
+                degree,
+                origin,
+            } => {
+                if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                    vec![self.make_radical_lua(body, delim, *subtype, *width, *options, degree.as_deref(), style)]
+                } else {
+                    self.make_radical(body, *delim, style, origin)
+                }
+            }
             Node::Accent { spec, body, origin } => {
-                let accent = spec.top.map_or((0, 0), |(fam, c)| (fam, c as u8));
-                self.make_accent(accent, body, style, None, None, origin)
+                if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                    vec![self.make_math_accent_lua(spec, body, None, None, style).0]
+                } else {
+                    let accent = spec.top.map_or((0, 0), |(fam, c)| (fam, c as u8));
+                    self.make_accent(accent, body, style, None, None, origin)
+                }
             }
             Node::DelimBox {
                 small,
@@ -4359,7 +4427,7 @@ fn box_dims_shifted(n: &Node) -> (i32, i32) {
 
 /// Preserve TeX's ordinary-group unwrap for a lone accent noad.
 /// Explicit non-ordinary class markers must not be unwrapped.
-fn accent_noad_of(nucleus: &[Node]) -> Option<(AccentSpec, &[Node], &MathDiagnosticOrigin)> {
+pub(crate) fn accent_noad_of(nucleus: &[Node]) -> Option<(AccentSpec, &[Node], &MathDiagnosticOrigin)> {
     let accent = match nucleus {
         [a @ Node::Accent { .. }] => a,
         [Node::MathChar {

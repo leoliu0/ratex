@@ -839,6 +839,9 @@ pub enum Node {
         nucleus: NodeList,
         sup: Option<NodeList>,
         sub: Option<NodeList>,
+        /// luatex `noadoptions` of the noad (`noad_option::NO_SUB_SCRIPT`,
+        /// `NO_SUPER_SCRIPT`: `\Unosubscript`, `\Unosuperscript`)
+        options: u16,
     },
     /// A delimiter marker of a flat mlist: `size` 0 is a `\left` (open
     /// boundary), 1 a `\right`, 2 a plain delimiter atom, 3 a `\middle`

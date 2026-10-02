@@ -543,10 +543,7 @@ impl Engine {
             }
             UPrim::UNoSubscript | UPrim::UNoSuperscript => {
                 if !self.insert_dollar_unless_math(id) {
-                    // an empty script suppresses the following one
-                    self.push_token(Token::char(2, u32::from(b'}')));
-                    self.push_token(Token::char(1, u32::from(b'{')));
-                    self.append_script(u == UPrim::UNoSuperscript, 0);
+                    self.append_script_opt(u == UPrim::UNoSuperscript, 0, true);
                 }
             }
             UPrim::LateLua => {

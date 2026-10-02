@@ -17,6 +17,11 @@
 //! * Glyph IDs are preserved. Composite components that are not used by
 //!   themselves are put into the lowest free slot and the composite is patched.
 //! * `CIDToGIDMap` is always `/Identity` (`NO_GHOSTSCRIPT_BUG` is not defined).
+//!
+//! The C implementation leaves `ury` of empty glyphs and typo ascender/
+//! descender of an existing OS/2 table shorter than 78 bytes uninitialized.
+//! Their vertical metrics depend on heap residue, so no deterministic port
+//! can reproduce them; this module initializes those fields to zero.
 
 use std::collections::BTreeSet;
 
@@ -465,7 +470,9 @@ fn tt_build_tables(sfont: &mut Sfnt, g: &mut Glyphs) -> Result<(), String> {
     let num_ex = num_ex_side_bearings(sfont.len(b"hmtx"), num_of_long_hor_metrics);
     let hmtx = read_long_metrics(f, hmtx_pos, num_glyphs, num_of_long_hor_metrics, num_ex)?;
 
-    // OS/2 (tt_read_os2__table; fields that are not present stay 0)
+    // OS/2 (tt_read_os2__table). Missing table uses its defined 880/-120
+    // defaults; a short existing table has uninitialized typo fields in C,
+    // represented by zero here rather than reading heap residue.
     let (typo_asc, typo_desc): (i32, i32) = if sfont.pos(b"OS/2") > 0 {
         let p = sfont.locate(b"OS/2")?;
         if sfont.len(b"OS/2") >= 78 {

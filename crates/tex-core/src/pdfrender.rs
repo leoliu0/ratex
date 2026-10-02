@@ -1849,6 +1849,10 @@ impl<'a> RenderCtx<'a> {
         if self.dpxt.in_text() {
             self.dpxt_graphics_mode();
         }
+        self.end_pdftex_text();
+    }
+    /// The pdfTeX-style text object only (the dpx text engine keeps its own).
+    fn end_pdftex_text(&mut self) {
         if self.doing_text {
             self.end_string_nl();
             self.content.push_str("ET\n");

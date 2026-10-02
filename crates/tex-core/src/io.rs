@@ -791,6 +791,10 @@ impl Engine {
             self.lua_hyphenation_words(is_patterns);
             return;
         }
+        if self.engine_kind == crate::engine::EngineKind::XeTeX {
+            self.xetex_hyphenation_words(is_patterns);
+            return;
+        }
         if is_patterns && !self.ini_mode {
             self.error("\\patterns can be used only in INITEX mode");
             return;

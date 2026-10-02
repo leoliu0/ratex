@@ -318,6 +318,8 @@ pub struct Engine {
     /// e-TeX `\savinghyphcodes`: language-specific lowercase tables captured
     /// when that language's patterns are loaded.
     pub hyphen_codes: crate::FxHashMap<u8, Box<[u8; 256]>>,
+    /// XeTeX hyphenation state beyond the tries (see `hyphen::XeHyph`).
+    pub xe_hyph: crate::hyphen::XeHyph,
     pub hyphen_exceptions: Vec<(String, Vec<u8>)>,
     pub par_shape: Vec<(i32, i32)>,
     /// group level of the current par_shape assignment (tex.web tracks
@@ -1131,6 +1133,7 @@ impl Engine {
             hyphen_trie: crate::hyphen::Trie::new(),
             hyphen_tries: crate::FxHashMap::default(),
             hyphen_codes: crate::FxHashMap::default(),
+            xe_hyph: Default::default(),
             hyphen_exceptions: Vec::new(),
             par_shape: Vec::new(),
             par_shape_level: crate::eqtb::LEVEL_ONE,

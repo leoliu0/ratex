@@ -2351,7 +2351,7 @@ fn info_dictionary(doc: &PdfDoc) -> String {
     let given = |key: &str| user.contains(key);
     let mut dict = String::from("<<\n");
     if !given("/Producer") {
-        dict.push_str(&format!("/Producer ({})\n", crate::pdftex::PDFTEX_PRODUCER));
+        dict.push_str(&format!("/Producer ({})\n", doc.producer));
     }
     if !user.is_empty() {
         dict.push_str(&user);
@@ -2371,7 +2371,7 @@ fn info_dictionary(doc: &PdfDoc) -> String {
         dict.push_str("/Trapped /False\n");
     }
     if let Some(key) = doc.ptex_banner_key {
-        dict.push_str(&format!("/{key} ({})\n", escape_string(crate::pdftex::PDFTEX_BANNER)));
+        dict.push_str(&format!("/{key} ({})\n", escape_string(doc.banner)));
     }
     dict.push_str(">>");
     dict

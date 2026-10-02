@@ -56,7 +56,7 @@ fn opentype_font_from_table_is_embedded_with_tounicode() {
  if not file then texio.write_nl("NOFONT") return end
  local id = font.define{
   name="lmroman10-regular", psname="LMRoman10-Regular", fullname="LMRoman10-Regular",
-  filename=file, format="opentype", embedding="subset", encodingbytes=2, type="real",
+  filename=file, format="opentype", embedding="subset", encodingbytes=2, type="real", subfont=1,
   size=655360, designsize=655360,
   characters={
    [32]={index=3,width=332871},
@@ -93,6 +93,8 @@ fn opentype_font_from_table_is_embedded_with_tounicode() {
     assert_eq!(e.error_count, 0, "errors: {:?}\n{}", e.diagnostics, e.term);
     // luatex: WD=47.8592ptHT=7.15999ptFN=lmroman10-regular
     assert!(e.term.contains("WD=47.8592ptHT=7.15999ptFN=lmroman10-regular"), "{}", e.term);
+    // the table's `subfont=1` (what luaotfload supplies) names the first face of a plain font file
+    e.embed_used_fonts().expect("the font program of a Lua font is embedded");
     let text: String = e
         .pdf_doc
         .native_bindings
@@ -162,4 +164,23 @@ fn font_library_has_luatex_members() {
 }"#,
     );
     assert_eq!(e.error_count, 0, "errors: {:?}\n{}", e.diagnostics, e.term);
+}
+
+/// luatex's Info dictionary (`luatex --ini` with `\pdfvariable suppressptexinfo=1`
+/// and `ptexuseunderscore=1`): /Producer `LuaTeX-1.24.0` and a `PTEX.FullBanner`
+/// that neither of the pdfTeX switches touches.
+#[test]
+fn info_dictionary_names_luatex() {
+    let mut e = run_luatex(
+        r"\pdfvariable suppressptexinfo=1 \pdfvariable ptexuseunderscore=1 \outputmode=1 \shipout\hbox{}",
+    );
+    assert_eq!(e.error_count, 0, "errors: {:?}\n{}", e.diagnostics, e.term);
+    let bytes = tex_core::driver::finish_pdf(&mut e, false).expect("PDF output");
+    let pdf = lopdf::Document::load_mem(&bytes).expect("valid PDF");
+    let info = pdf.trailer.get(b"Info").unwrap().as_reference().unwrap();
+    let info = pdf.get_dictionary(info).unwrap();
+    let text = |key: &[u8]| String::from_utf8_lossy(info.get(key).unwrap().as_str().unwrap()).into_owned();
+    assert_eq!(text(b"Producer"), "LuaTeX-1.24.0");
+    assert!(text(b"PTEX.FullBanner").starts_with("This is LuaTeX, Version 1.24.0"));
+    assert!(info.get(b"PTEX_FullBanner").is_err() && info.get(b"PTEX.Fullbanner").is_err());
 }

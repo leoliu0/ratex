@@ -1,0 +1,46 @@
+\catcode`\{=1 \catcode`\}=2 \catcode`\#=6 \catcode`\ =10
+\directlua{tex.enableprimitives('',tex.extraprimitives())}
+\outputmode=1 \pagewidth=100pt \pageheight=60pt \pdfvariable compresslevel=0 \pdfvariable objcompresslevel=0
+\baselineskip=0pt \lineskip=0pt \lineskiplimit=0pt
+\directlua{
+ SP = 65536
+ function SHOW(n) return 'id='..n.id..' sub='..n.subtype..' w='..n.width..' h='..n.height..' d='..n.depth..' dir='..tostring(n.dir) end
+ function SHOWND(n) return 'id='..n.id..' sub='..n.subtype..' w='..n.width..' h='..n.height..' d='..n.depth end
+ function RULE(st, w, h, d, tr)
+   local r = node.new('rule', st) r.width = w r.height = h r.depth = d
+   if tr then r.transform = tr end
+   return r
+ end
+ function LEAD(st, sub)
+   local g = node.new('glue', sub) g.width = 20*SP g.stretch = 0 g.shrink = 0
+   g.leader = RULE(st, 3*SP, 4*SP, 1*SP)
+   return g
+ end
+ function ALL(from)
+   for _, st in ipairs{0, 3, 4, 5, 6, 7, 8, 9} do
+     node.write(RULE(st, 10*SP, 3*SP, SP, st == 9 and 2*SP or nil))
+     if from == 'h' then node.write(node.new('kern', 2*SP)) end
+   end
+ end
+ function CB(mode, show)
+   callback.register('process_rule', function(n, w, h)
+     texio.write_nl('term and log', 'PR ' .. (show or SHOW)(n) .. ' size ' .. w .. ' ' .. h .. '@@')
+     local s = '0 0 1 rg 0 0 ' .. (math.floor(w/65.78176)/1000) .. ' ' .. (math.floor(h/65.78176)/1000) .. ' re f'
+     if mode then pdf.print(mode, s) else pdf.print(s) end
+   end)
+ end
+ CB()
+}
+% \vrule/\hrule: filled, hairline stroked
+\shipout\hbox{\vrule width 2pt height 5pt depth 1pt\vrule width 0.3pt height 4pt\vrule height 0.3pt width 4pt\vrule width 1pt height 1pt depth 1pt \vrule height 0pt width 3pt}
+\shipout\vbox{\hrule height 2pt width 20pt\hrule height 0.3pt width 20pt depth 0.2pt\hrule width 5pt height 4pt\hrule}
+% \nohrule, \novrule take space only
+\shipout\vbox{\nohrule height 2pt width 5pt\hrule height 2pt\hbox{\novrule width 3pt height 2pt\vrule width 2pt height 2pt}\hbox{\novrule width 3pt height 2pt}\nohrule}
+% rule leaders
+\shipout\vbox{\hbox to 40pt{\leaders\hrule height 3pt\hfil\kern2pt\leaders\vrule width 2pt\hskip 10pt}
+\vbox to 30pt{\hrule width 5pt\leaders\vrule width 4pt\vfil\leaders\hrule\vskip 6pt}}
+% outline rules, a small user rule gets the callback
+\shipout\vbox{\hbox{\directlua{node.write(RULE(9, 10*SP, 5*SP, 2*SP, 1.5*SP)) node.write(RULE(9, 10*SP, 5*SP, 2*SP, 0)) node.write(RULE(9, 10*SP, 5*SP, 2*SP, 0.5*SP)) node.write(RULE(9, 5*SP, 0.3*SP, 0, SP)) node.write(RULE(0, 5*SP, 4*SP, 0))}}
+\directlua{node.write(RULE(9, 20*SP, 5*SP, 2*SP, 2*SP))}}
+\shipout\vbox{\hbox{\directlua{node.write(RULE(4, 0, SP, 0)) node.write(RULE(4, SP, 0, 0)) node.write(RULE(4, SP, SP, 0)) node.write(RULE(4, 0.3*SP, 3*SP, 0)) node.write(RULE(4, 10*SP, 0.3*SP, 0)) node.write(RULE(9, 10*SP, 0.3*SP, 0, SP)) node.write(RULE(9, 0.3*SP, 10*SP, 0, SP)) node.write(RULE(9, 10*SP, 10*SP, 0, 0))}}}
+\end

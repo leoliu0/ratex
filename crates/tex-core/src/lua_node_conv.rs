@@ -505,7 +505,11 @@ impl Engine {
                 f[sl::R_WIDTH] = rule_to_lua(*width);
                 f[sl::R_HEIGHT] = rule_to_lua(*height);
                 f[sl::R_DEPTH] = rule_to_lua(*depth);
-                f[sl::R_INDEX] = *index;
+                if *subtype == boxes::RULE_OUTLINE {
+                    f[sl::R_TRANSFORM] = *index;
+                } else {
+                    f[sl::R_INDEX] = *index;
+                }
                 n
             }
             Node::Disc(dc) => {
@@ -776,7 +780,7 @@ impl Engine {
                         height: rule_from_lua(h),
                         depth: rule_from_lua(d),
                         subtype: sub as u8,
-                        index: f[sl::R_INDEX],
+                        index: if sub == u16::from(boxes::RULE_OUTLINE) { f[sl::R_TRANSFORM] } else { f[sl::R_INDEX] },
                         attr: crate::boxes::Attr::NONE,
                     }),
                 }

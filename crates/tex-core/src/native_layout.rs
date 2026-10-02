@@ -33,6 +33,14 @@ pub struct NativeRun {
     pub actual_text: bool,
 }
 
+impl NativeRun {
+    /// xetex.web `glyph_node` (`\XeTeXglyph`, math): one glyph with an empty
+    /// cluster; a native word always has a non-empty cluster.
+    pub fn is_glyph_node(&self) -> bool {
+        self.glyphs.len() == 1 && self.glyphs[0].cluster_start == self.glyphs[0].cluster_end
+    }
+}
+
 /// State of the character run the main loop is collecting (`native_text`).
 #[derive(Default, Debug)]
 pub struct NativeTextState {

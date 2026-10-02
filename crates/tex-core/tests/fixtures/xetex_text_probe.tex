@@ -1,0 +1,31 @@
+\catcode`\{=1 \catcode`\}=2 \catcode`\#=6
+\tracingonline1 \showboxbreadth100 \showboxdepth100
+\font\a="[lmroman10-regular.otf]" at 10pt
+\font\b="[lmroman10-regular.otf]:script=latn;+smcp" at 12pt
+\a
+\message{[\the\fontdimen1\a|\the\fontdimen2\a|\the\fontdimen3\a|\the\fontdimen4\a|\the\fontdimen5\a|\the\fontdimen6\a|\the\fontdimen7\a|\the\fontdimen8\a]}
+\message{[\fontname\a|\fontname\b|\the\XeTeXfonttype\a|\the\XeTeXcountglyphs\a]}
+\message{[\the\XeTeXfirstfontchar\a|\the\XeTeXlastfontchar\a]}
+\message{[\the\XeTeXcharglyph 65 |\XeTeXglyphname\a 36|\the\XeTeXglyphbounds1 36 |\the\XeTeXglyphbounds2 36 |\the\XeTeXglyphbounds3 36 |\the\XeTeXglyphbounds4 36 ]}
+\message{[\the\XeTeXglyphindex A |\the\XeTeXglyphindex ffi |\the\XeTeXglyphindex nosuchglyph ]}
+\message{[\the\fontcharwd\a`A|\the\fontcharht\a`A|\the\fontchardp\a`g|\the\fontcharic\a`f|\iffontchar\a`A Y\else N\fi\iffontchar\a"1F600 Y\else N\fi]}
+\message{[\the\XeTeXOTcountscripts\a|\the\XeTeXOTscripttag\a 0 |\the\XeTeXOTcountlanguages\a 1818326126 |\the\XeTeXOTcountfeatures\a 1818326126 0 ]}
+\setbox0\hbox{\a Hello, world fi --- ffi}
+\showbox0
+\setbox0\hbox{\b Hello, world}
+\showbox0
+\setbox0\hbox{\a A\XeTeXglyph36 B}
+\showbox0
+\XeTeXuseglyphmetrics=1
+\setbox0\hbox{\a Hello}
+\showbox0
+\tracinglostchars=1 \XeTeXtracingfonts=1
+\setbox0\hbox{\a A\char"1F600 B}
+\font\c="[lmroman10-bold.otf]:mapping=tex-text" at 11pt
+\setbox0\hbox{\c ``q'' --- --}
+\showbox0
+\XeTeXcharclass`A=1 \XeTeXcharclass`B=2 \XeTeXinterchartokenstate=1
+\XeTeXinterchartoks 1 2 = {\message{[AB]}} \XeTeXinterchartoks 4095 1 = {\message{[bA]}} \XeTeXinterchartoks 2 4095 = {\message{[Bb]}}
+\setbox0\hbox{\a xAByz}
+\showbox0
+\end

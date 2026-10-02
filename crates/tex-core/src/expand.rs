@@ -1683,7 +1683,13 @@ impl Engine {
             }
             Prim::FontName => {
                 let f = self.scan_font_id();
-                let text = self.font_display_name(f);
+                let mut text = self.font_display_name(f);
+                // xetex.web: the name of a native font is quoted
+                if self.is_native_font(f) {
+                    let name = self.eqtb.fonts[f as usize].tfm_name.clone();
+                    let q = if name.contains('"') { '\'' } else { '"' };
+                    text = text.replacen(&name, &format!("{q}{name}{q}"), 1);
+                }
                 self.exp_string(text.as_bytes());
                 None
             }

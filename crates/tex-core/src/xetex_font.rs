@@ -67,8 +67,21 @@ impl Engine {
     }
 
     fn find_font_program(&mut self, name: &str, index: u32) -> Option<Rc<crate::font_program::FontProgram>> {
-        let bytes = self.font_loader.read_program_bytes(name)?;
-        self.font_loader.load_program(bytes, index, Vec::new()).ok()
+        // kpse_find_file(name, opentype / truetype / type1): the file as
+        // spelled, then with the suffixes of those formats
+        let mut candidates = vec![name.to_string()];
+        let lower = name.to_ascii_lowercase();
+        if !(lower.ends_with(".otf") || lower.ends_with(".ttf") || lower.ends_with(".ttc") || lower.ends_with(".pfb") || lower.ends_with(".pfa") || lower.ends_with(".dfont")) {
+            for ext in [".otf", ".ttf", ".ttc", ".pfb", ".pfa"] {
+                candidates.push(format!("{name}{ext}"));
+            }
+        }
+        for c in candidates {
+            if let Some(bytes) = self.font_loader.read_program_bytes(&c) {
+                return self.font_loader.load_program(bytes, index, Vec::new()).ok();
+            }
+        }
+        None
     }
 
     /// `getDesignSize` of a program, in sp (D2Fix of TeX points; 10pt default).

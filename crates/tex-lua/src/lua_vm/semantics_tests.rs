@@ -116,8 +116,47 @@ fn lua53_integer_for_loop_skips_when_start_is_past_limit() {
     );
 }
 
+/// Lua source binding `pow_NAME` to the platform libm's `pow(x, y)`, passed
+/// bit-exactly (the last bits of `pow` differ between libm implementations).
+fn libm_pow_bindings(cases: &[(&str, f64, f64)]) -> String {
+    let mut source = String::new();
+    for &(name, x, y) in cases {
+        let bits = std::hint::black_box(x).powf(std::hint::black_box(y)).to_bits() as i64;
+        source.push_str(&format!(
+            "local pow_{name} = string.unpack('<d', string.pack('<i8', {bits}))\n"
+        ));
+    }
+    source
+}
+
 #[test]
 fn power_uses_libm_pow() {
+    // `^` must return exactly what the platform's `pow` returns, not a
+    // repeated-multiplication or exp/log approximation.
+    let bindings = libm_pow_bindings(&[
+        ("ten23", 10.0, 23.0),
+        ("three40", 3.0, 40.0),
+        ("three255", 3.0, 255.0),
+        ("sqrt2", 2.0, 0.5),
+    ]);
+    run_both(&format!(
+        r#"
+        {bindings}
+        local ten, e, three = 10, 23, 3
+        assert(ten ^ e == pow_ten23)
+        assert(three ^ 40 == pow_three40)
+        assert(three ^ 255 == pow_three255)
+        assert(2 ^ 0.5 == pow_sqrt2)
+        assert(math.pow == nil or math.pow(10, 23) == pow_ten23)
+        "#
+    ));
+}
+
+/// glibc's correctly rounded `pow` results (other libms may differ in the
+/// last bit, e.g. macOS for 10^23).
+#[cfg(target_os = "linux")]
+#[test]
+fn power_matches_glibc_pow_values() {
     run_both(
         r#"
         local ten, e = 10, 23

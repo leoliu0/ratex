@@ -178,9 +178,26 @@ mod sys {
         Some(dt.timestamp())
     }
 
+    /// `strftime` of one conversion (`spec` includes the '%'), validated by
+    /// `conversion_length`. The `E` and `O` modifiers change nothing in the
+    /// C locale. chrono's formatter reports unsupported items as a
+    /// `fmt::Error` (a panic in `to_string`), so errors yield no text.
     pub(super) fn strftime(spec: &[u8], dt: &Raw, out: &mut Vec<u8>) {
-        let spec = std::str::from_utf8(spec).unwrap_or("");
-        out.extend_from_slice(dt.format(spec).to_string().as_bytes());
+        use std::fmt::Write;
+        let conv = match spec {
+            [b'%', b'E' | b'O', conv] => *conv,
+            [b'%', conv] => *conv,
+            _ => return,
+        };
+        if conv == b'Z' && dt.offset().local_minus_utc() == 0 {
+            out.extend_from_slice(b"GMT");
+            return;
+        }
+        let format = ['%', conv as char].into_iter().collect::<String>();
+        let mut text = String::new();
+        if write!(text, "{}", dt.format(&format)).is_ok() {
+            out.extend_from_slice(text.as_bytes());
+        }
     }
 }
 
@@ -408,7 +425,7 @@ fn push_os_error(l: &mut LuaState, error: &std::io::Error, filename: Option<&[u8
     l.push_value(LuaValue::nil())?;
     let message = l.create_string(&message)?;
     l.push_value(message)?;
-    l.push_value(LuaValue::integer(error.raw_os_error().unwrap_or(0) as i64))?;
+    l.push_value(LuaValue::integer(crate::stdlib::io::file::error_code(error)))?;
     Ok(3)
 }
 

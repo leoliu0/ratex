@@ -413,11 +413,11 @@ fn test_os_file_operations_return_c_error_triples() {
         r##"
         local dir = {dir:?}
         local r, msg, code = os.remove(dir .. "/missing")
-        assert(r == nil and msg == dir .. "/missing: No such file or directory" and code == 2)
+        assert(r == nil and msg == dir .. "/missing: No such file or directory" and code == {enoent})
         r, msg, code = os.rename(dir .. "/missing", dir .. "/other")
-        assert(r == nil and msg == "No such file or directory" and code == 2)
+        assert(r == nil and msg == "No such file or directory" and code == {enoent})
         r, msg, code = os.remove(dir)
-        assert(r == nil and msg == dir .. ": Directory not empty" and code == 39)
+        assert(r == nil and msg == dir .. ": Directory not empty" and code == {enotempty})
         assert(os.remove(dir .. "/sub") == true)
         local name = os.tmpname()
         local f = io.open(name, "r")
@@ -425,7 +425,10 @@ fn test_os_file_operations_return_c_error_triples() {
         assert(os.remove(name) == true)
         assert(os.getenv(1) == nil and not pcall(os.getenv))
         "##,
-        dir = dir.to_string_lossy()
+        dir = dir.to_string_lossy(),
+        // errno numbers are the platform's (ENOTEMPTY is 39 on Linux, 66 on macOS)
+        enoent = libc::ENOENT,
+        enotempty = libc::ENOTEMPTY
     );
     for level in [LuaLanguageLevel::Lua53, LuaLanguageLevel::Lua55] {
         let _ = std::fs::remove_dir_all(&dir);

@@ -58,6 +58,10 @@ pub(crate) mod sl {
     pub const D_POST: usize = 1;
     pub const D_REPLACE: usize = 2;
     pub const D_PENALTY: usize = 3;
+    /// engine data: bit 0/1/2 when the first node of the pre/post/replace
+    /// list has no `prev` pointer (luatex `set_disc_field`), so a kern
+    /// `add_kern_before` puts in front of it is lost
+    pub const D_NOALINK: usize = 4;
     // ins
     pub const I_COST: usize = 0;
     pub const I_DEPTH: usize = 1;

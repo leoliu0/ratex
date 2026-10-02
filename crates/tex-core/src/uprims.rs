@@ -286,33 +286,16 @@ impl Engine {
         }
     }
 
-    /// `\hjcode` of the current language (texlang.c `get_hj_code`): the
-    /// `\lccode` until a code is assigned.
+    /// `\hjcode` of the current language (texlang.c `get_hj_code`).
     fn hj_code(&self, c: i32) -> i32 {
-        let id = self.current_language_id();
-        let Some(index) = usize::try_from(c).ok().filter(|c| *c < 256) else {
-            return 0;
-        };
-        let lc = i32::from(self.eqtb.lc_code[index]);
-        self.hyphen_codes.get(&id).map_or(lc, |codes| match codes[index] {
-            0 => lc,
-            code => i32::from(code),
-        })
+        self.hj_code_of(self.current_language_id(), c)
     }
 
     fn set_hj_code(&mut self, c: i32, value: i32) {
         let id = self.current_language_id();
-        let (Some(index), Ok(value)) = (usize::try_from(c).ok().filter(|c| *c < 256), u8::try_from(value)) else {
-            self.error("Invalid hjcode: hyphenation codes are limited to the 8-bit range");
-            return;
-        };
-        let lc = self.eqtb.lc_code.clone();
-        let codes = self.hyphen_codes.entry(id).or_insert_with(|| {
-            let mut t = Box::new([0u8; 256]);
-            t.copy_from_slice(&lc[..256]);
-            t
-        });
-        codes[index] = value;
+        if !self.set_hj_code_of(id, c, value) {
+            self.error("Invalid hjcode: the character or the code is out of range");
+        }
     }
 
     // ---- directions ----
@@ -623,7 +606,15 @@ impl Engine {
                     _ => self.cur_list.push(node),
                 }
             }
-            UPrim::AutomaticDiscretionary => self.main_dispatch(Prim::HyphenDisc, id),
+            UPrim::AutomaticDiscretionary => {
+                if self.mode.is_v() {
+                    // as for \-: the paragraph starts before the discretionary
+                    self.push_token(Token::from_cs(id));
+                    self.start_paragraph(true);
+                } else {
+                    self.append_hyphen_discretionary(true);
+                }
+            }
             UPrim::EndLocalControl => self.end_local_control(),
             UPrim::GLeaders => self.begin_leaders(crate::boxes::LEADERS_G),
             UPrim::NoHRule => self.rule_command(id, true, crate::boxes::RULE_EMPTY),

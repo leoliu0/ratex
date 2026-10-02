@@ -822,7 +822,7 @@ impl Engine {
             wd,
             ht,
             dp,
-        }));
+        }, self.eqtb.cur_attr));
     }
 
     /// Destination identifier: `name {<string>}` or `num <n>` (pdfTeX
@@ -878,7 +878,7 @@ impl Engine {
             id,
             kind,
             params: vals,
-        });
+        }, self.eqtb.cur_attr);
         match self.mode {
             crate::engine::Mode::Vertical | crate::engine::Mode::InternalVertical => {
                 self.vlist_append(node)
@@ -913,7 +913,7 @@ impl Engine {
             }
         }
         let attr = self.scan_pdf_string();
-        self.append_whatsit(Node::Whatsit(WhatIt::PdfAnnot { attr, wd, ht, dp }));
+        self.append_whatsit(Node::Whatsit(WhatIt::PdfAnnot { attr, wd, ht, dp }, self.eqtb.cur_attr));
     }
 
     /// pdfTeX `scan_action`: `user {<dict>}` or

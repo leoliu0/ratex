@@ -147,7 +147,7 @@ impl Engine {
         if (0..=255).contains(&slot) {
             self.cur_list.push(crate::boxes::Node::Char {
                 font: font_id,
-                c: slot as u8,
+                c: slot as u8, attr: crate::boxes::Attr::NONE,
             });
         }
     }

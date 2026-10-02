@@ -39,8 +39,8 @@ fn precedes_break(n: &Node) -> bool {
             | Node::NativeGlyphRun { .. }
             | Node::Ins { .. }
             | Node::Mark { .. }
-            | Node::Adj(_)
-            | Node::Whatsit(_)
+            | Node::Adj(_, _)
+            | Node::Whatsit(_, _)
     )
 }
 
@@ -59,7 +59,7 @@ fn x_over_n(x: i64, n: i64) -> i64 {
 /// dropped, whatsits/marks/insertions stay, and a `split_top_skip` glue
 /// shrunk by the first box's height opens the list. Scanning stops at the
 /// first box/rule; everything after it is untouched.
-fn prune_page_top_list(list: NodeList, topskip: &Glue, snaps: &mut usize) -> NodeList {
+fn prune_page_top_list(list: NodeList, topskip: &Glue, snaps: &mut usize, attr: crate::boxes::Attr) -> NodeList {
     let mut out: NodeList = Vec::new();
     let mut it = list.into_iter();
     loop {
@@ -67,16 +67,16 @@ fn prune_page_top_list(list: NodeList, topskip: &Glue, snaps: &mut usize) -> Nod
             None => return out,
             Some(Node::Whatsit(
                 crate::boxes::WhatIt::PdfSnapY(_) | crate::boxes::WhatIt::PdfSnapYComp(_),
-            )) => *snaps += 1,
+            _)) => *snaps += 1,
             Some(n @ Node::Mark { .. })
             | Some(n @ Node::Ins { .. })
-            | Some(n @ Node::Whatsit(_)) => out.push(n),
+            | Some(n @ Node::Whatsit(_, _)) => out.push(n),
             Some(n) => {
                 let h = match &n {
                     Node::Box { h, .. }
                     | Node::Rule { height: h, .. }
                     | Node::NativeGlyphRun { height: h, .. } => *h as i64,
-                    Node::Glue(_) | Node::Kern(_) | Node::ExplicitKern(_) | Node::Penalty(_) => {
+                    Node::Glue(_, _) | Node::Kern(_, _) | Node::ExplicitKern(_, _) | Node::Penalty(_, _) => {
                         continue
                     }
                     _ => continue,
@@ -87,7 +87,7 @@ fn prune_page_top_list(list: NodeList, topskip: &Glue, snaps: &mut usize) -> Nod
                     width: pad,
                     subtype: crate::boxes::glue_subtype::SPLIT_TOP_SKIP,
                     ..topskip.fresh()
-                }));
+                }, attr));
                 out.push(n);
                 out.extend(it);
                 return out;
@@ -140,7 +140,7 @@ fn page_vert_break(list: &[Node], w: i64, d: i64) -> (Option<usize>, i64) {
                     i += 1;
                     continue;
                 }
-                Node::Glue(g) => {
+                Node::Glue(g, _) => {
                     if !prev_breakable {
                         cur += prev_dp + g.width as i64;
                         prev_dp = 0;
@@ -157,11 +157,11 @@ fn page_vert_break(list: &[Node], w: i64, d: i64) -> (Option<usize>, i64) {
                     }
                     0
                 }
-                Node::Kern(k) | Node::ExplicitKern(k) => {
+                Node::Kern(k, _) | Node::ExplicitKern(k, _) => {
                     // tex.web @18973: a kern is a breakpoint only when the
                     // FOLLOWING node is glue; at the list end it counts as a
                     // penalty node type, which is not glue
-                    let followed = matches!(list.get(i + 1), Some(Node::Glue(_)));
+                    let followed = matches!(list.get(i + 1), Some(Node::Glue(_, _)));
                     if !followed {
                         cur += prev_dp + *k as i64;
                         prev_dp = 0;
@@ -175,7 +175,7 @@ fn page_vert_break(list: &[Node], w: i64, d: i64) -> (Option<usize>, i64) {
                     }
                     0
                 }
-                Node::Penalty(p) => *p as i64,
+                Node::Penalty(p, _) => *p as i64,
                 Node::Mark { .. } | Node::Ins { .. } => {
                     if prev_dp > d {
                         cur += prev_dp - d;
@@ -232,14 +232,14 @@ fn page_vert_break(list: &[Node], w: i64, d: i64) -> (Option<usize>, i64) {
         // to the depth clamp only
         if i < n {
             match &list[i] {
-                Node::Glue(g) => {
+                Node::Glue(g, _) => {
                     cur += prev_dp + g.width as i64;
                     prev_dp = 0;
                     let so = (g.stretch_order as usize).min(3);
                     act[so] += g.stretch as i64;
                     act[4] += g.shrink as i64;
                 }
-                Node::Kern(k) | Node::ExplicitKern(k) => {
+                Node::Kern(k, _) | Node::ExplicitKern(k, _) => {
                     cur += prev_dp + *k as i64;
                     prev_dp = 0;
                 }
@@ -493,19 +493,19 @@ impl Engine {
             let mut advance = true;
             st.cur_legal = false;
             match &self.page_list[idx] {
-                Node::Glue(g) => {
+                Node::Glue(g, _) => {
                     self.last_page_glue = Some(g.clone());
                     self.last_page_penalty = 0;
                     self.last_page_kern = 0;
                     self.last_page_node_type = 11;
                 }
-                Node::Penalty(p) => {
+                Node::Penalty(p, _) => {
                     self.last_page_glue = None;
                     self.last_page_penalty = *p;
                     self.last_page_kern = 0;
                     self.last_page_node_type = 13;
                 }
-                Node::Kern(k) | Node::ExplicitKern(k) => {
+                Node::Kern(k, _) | Node::ExplicitKern(k, _) => {
                     self.last_page_glue = None;
                     self.last_page_penalty = 0;
                     self.last_page_kern = *k;
@@ -550,7 +550,7 @@ impl Engine {
             }
 
             match &self.page_list[idx] {
-                Node::Glue(g) => {
+                Node::Glue(g, _) => {
                     let g = g.clone();
                     if st.box_seen {
                         // tex.web evaluates a glue breakpoint BEFORE the glue
@@ -586,7 +586,7 @@ impl Engine {
                         advance = false;
                     }
                 }
-                Node::Kern(k) | Node::ExplicitKern(k) => {
+                Node::Kern(k, _) | Node::ExplicitKern(k, _) => {
                     let k = *k;
                     if st.box_seen {
                         self.contribute_gap(&mut st, k as i64);
@@ -600,7 +600,7 @@ impl Engine {
                         advance = false;
                     }
                 }
-                Node::Penalty(p) => {
+                Node::Penalty(p, _) => {
                     let p = *p;
                     if st.box_seen {
                         // legal break at penalties < inf_penalty when a box precedes
@@ -653,7 +653,7 @@ impl Engine {
                             Node::Glue(Glue {
                                 subtype: crate::boxes::glue_subtype::TOP_SKIP,
                                 ..Glue::new(pad)
-                            }),
+                            }, self.eqtb.cur_attr),
                         );
                         // tex.web §19509-§19516: \topskip is linked ahead of the box,
                         // and build_page jumps to `continue` to process \topskip through
@@ -693,7 +693,7 @@ impl Engine {
                 // pdfTeX: snap nodes reaching an empty page are recycled
                 Node::Whatsit(
                     crate::boxes::WhatIt::PdfSnapY(_) | crate::boxes::WhatIt::PdfSnapYComp(_),
-                ) if !st.box_seen => {
+                _) if !st.box_seen => {
                     self.report_discarded_snap();
                     self.page_list.remove(idx);
                     if let Some(spot) = st.best.as_mut() {
@@ -703,7 +703,7 @@ impl Engine {
                     }
                     advance = false;
                 }
-                Node::Adj(a) => {
+                Node::Adj(a, _) => {
                     let a = *a;
                     if st.goal_set {
                         self.contribute_gap(&mut st, a as i64);
@@ -913,7 +913,7 @@ impl Engine {
         s.split_at = q;
         // §19677-19678: the break penalty rides into \insertpenalties
         if let Some(i) = q {
-            if let Some(Node::Penalty(p)) = inner.get(i) {
+            if let Some(Node::Penalty(p, _)) = inner.get(i) {
                 st.insert_penalties += *p as i64;
             }
         } else {
@@ -1027,7 +1027,7 @@ impl Engine {
     fn fire_up(&mut self, cut: usize, _penalty: i32, pack_goal: i64) {
         // is inserted before it, preserving \lastskip/\lastpenalty semantics.
         let (cut, penalty) = match cut.checked_sub(1).and_then(|i| self.page_list.get_mut(i)) {
-            Some(Node::Penalty(p)) => {
+            Some(Node::Penalty(p, _)) => {
                 let penalty = *p;
                 *p = INF_PENALTY;
                 (cut - 1, penalty)
@@ -1049,7 +1049,7 @@ impl Engine {
         let mut seen_first = std::collections::BTreeSet::new();
         let mut seen_bot = std::collections::BTreeSet::new();
         for node in &items {
-            if let Node::Mark { class, tokens } = node {
+            if let Node::Mark { class, tokens, .. } = node {
                 let c = (*class).max(0) as usize;
                 if c < MAX_MARK_CLASS {
                     for m in self.marks.iter_mut() {
@@ -1190,7 +1190,7 @@ impl Engine {
                             let pos = (base + i).min(queue.len());
                             let rest: NodeList = queue.drain(pos..).collect();
                             let mut snaps = 0;
-                            let pruned = prune_page_top_list(rest, &topskip, &mut snaps);
+                            let pruned = prune_page_top_list(rest, &topskip, &mut snaps, self.eqtb.cur_attr);
                             for _ in 0..snaps {
                                 self.report_discarded_snap();
                             }
@@ -1219,7 +1219,7 @@ impl Engine {
                             cost,
                             split_top_skip: topskip,
                             split_max_depth: splitmax,
-                            box_node: Box::new(rr.node),
+                            box_node: Box::new(rr.node), attr: self.eqtb.cur_attr,
                         });
                     }
                     if let Some(s) = states.get_mut(&num) {
@@ -1276,8 +1276,8 @@ impl Engine {
             let mut pad: Option<Node> = None;
             for n in page_mat.drain(..fb) {
                 match n {
-                    Node::Glue(_) | Node::Kern(_) | Node::ExplicitKern(_) => pad = Some(n),
-                    Node::Penalty(_) => {}
+                    Node::Glue(_, _) | Node::Kern(_, _) | Node::ExplicitKern(_, _) => pad = Some(n),
+                    Node::Penalty(_, _) => {}
                     other => head.push(other),
                 }
             }
@@ -1332,13 +1332,13 @@ impl Engine {
             // would otherwise recycle them
             while i < self.page_list.len() {
                 match &self.page_list[i] {
-                    Node::Glue(_) | Node::Kern(_) | Node::ExplicitKern(_) | Node::Penalty(_) => {
+                    Node::Glue(_, _) | Node::Kern(_, _) | Node::ExplicitKern(_, _) | Node::Penalty(_, _) => {
                         if i < self.page_processed - removed_prefix {
                             removed_prefix += 1;
                         }
                         self.page_list.remove(i);
                     }
-                    Node::Whatsit(_) | Node::Mark { .. } => i += 1,
+                    Node::Whatsit(_, _) | Node::Mark { .. } => i += 1,
                     _ => break,
                 }
             }
@@ -1368,7 +1368,7 @@ impl Engine {
                             Node::Glue(Glue {
                                 subtype: crate::boxes::glue_subtype::TOP_SKIP,
                                 ..Glue::new(pad)
-                            }),
+                            }, self.eqtb.cur_attr),
                         );
                         self.page_processed += 1;
                     }
@@ -1382,7 +1382,7 @@ impl Engine {
                     let mut shrink = [0i64; 4];
                     for node in &self.page_list[..self.page_processed] {
                         match node {
-                            Node::Glue(g) => {
+                            Node::Glue(g, _) => {
                                 total += depth + g.width as i64;
                                 depth = 0;
                                 let so = (g.stretch_order as usize).min(3);
@@ -1396,7 +1396,7 @@ impl Engine {
                                     shrink[ho] += g.width as i64;
                                 }
                             }
-                            Node::Kern(k) | Node::ExplicitKern(k) => {
+                            Node::Kern(k, _) | Node::ExplicitKern(k, _) => {
                                 total += depth + *k as i64;
                                 depth = 0;
                             }
@@ -1598,11 +1598,11 @@ impl Engine {
                 stream,
                 tokens,
                 source,
-            }) => {
+            }, _) => {
                 let toks = tokens.clone();
-                self.fire_write(*stream, &toks, source.as_ref());
+                self.fire_write(*stream, &toks, source.as_deref());
             }
-            Node::Whatsit(crate::boxes::WhatIt::LateLua { code, func }) => {
+            Node::Whatsit(crate::boxes::WhatIt::LateLua { code, func }, _) => {
                 if *func > 0 {
                     let f = *func;
                     self.call_lua_function(f);
@@ -1618,12 +1618,12 @@ impl Engine {
                 names,
                 create_parent,
                 source,
-            }) => {
+            }, _) => {
                 let p = names.0.clone();
-                self.exec_openout(*stream, &p, *create_parent, source.as_ref());
+                self.exec_openout(*stream, &p, *create_parent, source.as_deref());
             }
-            Node::Whatsit(crate::boxes::WhatIt::CloseOut { stream, source }) => {
-                self.exec_closeout(*stream, source.as_ref());
+            Node::Whatsit(crate::boxes::WhatIt::CloseOut { stream, source }, _) => {
+                self.exec_closeout(*stream, source.as_deref());
             }
             Node::Box { list, .. } => {
                 for m in list {
@@ -1631,7 +1631,7 @@ impl Engine {
                 }
             }
             Node::Ins { box_node, .. } => self.fire_page_writes(box_node),
-            Node::VAdjust(v) | Node::PreAdjust(v) => {
+            Node::VAdjust(v, _) | Node::PreAdjust(v, _) => {
                 for m in v {
                     self.fire_page_writes(m);
                 }

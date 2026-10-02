@@ -415,6 +415,10 @@ pub struct Engine {
     pub setbox_stack: Vec<(Option<u16>, usize, bool)>,
     pub pending_box_shift: Option<(i32, bool)>,
     pub box_targets: Vec<Option<(i32, bool)>>,
+    /// LuaTeX `scan_full_spec`: the attribute list an open `\hbox`/`\vbox`/
+    /// `\vtop` was started with (plus its `attr` keywords), keyed by
+    /// `saved_lists.len()` inside the box; the packed box carries it.
+    pub box_attrs: Vec<(usize, crate::boxes::Attr)>,
     pub box_shifts: Vec<i32>,
     pub box_kinds: Vec<u8>,
     /// Pending leader object boxes as (leader kind, surrounding box depth).
@@ -1198,6 +1202,7 @@ impl Engine {
             last_delim: None,
             page_list: Vec::new(),
             box_targets: Vec::new(),
+            box_attrs: Vec::new(),
             box_shifts: Vec::new(),
             box_kinds: Vec::new(),
             leader_stack: Vec::new(),
@@ -2714,7 +2719,7 @@ mod capacity_tests {
         let mut eng = Engine::new(true);
         eng.init_primitives();
         eng.page_list
-            .resize(MAX_PAGE_LIST + 1, crate::boxes::Node::Penalty(0));
+            .resize(MAX_PAGE_LIST + 1, crate::boxes::Node::Penalty(0, crate::boxes::Attr::NONE));
         assert!(eng.capacity_exceeded());
         assert!(eng.end_occurred);
     }

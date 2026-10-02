@@ -79,8 +79,7 @@ impl Engine {
 
     /// The attribute list of the current `\attribute` registers.
     fn lk_current_attr(&mut self) -> u32 {
-        let regs = self.lua_attribute_registers();
-        self.lua_nodes.current_attr_list(&regs)
+        self.lua_current_attr_handle()
     }
 
     /// `raw_glyph_node` plus the current attributes (what `new_glyph` does):

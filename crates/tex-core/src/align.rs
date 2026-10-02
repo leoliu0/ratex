@@ -98,7 +98,7 @@ fn split_pre_adjust(adj: NodeList) -> (NodeList, NodeList) {
     let mut post = NodeList::with_capacity(adj.len());
     for n in adj {
         match n {
-            Node::PreAdjust(items) => pre.extend(items),
+            Node::PreAdjust(items, _) => pre.extend(items),
             other => post.push(other),
         }
     }
@@ -1226,13 +1226,13 @@ impl Engine {
         let mut i = 0;
         while i < list.len() {
             match list[i] {
-                Node::VAdjust(_) => match list.remove(i) {
-                    Node::VAdjust(items) => self.align_adjust.extend(items),
+                Node::VAdjust(_, _) => match list.remove(i) {
+                    Node::VAdjust(items, _) => self.align_adjust.extend(items),
                     _ => unreachable!(),
                 },
                 // pdftex.web cur_pre_tail: kept apart from the post material
                 // (split again by `split_pre_adjust` when the row is built)
-                Node::PreAdjust(_) => self.align_adjust.push(list.remove(i)),
+                Node::PreAdjust(_, _) => self.align_adjust.push(list.remove(i)),
                 _ => i += 1,
             }
         }
@@ -1328,7 +1328,7 @@ impl Engine {
                 glue_order: 0,
                 glue_set: 0.0,
                 lr: 0,
-                dir: 0,
+                dir: 0, attr: self.eqtb.cur_attr,
             };
             self.align_rows.push(vec![Cell {
                 packed: Some(node),
@@ -1559,6 +1559,7 @@ impl Engine {
         // §804: package the preamble (unset columns of the final widths
         // separated by tabskip glue) to find the alignment's glue setting;
         // \overfullrule is suppressed for this pack.
+        let cur_attr = self.eqtb.cur_attr;
         let column = |w: i32| Node::Box {
             kind: if valign { crate::boxes::VBOX } else { crate::boxes::HBOX },
             w: if valign { 0 } else { w },
@@ -1571,12 +1572,13 @@ impl Engine {
             glue_set: 0.0,
             lr: 0,
             dir: 0,
+            attr: cur_attr,
         };
         let mut preamble: NodeList = Vec::with_capacity(2 * ncols + 1);
-        preamble.push(Node::Glue(t0));
+        preamble.push(Node::Glue(t0, self.eqtb.cur_attr));
         for j in 0..ncols {
             preamble.push(column(widths[j]));
-            preamble.push(Node::Glue(tabs[j]));
+            preamble.push(Node::Glue(tabs[j], self.eqtb.cur_attr));
         }
         let preamble_len = preamble.len();
         let (dim, spread) = match self.align_to {
@@ -1678,7 +1680,7 @@ impl Engine {
                     // §811: running dimensions of top-level rules extend to
                     // the alignment's boundaries
                     rows.extend(list.into_iter().map(|mut n| {
-                        if let Node::Rule { width, height, depth } = &mut n {
+                        if let Node::Rule { width, height, depth, .. } = &mut n {
                             if valign {
                                 if *height == crate::build::RULE_FILL {
                                     *height = p_size;
@@ -1717,7 +1719,7 @@ impl Engine {
                 _ => (a, b),
             });
             let mut line: NodeList = Vec::with_capacity(2 * row.len() + 1);
-            line.push(Node::Glue(t0));
+            line.push(Node::Glue(t0, self.eqtb.cur_attr));
             for (c, cell) in row.into_iter().enumerate() {
                 // grid slots covered by an earlier spanning cell
                 let Some(mut cell_box) = cell.packed else { continue };
@@ -1729,13 +1731,13 @@ impl Engine {
                 for k in c + 1..=end {
                     let g = tabs[k - 1];
                     t += tab_amount(&g) + widths[k] as i64;
-                    covered.push(Node::Glue(g));
+                    covered.push(Node::Glue(g, self.eqtb.cur_attr));
                     covered.push(column(widths[k]));
                 }
                 set_unset_cell(&mut cell_box, w, t, valign, row_a, row_b);
                 line.push(cell_box);
                 line.extend(covered);
-                line.push(Node::Glue(tabs[end]));
+                line.push(Node::Glue(tabs[end], self.eqtb.cur_attr));
             }
             let row_box = Node::Box {
                 kind: if valign { crate::boxes::VBOX } else { crate::boxes::HBOX },
@@ -1748,7 +1750,7 @@ impl Engine {
                 glue_order: p_order,
                 glue_set: p_set,
                 lr: if display { crate::boxes::BOX_LR_DLIST } else { 0 },
-                dir: 0,
+                dir: 0, attr: self.eqtb.cur_attr,
             };
             // pdftex.web fin_row: the row's `\vadjust pre` material joins
             // the vertical list in front of the row (and its interline glue)
@@ -1770,7 +1772,7 @@ impl Engine {
                             subtype: crate::boxes::glue_subtype::BASELINE_SKIP,
                             ..bs.fresh()
                         }
-                    }));
+                    }, self.eqtb.cur_attr));
                 }
                 prev = Some(row_b);
             }
@@ -1985,7 +1987,7 @@ mod tests {
         let start = e
             .page_list
             .iter()
-            .position(|n| !matches!(n, Node::Glue(_)))
+            .position(|n| !matches!(n, Node::Glue(_, _)))
             .expect("alignment material on page list");
         if let Node::Box { kind, w, list, .. } = &e.page_list[start] {
             if *kind == crate::boxes::VBOX {
@@ -2542,7 +2544,7 @@ mod tests {
 
     fn glue_w(n: &Node) -> i32 {
         match n {
-            Node::Glue(g) => g.width,
+            Node::Glue(g, _) => g.width,
             other => panic!("expected glue, got {other:?}"),
         }
     }
@@ -2567,7 +2569,7 @@ mod tests {
         assert_eq!(l.len(), 4, "migrated vlist: {l:?}");
         assert!(matches!(l[0], Node::Box { .. }));
         assert_eq!(glue_w(&l[1]), 2 * 65536, "row 1 adjustment");
-        assert!(matches!(l[2], Node::Glue(_)), "interline glue after it");
+        assert!(matches!(l[2], Node::Glue(_, _)), "interline glue after it");
         assert_eq!(
             glue_w(&l[2]),
             glue_w(&p[1]),
@@ -2577,7 +2579,7 @@ mod tests {
         // row boxes must not contain the adjustment node
         for r in [0usize, 3] {
             assert!(
-                row_of(&l[r]).iter().all(|n| !matches!(n, Node::VAdjust(_))),
+                row_of(&l[r]).iter().all(|n| !matches!(n, Node::VAdjust(_, _))),
                 "vadjust stuck in row {r}"
             );
         }
@@ -2664,7 +2666,7 @@ mod tests {
         // accumulator was reset for it
         assert_eq!(l.len(), 4, "no leaked second adjustment: {l:?}");
         assert_eq!(glue_w(&l[1]), 2 * 65536);
-        assert!(matches!(l[2], Node::Glue(_)));
+        assert!(matches!(l[2], Node::Glue(_, _)));
         assert!(matches!(l[3], Node::Box { .. }));
     }
 

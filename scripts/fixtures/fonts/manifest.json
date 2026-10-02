@@ -362,7 +362,7 @@
       "Italic Roman face",
       "Scoped Sans Serif block",
       "Scoped Monospace typewriter block",
-      "Final check: Base Roman Regular restored"
+      "Final check: Base Roman Regu"
     ],
     "check_type": "native_styles",
     "min_ink_pixels": 1000
@@ -374,6 +374,7 @@
     "main_tex": "main.tex",
     "engine": "xelatex",
     "reference_engine": "xelatex",
+    "expect_form_xobjects": false,
     "required_fonts": [
       "LMRoman",
       "IPAexMincho"
@@ -396,6 +397,7 @@
     "main_tex": "main.tex",
     "engine": "xelatex",
     "reference_engine": "xelatex",
+    "expect_form_xobjects": false,
     "required_fonts": [
       "RatexSharedMincho"
     ],

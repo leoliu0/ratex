@@ -286,7 +286,13 @@ impl Engine {
         };
         let s_space = space_w + nf.letter_space;
         let cs_name = String::from_utf8_lossy(self.cs.name(cs)).to_string();
-        let params = vec![font_slant, s_space, s_space / 2, s_space / 3, x_ht, actual_size, s_space / 3, cap_ht];
+        let mut params = vec![font_slant, s_space, s_space / 2, s_space / 3, x_ht, actual_size, s_space / 3, cap_ht];
+        // xetex.web load_native_font: an OpenType math font gets \fontdimen9 =
+        // the number of assigned dimens and the MathConstants as 10..65
+        if let Some(constants) = crate::math_xetex::ot_math_constants(&nf.program, actual_size) {
+            params.push(9 + constants.len() as i32);
+            params.extend_from_slice(&constants);
+        }
         let nf = Rc::new(nf);
         let font = Font {
             name: cs_name,

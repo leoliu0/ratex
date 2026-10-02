@@ -1161,9 +1161,12 @@ def validate_pdf_font_embedding(pdf_path: Path, case: dict[str, Any]) -> list[st
                 f"unioned_subsets contract violated: multiple font stream indirect objects {shared_stream_ids} "
                 f"emitted for shared face across pages/sizes/forms/aliases, expected exactly 1 shared stream"
             )
-        if len(discovered_forms) == 0:
+        # XeTeX has no \pdfxform: fixtures take their \copy branch, as in TeX Live,
+        # whose xdvipdfmx output has no Form XObjects for them.
+        expect_forms = case.get("expect_form_xobjects", True)
+        if expect_forms and len(discovered_forms) == 0:
             errors.append("unioned_subsets contract violated: expected Form XObject using shared face")
-        if len(form_invocations) < 2:
+        if expect_forms and len(form_invocations) < 2:
             errors.append(
                 f"unioned_subsets contract violated: expected Form XObject reuse across pages, got {len(form_invocations)} invocations"
             )
@@ -1208,9 +1211,10 @@ def validate_pdf_font_embedding(pdf_path: Path, case: dict[str, Any]) -> list[st
                 f"{sorted([f'U+{ord(c):04X}' for c in missing_astral])} to be resolved in /ToUnicode, but were missing"
             )
     elif check_type == "native_boxes":
-        if len(discovered_forms) == 0:
+        expect_forms = case.get("expect_form_xobjects", True)
+        if expect_forms and len(discovered_forms) == 0:
             errors.append("boxes_forms contract violated: expected at least 1 PDF Form XObject (/Subtype /Form) in document")
-        if len(form_invocations) < 2:
+        if expect_forms and len(form_invocations) < 2:
             errors.append(
                 f"boxes_forms contract violated: expected PDF Form XObject reuse (invoked >= 2 times via Do), "
                 f"got {len(form_invocations)} invocations"
@@ -1660,6 +1664,9 @@ class FontTestHarness:
         else:
             engine_flags = ["-pdf", "-interaction=nonstopmode", "-halt-on-error"]
 
+        if case.get("expected_output_substrings"):
+            # the transcript is where TeX reports them (texmk shows no engine output)
+            engine_flags.append("--keep-logs")
         cmd = [str(self.isolated_bin_path), *engine_flags, main_tex]
 
         use_bwrap = sys.platform == "linux" and self.bwrap_info["available"]
@@ -2009,6 +2016,9 @@ class FontTestHarness:
         # TeX Live's own diagnostics that a successful run must also print
         # (e.g. XeTeX's "Missing character" warning).
         run_output = (rust_res.get("stdout") or "") + (rust_res.get("stderr") or "")
+        transcript = rust_work / f"{Path(case['main_tex']).stem}.log"
+        if transcript.is_file():
+            run_output += transcript.read_text(errors="replace")
         for expected in case.get("expected_output_substrings", []):
             if expected not in run_output:
                 reasons.append(f"Expected diagnostic '{expected}' not found in Ratex output")

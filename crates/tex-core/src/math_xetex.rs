@@ -255,6 +255,31 @@ impl OtFont {
             .map_or(0, |g| g.0)
     }
 
+    /// What PDF text extraction reports for a glyph that no character
+    /// produced (size variants, assembly parts): the Unicode value of its
+    /// glyph name without the `.v1`-style suffix, else a character the cmap
+    /// maps to it (xdvipdfmx's ToUnicode for the embedded subset).
+    fn glyph_text(&self, gid: u16) -> String {
+        let Ok(face) = self.program.face() else { return String::new() };
+        let id = ttf_parser::GlyphId(gid);
+        if let Some(t) = face.glyph_name(id).and_then(crate::pdf_fonts::glyph_to_unicode) {
+            return t;
+        }
+        let mut found: Option<u32> = None;
+        if let Some(cmap) = face.tables().cmap {
+            for st in cmap.subtables {
+                if st.is_unicode() {
+                    st.codepoints(|cp| {
+                        if found.is_none() && st.glyph_index(cp) == Some(id) {
+                            found = Some(cp);
+                        }
+                    });
+                }
+            }
+        }
+        found.and_then(char::from_u32).map(String::from).unwrap_or_default()
+    }
+
     /// `getGlyphWidth`
     pub fn glyph_width(&self, gid: u16) -> i32 {
         let adv = self
@@ -455,6 +480,7 @@ pub(crate) struct XeMathState {
     pub cur_f: std::cell::Cell<FontId>,
     fonts: std::cell::RefCell<crate::FxHashMap<FontId, Rc<OtFont>>>,
     glyphs: std::cell::RefCell<crate::FxHashMap<(FontId, u32), u16>>,
+    texts: std::cell::RefCell<crate::FxHashMap<(FontId, u16), Rc<str>>>,
 }
 
 /// `OtFont` data for the font program of a native font at `size_sp` -- used
@@ -582,16 +608,28 @@ impl Engine {
     /// A glyph node is a one-glyph run with an empty cluster; `text` is only
     /// what PDF text extraction (ToUnicode) reports for the glyph.
     pub(crate) fn xe_glyph_node(&self, fid: FontId, gid: u16, text: &str) -> Node {
-        let (w, h, d) = match self.xe_ot(fid) {
+        let ot = self.xe_ot(fid);
+        let (w, h, d) = match &ot {
             Some(o) => {
                 let (h, d) = o.glyph_height_depth(gid);
                 (o.glyph_width(gid), h, d)
             }
             None => (0, 0, 0),
         };
+        let text: Rc<str> = match (&ot, text.is_empty()) {
+            (Some(o), true) => self
+                .xe_math
+                .texts
+                .borrow_mut()
+                .entry((fid, gid))
+                .or_insert_with(|| Rc::from(o.glyph_text(gid)))
+                .clone(),
+            _ => Rc::from(text),
+        };
         let run = Rc::new(crate::native_layout::NativeRun {
+            actual_text: false,
             font: fid,
-            text: Rc::from(text),
+            text,
             glyphs: vec![crate::native_layout::NativeGlyph {
                 glyph_id: gid,
                 cluster_start: 0,
@@ -601,7 +639,6 @@ impl Engine {
                 x_offset: 0,
                 y_offset: 0,
             }],
-            actual_text: false,
         });
         Node::NativeGlyphRun { run, start: 0, end: 1, width: w, height: h, depth: d }
     }

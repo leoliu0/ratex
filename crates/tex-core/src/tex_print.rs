@@ -19,25 +19,55 @@ pub(crate) const MAX_PRINT_LINE: usize = 79;
 pub(crate) struct Lane {
     pub(crate) out: Vec<u8>,
     pub(crate) offset: usize,
+    /// XeTeX prints UTF-8: a scalar is one column, however many bytes it
+    /// has, and a line is never broken inside one
+    unicode: bool,
+    wrap_pending: bool,
 }
 
 impl Lane {
-    fn new(offset: usize) -> Lane {
-        Lane { out: Vec::new(), offset }
+    fn new(offset: usize, unicode: bool) -> Lane {
+        Lane { out: Vec::new(), offset, unicode, wrap_pending: false }
     }
 
     /// tex.web print_char for a byte that is not the new-line character.
     fn put(&mut self, byte: u8) {
+        if self.unicode {
+            if byte & 0xC0 == 0x80 {
+                // continuation byte of the scalar just started
+                self.out.push(byte);
+                return;
+            }
+            if self.wrap_pending {
+                self.out.push(b'\n');
+                self.offset = 0;
+                self.wrap_pending = false;
+            }
+        }
         self.out.push(byte);
         self.offset += 1;
         if self.offset == MAX_PRINT_LINE {
+            if self.unicode && byte >= 0xC0 {
+                self.wrap_pending = true;
+            } else {
+                self.out.push(b'\n');
+                self.offset = 0;
+            }
+        }
+    }
+
+    /// The line break a scalar ending the line was waiting for.
+    fn finish(&mut self) {
+        if self.wrap_pending {
             self.out.push(b'\n');
             self.offset = 0;
+            self.wrap_pending = false;
         }
     }
 
     /// tex.web print_ln.
     pub(crate) fn ln(&mut self) {
+        self.finish();
         self.out.push(b'\n');
         self.offset = 0;
     }
@@ -95,16 +125,19 @@ impl Engine {
     pub(crate) fn print_to(&mut self, term: bool, log: bool, body: &dyn Fn(&mut Lane)) {
         // queued trace lines come first and move the columns read below
         self.flush_trace_events();
+        let unicode = self.engine_kind == crate::engine::EngineKind::XeTeX;
         if term && self.interaction_mode != InteractionMode::Batch {
-            let mut lane = Lane::new(self.term_offset);
+            let mut lane = Lane::new(self.term_offset, unicode);
             body(&mut lane);
+            lane.finish();
             self.term_pad = false;
             self.append_term(&bytes_to_text(&lane.out));
             self.term_offset = lane.offset;
         }
         if log {
-            let mut lane = Lane::new(self.file_offset);
+            let mut lane = Lane::new(self.file_offset, unicode);
             body(&mut lane);
+            lane.finish();
             self.log_pad = false;
             self.append_log(&bytes_to_text(&lane.out));
             self.file_offset = lane.offset;

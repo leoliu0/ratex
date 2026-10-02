@@ -827,7 +827,7 @@ impl Engine {
             hyf.to_vec(),
             hn,
             hyf_bchar,
-            hyf_char,
+            u32::from(hyf_char),
             first_attr,
         ))
     }
@@ -847,7 +847,7 @@ impl Engine {
         hyf: Vec<u8>,
         hn: usize,
         hyf_bchar: Option<u8>,
-        hyf_char: u8,
+        hyf_char: u32,
         first_attr: crate::boxes::Attr,
     ) -> (usize, usize, NodeList) {
         let mut rc = Reconstitute {
@@ -862,6 +862,7 @@ impl Engine {
             hyphen_passed: 0,
             hold: Vec::new(),
             attr: first_attr,
+            wide_hyphen: hyf_char > 255,
         };
         let (start, j0) = match &list[ha] {
             Node::Char { c, font: f, .. } if *f == hf => {
@@ -897,7 +898,7 @@ impl Engine {
                 _ => (ha + 1, 1),
             },
         };
-        let nodes = rc.hyphenated_word(j0, hn, hyf_bchar, hyf_char);
+        let nodes = rc.hyphenated_word(j0, hn, hyf_bchar, hyf_char as u8);
         (start, hb + 1, nodes)
     }
 
@@ -2468,6 +2469,9 @@ struct Reconstitute<'a> {
     /// the attribute list of the word's first letter, which every node the
     /// reconstitution makes carries
     attr: crate::boxes::Attr,
+    /// XeTeX: the font's `\hyphenchar` is above 255, so no TFM character
+    /// holds it (`hyf_node` is null); the word is still hyphenated
+    wide_hyphen: bool,
 }
 
 impl Reconstitute<'_> {
@@ -2540,7 +2544,7 @@ impl Reconstitute<'_> {
             // §909: a lig/kern with the hyphen, then with cur_r
             let mut done = true;
             if let Some(h) = cur_rh.take() {
-                if lig_kern_step(self.font, cur_l, h).is_some() {
+                if !self.wide_hyphen && lig_kern_step(self.font, cur_l, h).is_some() {
                     self.hyphen_passed = j;
                     hchar = None;
                 }
@@ -2656,7 +2660,7 @@ impl Reconstitute<'_> {
     /// hyphens
     fn hyphenated_word(&mut self, mut j: usize, hn: usize, bchar: Option<u8>, hyf_char: u8) -> NodeList {
         let mut out = NodeList::new();
-        let has_hyphen = self.font.char_present(hyf_char);
+        let has_hyphen = !self.wide_hyphen && self.font.char_present(hyf_char);
         let font_bchar = self.font.bchar;
         let left_boundary = crate::build::bchar_label(self.font).is_some();
         loop {

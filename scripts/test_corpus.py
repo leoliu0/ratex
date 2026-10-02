@@ -957,6 +957,12 @@ FONTSPEC_RE = re.compile(
     r"\\(?:usepackage|RequirePackage)(?:\[[^\]]*\])?\{[^}]*\b(?:fontspec|xeCJK|xunicode|unicode-math|bxjsarticle|bxjsbook|zxjatype|xecyr|xltxtra|polyglossia|bidi)\b[^}]*\}",
     re.DOTALL,
 )
+# ctex (package or class) needs a Unicode engine; `ratex` and texmk route it to
+# XeTeX, so the reference runs xelatex as well.
+CTEX_RE = re.compile(
+    r"\\(?:usepackage|RequirePackage|documentclass)(?:\[[^\]]*\])?\{(?:[^},]*,)*\s*(?:ctex|ctexart|ctexbook|ctexrep|ctexbeamer)\s*(?:,[^}]*)?\}",
+    re.DOTALL,
+)
 LUALATEX_RE = re.compile(
     r"\\(?:usepackage|RequirePackage)(?:\[[^\]]*\])?\{[^}]*\b(?:luacode|luatextra|luatexja|luamplib|lualibs|luaotfload|luatexbase)\b[^}]*\}",
     re.DOTALL,
@@ -1277,7 +1283,7 @@ def detect_ref_engine(src_dir: Path, tex_rel: Path, entry: dict | None = None) -
         return "lualatex"
 
     # 2. XeTeX / fontspec / Unicode packages
-    if FONTSPEC_RE.search(full_text):
+    if FONTSPEC_RE.search(full_text) or CTEX_RE.search(full_text):
         return "xelatex"
     if re.search(r"\\(?:documentclass|LoadClass|LoadClassWithOptions)(?:\[[^\]]*\])?\{[^}]*\b(?:bxjsarticle|bxjsbook)\b[^}]*\}", full_text):
         return "xelatex"

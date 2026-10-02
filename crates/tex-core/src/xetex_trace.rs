@@ -117,8 +117,8 @@ impl Engine {
     /// `\tracingmacros>0` is traced by XeTeX only.
     #[inline(always)]
     pub(crate) fn xetex_macro_trace(&self) -> bool {
-        self.eqtb.int_params[IntParam::TracingMacros.idx() as usize] > 0
-            && self.engine_kind == EngineKind::XeTeX
+        self.engine_kind == EngineKind::XeTeX
+            && self.eqtb.int_params[IntParam::TracingMacros.idx() as usize] > 0
     }
 
     /// tex.web §401 "Show the text of the macro being expanded", with the

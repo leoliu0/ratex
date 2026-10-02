@@ -1,17 +1,21 @@
 \catcode`\{=1 \catcode`\}=2
 \catcode`\#=12
+\def\foo{FOO}
 \directlua{
 function dump(t)
  local n=0 for _ in ipairs(t) do n=n+1 end
  texio.write_nl("@@R "..n)
- for i=1,n do local x=t[i] texio.write_nl("@@"..i.." "..x.command.." "..x.cmdname.." "..tostring(x.csname).." "..tostring(x.mode).." "..x.tok) end
+ for i=1,n do local x=t[i]
+  if x.csname then texio.write_nl("@@"..i.." cs "..x.csname.." "..x.cmdname)
+  else texio.write_nl("@@"..i.." "..x.command.." "..x.cmdname.." "..x.mode.." "..x.tok) end
+ end
 end
 }
 \catcode`\#=6
-\directlua{ dump(token.scan_toks(true,false)) }#1#2{a#1 b}
-\directlua{ dump(token.scan_toks(true,true)) }#1.#2{a#1 b##}
-\directlua{ dump(token.scan_toks(true)) }{ab}
-\directlua{ dump(token.scan_toks(true,true)) }x#1#{a#1 b}
-\directlua{ dump(token.scan_toks(true,false)) }x#1#{a#1 b}
+\directlua{ dump(token.scan_toks(true,false)) }#1#2{a\foo #1 b}
+\directlua{ dump(token.scan_toks(true,true)) }#1.#2{a\foo #1 b##}
+\directlua{ dump(token.scan_toks(true)) }{a\foo b}
+\directlua{ dump(token.scan_toks(true,true)) }x#1#{a\foo #1 b}
+\directlua{ dump(token.scan_toks(true,false)) }x#1#{a\foo #1 b}
 \directlua{ dump(token.scan_toks(false,false)) }{ab#}
 \end

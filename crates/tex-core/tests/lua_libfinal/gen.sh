@@ -8,6 +8,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 d=$(mktemp -d)
 cd "$d"
 cp "$here/$name.lua" body.lua
+cp "$here"/*.png . 2>/dev/null || true
 cat > one.lua <<'LUA'
 local out = {}
 function P(...) local t = table.pack(...) for i = 1, t.n do t[i] = tostring(t[i]) end out[#out+1] = table.concat(t, ' | ') end

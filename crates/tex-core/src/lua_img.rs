@@ -2,7 +2,9 @@
 //! by the pdfTeX `\pdfximage` machinery (`pdf_images.rs`); the Lua side
 //! keeps the image tables.
 
-use tex_lua::{Lua, LuaApi, LuaString, LuaTable};
+use std::any::Any;
+
+use tex_lua::{Lua, LuaApi, LuaString, LuaTable, UserDataTrait};
 
 use crate::engine::{Engine, ImageKind};
 use crate::lua_bridge::{bytes_of, with_engine};
@@ -13,6 +15,24 @@ macro_rules! reg {
         $tbl.set($name, $lua.create_function($f).map_err(|e| format!("{}: {e:?}", $name))?)
             .map_err(|e| format!("{}: {e:?}", $name))?
     };
+}
+
+/// An image object (limglib.c `luatex.image`): a bare userdata whose fields
+/// the Lua side keeps; the metatable holds the accessors.
+struct ImageUd;
+
+impl UserDataTrait for ImageUd {
+    fn type_name(&self) -> &'static str {
+        "luatex.image"
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
 }
 
 fn text_tokens(s: &str) -> Vec<Token> {
@@ -92,6 +112,20 @@ impl Engine {
 pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
     let t: LuaTable = lua.create_table().map_err(|e| format!("{e:?}"))?;
 
+    let meta: LuaTable = lua.create_table().map_err(|e| format!("{e:?}"))?;
+    t.set("meta", meta.clone()).map_err(|e| format!("{e:?}"))?;
+    let newud = lua
+        .create_callback(move |cx| {
+            let ud = cx.create_userdata(ImageUd)?;
+            let value = cx.pack(&ud)?;
+            value.set_metatable(Some(&meta))?;
+            cx.push(value)
+        })
+        .map_err(|e| format!("{e:?}"))?;
+    t.set("newud", newud).map_err(|e| format!("{e:?}"))?;
+    reg!(lua, t, "fatal", |message: String| -> Result<(), String> {
+        with_engine(|e| e.fatal_error(&message))
+    });
     reg!(lua, t, "scan", |spec: LuaTable| -> Result<Option<i64>, String> {
         with_engine(|e| e.lua_img_scan(&spec))?
     });

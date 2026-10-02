@@ -24,6 +24,7 @@ fn run_fixture(name: &str) -> String {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/lua_libfinal");
     let base = std::env::temp_dir().join(format!("ratex-lua-libfinal-{}", std::process::id()));
     std::fs::create_dir_all(&base).unwrap();
+    std::fs::copy(root.join("a.png"), base.join("a.png")).unwrap();
     let fixture = std::fs::read_to_string(root.join(format!("{name}.lua"))).unwrap();
     // luatex refuses absolute output paths (openout_any=p): write relative to TEXMFOUTPUT
     std::env::set_var("TEXMFOUTPUT", &base);
@@ -133,4 +134,10 @@ fn scan_toks_reads_a_macro_definition() {
 #[test]
 fn tex_finish_aborts_the_chunk() {
     check_tex("finish");
+}
+
+// luatex: the image library (limglib.c); image objects are userdata
+#[test]
+fn img_library_matches_luatex() {
+    check("img");
 }

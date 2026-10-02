@@ -22,8 +22,9 @@ pub(crate) enum ScanKind {
         subtype: u8,
         width: i32,
         options: u16,
+        /// the finished root degree of a `\Uroot`
+        degree: Option<NodeList>,
     },
-    /// the root degree of `\Uroot`
     Degree {
         delim: Delim,
         width: i32,

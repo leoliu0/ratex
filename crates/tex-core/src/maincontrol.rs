@@ -552,7 +552,7 @@ impl Engine {
                         glue_order: 0,
                         glue_set: 0.0,
                         lr: 0,
-                        dir: 0, attr: self.eqtb.cur_attr,
+                        dir: 0, attr: self.eqtb.cur_attr, subtype: 0,
                     });
                     self.page_append(Node::Glue(crate::boxes::Glue::fil(
                         crate::boxes::GLUE_FILL,
@@ -1473,44 +1473,11 @@ impl Engine {
         self.error(&format!("You can't use `\\{name}' in {mode}"));
     }
 
-    /// tex.web §1267-1275 make_accent: `\accent <number 0-255> <filler>
-    /// <char>`. Typesets the next character with an accent character taken
-    /// from slot <number> of the current font, stacked above the base char
-    /// and centered with two kerns, raised so the accent sits at the font's
-    /// x-height. The emitted list is
-    ///   kern(delta) [accent char] kern(-a-delta) base_char
-    /// so the sequence is exactly as wide as the base character.
-    fn do_accent(&mut self) {
-        let lua_mode = self.engine_kind == crate::engine::EngineKind::LuaTeX;
-        let acc: u32 = if lua_mode {
-            self.scan_unicode_character_code("\\accent")
-        } else {
-            u32::from(self.scan_character_code("\\accent"))
-        };
-        let f_acc = self.eqtb.cur_font_val;
-        if self.eqtb.fonts.get(f_acc as usize).is_none() {
-            return; // nullfont: nothing happens (tex.web new_character fails)
-        }
-        let Some(accent_node) = self.new_glyph_node(f_acc, acc) else {
-            // char_warning: no accent glyph — drop the accent; the base
-            // character stays in the stream and typesets normally.
-            let accent_source = self
-                .current_token_source_mark()
-                .map(|mark| mark.to_context());
-            if let Ok(byte) = u8::try_from(acc) {
-                self.font_has_character_or_warn(f_acc, byte, accent_source);
-            }
-            return;
-        };
-        let (a, _, _) = self.glyph_whd(f_acc, acc);
-        let af = &self.eqtb.fonts[f_acc as usize];
-        let x = af.x_height();
-        let s = f64::from(af.param(1)) / 65536.0; // accent font slant
-        // tex.web §1123 do_assignments: expand, skip blanks/\relax and
-        // perform assignments (font selections included) until a
-        // non-assignment command; `\accent 127 \i` then typesets the
-        // dotless ı that \i stands for.
-        let t = loop {
+    /// tex.web §1123 `do_assignments`: expand, skip blanks/`\relax` and
+    /// perform assignments (font selections included) until a
+    /// non-assignment command, which is returned.
+    pub(crate) fn do_assignments(&mut self) -> Token {
+        loop {
             self.skip_spaces_relax();
             let t = self.get_x_raw();
             if !t.is_cs() {
@@ -1573,7 +1540,44 @@ impl Engine {
                 }
                 _ => break t,
             }
+        }
+    }
+
+    /// tex.web §1267-1275 make_accent: `\accent <number 0-255> <filler>
+    /// <char>`. Typesets the next character with an accent character taken
+    /// from slot <number> of the current font, stacked above the base char
+    /// and centered with two kerns, raised so the accent sits at the font's
+    /// x-height. The emitted list is
+    ///   kern(delta) [accent char] kern(-a-delta) base_char
+    /// so the sequence is exactly as wide as the base character.
+    fn do_accent(&mut self) {
+        let lua_mode = self.engine_kind == crate::engine::EngineKind::LuaTeX;
+        let acc: u32 = if lua_mode {
+            self.scan_unicode_character_code("\\accent")
+        } else {
+            u32::from(self.scan_character_code("\\accent"))
         };
+        let f_acc = self.eqtb.cur_font_val;
+        if self.eqtb.fonts.get(f_acc as usize).is_none() {
+            return; // nullfont: nothing happens (tex.web new_character fails)
+        }
+        let Some(accent_node) = self.new_glyph_node(f_acc, acc) else {
+            // char_warning: no accent glyph — drop the accent; the base
+            // character stays in the stream and typesets normally.
+            let accent_source = self
+                .current_token_source_mark()
+                .map(|mark| mark.to_context());
+            if let Ok(byte) = u8::try_from(acc) {
+                self.font_has_character_or_warn(f_acc, byte, accent_source);
+            }
+            return;
+        };
+        let (a, _, _) = self.glyph_whd(f_acc, acc);
+        let af = &self.eqtb.fonts[f_acc as usize];
+        let x = af.x_height();
+        let s = f64::from(af.param(1)) / 65536.0; // accent font slant
+        // `\accent 127 \i` then typesets the dotless ı that \i stands for.
+        let t = self.do_assignments();
         // §1124: a letter, other char, \chardef'd char or \char is the base
         let base: Option<u32> = if t.is_char() && (t.cc() == 11 || t.cc() == 12) {
             Some(t.chr()).filter(|c| lua_mode || *c < 256)

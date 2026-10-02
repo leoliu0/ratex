@@ -33,11 +33,14 @@ enum Special {
 #[derive(Clone, Debug)]
 enum Nuc {
     None,
-    Char { fam: u8, c: u32, origin: MathDiagnosticOrigin },
+    Char { fam: u8, c: u32, origin: MathDiagnosticOrigin, attr: crate::boxes::Attr },
     Mlist(NodeList),
     /// a `\left...\right` list: starts and ends with its fence markers
     Fenced(NodeList),
     Box(Node),
+    /// an accent or radical noad: converted with the style in force (its
+    /// box becomes the nucleus, as luatex's `make_math_accent` does)
+    Atom(Node),
 }
 
 #[derive(Clone, Debug)]
@@ -49,11 +52,15 @@ struct Noad {
     sup: Option<NodeList>,
     sub: Option<NodeList>,
     text_char: bool,
+    /// luatex `noadoptions` (`noad_option::NO_SUB_SCRIPT`, `NO_SUPER_SCRIPT`)
+    options: u16,
+    /// luatex `noad_fam` of an over/under noad ([`crate::boxes::NO_FAM`] for none)
+    fam: u8,
 }
 
 impl Noad {
     fn new(class: u8, nuc: Nuc) -> Noad {
-        Noad { class, special: Special::None, opsub: OP_NORMAL, nuc, sup: None, sub: None, text_char: false }
+        Noad { class, special: Special::None, opsub: OP_NORMAL, nuc, sup: None, sub: None, text_char: false, options: 0, fam: crate::boxes::NO_FAM }
     }
     fn has_scripts(&self) -> bool {
         self.sup.is_some() || self.sub.is_some()
@@ -65,6 +72,8 @@ enum Side {
     Left,
     Middle,
     Right,
+    /// luatex `no_noad_side` (`\Uvextensible`)
+    Plain,
 }
 
 #[derive(Clone, Debug)]
@@ -73,7 +82,7 @@ enum Item {
     /// a fraction/radical/accent converted by `convert_atom`; `inner`
     /// spacing class for fractions
     Raw { node: Node, frac: bool },
-    Fence { side: Side, delim: Option<(u8, u32, u8, u32)> },
+    Fence { side: Side, delim: Option<(u8, u32, u8, u32)>, fence: crate::boxes::FenceOpts, attr: crate::boxes::Attr },
     Style(GStyle),
     NonScript,
     Other(Node),
@@ -124,10 +133,12 @@ impl Engine {
             match n {
                 Node::Style(s, _) => out.push(Slot::new(Item::Style(crate::math::gstyle_of(*s)))),
                 Node::NonScript => out.push(Slot::new(Item::NonScript)),
-                Node::DelimBox { small, large, size, .. } => {
+                Node::DelimBox { small, large, size, fence, attr, .. } => {
                     let d = Some((small.0, u32::from(small.1), large.0, u32::from(large.1)));
                     match *size {
-                        0 if fenced && i == 0 => out.push(Slot::new(Item::Fence { side: Side::Left, delim: d })),
+                        0 if fenced && i == 0 => {
+                            out.push(Slot::new(Item::Fence { side: Side::Left, delim: d, fence: *fence, attr: *attr }))
+                        }
                         0 => {
                             let mut depth = 1usize;
                             let mut j = i + 1;
@@ -161,31 +172,36 @@ impl Engine {
                             i = end;
                         }
                         1 if fenced && i + 1 == list.len() => {
-                            out.push(Slot::new(Item::Fence { side: Side::Right, delim: d }))
+                            out.push(Slot::new(Item::Fence { side: Side::Right, delim: d, fence: *fence, attr: *attr }))
                         }
                         1 => {
                             // stray right delimiter: a close noad
                             out.push(Slot::new(Item::Noad(Noad::new(
                                 CL_CLOSE,
-                                Nuc::Char { fam: small.0, c: u32::from(small.1), origin: MathDiagnosticOrigin::default() },
+                                Nuc::Char { fam: small.0, c: u32::from(small.1), origin: MathDiagnosticOrigin::default(), attr: *attr },
                             ))));
                         }
-                        3 if fenced => out.push(Slot::new(Item::Fence { side: Side::Middle, delim: d })),
+                        3 if fenced => out.push(Slot::new(Item::Fence { side: Side::Middle, delim: d, fence: *fence, attr: *attr })),
                         3 => {}
+                        4 => out.push(Slot::new(Item::Fence { side: Side::Plain, delim: d, fence: *fence, attr: *attr })),
                         _ => out.push(Slot::new(Item::Noad(Noad::new(
                             CL_ORD,
-                            Nuc::Char { fam: small.0, c: u32::from(small.1), origin: MathDiagnosticOrigin::default() },
+                            Nuc::Char { fam: small.0, c: u32::from(small.1), origin: MathDiagnosticOrigin::default(), attr: *attr },
                         )))),
                     }
                 }
                 Node::MathChar { fam: 255, .. } => {}
-                Node::MathChar { fam, c, class, origin, .. } => {
-                    let mut noad = Noad::new(*class, Nuc::Char { fam: *fam, c: *c, origin: origin.clone() });
+                Node::MathChar { fam, c, class, origin, attr } => {
+                    let mut noad = Noad::new(*class, Nuc::Char { fam: *fam, c: *c, origin: origin.clone(), attr: *attr });
                     noad.opsub = OP_NORMAL;
                     out.push(Slot::new(Item::Noad(noad)));
                 }
-                Node::Scripts { nucleus, sup, sub, .. } => {
-                    out.push(Slot::new(self.lm_decode_scripts(nucleus, sup, sub, false)));
+                Node::Scripts { nucleus, sup, sub, options, .. } => {
+                    let mut item = self.lm_decode_scripts(nucleus, sup, sub, false);
+                    if let Item::Noad(q) = &mut item {
+                        q.options = *options;
+                    }
+                    out.push(Slot::new(item));
                 }
                 Node::OpLimits { op, above, below, .. } => {
                     out.push(Slot::new(self.lm_decode_oplimits(op, above, below)));
@@ -200,9 +216,10 @@ impl Engine {
                     noad.special = Special::VCenter;
                     out.push(Slot::new(Item::Noad(noad)));
                 }
-                Node::Overline { body, under, .. } => {
+                Node::Overline { body, under, fam, .. } => {
                     let mut noad = Noad::new(CL_ORD, Nuc::Mlist(body.clone()));
                     noad.special = if *under { Special::Under } else { Special::Over };
+                    noad.fam = *fam;
                     out.push(Slot::new(Item::Noad(noad)));
                 }
                 Node::Empty | Node::InsDisc => {}
@@ -223,13 +240,14 @@ impl Engine {
             _ => op,
         };
         let nuc = match payload {
-            [Node::MathChar { fam, c, class: CL_OP, origin, .. }] if *fam != 255 => {
-                Nuc::Char { fam: *fam, c: *c, origin: origin.clone() }
+            [Node::MathChar { fam, c, class: CL_OP, origin, attr }] if *fam != 255 => {
+                Nuc::Char { fam: *fam, c: *c, origin: origin.clone(), attr: *attr }
             }
-            [Node::DelimBox { small, size: 2, .. }] => Nuc::Char {
+            [Node::DelimBox { small, size: 2, attr, .. }] => Nuc::Char {
                 fam: small.0,
                 c: u32::from(small.1),
                 origin: MathDiagnosticOrigin::default(),
+                attr: *attr,
             },
             _ => Nuc::Mlist(payload.to_vec()),
         };
@@ -253,14 +271,14 @@ impl Engine {
             if let [Node::Accent { body, .. }] = nucleus {
                 if matches!(body.as_slice(), [Node::MathChar { fam, .. }] if *fam != 255) {
                     return Item::Raw {
-                        node: Node::Scripts { nucleus: nucleus.to_vec(), sup: sup.clone(), sub: sub.clone(), attr: crate::boxes::Attr::NONE },
+                        node: Node::Scripts { nucleus: nucleus.to_vec(), sup: sup.clone(), sub: sub.clone(), options: 0, attr: crate::boxes::Attr::NONE },
                         frac: false,
                     };
                 }
             }
         }
         let mut noad = match nucleus {
-            [] => Noad::new(CL_ORD, Nuc::None),
+            [] => Noad::new(CL_ORD, Nuc::Mlist(Vec::new())),
             [Node::MathChar { fam: 255, c, class, .. }, rest @ ..] => {
                 let mut n = Noad::new(*class, Nuc::Mlist(rest.to_vec()));
                 if *class == CL_OP {
@@ -268,16 +286,16 @@ impl Engine {
                 }
                 n
             }
-            [Node::MathChar { fam, c, class, origin, .. }] => {
-                let mut n = Noad::new(*class, Nuc::Char { fam: *fam, c: *c, origin: origin.clone() });
+            [Node::MathChar { fam, c, class, origin, attr }] => {
+                let mut n = Noad::new(*class, Nuc::Char { fam: *fam, c: *c, origin: origin.clone(), attr: *attr });
                 if *class == CL_OP {
                     n.opsub = OP_NOLIMITS;
                 }
                 n
             }
-            [Node::DelimBox { small, size: 2, .. }] => Noad::new(
+            [Node::DelimBox { small, size: 2, attr, .. }] => Noad::new(
                 CL_ORD,
-                Nuc::Char { fam: small.0, c: u32::from(small.1), origin: MathDiagnosticOrigin::default() },
+                Nuc::Char { fam: small.0, c: u32::from(small.1), origin: MathDiagnosticOrigin::default(), attr: *attr },
             ),
             [Node::Box { .. }] => Noad::new(CL_ORD, Nuc::Box(nucleus[0].clone())),
             [Node::VCenter { box_node }] => {
@@ -285,11 +303,13 @@ impl Engine {
                 n.special = Special::VCenter;
                 n
             }
-            [Node::Overline { body, under, .. }] => {
+            [Node::Overline { body, under, fam, .. }] => {
                 let mut n = Noad::new(CL_ORD, Nuc::Mlist(body.clone()));
                 n.special = if *under { Special::Under } else { Special::Over };
+                n.fam = *fam;
                 n
             }
+            [n @ (Node::Accent { .. } | Node::Radical { .. })] => Noad::new(CL_ORD, Nuc::Atom(n.clone())),
             other => Noad::new(CL_ORD, Nuc::Mlist(other.to_vec())),
         };
         noad.sup = sup.clone();
@@ -503,7 +523,7 @@ impl Engine {
     // ================= fetch / nucleus =================
 
     /// luatex `fetch`: the font and character of a math char at size `size`.
-    fn lm_fetch(&mut self, fam: u8, c: u32, size: usize) -> (FontId, u32) {
+    pub(crate) fn lm_fetch(&mut self, fam: u8, c: u32, size: usize) -> (FontId, u32) {
         let f = self.fam_fnt(u32::from(fam), size);
         self.lm_cur_f = f;
         if f == 0 {
@@ -543,6 +563,14 @@ impl Engine {
                 (p, Some(delta))
             }
             Nuc::Box(b) => (vec![b], None),
+            Nuc::Atom(n) => {
+                let nodes = self.convert_atom(&n, cur_style, false);
+                if matches!(nodes.as_slice(), [Node::Box { .. }]) {
+                    (nodes, None)
+                } else {
+                    (vec![hpack_nat(self, nodes)], None)
+                }
+            }
             Nuc::Mlist(l) => {
                 let nodes = self.lm_convert(&l, cur_style, false, false);
                 (vec![hpack_nat(self, nodes)], None)
@@ -559,7 +587,7 @@ impl Engine {
 
     /// `clean_box` of a script/numerator list (a lone math char becomes an
     /// ord noad).
-    pub(crate) fn lm_clean_list(&mut self, list: &[Node], s: GStyle) -> Node {
+    pub(crate) fn lm_clean_list(&mut self, list: &[Node], s: GStyle, st: u8) -> Node {
         let tmp;
         let list = match list {
             [Node::MathChar { fam, c, origin, class, .. }] if *fam != 255 && *class != CL_ORD => {
@@ -569,16 +597,17 @@ impl Engine {
             _ => list,
         };
         let nodes = self.lm_convert(list, s, false, false);
-        self.lm_finish_clean(nodes)
+        self.lm_finish_clean(nodes, st)
     }
 
-    fn lm_finish_clean(&mut self, nodes: NodeList) -> Node {
+    fn lm_finish_clean(&mut self, nodes: NodeList, st: u8) -> Node {
         let mut x = if matches!(nodes.as_slice(), [Node::Box { shift: 0, .. }]) {
             nodes.into_iter().next().unwrap()
         } else {
             hpack_nat(self, nodes)
         };
-        if let Node::Box { list, .. } = &mut x {
+        if let Node::Box { list, subtype, .. } = &mut x {
+            *subtype = st;
             if list.len() == 2 && is_char_node(&list[0]) && matches!(list[1], Node::Kern(_, _) | Node::ItalicKern(_, _)) {
                 list.pop();
             }
@@ -586,27 +615,34 @@ impl Engine {
         x
     }
 
-    fn lm_clean_nuc(&mut self, nuc: &Nuc, s: GStyle) -> Node {
+    fn lm_clean_nuc(&mut self, nuc: &Nuc, s: GStyle, st: u8) -> Node {
         match nuc {
-            Nuc::Char { fam, c, origin } => {
-                let l = [Node::MathChar { fam: *fam, c: *c, class: CL_ORD, origin: origin.clone(), attr: crate::boxes::Attr::NONE }];
+            Nuc::Char { fam, c, origin, attr } => {
+                let l = [Node::MathChar { fam: *fam, c: *c, class: CL_ORD, origin: origin.clone(), attr: *attr }];
                 let nodes = self.lm_convert(&l, s, false, false);
-                self.lm_finish_clean(nodes)
+                self.lm_finish_clean(nodes, st)
             }
             Nuc::Box(b) => {
                 let nodes = vec![b.clone()];
-                self.lm_finish_clean(nodes)
+                self.lm_finish_clean(nodes, st)
+            }
+            Nuc::Atom(n) => {
+                let nodes = self.convert_atom(n, s, false);
+                self.lm_finish_clean(nodes, st)
             }
             Nuc::Mlist(l) => {
                 let nodes = self.lm_convert(l, s, false, false);
-                self.lm_finish_clean(nodes)
+                self.lm_finish_clean(nodes, st)
             }
             Nuc::Fenced(l) => {
                 let nodes = self.lm_convert(l, s, false, true);
-                self.lm_finish_clean(nodes)
+                self.lm_finish_clean(nodes, st)
             }
             Nuc::None => {
-                let x = null_box(HBOX);
+                let mut x = null_box(HBOX);
+                if let Node::Box { subtype, .. } = &mut x {
+                    *subtype = st;
+                }
                 x
             }
         }
@@ -648,8 +684,19 @@ impl Engine {
 
     // ================= over / under / vcenter =================
 
-    fn lm_rule(t: i32) -> Node {
-        Node::Rule { width: crate::build::RULE_FILL, height: t, depth: 0, subtype: crate::boxes::RULE_NORMAL, index: 0, attr: crate::boxes::Attr::NONE }
+    /// mlist.c `do_fraction_rule`: a rule of thickness `t`; under
+    /// `\mathrulesmode` it carries the math rule subtype `some_rule` and the
+    /// size it was made for as its `index`.
+    pub(crate) fn lm_math_rule(&self, t: i32, some_rule: u8, size: usize) -> Node {
+        let marked = self.eqtb.int_params[IntParam::MathRulesMode.idx() as usize] != 0;
+        Node::Rule {
+            width: crate::build::RULE_FILL,
+            height: t,
+            depth: 0,
+            subtype: if marked { some_rule } else { crate::boxes::RULE_NORMAL },
+            index: if marked { size as i32 } else { 0 },
+            attr: crate::boxes::Attr::NONE,
+        }
     }
 
     fn lm_nuc_of(&self, slots: &[Slot], i: usize) -> Nuc {
@@ -665,30 +712,55 @@ impl Engine {
         }
     }
 
+    /// The bar thickness of an over/under noad: `\mathrulethicknessmode`
+    /// takes it from the math font of the noad's own `fam` when that font has
+    /// the parameter (`par` is its `MathConstants` index).
+    fn lm_bar_thickness(&mut self, slots: &[Slot], i: usize, cur_style: GStyle, base: i32, par: usize) -> i32 {
+        let fam = match &slots[i].item {
+            Item::Noad(q) => q.fam,
+            _ => crate::boxes::NO_FAM,
+        };
+        if self.eqtb.int_params[IntParam::MathRuleThicknessMode.idx() as usize] > 0 && fam != crate::boxes::NO_FAM {
+            let f = self.fam_fnt(u32::from(fam), size_of_style(cur_style));
+            if self.assume_new_math(f) {
+                let t = self.font_math_par(f, par);
+                if t != UNDEFINED_MATH_PARAMETER {
+                    return t;
+                }
+            }
+        }
+        base
+    }
+
     fn lm_make_over(&mut self, slots: &mut Vec<Slot>, i: usize, cur_style: GStyle) {
-        let thickness = self.mparam_err(MATH_PARAM_OVERBAR_RULE, cur_style);
+        let base = self.mparam_err(MATH_PARAM_OVERBAR_RULE, cur_style);
+        let thickness = self.lm_bar_thickness(slots, i, cur_style, base, mc::OVERBAR_RULE_THICKNESS);
         let nuc = self.lm_nuc_of(slots, i);
-        let b = self.lm_clean_nuc(&nuc, cramped(cur_style));
+        let b = self.lm_clean_nuc(&nuc, cramped(cur_style), crate::boxes::list_subtype::NUCLEUS);
         let vgap = self.mparam_err(MATH_PARAM_OVERBAR_VGAP, cur_style);
         let kern = self.mparam_err(MATH_PARAM_OVERBAR_KERN, cur_style);
         // overbar(b, k = vgap, t, ht = kern)
-        let v = vpack_nat(self, vec![Node::Kern(kern, crate::boxes::Attr::NONE), Self::lm_rule(thickness), Node::Kern(vgap, crate::boxes::Attr::NONE), b]);
+        let v = vpack_nat(self, vec![Node::Kern(kern, crate::boxes::Attr::NONE), self.lm_math_rule(thickness, crate::boxes::RULE_MATH_OVER, size_of_style(cur_style)), Node::Kern(vgap, crate::boxes::Attr::NONE), b]);
+        let v = with_list_subtype(v, crate::boxes::list_subtype::OVER);
         Self::lm_set_nuc_box(slots, i, v);
     }
 
     fn lm_make_under(&mut self, slots: &mut Vec<Slot>, i: usize, cur_style: GStyle) {
-        let thickness = self.mparam_err(MATH_PARAM_UNDERBAR_RULE, cur_style);
+        let base = self.mparam_err(MATH_PARAM_UNDERBAR_RULE, cur_style);
+        let thickness = self.lm_bar_thickness(slots, i, cur_style, base, mc::UNDERBAR_RULE_THICKNESS);
         let nuc = self.lm_nuc_of(slots, i);
-        let x = self.lm_clean_nuc(&nuc, cur_style);
+        let x = self.lm_clean_nuc(&nuc, cur_style, crate::boxes::list_subtype::NUCLEUS);
         let vgap = self.mparam_err(MATH_PARAM_UNDERBAR_VGAP, cur_style);
         let (_, xh, _) = box_whd(&x);
-        let mut y = vpack_nat(self, vec![x, Node::Kern(vgap, crate::boxes::Attr::NONE), Self::lm_rule(thickness)]);
+        let rule = self.lm_math_rule(thickness, crate::boxes::RULE_MATH_UNDER, size_of_style(cur_style));
+        let mut y = vpack_nat(self, vec![x, Node::Kern(vgap, crate::boxes::Attr::NONE), rule]);
         let kern = self.mparam_err(MATH_PARAM_UNDERBAR_KERN, cur_style);
         let (_, yh, yd) = box_whd(&y);
         let delta = yh + yd + kern;
-        if let Node::Box { h, d, .. } = &mut y {
+        if let Node::Box { h, d, subtype, .. } = &mut y {
             *h = xh;
             *d = delta - xh;
+            *subtype = crate::boxes::list_subtype::UNDER;
         }
         Self::lm_set_nuc_box(slots, i, y);
     }
@@ -750,14 +822,14 @@ impl Engine {
                         1 | 5 => set_nuc_char(&mut slots[i], repl),
                         2 | 6 => set_nuc_char(&mut slots[i + 1], repl),
                         3 | 7 | 11 => {
-                            let origin = match &slots[i].item {
+                            let (origin, attr) = match &slots[i].item {
                                 Item::Noad(q) => match &q.nuc {
-                                    Nuc::Char { origin, .. } => origin.clone(),
-                                    _ => MathDiagnosticOrigin::default(),
+                                    Nuc::Char { origin, attr, .. } => (origin.clone(), *attr),
+                                    _ => (MathDiagnosticOrigin::default(), crate::boxes::Attr::NONE),
                                 },
-                                _ => MathDiagnosticOrigin::default(),
+                                _ => (MathDiagnosticOrigin::default(), crate::boxes::Attr::NONE),
                             };
-                            let mut r = Noad::new(CL_ORD, Nuc::Char { fam, c: repl, origin });
+                            let mut r = Noad::new(CL_ORD, Nuc::Char { fam, c: repl, origin, attr });
                             r.text_char = ltype >= 11;
                             slots.insert(i + 1, Slot::new(Item::Noad(r)));
                         }
@@ -808,7 +880,7 @@ impl Engine {
             }
         }
         let mut cur_f = self.lm_cur_f;
-        if let Nuc::Char { fam, c, origin } = nuc.clone() {
+        if let Nuc::Char { fam, c, origin, attr: nuc_attr } = nuc.clone() {
             let (f, mut cc) = self.lm_fetch(fam, c, size);
             cur_f = f;
             let mut x;
@@ -816,7 +888,7 @@ impl Engine {
             if cur_style < 2 {
                 let ok_size = self.mparam(MATH_PARAM_OPERATOR_SIZE, cur_style);
                 if ok_size != UNDEFINED_MATH_PARAMETER {
-                    let (xb, info) = self.do_delimiter(Some((fam, cc, 0, 0)), 0, ok_size, false, cur_style, true, 0);
+                    let (xb, info) = self.do_delimiter(Some((fam, cc, 0, 0)), 0, ok_size, false, cur_style, true, 0, nuc_attr);
                     x = xb;
                     delta = info.delta;
                     if delta != 0 && has_sub && opsub != OP_LIMITS {
@@ -838,8 +910,8 @@ impl Engine {
                         cc = next;
                     }
                     delta = self.mc_metrics(f, cc).italic;
-                    let tmp = Nuc::Char { fam, c: cc, origin: origin.clone() };
-                    x = self.lm_clean_nuc(&tmp, cur_style);
+                    let tmp = Nuc::Char { fam, c: cc, origin: origin.clone(), attr: nuc_attr };
+                    x = self.lm_clean_nuc(&tmp, cur_style, crate::boxes::list_subtype::NUCLEUS);
                     if delta != 0 && has_sub && opsub != OP_LIMITS {
                         if let Node::Box { w, .. } = &mut x {
                             *w -= delta;
@@ -849,7 +921,7 @@ impl Engine {
                 }
             } else {
                 delta = self.mc_metrics(f, cc).italic;
-                x = self.lm_clean_nuc(&nuc, cur_style);
+                x = self.lm_clean_nuc(&nuc, cur_style, crate::boxes::list_subtype::NUCLEUS);
                 if delta != 0 && has_sub && opsub != OP_LIMITS {
                     if let Node::Box { w, .. } = &mut x {
                         *w -= delta;
@@ -887,9 +959,9 @@ impl Engine {
                 _ => (None, None),
             };
             let nuc = self.lm_nuc_of(slots, i);
-            let x0 = self.lm_clean_list_opt(sup.as_deref(), sup_style(cur_style));
-            let y0 = self.lm_clean_nuc(&nuc, cur_style);
-            let z0 = self.lm_clean_list_opt(sub.as_deref(), sub_style(cur_style));
+            let x0 = self.lm_clean_list_opt(sup.as_deref(), sup_style(cur_style), crate::boxes::list_subtype::SUP);
+            let y0 = self.lm_clean_nuc(&nuc, cur_style, crate::boxes::list_subtype::NUCLEUS);
+            let z0 = self.lm_clean_list_opt(sub.as_deref(), sub_style(cur_style), crate::boxes::list_subtype::SUB);
             let mut width = box_whd(&y0).0;
             width = width.max(box_whd(&x0).0).max(box_whd(&z0).0);
             let mut x = self.lm_rebox(x0, width);
@@ -932,7 +1004,7 @@ impl Engine {
                 list.push(Node::Kern(kern, crate::boxes::Attr::NONE));
                 vd = vd + kern + zh + zd + shift_down;
             }
-            let mut v = vpack_nat(self, list);
+            let mut v = with_list_subtype(vpack_nat(self, list), crate::boxes::list_subtype::LIMITS);
             if let Node::Box { w, h, d, .. } = &mut v {
                 *w = width;
                 *h = vh;
@@ -947,10 +1019,16 @@ impl Engine {
         delta
     }
 
-    fn lm_clean_list_opt(&mut self, l: Option<&[Node]>, s: GStyle) -> Node {
+    fn lm_clean_list_opt(&mut self, l: Option<&[Node]>, s: GStyle, st: u8) -> Node {
         match l {
-            Some(l) => self.lm_clean_list(l, s),
-            None => null_box(HBOX),
+            Some(l) => self.lm_clean_list(l, s, st),
+            None => {
+                let mut b = null_box(HBOX);
+                if let Node::Box { subtype, .. } = &mut b {
+                    *subtype = st;
+                }
+                b
+            }
         }
     }
 
@@ -968,9 +1046,16 @@ impl Engine {
         subshift: i32,
     ) {
         let size = size_of_style(cur_style);
-        let (sup, sub, nuc_is_char) = match &slots[i].item {
-            Item::Noad(q) => (q.sup.clone(), q.sub.clone(), matches!(q.nuc, Nuc::Char { .. })),
+        let (sup, sub, nuc_is_char, options) = match &slots[i].item {
+            Item::Noad(q) => (q.sup.clone(), q.sub.clone(), matches!(q.nuc, Nuc::Char { .. }), q.options),
             _ => return,
+        };
+        // `\Unosubscript`/`\Unosuperscript`: the script keeps the style of the noad
+        let sub_style = |g: GStyle| {
+            if crate::boxes::noad_option::has(options, crate::boxes::noad_option::NO_SUB_SCRIPT) { g } else { sub_style(g) }
+        };
+        let sup_style = |g: GStyle| {
+            if crate::boxes::noad_option::has(options, crate::boxes::noad_option::NO_SUPER_SCRIPT) { g } else { sup_style(g) }
         };
         let mut shift_up;
         let mut shift_down;
@@ -1002,7 +1087,7 @@ impl Engine {
         let x: Node;
         let mut kern_after: Vec<Node> = Vec::new();
         if sup.is_none() {
-            let mut xb = self.lm_clean_list(sub.as_deref().unwrap_or(&[]), sub_style(cur_style));
+            let mut xb = self.lm_clean_list(sub.as_deref().unwrap_or(&[]), sub_style(cur_style), crate::boxes::list_subtype::SUB);
             if let Node::Box { w, .. } = &mut xb {
                 *w += space_after;
             }
@@ -1035,7 +1120,7 @@ impl Engine {
             }
             x = xb;
         } else {
-            let mut xb = self.lm_clean_list(sup.as_deref().unwrap(), sup_style(cur_style));
+            let mut xb = self.lm_clean_list(sup.as_deref().unwrap(), sup_style(cur_style), crate::boxes::list_subtype::SUP);
             if let Node::Box { w, .. } = &mut xb {
                 *w += space_after;
             }
@@ -1070,7 +1155,7 @@ impl Engine {
                 }
                 x = xb;
             } else {
-                let mut yb = self.lm_clean_list(sub.as_deref().unwrap(), sub_style(cur_style));
+                let mut yb = self.lm_clean_list(sub.as_deref().unwrap(), sub_style(cur_style), crate::boxes::list_subtype::SUB);
                 if let Node::Box { w, .. } = &mut yb {
                     *w += space_after;
                 }
@@ -1131,7 +1216,7 @@ impl Engine {
                 let (_, yh, _) = box_whd(&yb);
                 let (_, _, xd) = box_whd(&xb);
                 let gap = (shift_up - xd) - (yh - shift_down);
-                let mut v = vpack_nat(self, vec![xb, Node::Kern(gap, crate::boxes::Attr::NONE), yb]);
+                let mut v = with_list_subtype(vpack_nat(self, vec![xb, Node::Kern(gap, crate::boxes::Attr::NONE), yb]), crate::boxes::list_subtype::SCRIPTS);
                 set_shift(&mut v, shift_down);
                 x = v;
             }
@@ -1266,8 +1351,8 @@ impl Engine {
             }
             let mut new_hlist: NodeList = slot.hlist.clone();
             let mut fence_right = false;
-            if let Item::Fence { side, delim } = &slot.item {
-                let (hl, class) = self.lm_make_left_right(*side, *delim, style, max_d, max_hl);
+            if let Item::Fence { side, delim, fence, attr } = &slot.item {
+                let (hl, class) = self.lm_make_left_right(*side, *delim, *fence, *attr, style, max_d, max_hl);
                 new_hlist = hl;
                 t = class;
                 fence_right = *side == Side::Right;
@@ -1308,25 +1393,66 @@ impl Engine {
         &mut self,
         side: Side,
         delim: Option<(u8, u32, u8, u32)>,
+        fence: crate::boxes::FenceOpts,
+        att: crate::boxes::Attr,
         style: GStyle,
         max_d: i32,
         max_h: i32,
     ) -> (NodeList, u8) {
+        use crate::boxes::noad_option as no;
         let size = size_of_style(style);
-        let axis = true;
-        let delta = self.lm_delimiter_height(max_d, max_h, axis, size);
         let same = match side {
             Side::Left => 1,
             Side::Middle => 2,
             Side::Right => 3,
+            Side::Plain => 4,
         };
-        let (tmp, _info) = self.do_delimiter(delim, size, delta, false, style, axis, same);
-        let class = if side == Side::Left { CL_OPEN } else { CL_CLOSE };
+        let tmp = if fence.height != 0 || fence.depth != 0 {
+            let delta = fence.height + fence.depth;
+            let (mut t, info) = self.do_delimiter(delim, size, delta, false, style, false, same, att);
+            let (mut fh, mut fd) = (fence.height, fence.depth);
+            if info.stack {
+                crate::math_otf::set_shift(&mut t, fd);
+            }
+            if no::has(fence.options, no::EXACT) {
+                let sh = crate::math_otf::box_shift(&t);
+                let (_, bh, bd) = box_whd(&t);
+                fh = bh - sh;
+                fd = bd + sh;
+            }
+            if no::has(fence.options, no::AXIS) {
+                let ax = self.math_axis_size(size);
+                fh += ax;
+                fd -= ax;
+                let sh = crate::math_otf::box_shift(&t) - ax;
+                crate::math_otf::set_shift(&mut t, sh);
+            }
+            let (w, _, _) = box_whd(&t);
+            let mut lst = null_box(HBOX);
+            if let Node::Box { w: bw, h: bh, d: bd, list, .. } = &mut lst {
+                *bw = w;
+                *bh = fh;
+                *bd = fd;
+                *list = vec![t];
+            }
+            lst
+        } else {
+            let axis = !no::has(fence.options, no::NO_AXIS);
+            let delta = self.lm_delimiter_height(max_d, max_h, axis, size);
+            self.do_delimiter(delim, size, delta, false, style, axis, same, att).0
+        };
+        let class = if (0..=7).contains(&fence.class) {
+            fence.class as u8
+        } else if side == Side::Left {
+            CL_OPEN
+        } else {
+            CL_CLOSE
+        };
         (vec![tmp], class)
     }
 
     /// `get_delimiter_height`
-    fn lm_delimiter_height(&mut self, max_d: i32, max_h: i32, axis: bool, size: usize) -> i32 {
+    pub(crate) fn lm_delimiter_height(&mut self, max_d: i32, max_h: i32, axis: bool, size: usize) -> i32 {
         let delta2 = if axis { max_d + self.math_axis_size(size) } else { max_d };
         let mut delta1 = max_h + max_d - delta2;
         if delta2 > delta1 {

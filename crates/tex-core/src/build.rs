@@ -1589,8 +1589,12 @@ impl Engine {
             _ => {}
         }
         let mut node = res.node;
-        if let Node::Box { shift: s, .. } = &mut node {
+        if let Node::Box { shift: s, subtype, .. } = &mut node {
             *s += shift;
+            // luatex package(): `\hbox` boxes are `box_list`
+            if matches!(kind, 0 | 6) {
+                *subtype = boxes::list_subtype::BOX;
+            }
         }
         if let Some(a) = box_attr {
             node.set_attr(a);
@@ -3041,7 +3045,7 @@ impl Engine {
                 } else if indent {
                     let pi = self.eqtb.dim_params[DimParam::ParIndent.idx() as usize];
                     let r = boxes::hpack(Vec::new(), Some(pi), boxes::HBOX, &self.eqtb);
-                    self.cur_list.push(r.node);
+                    self.cur_list.push(crate::math_otf::with_list_subtype(r.node, boxes::list_subtype::INDENT));
                 }
                 self.run_everypar();
                 // §1091: `if nest_ptr=1 then build_page` comes last, so an
@@ -3090,7 +3094,7 @@ impl Engine {
                 } else if indent {
                     let pi = self.eqtb.dim_params[DimParam::ParIndent.idx() as usize];
                     let r = boxes::hpack(Vec::new(), Some(pi), boxes::HBOX, &self.eqtb);
-                    self.cur_list.push(r.node);
+                    self.cur_list.push(crate::math_otf::with_list_subtype(r.node, boxes::list_subtype::INDENT));
                 }
                 self.run_everypar();
             }

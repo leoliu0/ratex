@@ -1313,7 +1313,7 @@ impl Engine {
                 glue_order: 0,
                 glue_set: 0.0,
                 lr: 0,
-                dir: 0, attr: self.eqtb.cur_attr,
+                dir: 0, attr: self.eqtb.cur_attr, subtype: 0,
             };
             self.align_rows.push(vec![Cell {
                 packed: Some(node),
@@ -1544,7 +1544,7 @@ impl Engine {
             glue_set: 0.0,
             lr: 0,
             dir: 0,
-            attr: cur_attr,
+            attr: cur_attr, subtype: 0,
         };
         let mut preamble: NodeList = Vec::with_capacity(2 * ncols + 1);
         preamble.push(Node::Glue(t0, self.eqtb.cur_attr));
@@ -1714,7 +1714,7 @@ impl Engine {
                 glue_order: p_order,
                 glue_set: p_set,
                 lr: if display { crate::boxes::BOX_LR_DLIST } else { 0 },
-                dir: 0, attr: self.eqtb.cur_attr,
+                dir: 0, attr: self.eqtb.cur_attr, subtype: crate::boxes::list_subtype::ALIGNMENT,
             };
             // pdftex.web fin_row: the row's `\vadjust pre` material joins
             // the vertical list in front of the row (and its interline glue)
@@ -1811,6 +1811,9 @@ impl Engine {
                 let final_pd = prev.unwrap_or(self.prev_depth);
                 self.prev_depth = final_pd;
                 self.display_halign = Some((rows, final_pd));
+                if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                    self.finish_display_alignment();
+                }
             }
             _ => {
                 let vbox = crate::boxes::vpack(rows, None, crate::boxes::VBOX, &self.eqtb).node;
@@ -1864,11 +1867,13 @@ fn set_unset_cell(cell: &mut Node, w: i32, t: i64, valign: bool, row_a: i32, row
         glue_sign,
         glue_order,
         glue_set,
+        subtype,
         ..
     } = cell
     else {
         return;
     };
+    *subtype = crate::boxes::list_subtype::CELL;
     let nat = if valign { *bh } else { *bw } as i64;
     let (stretch, shrink) = crate::boxes::glue_sums(list);
     let top = |v: &[i64; 4]| (0..4).rev().find(|&o| v[o] != 0).unwrap_or(0);

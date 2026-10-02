@@ -177,6 +177,13 @@ pub mod noad_option {
     pub const NO_SUPER_SCRIPT: u16 = 0x22 + 0x08;
     pub const NO_SCRIPT: u16 = 0x23 + 0x08;
     pub const NO_RULE: u16 = 0x24 + 0x08;
+    /// not luatex options: the fraction has a left / right delimiter node
+    /// (`\withdelims`, or a Lua fraction noad with `left` / `right` set), even
+    /// when it is the null delimiter, which typesets as an unshifted empty
+    /// box; without the node the empty box is axis-shifted
+    pub const FRAC_LEFT_DELIM: u16 = 0x4000;
+    pub const FRAC_RIGHT_DELIM: u16 = 0x2000;
+    pub const FRAC_DELIMS: u16 = FRAC_LEFT_DELIM | FRAC_RIGHT_DELIM;
 
     /// `(options & bit) == bit`
     pub fn has(options: u16, bit: u16) -> bool {
@@ -529,6 +536,39 @@ pub const LEADERS_X: u8 = 2;
 /// luatex `\gleaders` (`g_leaders`): aligned to the page, not to the box
 pub const LEADERS_G: u8 = 3;
 
+/// luatex box (hlist/vlist) subtypes (`texnodes.h` `list_subtypes`)
+pub mod list_subtype {
+    pub const UNKNOWN: u8 = 0;
+    pub const LINE: u8 = 1;
+    pub const BOX: u8 = 2;
+    pub const INDENT: u8 = 3;
+    pub const ALIGNMENT: u8 = 4;
+    pub const CELL: u8 = 5;
+    pub const EQUATION: u8 = 6;
+    pub const EQUATION_NUMBER: u8 = 7;
+    pub const MATH: u8 = 8;
+    pub const MATH_CHAR: u8 = 9;
+    pub const H_EXTENSIBLE: u8 = 10;
+    pub const V_EXTENSIBLE: u8 = 11;
+    pub const H_DELIMITER: u8 = 12;
+    pub const V_DELIMITER: u8 = 13;
+    pub const OVER_DELIMITER: u8 = 14;
+    pub const UNDER_DELIMITER: u8 = 15;
+    pub const NUMERATOR: u8 = 16;
+    pub const DENOMINATOR: u8 = 17;
+    pub const LIMITS: u8 = 18;
+    pub const FRACTION: u8 = 19;
+    pub const NUCLEUS: u8 = 20;
+    pub const SUP: u8 = 21;
+    pub const SUB: u8 = 22;
+    pub const DEGREE: u8 = 23;
+    pub const SCRIPTS: u8 = 24;
+    pub const OVER: u8 = 25;
+    pub const UNDER: u8 = 26;
+    pub const ACCENT: u8 = 27;
+    pub const RADICAL: u8 = 28;
+}
+
 /// luatex rule subtypes (`texnodes.h` `rule_subtypes`)
 pub const RULE_NORMAL: u8 = 0;
 pub const RULE_BOX: u8 = 1;
@@ -536,6 +576,12 @@ pub const RULE_IMAGE: u8 = 2;
 /// `\nohrule`, `\novrule`: takes space, draws nothing
 pub const RULE_EMPTY: u8 = 3;
 pub const RULE_USER: u8 = 4;
+/// the rules `\mathrulesmode` marks in math: `\overline`, `\underline`,
+/// fraction rules and the bar of a radical (`rule_subtypes` 5..8)
+pub const RULE_MATH_OVER: u8 = 5;
+pub const RULE_MATH_UNDER: u8 = 6;
+pub const RULE_MATH_FRACTION: u8 = 7;
+pub const RULE_MATH_RADICAL: u8 = 8;
 
 /// the repeated object of a leader node: a rule or a packed box
 #[derive(Clone, Debug)]
@@ -596,13 +642,20 @@ impl DiscNode {
     }
 }
 
+/// `Node::Box::dir` of a box that no direction was ever assigned to (luatex
+/// `new_node` sets `box_dir` to -1; `\showbox` prints it as `-RTT`).
+pub const BOX_DIR_UNSET: u8 = 255;
+
+/// `fam` of a fraction or over/under noad that names no family (luatex -1).
+pub const NO_FAM: u8 = 255;
+
 /// Stable identity for a math atom that may need to report a missing glyph
 /// after TeX has selected the conversion style and font. Source marks live in
 /// an engine-side arena keyed by this id, keeping the hot `Node` enum compact.
 /// The id also prevents a measuring pass from reporting an atom twice.
 #[derive(Clone, Debug, Default)]
 pub struct MathDiagnosticOrigin {
-    pub(crate) id: u64,
+    pub(crate) id: u32,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct SpanId(pub u32);
@@ -853,8 +906,12 @@ pub enum Node {
         /// e-TeX `box_lr` (the hlist subtype): 0, [`BOX_LR_REVERSED`] once
         /// ship_out reversed the list, [`BOX_LR_DLIST`] for display math.
         lr: u8,
-        /// LuaTeX `box_dir` (`\boxdir`): 0 TLT, 1 TRT, 2 LTL, 3 RTT.
+        /// LuaTeX `box_dir` (`\boxdir`): 0 TLT, 1 TRT, 2 LTL, 3 RTT;
+        /// [`BOX_DIR_UNSET`] for a box `node.new` made (luatex -1).
         dir: u8,
+        /// LuaTeX `list_subtypes` (`line`, `box`, `indent`, `alignment`, `cell`,
+        /// `equation`, ..., `radical`): see [`list_subtype`].
+        subtype: u8,
         attr: Attr,
     },
     Mark {
@@ -899,6 +956,10 @@ pub enum Node {
     Frac {
         /// luatex `fractionoptions` (`noad_option_*`, see [`noad_option`])
         options: u16,
+        /// luatex `fraction_fam`: `NO_FAM` unless a Lua fraction noad sets
+        /// `fam`; with `\mathrulethicknessmode` its font gives the rule
+        /// thickness (one byte keeps the node within its size budget)
+        fam: u8,
         attr: Attr,
         thickness: i32,
         /// a null delimiter stands for none
@@ -931,6 +992,9 @@ pub enum Node {
         nucleus: NodeList,
         sup: Option<NodeList>,
         sub: Option<NodeList>,
+        /// luatex `noadoptions` of the noad (`noad_option::NO_SUB_SCRIPT`,
+        /// `NO_SUPER_SCRIPT`: `\Unosubscript`, `\Unosuperscript`)
+        options: u16,
         attr: Attr,
     },
     /// A delimiter marker of a flat mlist: `size` 0 is a `\left` (open
@@ -964,6 +1028,9 @@ pub enum Node {
     Overline {
         body: NodeList,
         under: bool,
+        /// luatex `noad_fam`: [`NO_FAM`] unless a Lua noad sets `fam`; with
+        /// `\mathrulethicknessmode` its font gives the bar thickness
+        fam: u8,
         /// the already-packed bar-and-body box the conversion yields; `body`
         /// is the original field, kept for `\showlists` (tex.web §692)
         packed: Box<Node>,
@@ -1469,7 +1536,7 @@ pub fn hpack_add(
             glue_order: order,
             glue_set: set,
             lr: 0,
-            dir: 0, attr: eqtb.cur_attr,
+            dir: 0, attr: eqtb.cur_attr, subtype: 0,
         },
         badness: bad,
         delta,
@@ -1560,7 +1627,7 @@ pub fn vpack_add_md(
             glue_order: order,
             glue_set: set,
             lr: 0,
-            dir: 0, attr: eqtb.cur_attr,
+            dir: 0, attr: eqtb.cur_attr, subtype: 0,
         },
         badness: bad,
         delta,

@@ -140,6 +140,33 @@ pub(super) fn empty_noad_kind<'a>(kind: NoadKind) -> Item<'a> {
     noad(kind, Field::Empty, Field::Empty, Field::Empty)
 }
 
+/// The noad field luatex is scanning into: it hands `scan_math` a fresh
+/// `math_char_node` (family 0, character 0), which `\showlists` prints as
+/// `\fam0 ` while the field is in progress.
+#[derive(Clone, Copy)]
+pub(super) enum PendingField {
+    Nucleus,
+    Sup,
+    Sub,
+    Degree,
+}
+
+pub(super) fn set_pending_field(item: &mut Item<'_>, which: PendingField) {
+    set_field(item, which, Field::Char(0, 0));
+}
+
+pub(super) fn set_field<'a>(item: &mut Item<'a>, which: PendingField, field: Field<'a>) {
+    if let Item::Noad(n) = item {
+        let slot = match which {
+            PendingField::Nucleus => &mut n.nucleus,
+            PendingField::Sup => &mut n.sup,
+            PendingField::Sub => &mut n.sub,
+            PendingField::Degree => &mut n.degree,
+        };
+        *slot = field;
+    }
+}
+
 /// tex.web `scripts_allowed`: the tail is a noad that can take scripts.
 pub(super) fn scripts_allowed(tail: Option<&Item<'_>>) -> bool {
     match tail {
@@ -184,7 +211,9 @@ pub(super) fn field_of<'a>(list: &'a [Node]) -> Field<'a> {
         [Node::Scripts {
             nucleus,
             sup: None,
-            sub: None, .. }] if matches!(
+            sub: None,
+            ..
+        }] if matches!(
             nucleus.first(),
             Some(Node::MathChar {
                 fam: 255,
@@ -308,7 +337,7 @@ fn scripts_items<'a>(
                 c,
                 class: CL_OP,
                 ..
-            }] if *class == CL_OP && *fam != 255 && origin.id != u64::MAX => {
+            }] if *class == CL_OP && *fam != 255 && origin.id != u32::MAX => {
                 Field::Char(*fam, *c)
             }
             _ => field_of(rest),
@@ -710,7 +739,24 @@ impl<'a> BoxDisplay<'a> {
             if n.subtype != 0 {
                 self.print_esc(if n.subtype == 1 { "limits" } else { "nolimits" });
             }
-            self.subsidiary_field(&n.nucleus, b'.');
+            // luatex's `sub_sup` gives a nucleus-less noad an empty
+            // `sub_mlist` nucleus (`{}`); tex.web leaves it empty
+            let simple = matches!(
+                n.kind,
+                NoadKind::Ord
+                    | NoadKind::Op
+                    | NoadKind::Bin
+                    | NoadKind::Rel
+                    | NoadKind::Open
+                    | NoadKind::Close
+                    | NoadKind::Punct
+                    | NoadKind::Inner
+            );
+            if simple && matches!(n.nucleus, Field::Empty) && self.e.engine_kind == crate::engine::EngineKind::LuaTeX {
+                self.subsidiary_field(&Field::List(Vec::new()), b'.');
+            } else {
+                self.subsidiary_field(&n.nucleus, b'.');
+            }
         }
         self.subsidiary_field(&n.sup, b'^');
         self.subsidiary_field(&n.sub, b'_');

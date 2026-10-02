@@ -393,6 +393,7 @@ impl<'a> BoxDisplay<'a> {
                 glue_order,
                 glue_set,
                 lr,
+                dir,
                 ..
             } => {
                 self.print_esc(match *kind {
@@ -424,7 +425,13 @@ impl<'a> BoxDisplay<'a> {
                     self.print_scaled(*shift);
                 }
                 if self.e.engine_kind == crate::engine::EngineKind::LuaTeX {
-                    self.print(", direction TLT");
+                    self.print(match *dir {
+                        1 => ", direction TRT",
+                        2 => ", direction LTL",
+                        3 => ", direction RTT",
+                        crate::boxes::BOX_DIR_UNSET => ", direction -RTT",
+                        _ => ", direction TLT",
+                    });
                 }
                 // etex.ch "Display if this box is never to be reversed"
                 if *kind == crate::boxes::HBOX
@@ -688,13 +695,15 @@ impl<'a> BoxDisplay<'a> {
 
     fn display_rule(&mut self, width: i32, height: i32, depth: i32, subtype: u8) {
         // texnodes.c `node_list_display`, rule_node
-        self.print_esc(match subtype {
-            crate::boxes::RULE_EMPTY => "norule(",
-            crate::boxes::RULE_USER => "userrule(",
-            crate::boxes::RULE_BOX => "box(",
-            crate::boxes::RULE_IMAGE => "image(",
-            _ => "rule(",
-        });
+        match subtype {
+            crate::boxes::RULE_NORMAL => self.print_esc("rule("),
+            crate::boxes::RULE_EMPTY => self.print_esc("norule("),
+            crate::boxes::RULE_USER => self.print_esc("userrule("),
+            crate::boxes::RULE_BOX => self.print_esc("box("),
+            crate::boxes::RULE_IMAGE => self.print_esc("image("),
+            // the math rule subtypes (over, under, fraction, radical, outline) print no name
+            _ => {}
+        }
         self.print_rule_dimen(height);
         self.out.push(b'+');
         self.print_rule_dimen(depth);

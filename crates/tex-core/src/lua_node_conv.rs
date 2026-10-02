@@ -184,7 +184,10 @@ impl Engine {
         i64::from(head)
     }
 
-    fn import_list(&mut self, list: &[Node], ctx: &mut LangCtx) -> (u32, u32) {
+    pub(crate) fn import_list(&mut self, list: &[Node], ctx: &mut LangCtx) -> (u32, u32) {
+        if list.iter().any(crate::lua_math_conv::is_math_node) {
+            return self.import_math_list(list, ctx, false);
+        }
         let mut head = 0u32;
         let mut tail = 0u32;
         let mut i = 0;
@@ -349,7 +352,7 @@ impl Engine {
     }
 
     fn import_box(&mut self, node: &Node, ctx: &mut LangCtx) -> u32 {
-        let Node::Box { kind, w, h, d, shift, list, glue_sign, glue_order, glue_set, lr, dir, .. } = node else {
+        let Node::Box { kind, w, h, d, shift, list, glue_sign, glue_order, glue_set, lr, dir, subtype, .. } = node else {
             unreachable!()
         };
         let id = if *kind == boxes::HBOX { HLIST } else { VLIST };
@@ -360,16 +363,14 @@ impl Engine {
         nd.f[sl::B_HEIGHT] = *h;
         nd.f[sl::B_DEPTH] = *d;
         nd.f[sl::B_ORDER] = crate::lua_node_pack::lua_order_of(*glue_order);
-        nd.f[sl::B_DIR] = i32::from(*dir);
+        nd.f[sl::B_DIR] = if *dir == boxes::BOX_DIR_UNSET { -1 } else { i32::from(*dir) };
         nd.f[sl::B_SHIFT] = *shift;
         nd.f[sl::B_SIGN] = i32::from(*glue_sign);
         nd.fl = *glue_set;
         nd.f[sl::B_HEAD] = head as i32;
         nd.f[sl::B_LR] = i32::from(*lr);
         nd.f[sl::B_KIND] = i32::from(*kind);
-        if *lr == BOX_LR_DLIST {
-            nd.subtype = 6;
-        }
+        nd.subtype = u16::from(*subtype);
         n
     }
 
@@ -621,7 +622,7 @@ impl Engine {
         }
     }
 
-    fn export_sub(&mut self, head: i32) -> NodeList {
+    pub(crate) fn export_sub(&mut self, head: i32) -> NodeList {
         let mut v = Vec::new();
         self.export_list(head as u32, &mut v);
         v
@@ -787,7 +788,7 @@ impl Engine {
                     glue_sign: f[sl::B_SIGN] as u8,
                     glue_set: nd.fl,
                     lr: if nd.subtype == 6 { BOX_LR_DLIST } else { f[sl::B_LR] as u8 },
-                    dir: f[sl::B_DIR] as u8, attr: crate::boxes::Attr::NONE,
+                    dir: f[sl::B_DIR] as u8, attr: crate::boxes::Attr::NONE, subtype: nd.subtype as u8,
                 });
             }
             MARK => {
@@ -828,7 +829,7 @@ impl Engine {
                         glue_order: 0,
                         glue_set: 0.0,
                         lr: 0,
-                        dir: 0, attr: crate::boxes::Attr::NONE,
+                        dir: 0, attr: crate::boxes::Attr::NONE, subtype: 0,
                     });
                 if let Node::Box { list: l, .. } = &mut box_node {
                     *l = list;
@@ -877,9 +878,12 @@ impl Engine {
                     out.push(o);
                 }
             }
+            STYLE | CHOICE | NOAD | RADICAL | FRACTION | ACCENT | FENCE | MATH_CHAR | MATH_TEXT_CHAR | SUB_BOX | SUB_MLIST => {
+                self.export_math_node(n, out)
+            }
             _ => {
                 // a node the engine has no use for (glue_spec, attribute, ...)
-                // is dropped; math noads are converted by `mlist_to_hlist`
+                // is dropped
             }
         }
     }

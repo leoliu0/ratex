@@ -897,6 +897,14 @@ pub(crate) struct DelimInfo {
     pub same: u8,
 }
 
+/// `subtype(b) = st` for a box.
+pub(crate) fn with_list_subtype(mut b: Node, st: u8) -> Node {
+    if let Node::Box { subtype, .. } = &mut b {
+        *subtype = st;
+    }
+    b
+}
+
 /// `new_null_box` of the given kind.
 pub(crate) fn null_box(kind: u8) -> Node {
     Node::Box {
@@ -910,7 +918,7 @@ pub(crate) fn null_box(kind: u8) -> Node {
         glue_order: 0,
         glue_set: 0.0,
         lr: 0,
-        dir: 0, attr: crate::boxes::Attr::NONE,
+        dir: 0, attr: crate::boxes::Attr::NONE, subtype: 0,
     }
 }
 
@@ -944,13 +952,28 @@ pub(crate) fn box_shift(n: &Node) -> i32 {
     }
 }
 
+/// luatex `reset_attributes` over a freshly built box tree: every node of
+/// `n` takes attribute list `a`.
+pub(crate) fn stamp_attr(n: &mut Node, a: crate::boxes::Attr) {
+    if a == crate::boxes::Attr::NONE {
+        return;
+    }
+    n.set_attr(a);
+    if let Node::Box { list, .. } = n {
+        for c in list.iter_mut() {
+            stamp_attr(c, a);
+        }
+    }
+}
+
 impl Engine {
     /// `char_box`: a box with one glyph whose width includes the italic
     /// correction.
     pub(crate) fn char_box(&self, f: FontId, c: u32) -> Node {
         let m = self.mc_metrics(f, c);
         let mut b = null_box(HBOX);
-        if let Node::Box { w, h, d, list, .. } = &mut b {
+        if let Node::Box { w, h, d, list, subtype, .. } = &mut b {
+            *subtype = crate::boxes::list_subtype::MATH_CHAR;
             *w = m.width + m.italic;
             *h = m.height;
             *d = m.depth;
@@ -998,6 +1021,45 @@ impl Engine {
         }
     }
 
+    /// mlist.c `get_delim_box`: the `make_extensible` callback may build the
+    /// box (it receives the delimiter's attribute list); no result means the
+    /// default construction, and anything but a box is a fatal error.
+    pub(crate) fn get_delim_box(
+        &mut self,
+        fnt: FontId,
+        chr: u32,
+        v: i32,
+        min_overlap: i32,
+        horizontal: bool,
+        att: crate::boxes::Attr,
+    ) -> Node {
+        use crate::lua_callbacks::{Cb, CbArg, CbRet};
+        if self.is_luamath() && self.cb_defined(Cb::MakeExtensible) {
+            let att_list = self.lua_attr_handle(att);
+            let args = vec![
+                CbArg::Int(i64::from(fnt)),
+                CbArg::Int(i64::from(chr)),
+                CbArg::Int(i64::from(v)),
+                CbArg::Int(i64::from(min_overlap)),
+                CbArg::Bool(horizontal),
+                if att_list == 0 { CbArg::Nil } else { CbArg::Node(att_list) },
+            ];
+            if let Some(CbRet::Node(h)) = self.lua_cb_call(Cb::MakeExtensible, "make_extensible", args).as_deref().and_then(|r| r.first()) {
+                let h = u32::try_from(*h).unwrap_or(0);
+                if matches!(self.lua_nodes.id(h), crate::lua_node::HLIST | crate::lua_node::VLIST) {
+                    if let Some(b @ Node::Box { .. }) = self.lua_nodes_to_engine(i64::from(h)).into_iter().next() {
+                        return b;
+                    }
+                }
+                self.fatal_error(&format!(
+                    "error:  (fonts): invalid extensible character {chr} created for font {fnt}, [h|v]list expected"
+                ));
+                return null_box(HBOX);
+            }
+        }
+        self.make_extensible(fnt, chr, v, min_overlap, horizontal, att)
+    }
+
     /// luatex `make_extensible`.
     pub(crate) fn make_extensible(
         &mut self,
@@ -1006,8 +1068,12 @@ impl Engine {
         v: i32,
         min_overlap: i32,
         horizontal: bool,
+        att: crate::boxes::Attr,
     ) -> Node {
-        let mut b = null_box(if horizontal { HBOX } else { VBOX });
+        let mut b = with_list_subtype(
+            null_box(if horizontal { HBOX } else { VBOX }),
+            if horizontal { crate::boxes::list_subtype::H_EXTENSIBLE } else { crate::boxes::list_subtype::V_EXTENSIBLE },
+        );
         let mut min_overlap = min_overlap.max(0);
         let mut ext = self.mc_variants(fnt, chr, horizontal).unwrap_or_default();
         let mut num_extenders = 0i32;
@@ -1018,6 +1084,7 @@ impl Engine {
                 if let Node::Box { w, .. } = &mut b {
                     *w = self.eqtb.dim_params[crate::prim::DimParam::NullDelimiterSpace.idx() as usize];
                 }
+                stamp_attr(&mut b, att);
                 return b;
             }
             if cur.extender > 0 {
@@ -1116,6 +1183,7 @@ impl Engine {
                 *h = b_max;
             }
         }
+        stamp_attr(&mut b, att);
         b
     }
 
@@ -1132,15 +1200,17 @@ impl Engine {
         cur_style: GStyle,
         shift: bool,
         same_in: u8,
+        att: crate::boxes::Attr,
     ) -> (Node, DelimInfo) {
         let mut info = DelimInfo::default();
         if let Some((0, 0, 0, 0)) = d {
-            let mut b = null_box(HBOX);
+            let mut b = with_list_subtype(null_box(HBOX), crate::boxes::list_subtype::V_DELIMITER);
             if !flat {
                 if let Node::Box { w, .. } = &mut b {
                     *w = self.eqtb.dim_params[crate::prim::DimParam::NullDelimiterSpace.idx() as usize];
                 }
             }
+            stamp_attr(&mut b, att);
             return (b, info);
         }
         let mut f: FontId = 0;
@@ -1212,7 +1282,7 @@ impl Engine {
             if variants.is_some() {
                 parts_done = true;
                 let ov = self.mparam_err(MATH_PARAM_CONNECTOR_OVERLAP_MIN, cur_style);
-                b = self.make_extensible(f, c, v, ov, flat);
+                b = self.get_delim_box(f, c, v, ov, flat, att);
                 let m = self.mc_metrics(f, x_start);
                 info.delta = if self.assume_new_math(f) { m.vert_italic } else { m.italic };
                 info.stack = true;
@@ -1221,16 +1291,18 @@ impl Engine {
                     info.same = emas;
                 }
                 b = self.char_box(f, c);
+                stamp_attr(&mut b, att);
                 info.delta = self.mc_metrics(f, c).italic;
                 info.stack = false;
             }
         } else {
-            b = null_box(HBOX);
+            b = with_list_subtype(null_box(HBOX), if flat { crate::boxes::list_subtype::H_DELIMITER } else { crate::boxes::list_subtype::V_DELIMITER });
             if !flat {
                 if let Node::Box { w, .. } = &mut b {
                     *w = self.eqtb.dim_params[crate::prim::DimParam::NullDelimiterSpace.idx() as usize];
                 }
             }
+            stamp_attr(&mut b, att);
             info.stack = false;
         }
         if !flat {

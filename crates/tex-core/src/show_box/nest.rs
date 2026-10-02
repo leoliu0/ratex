@@ -5,8 +5,8 @@
 //! `math_lists`. This module puts them back.
 
 use super::items::{
-    empty_noad, empty_noad_kind, scripts_allowed, set_op_subtype, view_list, Field,
-    FracItem, Item, NoadKind, Unset,
+    empty_noad, empty_noad_kind, scripts_allowed, set_field, set_op_subtype, set_pending_field, view_list,
+    Field, FracItem, Item, NoadKind, PendingField, Unset,
 };
 use crate::align::{AlignView, Cell, NOALIGN_SPAN};
 use crate::boxes::{glue_subtype, glue_sums, Glue, Node};
@@ -481,6 +481,23 @@ impl Engine {
                             if let Some(p) = pending_noad(kind, &parent.items) {
                                 parent.items.push(p);
                             }
+                            if let ScanKind::Radical { degree: Some(d), .. } = kind {
+                                if let Some(tail) = parent.items.last_mut() {
+                                    set_field(tail, PendingField::Degree, Field::List(view_list(d)));
+                                }
+                            }
+                            if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                                let which = match kind {
+                                    ScanKind::Script { sup: true, .. } => Some(PendingField::Sup),
+                                    ScanKind::Script { sup: false, .. } => Some(PendingField::Sub),
+                                    ScanKind::Degree { .. } => Some(PendingField::Degree),
+                                    ScanKind::Choice | ScanKind::Denominator(_) => None,
+                                    _ => Some(PendingField::Nucleus),
+                                };
+                                if let (Some(which), Some(tail)) = (which, parent.items.last_mut()) {
+                                    set_pending_field(tail, which);
+                                }
+                            }
                         }
                     }
                     None => {}
@@ -489,6 +506,11 @@ impl Engine {
                 for (k, g) in groups.iter().enumerate() {
                     if let Some(parent) = chain.last_mut() {
                         parent.items.push(empty_noad(0));
+                        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+                            if let Some(tail) = parent.items.last_mut() {
+                                set_pending_field(tail, PendingField::Nucleus);
+                            }
+                        }
                     }
                     chain.push(MathLevel {
                         mode: Mode::Math,
@@ -544,15 +566,24 @@ fn pending_noad<'a>(kind: &ScanKind, parent: &[Item<'a>]) -> Option<Item<'a>> {
             subtype,
             width,
             options,
+            ..
         } => Some(empty_noad_kind(NoadKind::Radical {
             subtype: *subtype,
             delim: *delim,
             width: *width,
             options: *options,
         })),
-        // the radical noad is already in the parent; its degree is what
-        // this level is scanning
-        ScanKind::Degree { .. } => None,
+        // `\Uroot`: the radical noad is appended before its degree is scanned
+        ScanKind::Degree {
+            delim,
+            width,
+            options,
+        } => Some(empty_noad_kind(NoadKind::Radical {
+            subtype: 2,
+            delim: *delim,
+            width: *width,
+            options: *options,
+        })),
         ScanKind::Class(class) => Some(empty_noad(*class)),
         ScanKind::Over => Some(empty_noad_kind(NoadKind::Over)),
         ScanKind::Under => Some(empty_noad_kind(NoadKind::Under)),

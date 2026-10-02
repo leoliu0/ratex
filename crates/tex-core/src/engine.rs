@@ -614,7 +614,7 @@ pub struct Engine {
     pub(crate) math_diagnostic_depth: usize,
     /// luatex `cur_f`/`cur_c` of `fetch` (LuaTeX math conversion)
     pub(crate) lm_cur_f: crate::tfm::FontId,
-    pub(crate) reported_missing_math_atoms: crate::FxHashSet<(u64, u16, u8)>,
+    pub(crate) reported_missing_math_atoms: crate::FxHashSet<(u32, u16, u8)>,
     pub(crate) token_vec_pool: Vec<Vec<crate::token::Token>>,
     /// The previous line buffer of a file source, reused for the next line.
     pub(crate) spare_line_buf: Vec<u8>,

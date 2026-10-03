@@ -165,3 +165,37 @@ fn bmp_pictures_have_xetex_sizes() {
         ]
     );
 }
+
+/// xdvipdfmx imports an included page's objects unchanged (pdf_import_object):
+/// the Type 1 font of `multi.pdf` keeps its own /Widths, /ToUnicode and
+/// descriptor and gets no /Encoding, as in the TL `xdvipdfmx` output
+/// (`pdffonts`: `Builtin`). pdfTeX's copyFont would replace it by the map's
+/// program with a /Differences encoding.
+#[test]
+fn included_pdf_fonts_are_copied_unchanged() {
+    let dir = format!("{}/tests/fixtures/xetex_pic", env!("CARGO_MANIFEST_DIR"));
+    let mut eng = Engine::new_with_kind(EngineKind::XeTeX, true);
+    eng.init_primitives();
+    eng.add_nullfont();
+    eng.set_interaction_mode(InteractionMode::Nonstop);
+    let src = format!(
+        r"\catcode`\{{=1 \catcode`\}}=2
+\pdfpagewidth=300pt \pdfpageheight=200pt
+\shipout\hbox{{\XeTeXpdffile {dir}/multi.pdf }}
+\end"
+    );
+    eng.input.push_file("test.tex".into(), src.into_bytes());
+    eng.run();
+    assert_eq!(eng.error_count, 0, "errors: {:?}, term: {}", eng.diagnostics, eng.term);
+    let bytes = tex_core::driver::finish_pdf(&mut eng, false).unwrap();
+    let pdf = lopdf::Document::load_mem(&bytes).unwrap();
+    let font = pdf
+        .objects
+        .values()
+        .filter_map(|object| object.as_dict().ok())
+        .find(|dict| dict.get(b"Type").and_then(|value| value.as_name()).ok() == Some(&b"Font"[..]))
+        .expect("an included font");
+    assert_eq!(font.get(b"BaseFont").unwrap().as_name().unwrap(), b"RMBTOL+CMR10");
+    assert!(font.get(b"Encoding").is_err());
+    assert!(font.get(b"ToUnicode").is_ok());
+}

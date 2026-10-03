@@ -984,6 +984,10 @@ impl Engine {
         if self.lua_res_mode() {
             // getfontmap: the callbacks read the map and the font's entry
             self.lua_res_init_font(f);
+        } else if self.engine_kind == crate::engine::EngineKind::XeTeX {
+            if let Some(font) = self.eqtb.fonts.get_mut(usize::from(f)) {
+                self.font_loader.refresh_map_entry(font);
+            }
         }
         let blink = self
             .eqtb

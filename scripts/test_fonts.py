@@ -990,7 +990,7 @@ def validate_pdf_font_embedding(pdf_path: Path, case: dict[str, Any]) -> list[st
                                         if ord(ch) > 0xFFFF:
                                             resolved_astral_chars.add(ch)
 
-                                if gid == 0 and uni_text and uni_text.strip() and not in_actual_text:
+                                if gid == 0 and uni_text and uni_text.strip() and not in_actual_text and not case.get("expect_missing_glyphs"):
                                     errors.append(
                                         f"Font {base_font} in {container_label}: character {repr(uni_text)} "
                                         f"(code 0x{code:04X}) resolved to GID 0 (.notdef missing glyph)"
@@ -1049,7 +1049,7 @@ def validate_pdf_font_embedding(pdf_path: Path, case: dict[str, Any]) -> list[st
                                         if ord(ch) > 0xFFFF:
                                             resolved_astral_chars.add(ch)
 
-                                if cid == 0 and uni_text and uni_text.strip() and not in_actual_text:
+                                if cid == 0 and uni_text and uni_text.strip() and not in_actual_text and not case.get("expect_missing_glyphs"):
                                     errors.append(
                                         f"Font {base_font} in {container_label}: character {repr(uni_text)} "
                                         f"(code 0x{code:04X}) resolved to CID 0 (.notdef missing glyph)"

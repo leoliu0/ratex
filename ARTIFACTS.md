@@ -131,6 +131,11 @@ The full workspace suite includes the archive-index checks. The release
 workflow also executes an extracted archive and the native installers on each
 supported operating system.
 
+The font suite's deliberate missing-glyph fixture sets `expect_missing_glyphs`:
+TeX Live itself emits `.notdef` for these characters. This exempts only that
+resolution check; the expected warning, font-program bounds, text and render
+checks remain required. Other fixtures still reject unexpected `.notdef`.
+
 ## Corpus and benchmark artifacts
 
 ### Source acquisition

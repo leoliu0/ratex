@@ -248,3 +248,20 @@ fn tfm_annotation_metrics_use_the_driver_rounding() {
         .iter().map(|value| value.as_float().unwrap()).collect();
     assert_eq!(rect, [72.001, 35.860, 205.202, 47.552]);
 }
+
+#[test]
+fn mapline_replaces_the_default_program_and_rejects_pfa() {
+    use std::path::Path;
+    let pfb = tex_kpse::get_embedded_package("cmr10.pfb").unwrap();
+    let pfa = tex_core::pdf_fonts::parse_type1(&pfb).data;
+    let fs = tex_kpse::fs::MemoryFs::new(Path::new("/project"), 0).unwrap();
+    fs.insert(Path::new("probe.pfa"), pfa).unwrap();
+    let _scope = fs.enter();
+    let (mut eng, _) = ship(
+        r"\catcode`\{=1 \catcode`\}=2
+\font\a=cmr10 at10pt \a
+\shipout\hbox{\special{pdf:mapline cmr10 CMR10 <probe.pfa}ABC}
+\end"
+    );
+    assert!(tex_core::driver::finish_pdf(&mut eng, false).is_err());
+}

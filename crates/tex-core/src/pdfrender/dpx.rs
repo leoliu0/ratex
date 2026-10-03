@@ -1095,14 +1095,28 @@ impl<'a> RenderCtx<'a> {
                 self.eng.dpx.bgcolor = Some(c);
                 Ok(())
             }
-            "fontmapline" | "fontmapfile" => {
-                let rest = String::from_utf8_lossy(&p.s[p.pos..]).into_owned();
-                let is_file = cmd == "fontmapfile";
-                self.eng.process_map_item(rest.trim(), is_file);
-                Ok(())
-            }
+            "fontmapline" | "fontmapfile" => self.dpx_map_item(p, cmd == "fontmapfile"),
             _ => Err(format!("unknown x: special {cmd}")),
         }
+    }
+
+    /// `spc_handler_pdfm_mapline/mapfile` and `spc_handler_xtx_fontmapline/fontmapfile`:
+    /// unprefixed entries replace, unlike pdfTeX's default duplicate-ignore mode.
+    pub(super) fn dpx_map_item(&mut self, p: &mut Parser, is_file: bool) -> Result<(), String> {
+        let rest = std::str::from_utf8(&p.s[p.pos..])
+            .map_err(|_| "Invalid fontmap item.".to_string())?
+            .trim();
+        if rest.starts_with(['+', '-']) {
+            self.eng.process_map_item(rest, is_file);
+        } else if !rest.is_empty() {
+            let mut item = String::with_capacity(rest.len() + 1);
+            item.push('=');
+            item.push_str(rest);
+            self.eng.process_map_item(&item, is_file);
+        } else if !is_file {
+            return Err("Empty mapline special?".to_string());
+        }
+        Ok(())
     }
 
     /// `spc_handler_xtx_do_transform`: `cm` about the current point.

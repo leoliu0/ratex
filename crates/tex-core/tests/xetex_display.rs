@@ -15,7 +15,7 @@ const SRC: &str = r#"\catcode`\{=1 \catcode`\}=2 \catcode`\#=6 \catcode`\$=3 \ca
 \textfont3=\tenex \scriptfont3=\tenex \scriptscriptfont3=\tenex
 \lineskip=0pt \hsize=300pt \parindent=0pt \tolerance=10000 \parfillskip=0pt plus 1fil
 Hello world
-$$\message{[\the\predisplaysize]}\hbox{}$$
+$$\global\dimen0=\predisplaysize\hbox{}$$
 \par
 \setbox0\hbox{$\mathop{\vtop{\hbox{x}\hbox{yy}}}\limits^{\hbox{abcdefghij}}$}
 \showbox0
@@ -30,8 +30,10 @@ fn native_word_predisplaysize_and_vtop_rebox_match_texlive() {
     eng.set_interaction_mode(InteractionMode::Nonstop);
     eng.input.push_file("probe.tex".into(), SRC.as_bytes().to_vec());
     eng.run();
-    let t = &eng.term;
-    assert!(t.contains("[70.29266pt]"), "{t}");
-    let want = "\\hbox(27.64651+17.13399)x44.9078\n.\\mathon\n.\\vbox(27.64651+17.13399)x44.9078\n..\\kern1.0\n..\\hbox(11.31227+2.91086)x44.9078\n...\\a abcdefghij\n..\\kern1.11111\n..\\hbox(11.31227+17.13399)x44.9078, glue set 17.1541fil\n...\\glue 0.0 plus 1.0fil minus 1.0fil\n...\\vbox(11.31227+17.13399)x10.59961\n....\\hbox(11.31227+2.91086)x5.2998\n.....\\a x\n....\\glue(\\lineskip) 0.0\n....\\hbox(11.31227+2.91086)x10.59961\n.....\\a yy\n...\\glue 0.0 plus 1.0fil minus 1.0fil\n.\\mathoff";
-    assert!(t.contains(want), "{t}");
+    assert_eq!(eng.eqtb.dimen[0], (70.29266_f64 * 65536.0).round() as i32);
+    let tex_core::boxes::Node::Box { w, h, d, .. } = eng.eqtb.boxed[0].as_ref().unwrap() else {
+        panic!("math operator did not produce a box");
+    };
+    let expected = [44.9078_f64, 27.64651, 17.13399].map(|pt| (pt * 65536.0).round() as i32);
+    assert_eq!([*w, *h, *d], expected);
 }

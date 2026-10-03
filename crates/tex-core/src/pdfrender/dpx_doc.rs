@@ -271,11 +271,7 @@ impl<'a> RenderCtx<'a> {
             }
             "stream" => self.dpx_stream(p, env, false),
             "fstream" => self.dpx_stream(p, env, true),
-            "mapline" | "mapfile" => {
-                let rest = String::from_utf8_lossy(&p.s[p.pos..]).into_owned();
-                self.eng.process_map_item(rest.trim(), cmd == "mapfile");
-                Ok(())
-            }
+            "mapline" | "mapfile" => self.dpx_map_item(p, cmd == "mapfile"),
             "bcontent" => {
                 self.dpx_bcontent(env);
                 Ok(())

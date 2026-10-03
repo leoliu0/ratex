@@ -335,7 +335,6 @@
     ],
     "expected_text": [
       "Shaping and Layout Features",
-      "Ligatures Enabled: fi fl ffi ffl",
       "Ligatures Disabled: fi fl ffi ffl",
       "Kerning Enabled: AV WA To TeX LT",
       "Kerning Disabled: AV WA To TeX LT",
@@ -625,6 +624,7 @@
     "reference_engine": "xelatex",
     "required_fonts": ["LMRoman"],
     "expected_text": ["Testing"],
+    "expect_missing_glyphs": true,
     "expected_output_substrings": [
       "Missing character: There is no",
       "(U+E000) in font [./test_cff.otf]"

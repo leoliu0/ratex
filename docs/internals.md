@@ -40,6 +40,14 @@ with literal PDF strings and truncating TJ adjustments. XeTeX embeds PFB
 programs as Type1C, shares map encodings and their Unicode CMaps, and rejects
 PFA containers without guessing from encrypted bytes. pdfTeX and LuaTeX keep
 their existing font writers.
+XeTeX resolves mapped TFM programs and encodings at first PDF font use,
+after preceding map specials. Unprefixed `pdf:mapline`/`mapfile` and
+`x:fontmapline`/`fontmapfile` replace entries, as in xdvipdfmx.
+
+XeTeX copies included PDF fonts unchanged instead of applying pdfTeX's
+font-map replacement. Native-word widths contribute to `\predisplaysize`;
+vertical-top math nuclei are reboxed as vertical lists, preserving their
+baseline and limit placement.
 
 ## Executables and dispatch
 

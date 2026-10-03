@@ -295,23 +295,56 @@ impl FontLoader {
         self.ensure_map();
         let map_entry = self.map.get(name);
         if let Some(me) = &map_entry {
-            font.map_fontname = (!me.fontname.is_empty()).then(|| me.fontname.clone());
-            if let Some(enc) = &me.enc_file {
-                font.enc_name = Some(enc.clone());
-                font.encoding = self.load_enc(enc);
-            } else if let Some(en) = &me.enc_name {
-                // no explicit vector file: try the named encoding as
-                // <name>.enc (e.g. TeXBase1Encoding alongside <8r.enc)
-                if let Some(e) = self.load_enc(en) {
-                    font.enc_name = Some(en.clone());
-                    font.encoding = Some(e);
-                }
-            }
-            if let Some(pfb) = &me.pfb {
-                font.type1_path = Some(pfb.clone());
-            }
+            self.set_map_entry(font, me);
         }
         map_entry
+    }
+
+    /// xdvipdfmx resolves a TFM's map at first use, after preceding map specials.
+    /// Keep unchanged shared metrics intact; detach only a changed map binding.
+    pub(crate) fn refresh_map_entry(&mut self, font: &mut Rc<Font>) {
+        if font.native.is_some() || font.lua.is_some() {
+            return;
+        }
+        self.ensure_map();
+        let entry = self.map.get(&font.tfm_name);
+        let name = entry.as_ref().filter(|entry| !entry.fontname.is_empty())
+            .map(|entry| entry.fontname.as_str());
+        let encoding = entry.as_ref()
+            .and_then(|entry| entry.enc_file.as_deref().or(entry.enc_name.as_deref()));
+        let program = entry.as_ref().and_then(|entry| entry.pfb.as_deref());
+        if font.map_fontname.as_deref() == name
+            && font.enc_name.as_deref() == encoding
+            && font.type1_path.as_deref() == program
+        {
+            return;
+        }
+        let font = Rc::make_mut(font);
+        font.map_fontname = None;
+        font.enc_name = None;
+        font.encoding = None;
+        font.type1_path = None;
+        if let Some(entry) = entry {
+            self.set_map_entry(font, &entry);
+        }
+    }
+
+    fn set_map_entry(&mut self, font: &mut Font, entry: &MapEntry) {
+        font.map_fontname = (!entry.fontname.is_empty()).then(|| entry.fontname.clone());
+        if let Some(enc) = &entry.enc_file {
+            font.enc_name = Some(enc.clone());
+            font.encoding = self.load_enc(enc);
+        } else if let Some(en) = &entry.enc_name {
+            // no explicit vector file: try the named encoding as
+            // <name>.enc (e.g. TeXBase1Encoding alongside <8r.enc)
+            if let Some(e) = self.load_enc(en) {
+                font.enc_name = Some(en.clone());
+                font.encoding = Some(e);
+            }
+        }
+        if let Some(pfb) = &entry.pfb {
+            font.type1_path = Some(pfb.clone());
+        }
     }
 
     pub fn load_tfm(&mut self, name: &str, at: i32) -> Option<Rc<Font>> {

@@ -11,6 +11,7 @@ use crate::prim::{DimParam, IntParam};
 pub(crate) mod dpx;
 mod dpx_doc;
 mod dpx_page;
+mod dpx_text;
 mod lr;
 mod lua_glyph;
 pub(crate) use lua_glyph::with_vf_packet;
@@ -391,6 +392,8 @@ pub struct RenderCtx<'a> {
     pub xform_list: Vec<i32>,
     /// XeTeX: page-local state of the xdvipdfmx special interpreter.
     dpx: dpx::DpxPage,
+    /// XeTeX: the pdfdev.c text state of native glyph runs.
+    dpxt: dpx_text::DpxText,
 }
 
 /// A shipped \pdfxform box: its content stream and resources.
@@ -558,6 +561,7 @@ impl Engine {
             ximage_list: Vec::new(),
             xform_list: Vec::new(),
             dpx: dpx::DpxPage::new(),
+            dpxt: dpx_text::DpxText::new(),
         }
     }
 
@@ -1128,6 +1132,11 @@ impl<'a> RenderCtx<'a> {
 
     /// ship a vbox's vertical list with its top edge at y (`vlist_out`)
     pub fn ship_vlist(&mut self, list: &NodeList, x: i64, y: i64, sign: u8, order: u8, set: f64) {
+        let saved_dvi = if self.cur_s >= 0 && self.eng.engine_kind == crate::engine::EngineKind::XeTeX {
+            Some(self.dpx.cursor)
+        } else {
+            None
+        };
         self.cur_s += 1;
         if self.cur_s > 0 && self.eng.engine_kind == crate::engine::EngineKind::XeTeX {
             self.dpx_mark_depth(self.cur_s);
@@ -1135,6 +1144,9 @@ impl<'a> RenderCtx<'a> {
         self.vlist_nodes(list, x, y, sign, order, set);
         if self.cur_s > 0 && self.eng.engine_kind == crate::engine::EngineKind::XeTeX {
             self.dpx_mark_depth(self.cur_s - 1);
+            if let Some(cursor) = saved_dvi {
+                self.dpx.cursor = cursor;
+            }
         }
         self.cur_s -= 1;
     }
@@ -1277,10 +1289,17 @@ impl<'a> RenderCtx<'a> {
                     cur_y += *k as i64;
                 }
                 Node::Penalty(_, _) | Node::Mark { .. } => {}
+                Node::Whatsit(w @ crate::boxes::WhatIt::XePic { h, d, .. }, _) => {
+                    // xetex.web resets cur_v to the saved DVI position,
+                    // not to the picture's nominal bottom edge.
+                    let saved_v = self.dpx.cursor.tex.1;
+                    cur_y += *h as i64;
+                    self.emit_whatsit_sp(w, x, cur_y);
+                    cur_y = saved_v + *d as i64;
+                }
                 Node::Whatsit(
                     w @ (crate::boxes::WhatIt::PdfRefXImage { h, d, .. }
-                    | crate::boxes::WhatIt::PdfRefXForm { h, d, .. }
-                    | crate::boxes::WhatIt::XePic { h, d, .. }),
+                    | crate::boxes::WhatIt::PdfRefXForm { h, d, .. }),
                 _) => {
                     cur_y += *h as i64;
                     self.emit_whatsit_sp(w, x, cur_y);
@@ -1333,6 +1352,11 @@ impl<'a> RenderCtx<'a> {
     /// running link open at this box nesting level gets a new annotation
     /// over this box (pdfTeX "Create link annotations for the current hbox").
     pub fn ship_hlist(&mut self, list: &NodeList, x: i64, y: i64, sign: u8, order: u8, set: f64) {
+        let saved_dvi = if self.cur_s >= 0 && self.eng.engine_kind == crate::engine::EngineKind::XeTeX {
+            Some(self.dpx.cursor)
+        } else {
+            None
+        };
         self.cur_s += 1;
         if self.cur_s > 0 && self.eng.engine_kind == crate::engine::EngineKind::XeTeX {
             self.dpx_mark_depth(self.cur_s);
@@ -1352,6 +1376,9 @@ impl<'a> RenderCtx<'a> {
         (self.left_edge_sp, self.base_line_sp) = saved;
         if self.cur_s > 0 && self.eng.engine_kind == crate::engine::EngineKind::XeTeX {
             self.dpx_mark_depth(self.cur_s - 1);
+            if let Some(cursor) = saved_dvi {
+                self.dpx.cursor = cursor;
+            }
         }
         self.cur_s -= 1;
     }
@@ -1411,6 +1438,7 @@ impl<'a> RenderCtx<'a> {
                     ..
                 } => {
                     self.emit_native_glyph_run_sp(run, *start, *end, cur_x, y);
+                    self.dpx_advance_h(i64::from(*width), i64::from(*width));
                     cur_x += *width as i64;
                 }
                 Node::Glue(g, _) => {
@@ -1449,6 +1477,11 @@ impl<'a> RenderCtx<'a> {
                     };
                     let (rw, rh, rd) = (*width as i64, h_sp, d_sp);
                     self.place_rule((*width, *height, *depth, *subtype, *index), cur_x, y + rd, rw, rh + rd);
+                    if self.eng.engine_kind == crate::engine::EngineKind::XeTeX
+                        && rw > 0 && rh + rd > 0 && *subtype != crate::boxes::RULE_EMPTY
+                    {
+                        self.dpx_advance_h(rw, rw);
+                    }
                     cur_x += rw;
                 }
                 Node::Box {
@@ -1523,6 +1556,7 @@ impl<'a> RenderCtx<'a> {
                                 ..
                             } => {
                                 self.emit_native_glyph_run_sp(run, *start, *end, cur_x, y);
+                                self.dpx_advance_h(i64::from(*width), i64::from(*width));
                                 cur_x += *width as i64;
                             }
                             other => {
@@ -1842,6 +1876,13 @@ impl<'a> RenderCtx<'a> {
     }
     /// pdfTeX `pdf_end_text`.
     fn end_text(&mut self) {
+        if self.dpxt.in_text() {
+            self.dpxt_graphics_mode();
+        }
+        self.end_pdftex_text();
+    }
+    /// The pdfTeX-style text object only (the dpx text engine keeps its own).
+    fn end_pdftex_text(&mut self) {
         if self.doing_text {
             self.end_string_nl();
             self.content.push_str("ET\n");
@@ -2193,19 +2234,23 @@ impl<'a> RenderCtx<'a> {
         if at_size_sp <= 0 {
             return; // nullfont: nothing to draw
         }
-        if self.eng.engine_kind == crate::engine::EngineKind::XeTeX && self.dpx_tracking() {
-            let adv = self.font_char_advance_sp(f, c);
-            let (h, d) = self
-                .eng
-                .eqtb
-                .fonts
-                .get(f as usize)
-                .map_or((0, 0), |ff| (i64::from(ff.char_height(c)), i64::from(ff.char_depth(c))));
-            self.dpx_track_box(x_sp, v_sp, adv, h, d);
-        }
-        // inside pdf:bcontent positions are relative to its origin
+        self.eng.ensure_vf_bases(f);
+        let virtual_font = self.eng.font_loader.vf_bases.contains_key(&f);
         let (x_sp, v_sp) = if self.eng.engine_kind == crate::engine::EngineKind::XeTeX {
-            self.dpx_compensate(x_sp, v_sp)
+            if self.dpxt.in_text() {
+                self.dpxt_graphics_mode();
+            }
+            let Some((advance, height, depth)) = self.dpx_tfm_metrics(f, c) else { return };
+            let (x, v) = self.dpx_sync(x_sp, v_sp);
+            self.dpx_advance_h(self.font_char_advance_sp(f, c), advance);
+            if virtual_font {
+                // VF packets have their own push/pop; track their physical
+                // glyphs rather than the virtual character's metric box.
+                (x, v)
+            } else {
+                self.dpx_track_box(x, v, advance, height, depth);
+                self.dpx_compensate(x, v)
+            }
         } else {
             (x_sp, v_sp)
         };
@@ -2219,9 +2264,7 @@ impl<'a> RenderCtx<'a> {
         // fonts (kerns included as offsets). The VF font itself is never
         // registered as a page resource. Offsets advance on the exact sp
         // raster, as pdfTeX's do_vf_packet does.
-        // pdftex.web `output_one_char`: `do_vf` on the first character
-        self.eng.ensure_vf_bases(f);
-        if self.eng.font_loader.vf_bases.contains_key(&f) {
+        if virtual_font {
             let font_name = |ctx: &Self| {
                 ctx.eng.eqtb.fonts.get(f as usize).map(|ff| ff.tfm_name.clone()).unwrap_or_default()
             };
@@ -2233,12 +2276,25 @@ impl<'a> RenderCtx<'a> {
                 ));
                 return;
             };
+            let saved_dvi = if self.eng.engine_kind == crate::engine::EngineKind::XeTeX {
+                let saved = self.dpx.cursor;
+                self.dpx.cursor = dpx::DviCursor { tex: (x_sp, v_sp), reader: (x_sp, v_sp) };
+                Some(saved)
+            } else {
+                None
+            };
             let first_glyph = steps.iter().position(|st| st.rule.is_none());
             for (step_idx, st) in steps.iter().enumerate() {
                 if let Some((wd, ht)) = st.rule {
                     // pdf_set_rule(cur_h, cur_v, wd, ht): stands on cur_v
                     let (x, v) = (x_sp + st.dx as i64, v_sp + st.dy as i64);
-                    self.emit_rect_sp(x, v, wd as i64, ht as i64);
+                    if self.eng.engine_kind == crate::engine::EngineKind::XeTeX {
+                        let (x, v) = self.dpx_sync(x, v);
+                        self.dpx_track_box(x, v, i64::from(wd), i64::from(ht), 0);
+                        self.dpx_rule(x, v, i64::from(wd), i64::from(ht));
+                    } else {
+                        self.emit_rect_sp(x, v, wd as i64, ht as i64);
+                    }
                     continue;
                 }
                 let base = self.eng.font_loader.vf_bases.get(&f).and_then(|bases| bases.get(st.base as usize));
@@ -2266,6 +2322,9 @@ impl<'a> RenderCtx<'a> {
                     ratio,
                     text,
                 );
+            }
+            if let Some(cursor) = saved_dvi {
+                self.dpx.cursor = cursor;
             }
             return;
         }
@@ -2471,6 +2530,8 @@ impl<'a> RenderCtx<'a> {
         adv_sp
     }
 
+
+    /// A native word or glyph node: the xdvipdfmx text engine (`dpx_text.rs`).
     fn emit_native_glyph_run_sp(
         &mut self,
         run: &std::rc::Rc<crate::native_layout::NativeRun>,
@@ -2479,115 +2540,7 @@ impl<'a> RenderCtx<'a> {
         cur_x: i64,
         y: i64,
     ) {
-        if start >= end || start >= run.glyphs.len() {
-            return;
-        }
-        let bound_end = end.min(run.glyphs.len());
-        let fid = run.font;
-        let at_size_sp = self
-            .eng
-            .eqtb
-            .fonts
-            .get(fid as usize)
-            .map(|ff| ff.at_size as i64)
-            .unwrap_or(0);
-        if at_size_sp <= 0 {
-            return;
-        }
-        let (_, m) = divide_scaled(at_size_sp, ONE_HUNDRED_BP_SP, 6);
-        let ratio = self.font_ratio(fid);
-        let x_bp = sp_to_bp(cur_x);
-        let y_bp = self.y_pdf(sp_to_bp(y));
-
-        self.display_list
-            .push(crate::boxes::DisplayItem::NativeGlyphRun {
-                run: run.clone(),
-                start,
-                end: bound_end,
-                x_bp,
-                y_bp,
-                tag: None,
-                span: None,
-            });
-        let mut pen_x = cur_x;
-        let mut idx = start;
-        while idx < bound_end {
-            let c_start = run.glyphs[idx].cluster_start;
-            let c_end = run.glyphs[idx].cluster_end;
-            let mut j = idx + 1;
-            while j < bound_end
-                && run.glyphs[j].cluster_start == c_start
-                && run.glyphs[j].cluster_end == c_end
-            {
-                j += 1;
-            }
-            let cluster_glyph_count = j - idx;
-            let extraction = if c_start == c_end && run.glyphs.len() == 1 {
-                // a single-glyph node (XeTeX `glyph_node`) reports its own text
-                &run.text[..]
-            } else if (c_start as usize) < run.text.len()
-                && (c_end as usize) <= run.text.len()
-                && c_start <= c_end
-            {
-                &run.text[c_start as usize..c_end as usize]
-            } else {
-                ""
-            };
-
-            if cluster_glyph_count > 1 {
-                self.end_string();
-                let mut actual_hex = String::from("FEFF");
-                for u in extraction.encode_utf16() {
-                    use std::fmt::Write;
-                    let _ = write!(&mut actual_hex, "{:04X}", u);
-                }
-                self.content.push_str("/Span << /ActualText <");
-                self.content.push_str(&actual_hex);
-                self.content.push_str("> >> BDC\n");
-            }
-
-            for k in idx..j {
-                let g = &run.glyphs[k];
-                let txt = if cluster_glyph_count == 1 {
-                    extraction
-                } else if k == idx {
-                    extraction
-                } else {
-                    ""
-                };
-                let (binding_idx, code) =
-                    self.eng
-                        .pdf_doc
-                        .get_or_alloc_native_code(fid as usize, g.glyph_id, txt);
-                let glyph_target_x = pen_x + g.x_offset as i64;
-                let glyph_target_y = y - g.y_offset as i64;
-
-                self.begin_hex_string(glyph_target_x, glyph_target_y, fid, binding_idx, ratio);
-                use std::fmt::Write;
-                let _ = write!(&mut self.content, "{:04X}", code);
-
-                let nom_sp = self.native_glyph_nom_advance_sp(fid, g.glyph_id);
-                let (_, nom_out) = if self.cur_tm_a == 0 {
-                    divide_scaled(nom_sp, m, 4)
-                } else {
-                    let (_, out) = divide_scaled(
-                        round_xn_over_d(nom_sp, 1000, 1000 + self.cur_tm_a as i64),
-                        m,
-                        4,
-                    );
-                    (0, out)
-                };
-                self.delta_h += nom_out;
-                pen_x += g.x_advance as i64;
-            }
-
-            if cluster_glyph_count > 1 {
-                self.end_string();
-                self.content.push_str("EMC\n");
-            }
-
-            idx = j;
-        }
+        self.dpx_native_run(run, start, end, cur_x, y);
     }
 
     /// pdfTeX `pdf_set_rule`: close the text object, then draw inside a
@@ -2670,6 +2623,7 @@ impl<'a> RenderCtx<'a> {
         if self.eng.engine_kind == crate::engine::EngineKind::XeTeX {
             // dvi_rule: only rules with both dimensions positive are set
             if w_sp > 0 && h_sp > 0 && subtype != RULE_EMPTY {
+                let (x_sp, v_down_sp) = self.dpx_sync(x_sp, v_down_sp);
                 self.dpx_track_box(x_sp, v_down_sp, w_sp, h_sp, 0);
                 self.dpx_rule(x_sp, v_down_sp, w_sp, h_sp);
             }
@@ -2936,8 +2890,10 @@ impl<'a> RenderCtx<'a> {
             PdfSnapRefPoint => self.eng.pdf_snap_refpos = (cur_h, cur_v),
             XePic { .. } => {
                 // xetex.web `pic_out`: the node becomes a `pdf:image` special
+                let saved = self.dpx.cursor.tex;
                 let text = crate::xetex_pic::pic_out_text(w);
                 self.handle_special(&text, cur_h, cur_v);
+                self.dpx.cursor.tex = saved;
             }
             PdfRefXForm { obj, d, .. } => {
                 if !self.xform_list.contains(obj) {
@@ -3209,6 +3165,7 @@ impl<'a> RenderCtx<'a> {
     }
     fn handle_special(&mut self, text: &str, cur_h: i64, cur_v: i64) {
         if self.eng.engine_kind == crate::engine::EngineKind::XeTeX {
+            let (cur_h, cur_v) = self.dpx_sync(cur_h, cur_v);
             return self.dpx_special(text, cur_h, cur_v);
         }
         self.handle_special_legacy(text, cur_h, cur_v);

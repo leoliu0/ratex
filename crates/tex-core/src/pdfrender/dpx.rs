@@ -512,6 +512,9 @@ pub(crate) struct Dpx {
     pub paper: Option<(f64, f64)>,
     /// dvipdfmx's `landscape_mode`
     pub landscape: bool,
+    /// xdvipdfmx re-reads TFM fixwords and rounds them with `sqxfw`,
+    /// independently of TeX's truncating `store_scaled`.
+    pub tfm_metrics: crate::FxHashMap<u16, Option<Box<[(i32, i32, i32); 256]>>>,
 }
 
 impl Dpx {
@@ -534,16 +537,62 @@ impl Dpx {
     }
 }
 
+/// XeTeX's cached DVI position and the reader's actual position can differ:
+/// `pic_out` restores the former without emitting a matching DVI movement.
+#[derive(Clone, Copy, Default)]
+pub(super) struct DviCursor {
+    pub tex: (i64, i64),
+    pub reader: (i64, i64),
+}
+
+fn tfm_metrics(data: &[u8], size: i32) -> Option<Box<[(i32, i32, i32); 256]>> {
+    let word = |offset: usize| -> Option<usize> {
+        Some(u16::from_be_bytes(data.get(offset..offset + 2)?.try_into().ok()?) as usize)
+    };
+    let (lh, bc, ec, nw, nh, nd) = (word(2)?, word(4)?, word(6)?, word(8)?, word(10)?, word(12)?);
+    if bc > 256 || ec > 255 || nw == 0 || nh == 0 || nd == 0 {
+        return None;
+    }
+    let count = (ec + 1).saturating_sub(bc);
+    let info = 24 + lh * 4;
+    let widths = info + count * 4;
+    let heights = widths + nw * 4;
+    let depths = heights + nh * 4;
+    data.get(..depths + nd * 4)?;
+    let metric = |table: usize, index: usize, len: usize| -> Option<i32> {
+        if index >= len {
+            return None;
+        }
+        let offset = table + index * 4;
+        let fix = i32::from_be_bytes(data.get(offset..offset + 4)?.try_into().ok()?);
+        // numbers.c `sqxfw`: nearest integer, half away from zero.
+        let product = i64::from(size) * i64::from(fix);
+        let magnitude = (product.abs() + (1 << 19)) >> 20;
+        Some((if product < 0 { -magnitude } else { magnitude }) as i32)
+    };
+    let mut out = Box::new([(0, 0, 0); 256]);
+    for c in bc..bc + count {
+        let p = info + (c - bc) * 4;
+        out[c] = (
+            metric(widths, data[p] as usize, nw)?,
+            metric(heights, (data[p + 1] >> 4) as usize, nh)?,
+            metric(depths, (data[p + 1] & 15) as usize, nd)?,
+        );
+    }
+    Some(out)
+}
+
 /// Page-local state of the interpreter (lives in the `RenderCtx`).
 pub(crate) struct DpxPage {
     pub gs: Vec<Gs>,
     /// `@resources` of the page being built
     pub res: Vec<(String, Obj)>,
+    pub(super) cursor: DviCursor,
 }
 
 impl DpxPage {
     pub(crate) fn new() -> DpxPage {
-        DpxPage { gs: vec![Gs::initial()], res: Vec::new() }
+        DpxPage { gs: vec![Gs::initial()], res: Vec::new(), cursor: DviCursor::default() }
     }
 }
 
@@ -555,6 +604,36 @@ pub(crate) struct Env {
 }
 
 impl<'a> RenderCtx<'a> {
+    /// xetex.web `synch_h`/`synch_v`: emit differences from the engine's
+    /// shadow position, not absolute coordinates to the DVI reader.
+    pub(super) fn dpx_sync(&mut self, h: i64, v: i64) -> (i64, i64) {
+        let c = &mut self.dpx.cursor;
+        c.reader.0 += h - c.tex.0;
+        c.reader.1 += v - c.tex.1;
+        c.tex = (h, v);
+        c.reader
+    }
+
+    pub(super) fn dpx_advance_h(&mut self, tex_width: i64, reader_width: i64) {
+        self.dpx.cursor.tex.0 += tex_width;
+        self.dpx.cursor.reader.0 += reader_width;
+    }
+
+    pub(super) fn dpx_tfm_metrics(&mut self, f: u16, c: u8) -> Option<(i64, i64, i64)> {
+        if !self.eng.dpx.tfm_metrics.contains_key(&f) {
+            let font = self.eng.eqtb.fonts.get(usize::from(f))?;
+            let (name, size) = (font.tfm_name.clone(), font.at_size);
+            let metrics = self.eng.font_loader.read_dependency(&name, tex_kpse::Format::Tfm)
+                .and_then(|data| tfm_metrics(&data, size));
+            if metrics.is_none() {
+                self.eng.error(&format!("Unable to read TFM `{name}` for XeTeX PDF output"));
+            }
+            self.eng.dpx.tfm_metrics.insert(f, metrics);
+        }
+        let &(w, h, d) = self.eng.dpx.tfm_metrics.get(&f)?.as_ref()?.get(usize::from(c))?;
+        Some((i64::from(w), i64::from(h), i64::from(d)))
+    }
+
     // ---------------------------------------------------------- small utils
 
     pub(super) fn dpx_warn(&mut self, message: &str) {

@@ -158,6 +158,13 @@ pub struct PdfDoc {
     pub minor_version: Option<i32>,
     /// pdfTeX `fixed_decimal_digits`: fractional digits of PDF coordinates.
     pub decimal_digits: u32,
+    /// XeTeX native fonts as xdvipdfmx embeds them: glyph metrics per font
+    /// program, the PDF font each TeX font belongs to (`xe_fid_rep`) and the
+    /// glyphs used per PDF font (`xe_use`, keyed by the representative TeX font).
+    pub(crate) xe_metrics: std::collections::HashMap<([u8; 16], u32, bool), std::rc::Rc<crate::dpx_font::NativeMetrics>>,
+    pub(crate) xe_groups: std::collections::HashMap<XeGroupKey, u16>,
+    pub(crate) xe_fid_rep: std::collections::HashMap<u16, u16>,
+    pub(crate) xe_use: std::collections::BTreeMap<u16, std::collections::BTreeSet<u16>>,
     pub native_bindings: std::collections::BTreeMap<usize, Vec<NativeBindingInfo>>,
     pub legacy_bindings: std::collections::BTreeMap<usize, Vec<LegacyBindingInfo>>,
     /// pdfTeX `mag_set`: the magnification frozen by the first page output
@@ -382,6 +389,45 @@ pub struct EmbedFont {
     /// pdfTeX's dictionary of an engine font's own code space (None for
     /// remapped code spaces, which have no pdfTeX counterpart).
     pub pdftex: Option<PdfTexFont>,
+    /// XeTeX native font data (xdvipdfmx Identity-H/V CID font).
+    pub xe: Option<XeFont>,
+}
+
+/// What the writer needs of a XeTeX native font beyond the program.
+pub struct XeFont {
+    pub vertical: bool,
+    pub used: std::collections::BTreeSet<u16>,
+}
+
+/// A PDF font of XeTeX's native text: xdvipdfmx shares one font between
+/// all TeX fonts of the same program, face, direction and synthetic options
+/// (`pdf_insert_native_fontmap_record` key).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct XeGroupKey {
+    pub hash: [u8; 16],
+    pub face_index: u32,
+    pub variations: Vec<(u32, u32)>,
+    pub vertical: bool,
+    pub extend: i32,
+    pub slant: i32,
+    pub embolden: i32,
+}
+
+impl PdfDoc {
+    /// The representative TeX font of `fid`'s PDF font.
+    pub(crate) fn xe_group_rep(&mut self, fid: u16, key: XeGroupKey) -> u16 {
+        if let Some(&rep) = self.xe_fid_rep.get(&fid) {
+            return rep;
+        }
+        let rep = *self.xe_groups.entry(key).or_insert(fid);
+        self.xe_fid_rep.insert(fid, rep);
+        rep
+    }
+
+    #[inline]
+    pub(crate) fn xe_note_glyph(&mut self, rep: u16, gid: u16) {
+        self.xe_use.entry(rep).or_default().insert(gid);
+    }
 }
 
 /// writefont.c `fo_entry` data of a Type 1 font dictionary.
@@ -450,6 +496,10 @@ impl PdfDoc {
             minor_version: None,
             decimal_digits: 3,
             native_bindings: std::collections::BTreeMap::new(),
+            xe_metrics: std::collections::HashMap::new(),
+            xe_groups: std::collections::HashMap::new(),
+            xe_fid_rep: std::collections::HashMap::new(),
+            xe_use: std::collections::BTreeMap::new(),
             legacy_bindings: std::collections::BTreeMap::new(),
             mag: 0,
             link_stack: Vec::new(),

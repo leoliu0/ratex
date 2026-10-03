@@ -2239,6 +2239,11 @@ pub struct Type1C {
     pub last_char: u8,
     /// `/Widths`: `last_char - first_char + 1` entries, 0 for unused codes
     pub widths: Vec<f64>,
+    /// The used codes that survived (`usedchars` after glyphs missing from the program were
+    /// dropped): what `pdf_encoding_add_usedchars` adds to a map encoding's set
+    pub used: [bool; 256],
+    /// The encoding vector the font was loaded with (`enc_vec`)
+    pub encoding: Vec<Option<String>>,
 }
 
 /// numbers.h `ROUND`
@@ -2291,6 +2296,13 @@ pub fn type1_to_type1c(
         return Err("Not a PFB font file?".into());
     }
     let binary = &program[length1..binary_end(program, length1)];
+    // (dvi.c: "type1 fonts with pfa format are not supported"; the ASCII hex of a PFA's eexec
+    // part cannot be told apart from a PFB's binary part by anything but its first bytes)
+    if binary.len() >= 4 && binary[..4].iter().all(u8::is_ascii_hexdigit) {
+        return Err(
+            "Sorry, pfa format not supported; please convert the font to pfb, e.g., with t1binary.".into(),
+        );
+    }
     let fontname = t1_get_fontname(clear)?;
 
     let mut builtin: Option<EncVec> = if encoding.is_none() { Some(vec![None; 256]) } else { None };
@@ -2616,7 +2628,104 @@ pub fn type1_to_type1c(
         first_char,
         last_char,
         widths: widths_out,
+        used: usedchars,
+        encoding: enc_vec,
     })
+}
+
+// ---------------------------------------------------------------------------------------------
+// pdfencoding.c: the /Encoding and ToUnicode of a map encoding
+// ---------------------------------------------------------------------------------------------
+
+/// `pdf_create_ToUnicode_CMap(enc_name, enc_vec, is_used)`: a CMap of the used codes' glyph
+/// names, or none when it is empty or a used glyph has no Unicode mapping at all
+/// ("Glyphs with no Unicode mapping found. Removing ToUnicode CMap.").
+pub fn to_unicode_cmap(glyphs: &[Option<String>], used: &[bool; 256], cmap_name: &str) -> Option<String> {
+    let mut bits = [0u64; 4];
+    let mut names = vec![String::new(); 256];
+    for code in 0..256usize {
+        if !used[code] {
+            continue;
+        }
+        if let Some(name) = glyphs.get(code).and_then(|g| g.as_deref()) {
+            crate::pdf_fonts::glyph_to_unicode(name)?;
+            names[code] = name.to_owned();
+            bits[code / 64] |= 1 << (code % 64);
+        }
+    }
+    crate::dpx_font::type1_to_unicode_cmap(&names, &bits, cmap_name)
+}
+
+/// The `/Encoding` entry of a map encoding (`create_encoding_resource`).
+#[derive(Debug, PartialEq, Eq)]
+pub enum EncodingResource {
+    /// No difference to report and no base encoding: no `/Encoding` key
+    None,
+    /// A predefined encoding, written as a name
+    Name(&'static str),
+    /// `<< /BaseEncoding /WinAnsiEncoding /Differences [..] >>`, an indirect object; the text
+    /// is the dictionary
+    Dict(String),
+}
+
+/// `is_similar_charset`: at least 64 codes empty or the same as in `WinAnsiEncoding`
+fn is_similar_to_winansi(glyphs: &[Option<String>]) -> bool {
+    let mut same = 0;
+    for code in 0..256 {
+        let differs = glyphs[code].as_deref().is_some_and(|g| g != crate::pdf_encodings::WIN_ANSI[code]);
+        if !differs {
+            same += 1;
+            if same >= 64 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// `pdf_encoding_complete` for one non-predefined encoding: `glyphs` is the encoding vector
+/// (`.notdef` and empty slots as `None`) and `is_used` the codes every font of the encoding uses.
+pub fn encoding_resource(
+    glyphs: &[Option<String>],
+    is_used: &[bool; 256],
+    escape_name: &dyn Fn(&str) -> String,
+) -> EncodingResource {
+    let glyphs: Vec<Option<String>> = (0..256)
+        .map(|c| glyphs.get(c).cloned().flatten().filter(|g| g != ".notdef"))
+        .collect();
+    let base = is_similar_to_winansi(&glyphs).then_some("WinAnsiEncoding");
+    // make_encoding_differences
+    let mut differences: Vec<String> = Vec::new();
+    let mut count = 0;
+    let mut skipping = true;
+    for code in 0..256usize {
+        let Some(glyph) = glyphs[code].as_deref().filter(|_| is_used[code]) else {
+            skipping = true;
+            continue;
+        };
+        if base.is_none() || crate::pdf_encodings::WIN_ANSI[code] != glyph {
+            if skipping {
+                differences.push(code.to_string());
+            }
+            differences.push(format!("/{}", escape_name(glyph)));
+            skipping = false;
+            count += 1;
+        } else {
+            skipping = true;
+        }
+    }
+    if count == 0 {
+        return match base {
+            Some(name) => EncodingResource::Name(name),
+            None => EncodingResource::None,
+        };
+    }
+    let mut dict = String::from("<< ");
+    if let Some(base) = base {
+        dict.push_str(&format!("/BaseEncoding /{base} "));
+    }
+    dict.push_str(&format!("/Differences [{}] >>", differences.join(" ")));
+    EncodingResource::Dict(dict)
 }
 
 #[cfg(test)]
@@ -2931,5 +3040,49 @@ mod tests {
         if !tl_pdfs().is_empty() && Path::new(T1_ROOT).exists() {
             assert!(!same.is_empty(), "no reference font compared");
         }
+    }
+    #[test]
+    fn map_encoding_resource_follows_pdfencoding_c() {
+        let mut glyphs: Vec<Option<String>> = crate::pdf_encodings::WIN_ANSI
+            .iter()
+            .map(|g| (*g != ".notdef").then(|| (*g).to_owned()))
+            .collect();
+        glyphs[28] = Some("fi".into());
+        let mut used = [false; 256];
+        used[65] = true;
+        let esc = |g: &str| g.to_owned();
+        // nothing differs from the predefined encoding: its name
+        assert_eq!(encoding_resource(&glyphs, &used, &esc), EncodingResource::Name("WinAnsiEncoding"));
+        used[28] = true;
+        assert_eq!(
+            encoding_resource(&glyphs, &used, &esc),
+            EncodingResource::Dict("<< /BaseEncoding /WinAnsiEncoding /Differences [28 /fi] >>".into())
+        );
+        // a charset unlike WinAnsi: every used code is listed
+        let sparse: Vec<Option<String>> = (0..256).map(|c| (c < 10).then(|| format!("g{c}"))).collect();
+        let mut used = [false; 256];
+        used[3] = true;
+        used[4] = true;
+        used[7] = true;
+        // (empty slots count as similar to WinAnsiEncoding: it is the base)
+        assert_eq!(
+            encoding_resource(&sparse, &used, &esc),
+            EncodingResource::Dict("<< /BaseEncoding /WinAnsiEncoding /Differences [3 /g3 /g4 7 /g7] >>".into())
+        );
+    }
+
+    #[test]
+    fn pfa_programs_are_refused_like_xdvipdfmx() {
+        let pfbs = pfb_index();
+        let Some(path) = pfbs.get("CMR10") else { return };
+        let prog = crate::pdf_fonts::parse_type1(&std::fs::read(path).unwrap());
+        let hex: String = prog.data[prog.length1..prog.length1 + prog.length2]
+            .iter()
+            .map(|b| format!("{b:02X}"))
+            .collect();
+        let mut pfa = prog.data[..prog.length1].to_vec();
+        pfa.extend_from_slice(hex.as_bytes());
+        let err = type1_to_type1c(&pfa, prog.length1, None, &[u64::MAX; 4], "ABCDEF").err();
+        assert!(err.is_some_and(|e| e.contains("pfa format not supported")));
     }
 }

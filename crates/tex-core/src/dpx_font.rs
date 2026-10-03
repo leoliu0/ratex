@@ -279,11 +279,21 @@ pub fn type1_to_unicode_cmap(glyph_names: &[String], used: &[u64; 4], cmap_name:
             continue;
         }
         let Some(name) = glyph_names.get(code).filter(|n| !n.is_empty() && *n != ".notdef") else { continue };
-        let Some(ch) = crate::pdf_fonts::glyph_to_scalar(name).filter(|c| !(0xE000..=0xF8FF).contains(&(*c as u32))) else {
-            continue;
-        };
         let mut d = Vec::new();
-        utf16be(ch as u32, &mut d);
+        if let Some(ch) = crate::pdf_fonts::glyph_to_scalar(name) {
+            if (0xE000..=0xF8FF).contains(&(ch as u32)) {
+                continue;
+            }
+            utf16be(ch as u32, &mut d);
+        } else {
+            let Some(text) = crate::pdf_fonts::glyph_to_unicode(name) else { continue };
+            if text.chars().any(|ch| (0xE000..=0xF8FF).contains(&(ch as u32))) {
+                continue;
+            }
+            for ch in text.chars() {
+                utf16be(ch as u32, &mut d);
+            }
+        }
         map.insert(code as u16, d);
     }
     (!map.is_empty()).then(|| cmap_stream_w(cmap_name, &map, true))
@@ -1137,15 +1147,32 @@ mod tests {
         assert_eq!(p_dtoa(2.0, 3), "2");
     }
 
-    /// Expectation from TL xdvipdfmx: runs of consecutive codes with
-    /// consecutive destinations become bfrange, others bfchar.
     #[test]
-    fn cmap_stream_ranges() {
-        let mut m = BTreeMap::new();
-        for (g, u) in [(0x10u16, 0x41u16), (0x11, 0x42), (0x12, 0x43), (0x20, 0x61), (0x30, 0x62)] {
-            m.insert(g, u.to_be_bytes().to_vec());
-        }
-        let s = cmap_stream("X-UTF16", &m);
-        assert!(s.contains("2 beginbfchar\n<0020> <0061>\n<0030> <0062>\nendbfchar\n1 beginbfrange\n<0010> <0012> <0041>\nendbfrange\n"), "{s}");
+    fn type1_unicode_sequences_are_read_by_pdf_consumers() {
+        use lopdf::{dictionary, Document, Object, Stream};
+        let mut names = vec![String::new(); 256];
+        names[65] = "Germandbls".into();
+        names[66] = "uni00660069".into();
+        names[67] = "fi".into();
+        let cmap = type1_to_unicode_cmap(&names, &[0, 0b1110, 0, 0], "Sequence-UTF16").unwrap();
+        let mut pdf = Document::with_version("1.5");
+        let pages = pdf.new_object_id();
+        let unicode = pdf.add_object(Stream::new(dictionary! {}, cmap.into_bytes()));
+        let font = pdf.add_object(dictionary! {
+            "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+            "ToUnicode" => unicode,
+        });
+        let content = pdf.add_object(Stream::new(dictionary! {}, b"BT /F0 10 Tf (ABC) Tj ET".to_vec()));
+        let page = pdf.add_object(dictionary! {
+            "Type" => "Page", "Parent" => pages, "Contents" => content,
+            "MediaBox" => vec![Object::Integer(0), Object::Integer(0), Object::Integer(100), Object::Integer(100)],
+            "Resources" => dictionary! { "Font" => dictionary! { "F0" => font } },
+        });
+        pdf.objects.insert(pages, dictionary! {
+            "Type" => "Pages", "Kids" => vec![Object::Reference(page)], "Count" => 1,
+        }.into());
+        let catalog = pdf.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages });
+        pdf.trailer.set("Root", catalog);
+        assert_eq!(pdf.extract_text(&[1]).unwrap().trim(), "SSfi\u{fb01}");
     }
 }

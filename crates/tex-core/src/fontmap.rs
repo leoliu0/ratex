@@ -115,6 +115,17 @@ impl FontMap {
         entry
     }
 
+    /// Device transforms without cloning the cached font file and encoding names.
+    pub(crate) fn transform(&self, name: &str) -> (f64, f64) {
+        if let Some(cached) = self.entries.borrow().get(name) {
+            return cached.as_ref().map_or((0.0, 1.0), |entry| (entry.slant, entry.extend));
+        }
+        let entry = self.resolve(name);
+        let transform = entry.as_ref().map_or((0.0, 1.0), |entry| (entry.slant, entry.extend));
+        self.entries.borrow_mut().insert(name.into(), entry);
+        transform
+    }
+
     pub fn contains_key(&self, name: &str) -> bool {
         self.get(name).is_some()
     }

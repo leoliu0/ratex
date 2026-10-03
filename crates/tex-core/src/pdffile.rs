@@ -1367,6 +1367,12 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             let (Some(pdftex), false, false) = (&font.pdftex, font.font_file.is_empty(), is_sfnt(font)) else {
                 continue;
             };
+            if !pdftex.source_is_pfb {
+                return Err(format!(
+                    "xdvipdfmx:fatal: Sorry, pfa format not supported; please convert the font to pfb, e.g., with t1binary. (font `{}`)",
+                    pdftex.tfm_name,
+                ));
+            }
             let mut tag = make_subset_tag(&font.content_hash, &format!("{}{:?}", pdftex.tfm_name, font.used_chars));
             tag.pop();
             let mut salt = 0u32;

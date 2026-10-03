@@ -28,11 +28,18 @@ Typesetting algorithms are documented in the module comments of
 | `writet1.rs` | writet1.c port: Type 1 FontFile cleartext/`/Encoding`/eexec/Subrs rewrite, `/Length1-3` |
 | `pdf_images.rs`, `pdf_encodings.rs` | pdftoepdf port: one shared `PdfSource` per included file; with `\pdfinclusioncopyfonts=0` Type 1/Type1C fonts the font map knows are replaced by the map's program (xpdf base-encoding tables) |
 | `pdfrender/dpx.rs`, `pdfrender/dpx_text.rs` | XeTeX's xdvipdfmx-compatible PDF driver: separate cached DVI and reader positions, text matrices and glyph runs; raw TFM metric words use the driver's `sqxfw` rounding for annotation bounds |
+| `dpx_font.rs`, `dpx_cff.rs`, `dpx_tt.rs`, `dpx_t1.rs` | xdvipdfmx native font objects, Unicode CMaps, TrueType/CFF subsetting and TFM Type 1 → Type1C conversion |
 | `diagnostics.rs` | structured diagnostics and their output bounds |
 
 The XeTeX driver serializes PDF object numbers with eight decimal places of
 precision. Restoring graphics state invalidates the device font and synthetic
 text matrix, matching xdvipdfmx's reset before the next text run.
+
+TFM Type 1 text uses the same xdvipdfmx text-state machine as native glyphs,
+with literal PDF strings and truncating TJ adjustments. XeTeX embeds PFB
+programs as Type1C, shares map encodings and their Unicode CMaps, and rejects
+PFA containers without guessing from encrypted bytes. pdfTeX and LuaTeX keep
+their existing font writers.
 
 ## Executables and dispatch
 

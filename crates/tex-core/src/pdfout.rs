@@ -433,6 +433,8 @@ impl PdfDoc {
 /// writefont.c `fo_entry` data of a Type 1 font dictionary.
 pub struct PdfTexFont {
     pub tfm_name: String,
+    /// Original container, retained before PFB segment headers are removed.
+    pub source_is_pfb: bool,
     /// The map's encoding file: one /Encoding object per file, covering
     /// the codes every font with that encoding uses. None = the program's
     /// builtin encoding, which pdfTeX leaves implicit.

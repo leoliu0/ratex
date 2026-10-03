@@ -2236,23 +2236,21 @@ impl<'a> RenderCtx<'a> {
         }
         self.eng.ensure_vf_bases(f);
         let virtual_font = self.eng.font_loader.vf_bases.contains_key(&f);
-        let (x_sp, v_sp) = if self.eng.engine_kind == crate::engine::EngineKind::XeTeX {
-            if self.dpxt.in_text() {
-                self.dpxt_graphics_mode();
-            }
+        let (x_sp, v_sp, dvi_advance) = if self.eng.engine_kind == crate::engine::EngineKind::XeTeX {
             let Some((advance, height, depth)) = self.dpx_tfm_metrics(f, c) else { return };
             let (x, v) = self.dpx_sync(x_sp, v_sp);
             self.dpx_advance_h(self.font_char_advance_sp(f, c), advance);
             if virtual_font {
                 // VF packets have their own push/pop; track their physical
                 // glyphs rather than the virtual character's metric box.
-                (x, v)
+                (x, v, advance)
             } else {
                 self.dpx_track_box(x, v, advance, height, depth);
-                self.dpx_compensate(x, v)
+                let (x, v) = self.dpx_compensate(x, v);
+                (x, v, advance)
             }
         } else {
-            (x_sp, v_sp)
+            (x_sp, v_sp, 0)
         };
         let self_ratio = self.font_ratio(f);
         let ratio = if self_ratio != 0 {
@@ -2367,9 +2365,19 @@ impl<'a> RenderCtx<'a> {
             advance = round_xn_over_d(advance, 1000 + i64::from(ratio), 1000);
         }
         self.eng.pdf_doc.record_font_char(base_f as usize, c);
-        self.begin_string(x_sp, v_sp, f, crate::pdfout::FontBinding::RAW, ratio);
-        push_pdf_char(&mut self.content, c);
-        self.adv_char_width(f, advance);
+        if self.eng.engine_kind == crate::engine::EngineKind::XeTeX
+            && self.font_programs.get(&f).is_some_and(|program| program.is_type1())
+        {
+            self.end_pdftex_text();
+            self.dpxt_tfm_char(f, c, x_sp, v_sp, dvi_advance);
+        } else {
+            if self.eng.engine_kind == crate::engine::EngineKind::XeTeX {
+                self.dpxt_graphics_mode();
+            }
+            self.begin_string(x_sp, v_sp, f, crate::pdfout::FontBinding::RAW, ratio);
+            push_pdf_char(&mut self.content, c);
+            self.adv_char_width(f, advance);
+        }
         let x_bp = sp_to_bp(x_sp);
         let y_bp = self.y_pdf(sp_to_bp(v_sp));
         let merged = if let Some(crate::boxes::DisplayItem::GlyphRun {

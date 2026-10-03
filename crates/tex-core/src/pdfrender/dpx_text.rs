@@ -10,6 +10,7 @@ use super::{RenderCtx, ONE_HUNDRED_BP_SP};
 use crate::dpx_font::NativeMetrics;
 use crate::native_layout::NativeRun;
 use std::rc::Rc;
+use std::fmt::Write;
 
 /// pdfdev.c: `pdf_init_device(dvi2pts, precision = 3, ..)`
 const PRECISION: usize = 3;
@@ -85,7 +86,7 @@ enum Motion {
 const WMODE_HH: i32 = 0;
 const WMODE_VH: i32 = 4;
 
-/// A `dev_font`: a native font instance of one size.
+/// A `dev_font`: a font instance of one size and PDF character format.
 #[derive(Clone, Copy, Debug)]
 struct DevFont {
     rep: u16,
@@ -94,6 +95,7 @@ struct DevFont {
     slant: f64,
     bold: f64,
     wmode: bool,
+    is_mb: bool,
 }
 
 /// `pdev.text_state` and the device fonts of the page.
@@ -233,8 +235,37 @@ impl<'a> RenderCtx<'a> {
             slant: slant as f64 / 65536.0,
             bold: bold as f64 / 65536.0,
             wmode: nf.vertical,
+            is_mb: true,
         });
         self.dpxt.fonts.len() - 1
+    }
+
+    /// TFM Type 1 characters use the same device positions and truncating
+    /// TJ adjustments as native glyphs, but their PDF strings are literal.
+    pub(super) fn dpxt_tfm_char(&mut self, fid: u16, ch: u8, x: i64, y: i64, width: i64) {
+        let size = i64::from(self.eng.eqtb.fonts[fid as usize].at_size);
+        let idx = match self.dpxt.fonts.iter().position(|f| !f.is_mb && f.rep == fid && f.sptsize == size) {
+            Some(idx) => idx,
+            None => {
+                self.eng.font_loader.ensure_map();
+                let (slant, extend) = self.eng.font_loader.map.transform(&self.eng.eqtb.fonts[fid as usize].tfm_name);
+                self.dpxt.fonts.push(DevFont {
+                    rep: fid,
+                    sptsize: size,
+                    slant,
+                    extend,
+                    bold: 0.0,
+                    wmode: false,
+                    is_mb: false,
+                });
+                self.dpxt.fonts.len() - 1
+            }
+        };
+        self.dpxt_set_string(x - self.dpxt.org_sp.0, -(y - self.dpxt.org_sp.1), u16::from(ch), width, idx);
+    }
+
+    fn dpxt_multibyte(&self) -> bool {
+        self.dpxt.font.is_some_and(|idx| self.dpxt.fonts[idx].is_mb)
     }
 
     // -------------------------------------------------- text state machine
@@ -286,7 +317,7 @@ impl<'a> RenderCtx<'a> {
     fn dpxt_text_mode(&mut self) {
         match self.dpxt.mode {
             Motion::Text => {}
-            Motion::Str => self.content.push_str(">]TJ"),
+            Motion::Str => self.content.push_str(if self.dpxt_multibyte() { ">]TJ" } else { ")]TJ" }),
             Motion::Graphics => self.dpxt_reset_text_state(),
         }
         self.dpxt.mode = Motion::Text;
@@ -298,7 +329,7 @@ impl<'a> RenderCtx<'a> {
         match self.dpxt.mode {
             Motion::Graphics => return,
             Motion::Str => {
-                self.content.push_str(">]TJ");
+                self.content.push_str(if self.dpxt_multibyte() { ">]TJ" } else { ")]TJ" });
                 self.dpxt_leave_text();
             }
             Motion::Text => self.dpxt_leave_text(),
@@ -338,24 +369,20 @@ impl<'a> RenderCtx<'a> {
             WMODE_VH => {
                 let desired_x = dely;
                 let desired_y = (-(delx as f64 - dely as f64 * slant) / extend) as i64;
-                let mut s = String::new();
-                err_y = sprint_bp(&mut s, desired_x, 0);
-                s.push(' ');
-                let e = sprint_bp(&mut s, desired_y, 0);
+                err_y = sprint_bp(&mut self.content, desired_x, 0);
+                self.content.push(' ');
+                let e = sprint_bp(&mut self.content, desired_y, 0);
                 err_x = -e;
-                self.content.push_str(&s);
             }
             _ => {
                 let desired_x = ((delx as f64 - dely as f64 * slant) / extend) as i64;
                 let desired_y = dely;
-                let mut s = String::new();
-                err_x = sprint_bp(&mut s, desired_x, std::mem::take(&mut org.0));
-                s.push(' ');
-                err_y = sprint_bp(&mut s, desired_y, std::mem::take(&mut org.1));
-                self.content.push_str(&s);
+                err_x = sprint_bp(&mut self.content, desired_x, std::mem::take(&mut org.0));
+                self.content.push(' ');
+                err_y = sprint_bp(&mut self.content, desired_y, std::mem::take(&mut org.1));
             }
         }
-        self.content.push_str(" Td[<");
+        self.content.push_str(if self.dpxt_multibyte() { " Td[<" } else { " Td[(" });
         self.dpxt.ref_x = xpos - err_x;
         self.dpxt.ref_y = ypos - err_y;
         self.dpxt.offset = 0;
@@ -368,7 +395,7 @@ impl<'a> RenderCtx<'a> {
         if self.dpxt.mode != Motion::Str {
             if self.dpxt.force_reset {
                 self.dpxt_set_text_matrix(xpos, ypos, slant, extend, rotate);
-                self.content.push_str("[<");
+                self.content.push_str(if self.dpxt_multibyte() { "[<" } else { "[(" });
                 self.dpxt.force_reset = false;
             } else {
                 self.dpxt_start_string(xpos, ypos, slant, extend, rotate);
@@ -390,16 +417,16 @@ impl<'a> RenderCtx<'a> {
         t.slant = f.slant;
         t.extend = f.extend;
         t.rotate = text_rotate;
-        let num = self.ensure_font(f.rep, crate::pdfout::FontBinding::remapped(0));
-        let mut s = format!(" /F{num}{} ", self.eng.pdf_doc.resname_prefix);
-        push_scaled(&mut s, scaled(f.sptsize as f64 * dvi2pts(), PRECISION + 1), PRECISION + 1);
-        s.push_str(" Tf");
-        self.content.push_str(&s);
+        let binding = if f.is_mb { crate::pdfout::FontBinding::remapped(0) } else { crate::pdfout::FontBinding::RAW };
+        let num = self.ensure_font(f.rep, binding);
+        let _ = write!(self.content, " /F{num}{} ", self.eng.pdf_doc.resname_prefix);
+        push_scaled(&mut self.content, scaled(f.sptsize as f64 * dvi2pts(), PRECISION + 1), PRECISION + 1);
+        self.content.push_str(" Tf");
         if f.bold > 0.0 || f.bold != self.dpxt.bold_param {
             if f.bold <= 0.0 {
                 self.content.push_str(" 0 Tr");
             } else {
-                self.content.push_str(&format!(" 2 Tr {:.6} w", f.bold));
+                let _ = write!(self.content, " 2 Tr {:.6} w", f.bold);
             }
         }
         self.dpxt.bold_param = f.bold;
@@ -413,7 +440,9 @@ impl<'a> RenderCtx<'a> {
             self.dpxt_set_font(idx);
         }
         let f = self.dpxt.fonts[idx];
-        self.eng.pdf_doc.xe_note_glyph(f.rep, gid);
+        if f.is_mb {
+            self.eng.pdf_doc.xe_note_glyph(f.rep, gid);
+        }
         let text_xorigin = self.dpxt.ref_x;
         let text_yorigin = self.dpxt.ref_y;
         let delh = text_xorigin + self.dpxt.offset - xpos;
@@ -431,11 +460,15 @@ impl<'a> RenderCtx<'a> {
             self.dpxt_string_mode(xpos, ypos, s, e, r);
         } else if kern != 0 {
             self.dpxt.offset -= (kern as f64 * f.extend * (f.sptsize as f64 / 1000.0)) as i32 as i64;
-            self.content.push('>');
-            self.content.push_str(&(if f.wmode { -kern } else { kern }).to_string());
-            self.content.push('<');
+            self.content.push(if f.is_mb { '>' } else { ')' });
+            super::push_i64(&mut self.content, if f.wmode { -kern } else { kern });
+            self.content.push(if f.is_mb { '<' } else { '(' });
         }
-        self.content.push_str(&format!("{gid:04x}"));
+        if f.is_mb {
+            let _ = write!(self.content, "{gid:04x}");
+        } else {
+            super::push_pdf_char(&mut self.content, gid as u8);
+        }
         self.dpxt.offset += width;
     }
 

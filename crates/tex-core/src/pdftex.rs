@@ -487,6 +487,7 @@ impl Engine {
                         };
                         embedded.pdftex = Some(crate::pdfout::PdfTexFont {
                             tfm_name: font.tfm_name.clone(),
+                            source_is_pfb: prog.data.starts_with(&[0x80, 0x01]),
                             enc_file: font.encoding.as_ref().and(font.enc_name.clone()),
                             enc_ps_name: font
                                 .enc_name

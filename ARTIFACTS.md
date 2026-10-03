@@ -140,6 +140,10 @@ fonts; Linux compares their rendering with the matching TeX Live 2026 engine.
 The LuaLaTeX case uses the suite's general geometry tolerances; the XeLaTeX
 accent case requires at least 0.98 ink IoU in both renderers. Fixture clocks
 share a fixed epoch and UTC timezone without changing the reported sources.
+Unix release archive and installer font smokes allow 180 seconds per document
+for cold Lua font-database startup. The macOS 15 arm64 release builder uses
+Rust 1.98.1 after a Rust 1.99 dependency-archive failure; regular macOS CI
+continues to exercise the latest stable compiler.
 
 The font suite's deliberate missing-glyph fixture sets `expect_missing_glyphs`:
 TeX Live itself emits `.notdef` for these characters. This exempts only that

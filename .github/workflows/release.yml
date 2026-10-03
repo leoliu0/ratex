@@ -127,6 +127,9 @@ jobs:
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          # Rust 1.99 failed to assemble the dependency archive on macOS 15 arm64.
+          toolchain: ${{ matrix.label == 'macos-aarch64' && '1.98.1' || 'stable' }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -306,6 +309,7 @@ jobs:
             --ratex "$EXTRACTED_RATEX" \
             --output /tmp/font-smoke-archive \
             --require-pdfjs \
+            --timeout 180 \
             --skip-reference
           rm -rf /tmp/ci-archive-test /tmp/font-smoke-archive
 
@@ -338,6 +342,7 @@ jobs:
             --ratex /tmp/ci-install-test/bin/ratex \
             --output /tmp/font-smoke-installed \
             --require-pdfjs \
+            --timeout 180 \
             --skip-reference
           ./install.sh --prefix /tmp/ci-install-test --uninstall
           rm -rf /tmp/ci-install-test /tmp/font-smoke-installed
@@ -355,6 +360,7 @@ jobs:
             --ratex /usr/local/bin/ratex \
             --output /tmp/font-smoke-pkg \
             --require-pdfjs \
+            --timeout 180 \
             --skip-reference
           rm -rf /tmp/font-smoke-pkg
           echo "==> Cleaning up installed files..."

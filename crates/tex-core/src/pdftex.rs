@@ -451,6 +451,16 @@ impl Engine {
                             || font.tfm_name == "dummy-space";
                         let names = font.encoding.as_ref().or(source.builtin_encoding.as_ref());
                         let tounicode = match names {
+                            // xdvipdfmx (pdf_font_load_type1) always writes a
+                            // ToUnicode CMap built from the glyph names
+                            Some(names) if self.engine_kind == crate::engine::EngineKind::XeTeX => {
+                                crate::dpx_font::type1_to_unicode_cmap(
+                                    names,
+                                    &raw_chars,
+                                    &format!("{}-UTF16", font.tfm_name),
+                                )
+                                .map(Into::into)
+                            }
                             Some(_) if !wants_tounicode => None,
                             Some(_) if self.pdf_backend.glyph_unicode.is_empty() => {
                                 // write_tounicode: `fixedgentounicode := 0`

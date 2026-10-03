@@ -175,6 +175,7 @@ jobs:
             collection-latexextra
             collection-fontsrecommended
             collection-fontsextra
+            collection-luatex
             collection-xetex
             collection-mathscience
             collection-langcjk
@@ -183,6 +184,7 @@ jobs:
             collection-langkorean
             collection-langcyrillic
             collection-langgreek
+            collection-langspanish
 
       - name: Linux full independent-viewer font verification gate
         if: runner.os == 'Linux'
@@ -194,6 +196,7 @@ jobs:
             --require-pdfjs \
             --reference-pdflatex "$(command -v pdflatex)" \
             --reference-xelatex "$(command -v xelatex)" \
+            --reference-lualatex "$(command -v lualatex)" \
             --reference-texlive 2026
 
       - name: Artifact font smoke (macos)
@@ -217,6 +220,8 @@ jobs:
             --case issue_5_stmaryrd \
             --case issue_6_bbding \
             --case issue_8_latin_modern \
+            --case issue_17_lualatex_spanish \
+            --case issue_18_xelatex_fixed_fonts \
             --case fontspec_native \
             --case xecjk_native \
             --case opentype_cff \
@@ -258,6 +263,8 @@ jobs:
             --case issue_5_stmaryrd `
             --case issue_6_bbding `
             --case issue_8_latin_modern `
+            --case issue_17_lualatex_spanish `
+            --case issue_18_xelatex_fixed_fonts `
             --case fontspec_native `
             --case xecjk_native `
             --case opentype_cff `

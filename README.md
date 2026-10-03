@@ -18,6 +18,9 @@ reference. The extracted archive is run on every release platform, and the
 shell installer, `.deb`, macOS `.pkg`, and Windows installers are installed
 and exercised. The workspace test suite,
 the C and WebAssembly libraries, and the browser module are tested as well.
+The exact minimum documents from [#17](https://github.com/leoliu0/ratex/issues/17)
+and [#18](https://github.com/leoliu0/ratex/issues/18) run under LuaLaTeX and
+XeLaTeX respectively, checking Spanish text, embedded fonts and rendering.
 See [PERFORMANCE.md](PERFORMANCE.md) for how speed is measured.
 
 ---
@@ -40,21 +43,21 @@ See [PERFORMANCE.md](PERFORMANCE.md) for how speed is measured.
 ## Installation
 
 ### Linux
-Download the native package for your distribution from [GitHub Releases](https://github.com/leoliu0/ratex/releases/tag/v0.4.7):
+Download the native package for your distribution from [GitHub Releases](https://github.com/leoliu0/ratex/releases/tag/v0.5.0):
 
 ```bash
 # Ubuntu / Debian (.deb)
-sudo apt install ./ratex_0.4.7_amd64.deb
+sudo apt install ./ratex_0.5.0_amd64.deb
 
 # Fedora / RHEL / openSUSE (.rpm)
-sudo dnf install ./ratex-0.4.7-1.x86_64.rpm
+sudo dnf install ./ratex-0.5.0-1.x86_64.rpm
 
 # Arch Linux (AUR): prebuilt binary or source build
 yay -S ratex-bin
 yay -S ratex
 
 # Any Linux (archive with installer; installs to ~/.local by default)
-tar -xzf tex-suite-v0.4.7-linux-x86_64.tar.gz && ./tex-suite-linux-x86_64/install.sh
+tar -xzf tex-suite-v0.5.0-linux-x86_64.tar.gz && ./tex-suite-linux-x86_64/install.sh
 ```
 
 ### macOS
@@ -68,8 +71,8 @@ brew install leoliu0/ratex/ratex
 This tap is independent of `homebrew/core`; `brew install ratex` uses core's separately reviewed version.
 
 Or download and run the native installer package:
-- [macOS Apple Silicon (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.4.7/ratex-v0.4.7-macos-aarch64.pkg)
-- [macOS Intel (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.4.7/ratex-v0.4.7-macos-x86_64.pkg)
+- [macOS Apple Silicon (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.5.0/ratex-v0.5.0-macos-aarch64.pkg)
+- [macOS Intel (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.5.0/ratex-v0.5.0-macos-x86_64.pkg)
 
 #### Migrating from the GitHub installer to Homebrew
 
@@ -103,7 +106,7 @@ installing `leoliu0/ratex/ratex`. Neither uninstall your documents nor TeX Live
 just to change which executable your editor uses.
 
 ### Windows
-- [Download Windows Setup (.exe)](https://github.com/leoliu0/ratex/releases/download/v0.4.7/ratex-setup-v0.4.7-windows-x64.exe)
+- [Download Windows Setup (.exe)](https://github.com/leoliu0/ratex/releases/download/v0.5.0/ratex-setup-v0.5.0-windows-x64.exe)
 
 ---
 

@@ -103,6 +103,31 @@
     "min_ink_pixels": 1000
   },
   {
+    "name": "issue_17_lualatex_spanish",
+    "description": "Issue #17 minimum document: Spanish babel title with the LuaLaTeX engine",
+    "dir": "issue_17_lualatex_spanish",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": ["LMRoman"],
+    "expected_text": ["Prueba de Latex en Español"],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 300
+  },
+  {
+    "name": "issue_18_xelatex_fixed_fonts",
+    "description": "Issue #18 minimum document: Spanish accents and ñ in four DeclareFixedFont sizes with XeLaTeX",
+    "dir": "issue_18_xelatex_fixed_fonts",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": ["NimbusSanL-Bold"],
+    "expected_text": ["Bibliografía", "Sueño", "Computación", "Índice"],
+    "check_type": "text_t1",
+    "min_ink_pixels": 500,
+    "min_iou": 0.98
+  },
+  {
     "name": "t1_latin_modern",
     "description": "Classic T1 Latin Modern full style and European accent coverage",
     "dir": "t1_latin_modern",

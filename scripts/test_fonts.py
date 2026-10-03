@@ -3,9 +3,9 @@
 Ratex Font Verification & Isolation Test Harness.
 
 Executes and verifies font embedding, text extraction, glyph rendering,
-and engine isolation across all reported issues (#3, #4, #5, #6, #8)
-and required font families (classic T1 LM/CM-Super, T2A Russian, LGR Greek,
-CJKutf8 Japanese/Chinese/Korean, and native fontspec/xeCJK/CFF/TTC).
+and engine isolation across reported font issues (#3, #4, #5, #6, #8),
+Spanish LuaLaTeX/XeLaTeX minimum documents (#17, #18), and required font
+families (T1 LM/CM-Super, T2A Russian, LGR Greek, CJKutf8, fontspec/CFF/TTC).
 
 Enforces:
   1. Linux bwrap isolation with /usr/local and /usr/share font/TEXMF masking
@@ -39,6 +39,9 @@ import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+FIXTURE_EPOCH = "1700000000"
+# Keep \today identical between engines without changing the reported sources.
 
 def text_contains_expected(expected: str, text: str) -> bool:
     if expected in text:
@@ -1334,7 +1337,7 @@ class FontTestHarness:
 
     def inspect_reference_engines(self) -> None:
         """Record reference engine versions and their TeX trees for masking."""
-        for engine in ("pdflatex", "xelatex"):
+        for engine in ("pdflatex", "xelatex", "lualatex"):
             binary = self.resolve_ref_binary(engine)
             if not binary or not os.path.isfile(binary):
                 self.reference_info[engine] = {"path": None, "version": None}
@@ -1695,6 +1698,9 @@ class FontTestHarness:
                 "--setenv", "PATH", "/usr/bin:/bin",
                 "--setenv", "LANG", "C.UTF-8",
                 "--setenv", "LC_ALL", "C.UTF-8",
+                "--setenv", "SOURCE_DATE_EPOCH", FIXTURE_EPOCH,
+                "--setenv", "FORCE_SOURCE_DATE", "1",
+                "--setenv", "TZ", "UTC",
                 "--unsetenv", "TEXMFHOME",
                 "--unsetenv", "TEXMFVAR",
                 "--unsetenv", "TEXMFCACHE",
@@ -1708,6 +1714,9 @@ class FontTestHarness:
             exec_env = dict(os.environ)
             exec_env["HOME"] = str(home_dir)
             exec_env["TEX_RS_HERMETIC"] = "1"
+            exec_env["SOURCE_DATE_EPOCH"] = FIXTURE_EPOCH
+            exec_env["FORCE_SOURCE_DATE"] = "1"
+            exec_env["TZ"] = "UTC"
             exec_env.pop("TEXMFHOME", None)
             exec_env.pop("TEXMFVAR", None)
             exec_env.pop("TEXMFCACHE", None)
@@ -1765,6 +1774,13 @@ class FontTestHarness:
                     return cand
             w = shutil.which("xelatex")
             return w
+        elif engine == "lualatex":
+            if self.args.reference_lualatex and Path(self.args.reference_lualatex).is_file():
+                return str(self.args.reference_lualatex)
+            for cand in ["/usr/bin/lualatex", "/Library/TeX/texbin/lualatex"]:
+                if os.path.isfile(cand):
+                    return cand
+            return shutil.which("lualatex")
         else:
             if self.args.reference_pdflatex and Path(self.args.reference_pdflatex).is_file():
                 return str(self.args.reference_pdflatex)
@@ -1796,6 +1812,9 @@ class FontTestHarness:
             ref_env["FONTCONFIG_FILE"] = str(self.ref_fonts_conf)
         ref_env["LC_ALL"] = "C.UTF-8"
         ref_env["LANG"] = "C.UTF-8"
+        ref_env["SOURCE_DATE_EPOCH"] = FIXTURE_EPOCH
+        ref_env["FORCE_SOURCE_DATE"] = "1"
+        ref_env["TZ"] = "UTC"
 
         if self.extra_tds_roots:
             ref_env["TFMFONTS"] = ":".join(f"{r}/fonts/tfm//" for r in self.extra_tds_roots) + ":/usr/share/texmf-dist/fonts/tfm//:"
@@ -2331,6 +2350,7 @@ def main() -> int:
     parser.add_argument("--case", type=str, action="append", help="Specific case(s) to run")
     parser.add_argument("--reference-pdflatex", type=Path, help="Reference pdfLaTeX executable")
     parser.add_argument("--reference-xelatex", type=Path, help="Reference XeLaTeX executable")
+    parser.add_argument("--reference-lualatex", type=Path, help="Reference LuaLaTeX executable")
     parser.add_argument("--require-isolation", action="store_true", help="Require Linux bwrap sandbox isolation")
     parser.add_argument("--require-pdfjs", action="store_true", help="Require pdf.js rendering and extraction")
     parser.add_argument("--skip-reference", action="store_true", help="Skip reference engine comparison")

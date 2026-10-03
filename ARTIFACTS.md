@@ -134,6 +134,12 @@ Linux CI removes completed dev-profile test builds before the release build
 to reclaim disk for the reference TeX Live installation and archive staging.
 XeTeX fixture paths use forward slashes when inserted into TeX input,
 including on Windows.
+The font suite also runs the exact minimum documents from issues #17 and #18
+with LuaLaTeX and XeLaTeX. Both must preserve Spanish text and embed their
+fonts; Linux compares their rendering with the matching TeX Live 2026 engine.
+The LuaLaTeX case uses the suite's general geometry tolerances; the XeLaTeX
+accent case requires at least 0.98 ink IoU in both renderers. Fixture clocks
+share a fixed epoch and UTC timezone without changing the reported sources.
 
 The font suite's deliberate missing-glyph fixture sets `expect_missing_glyphs`:
 TeX Live itself emits `.notdef` for these characters. This exempts only that

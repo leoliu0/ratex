@@ -210,6 +210,10 @@ jobs:
         if: matrix.platform == 'linux'
         run: python3 scripts/test_package_dist.py
 
+      - name: Release completed Linux test build artifacts
+        if: matrix.platform == 'linux'
+        run: cargo clean --profile dev
+
       - name: Install TeX Live 2026 reference
         if: matrix.platform == 'linux'
         uses: TeX-Live/setup-texlive-action@v3
@@ -221,6 +225,7 @@ jobs:
             collection-latexextra
             collection-fontsrecommended
             collection-fontsextra
+            collection-luatex
             collection-xetex
             collection-mathscience
             collection-langcjk
@@ -229,6 +234,7 @@ jobs:
             collection-langkorean
             collection-langcyrillic
             collection-langgreek
+            collection-langspanish
 
       - name: Linux full independent-viewer font verification gate
         if: matrix.platform == 'linux'
@@ -240,6 +246,7 @@ jobs:
             --require-pdfjs \
             --reference-pdflatex "$(command -v pdflatex)" \
             --reference-xelatex "$(command -v xelatex)" \
+            --reference-lualatex "$(command -v lualatex)" \
             --reference-texlive 2026
 
       - name: Package distribution (unix)

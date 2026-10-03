@@ -23,6 +23,17 @@ and [#18](https://github.com/leoliu0/ratex/issues/18) run under LuaLaTeX and
 XeLaTeX respectively, checking Spanish text, embedded fonts and rendering.
 See [PERFORMANCE.md](PERFORMANCE.md) for how speed is measured.
 
+## Issue assistant
+
+The issue bot reads the complete issue and triggering comment, selects the
+reported `-pdf`, `-xelatex` or `-lualatex` command, and includes the actual
+command, binary version and bounded compiler log in its reply. `/reproduce`,
+`/test` and `/fix` reuse the issue's document unless the comment supplies a
+replacement; an explicit engine option can override the reported engine.
+Suggestions and feature requests without TeX are left for maintainer review,
+not answered with an irrelevant request for a compilation snippet. AI
+diagnosis receives the full report and treats proposed causes as hypotheses.
+
 ---
 
 ## Key Features

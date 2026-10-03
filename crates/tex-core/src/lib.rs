@@ -97,6 +97,7 @@ pub mod page;
 mod pdf_encodings;
 pub mod dpx_cff;
 pub mod dpx_tt;
+pub mod dpx_t1;
 pub mod dpx_font;
 pub mod pdf_fonts;
 pub mod pdf_images;

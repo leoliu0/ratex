@@ -448,6 +448,7 @@ impl<'a> RenderCtx<'a> {
             return;
         }
         let Some(metrics) = self.native_metrics(fid) else { return };
+        let (cur_x, y) = self.dpx_sync(cur_x, y);
         self.end_pdftex_text();
         self.display_list.push(crate::boxes::DisplayItem::NativeGlyphRun {
             run: run.clone(),

@@ -200,3 +200,51 @@ fn bcontent_compensates_rule_positions() {
         "q 1 0 0 1 72 27.626 cm 0 G 0 g q 1 0 0 1 19.925 -5.978 cm 0 0 m 5 5 l S q 1.9925 w 0 3.985 m 9.963 3.985 l S Q q 1 0 0 1 9.963 0 cm q 3.985 0 6.974 5.978 re f Q Q 0 G 0 g Q 0 G 0 g q 2.9888 w 42.341 -5.978 m 42.341 0 l S Q Q"
     );
 }
+
+/// TL xetex + xdvipdfmx: a bare picture restores XeTeX's cached DVI
+/// coordinates, while the reader remains at the picture. A nested hbox's
+/// push/pop discards its extra displacement but keeps the outer one.
+#[test]
+fn bare_pictures_preserve_dvi_displacement_until_the_containing_box_ends() {
+    let image = format!("{}/tests/fixtures/xetex_pic/tmp-1.png", env!("CARGO_MANIFEST_DIR"));
+    let (_, content) = ship(&format!(
+        r"\catcode`\{{=1 \catcode`\}}=2
+\font\a=cmr10 \a
+\pdfpagewidth=200pt \pdfpageheight=120pt
+\shipout\hbox{{A\kern10pt\XeTeXpicfile {image} width12pt B\hbox{{C\kern5pt\XeTeXpicfile {image} width10pt D}}E\XeTeXpicfile {image} width5pt }}
+\end"
+    ));
+    let operations = lopdf::content::Content::decode(content.as_bytes()).unwrap().operations;
+    let mut translation = [0.0f32; 2];
+    let mut images = Vec::new();
+    for op in operations {
+        if op.operator == "cm" {
+            translation = [op.operands[4].as_float().unwrap(), op.operands[5].as_float().unwrap()];
+        } else if op.operator == "Do" {
+            images.push(translation);
+        }
+    }
+    assert_eq!(images, [[17.435, -9.0], [58.586, -9.0], [82.939, -9.0]]);
+}
+
+/// TL's link right edge is 205.202bp, not 205.201bp: xdvipdfmx rounds
+/// raw TFM fixwords with sqxfw; TeX's stored widths truncate. The 46sp
+/// kern puts the difference across PDF's 0.001bp rounding boundary.
+#[test]
+fn tfm_annotation_metrics_use_the_driver_rounding() {
+    let (mut eng, _) = ship(
+        r"\catcode`\{=1 \catcode`\}=2
+\pdfpagewidth=300pt \pdfpageheight=120pt
+\font\a=cmr10 at13.37pt \a
+\shipout\hbox{\kern46sp\special{pdf:bann << /Subtype /Link /A << /S /URI /URI (https://example.org) >> >>}MMMMMMMMMMgj\special{pdf:eann}}
+\end"
+    );
+    let bytes = tex_core::driver::finish_pdf(&mut eng, false).unwrap();
+    let pdf = lopdf::Document::load_mem(&bytes).unwrap();
+    let page = pdf.get_dictionary(pdf.get_pages()[&1]).unwrap();
+    let (_, annotations) = pdf.dereference(page.get(b"Annots").unwrap()).unwrap();
+    let (_, annotation) = pdf.dereference(&annotations.as_array().unwrap()[0]).unwrap();
+    let rect: Vec<f32> = annotation.as_dict().unwrap().get(b"Rect").unwrap().as_array().unwrap()
+        .iter().map(|value| value.as_float().unwrap()).collect();
+    assert_eq!(rect, [72.001, 35.860, 205.202, 47.552]);
+}

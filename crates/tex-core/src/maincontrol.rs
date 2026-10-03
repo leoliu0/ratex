@@ -2253,7 +2253,11 @@ impl Engine {
                 let mut fonts = EngineFontLookup {
                     loader: &mut self.font_loader,
                     programs: &mut doc.imported_programs,
-                    replace: !fixed.inclusion_copy_font,
+                    // pdftoepdf.cc `copyFont` replaces Type 1 fonts by the
+                    // font map's programs; xdvipdfmx's pdf_import_object
+                    // copies the included page's fonts unchanged.
+                    replace: !fixed.inclusion_copy_font
+                        && self.engine_kind != crate::engine::EngineKind::XeTeX,
                 };
                 let mut host = crate::pdf_images::PdfImportHost {
                     next_object: &mut self.pdf_next_obj,

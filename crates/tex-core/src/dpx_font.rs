@@ -171,7 +171,13 @@ fn uc_is_valid(ch: i32) -> bool {
 /// at most 100 entries, runs of consecutive codes with consecutive
 /// destinations in one `bfrange`.
 fn cmap_stream(name: &str, map: &BTreeMap<u16, Vec<u8>>) -> String {
+    cmap_stream_w(name, map, false)
+}
+
+/// `cmap_stream` with one-byte source codes (`<00> <FF>` code space) when `one_byte`.
+fn cmap_stream_w(name: &str, map: &BTreeMap<u16, Vec<u8>>, one_byte: bool) -> String {
     use std::fmt::Write;
+    let code = |v: u16| if one_byte { format!("{:02X}", v & 0xFF) } else { format!("{v:04X}") };
     let mut out = String::new();
     out.push_str("/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n");
     out.push_str("/CMapName /");
@@ -183,7 +189,11 @@ fn cmap_stream(name: &str, map: &BTreeMap<u16, Vec<u8>>) -> String {
         }
     }
     out.push_str(" def\n/CMapType 2 def\n/CIDSystemInfo <<\n  /Registry (Adobe)\n  /Ordering (UCS)\n  /Supplement 0\n>> def\n");
-    out.push_str("1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n");
+    out.push_str(if one_byte {
+        "1 begincodespacerange\n<00> <FF>\nendcodespacerange\n"
+    } else {
+        "1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n"
+    });
     let hex = |b: &[u8]| b.iter().fold(String::new(), |mut s, c| {
         let _ = write!(s, "{c:02X}");
         s
@@ -231,7 +241,7 @@ fn cmap_stream(name: &str, map: &BTreeMap<u16, Vec<u8>>) -> String {
                 blocks.push((c, run, dst));
                 k += run + 1;
             } else {
-                let _ = writeln!(chars, "<{:04X}> <{}>", hi << 8 | c as u16, hex(dst));
+                let _ = writeln!(chars, "<{}> <{}>", code(hi << 8 | c as u16), hex(dst));
                 count += 1;
                 k += 1;
                 if count >= 100 {
@@ -245,9 +255,9 @@ fn cmap_stream(name: &str, map: &BTreeMap<u16, Vec<u8>>) -> String {
             for (c, run, dst) in blocks {
                 let _ = writeln!(
                     out,
-                    "<{:04X}> <{:04X}> <{}>",
-                    hi << 8 | c as u16,
-                    hi << 8 | (c as usize + run) as u16,
+                    "<{}> <{}> <{}>",
+                    code(hi << 8 | c as u16),
+                    code(hi << 8 | (c as usize + run) as u16),
                     hex(dst)
                 );
             }
@@ -257,6 +267,26 @@ fn cmap_stream(name: &str, map: &BTreeMap<u16, Vec<u8>>) -> String {
     flush(&mut out, &mut chars, &mut count);
     out.push_str("endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n");
     out
+}
+
+/// The ToUnicode CMap xdvipdfmx writes for a Type 1 font (`pdf_font_load_type1`):
+/// the glyph name of every used code through the Adobe glyph list, one-byte
+/// codes. `glyph_names[code]` is the font's encoding; `used` the code bitset.
+pub fn type1_to_unicode_cmap(glyph_names: &[String], used: &[u64; 4], cmap_name: &str) -> Option<String> {
+    let mut map: BTreeMap<u16, Vec<u8>> = BTreeMap::new();
+    for code in 0..256usize {
+        if used[code / 64] >> (code % 64) & 1 == 0 {
+            continue;
+        }
+        let Some(name) = glyph_names.get(code).filter(|n| !n.is_empty() && *n != ".notdef") else { continue };
+        let Some(ch) = crate::pdf_fonts::glyph_to_scalar(name).filter(|c| !(0xE000..=0xF8FF).contains(&(*c as u32))) else {
+            continue;
+        };
+        let mut d = Vec::new();
+        utf16be(ch as u32, &mut d);
+        map.insert(code as u16, d);
+    }
+    (!map.is_empty()).then(|| cmap_stream_w(cmap_name, &map, true))
 }
 
 // ------------------------------------------------------------- cmap table

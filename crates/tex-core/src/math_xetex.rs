@@ -1309,7 +1309,9 @@ impl Engine {
         };
         if bw != w && !list_empty {
             let b = match &b {
-                Node::Box { kind, .. } if *kind == VBOX => crate::boxes::hpack(vec![b], None, HBOX, &self.eqtb).node,
+                Node::Box { kind, .. } if *kind == VBOX || *kind == crate::boxes::VTOP => {
+                    crate::boxes::hpack(vec![b], None, HBOX, &self.eqtb).node
+                }
                 _ => b,
             };
             let Node::Box { w: bw, list, .. } = b else { unreachable!() };

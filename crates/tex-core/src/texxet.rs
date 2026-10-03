@@ -267,6 +267,8 @@ impl Engine {
                         Node::LuaGlyph(g) => (crate::boxes::lua_glyph_dims(&self.eqtb, g).0 as i64, true),
                         Node::Ligature { lig_width, .. } => (*lig_width as i64, true),
                         Node::Box { w, .. } => (*w as i64, true),
+                        // xetex.web §1146: native_word/glyph whatsits are visible
+                        Node::NativeGlyphRun { width, .. } => (*width as i64, true),
                         Node::Rule { width, .. } => (*width as i64, true),
                         Node::Kern(k, _) | Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) | Node::SpaceAdjKern(k, _) => {
                             (*k as i64, false)

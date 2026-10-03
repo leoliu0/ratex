@@ -712,8 +712,8 @@ pub fn to_unicode_cmap(
     Some(cmap_stream(cmap_name, &map))
 }
 
-/// `agl_get_unicodes` for the name forms that do not need the Adobe glyph
-/// list: `uniXXXX[XXXX..]` and `uXXXX[XX]`, components joined by `_`,
+/// `agl_get_unicodes`: Adobe glyph list names and the `uniXXXX[XXXX..]` and
+/// `uXXXX[XX]` forms, components joined by `_`,
 /// anything after the first `.` ignored. Other names yield nothing.
 fn agl_unicodes(name: &str) -> Vec<u32> {
     let stem = name.split('.').next().unwrap_or("");
@@ -733,7 +733,11 @@ fn agl_unicodes(name: &str) -> Vec<u32> {
                 continue;
             }
         }
-        return Vec::new();
+        // a plain glyph name of the Adobe glyph list
+        match crate::pdf_fonts::glyph_to_scalar(comp) {
+            Some(c) => out.push(c as u32),
+            None => return Vec::new(),
+        }
     }
     out
 }

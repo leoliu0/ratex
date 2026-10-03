@@ -1040,11 +1040,6 @@ pub fn build_xe_font(
         let name = cff_name(cff).ok_or("No valid FontName found in the CFF font")?;
         let tagged = format!("{tag}+{name}");
         let info = crate::dpx_cff::cff_info(data, face_index)?;
-        if info.is_cid {
-            return Err(format!(
-                "CID-keyed OpenType font `{name}` is not supported by the native font writer yet"
-            ));
-        }
         let sub = crate::dpx_cff::subset_cid_cff(data, face_index, used, &tagged)?;
         if let Some(stem) = sub.std_vw {
             if let Some(e) = desc.entries.iter_mut().find(|e| e.0 == "StemV") {

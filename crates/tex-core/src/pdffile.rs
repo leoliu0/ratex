@@ -1016,6 +1016,33 @@ fn make_subset_tag(content_hash: &[u8; 16], base_font: &str) -> String {
     tag
 }
 
+/// pdfobj.c `write_string`: a literal string (a hex string when it is mostly unprintable).
+fn pdf_literal_string(s: &[u8]) -> String {
+    let printable = |c: u8| (32..=126).contains(&c);
+    let nescc = s.iter().filter(|&&c| !printable(c)).count();
+    if nescc > s.len() / 3 {
+        let mut out = String::from("<");
+        for &c in s {
+            out.push_str(&format!("{c:02X}"));
+        }
+        out.push('>');
+        return out;
+    }
+    let mut out = String::from("(");
+    for &c in s {
+        match c {
+            b'(' | b')' | b'\\' => {
+                out.push('\\');
+                out.push(c as char);
+            }
+            c if printable(c) => out.push(c as char),
+            c => out.push_str(&format!("\\{c:03o}")),
+        }
+    }
+    out.push(')');
+    out
+}
+
 /// xdvipdfmx's Type0/CIDFont objects of a XeTeX native font
 /// (`dpx_font::build_xe_font`).
 fn write_xe_font(
@@ -1323,6 +1350,33 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         .iter()
         .map(|font| font_file_key(font, T1Transform::default()))
         .collect();
+    // xdvipdfmx (`pdf_font_load_type1`) embeds a TFM font's Type 1 program as a Type1C CFF of
+    // its own, one per font; the pdfTeX writer below keeps the programs it could not convert.
+    let mut xe_tags: BTreeSet<String> = BTreeSet::new();
+    let mut xdpx_type1: HashMap<usize, crate::dpx_t1::Type1C> = HashMap::new();
+    if doc.xdvipdfmx {
+        for (index, font) in doc.fonts.iter().enumerate() {
+            let (Some(pdftex), false, false) = (&font.pdftex, font.font_file.is_empty(), is_sfnt(font)) else {
+                continue;
+            };
+            let mut tag = make_subset_tag(&font.content_hash, &format!("{}{:?}", pdftex.tfm_name, font.used_chars));
+            tag.pop();
+            let mut salt = 0u32;
+            while xe_tags.contains(&tag) {
+                salt += 1;
+                tag = make_subset_tag(&font.content_hash, &format!("{salt}{}{:?}", pdftex.tfm_name, font.used_chars));
+                tag.pop();
+            }
+            // (a map encoding is `encoding_id >= 0`; else the program's own encoding)
+            let encoding = font.encoding_diff.as_deref().filter(|_| pdftex.enc_file.is_some());
+            if let Ok(converted) =
+                crate::dpx_t1::type1_to_type1c(&font.font_file, font.length1, encoding, &font.used_chars, &tag)
+            {
+                xe_tags.insert(tag);
+                xdpx_type1.insert(index, converted);
+            }
+        }
+    }
     // epdf.c `copyFont`: the map entries' programs that replaced the fonts
     // of included PDF files go through the same writing pass.
     let imported: Vec<EmbedFont> = doc
@@ -1340,8 +1394,8 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
     // 1. Prepare Type 1 subsets
     let mut glyphs_by_file: HashMap<FontFileKey, Option<BTreeSet<String>>> = HashMap::new();
     let mut all_glyph_files: std::collections::HashSet<FontFileKey> = std::collections::HashSet::new();
-    for (font, &key) in doc.fonts.iter().zip(&font_keys) {
-        if font.font_file.is_empty() || is_sfnt(font) {
+    for (index, (font, &key)) in doc.fonts.iter().zip(&font_keys).enumerate() {
+        if font.font_file.is_empty() || is_sfnt(font) || xdpx_type1.contains_key(&index) {
             continue;
         }
         merge_glyph_demand(&mut glyphs_by_file, key, required_glyphs(font));
@@ -1368,9 +1422,11 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         .fonts
         .iter()
         .zip(&font_keys)
-        .chain(imported.iter().zip(&imported_keys))
-        .filter_map(|(font, &key)| {
-            if is_sfnt(font) || font.font_file.is_empty() || !attempted_files.insert(key) {
+        .enumerate()
+        .map(|(index, (font, key))| (font, key, xdpx_type1.contains_key(&index)))
+        .chain(imported.iter().zip(&imported_keys).map(|(font, key)| (font, key, false)))
+        .filter_map(|(font, &key, converted)| {
+            if converted || is_sfnt(font) || font.font_file.is_empty() || !attempted_files.insert(key) {
                 return None;
             }
             let glyphs = glyphs_by_file.get(&key)?.as_ref();
@@ -1604,7 +1660,8 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         .fonts
         .iter()
         .zip(&font_keys)
-        .map(|(f, &key)| {
+        .enumerate()
+        .map(|(index, (f, &key))| {
             let font = if f.obj_font > 0 {
                 f.obj_font as usize
             } else {
@@ -1615,7 +1672,8 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             }
             let sfnt = is_sfnt(f);
             // writefont.c: fonts of one Type 1 program share its descriptor
-            let desc = if sfnt || f.font_file.is_empty() {
+            let own_type1 = xdpx_type1.contains_key(&index);
+            let desc = if sfnt || f.font_file.is_empty() || own_type1 {
                 if f.desc_obj > 0 { f.desc_obj as usize } else { b.alloc() }
             } else {
                 *desc_cache
@@ -1633,6 +1691,8 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             let widths = (!sfnt && f.pdftex.is_some()).then(|| b.alloc());
             let file = if f.font_file.is_empty() {
                 None
+            } else if own_type1 {
+                Some(b.alloc())
             } else if sfnt {
                 let sfnt_k = SfntKey {
                     content_hash: f.content_hash,
@@ -1781,8 +1841,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         }
     }
 
-    let mut xe_tags: BTreeSet<String> = BTreeSet::new();
-    for ((f, fo), key) in doc.fonts.iter().zip(&font_objs).zip(&font_keys) {
+    for (index, ((f, fo), key)) in doc.fonts.iter().zip(&font_objs).zip(&font_keys).enumerate() {
         if let Some(xe) = &f.xe {
             write_xe_font(&mut b, doc, f, xe, fo.font, &mut xe_tags)?;
             continue;
@@ -1914,6 +1973,61 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
                     "<< /Type /Font /Subtype /Type0 /BaseFont /{} /Encoding {} 0 R /DescendantFonts [ {} 0 R ]{}{} >>",
                     escape_pdf_name(&prep.pdf_name), enc_obj, fo.cidfont.unwrap(), to_ref,
                     font_attr_entry(&f.font_attr)
+                ),
+            );
+        } else if let (Some(t1c), Some(pdftex)) = (xdpx_type1.get(&index), &f.pdftex) {
+            // xdvipdfmx `pdf_font_load_type1`: /FontFile3 /Type1C, widths of the program
+            let file = fo.file.expect("a converted font owns its program object");
+            b.set_stream(file, "/Subtype /Type1C", &t1c.data, true);
+            let n = crate::dpx_font::pdf_number;
+            let name = escape_pdf_name(&t1c.base_font);
+            let mut desc = format!(
+                "<< /Type /FontDescriptor /CapHeight {} /Ascent {} /Descent {} /ItalicAngle {} /StemV {} /Flags {} /FontBBox [{} {} {} {}] /FontFile3 {file} 0 R",
+                n(t1c.cap_height), n(t1c.ascent), n(t1c.descent), n(t1c.italic_angle), n(t1c.stem_v),
+                t1c.flags, n(t1c.font_bbox[0]), n(t1c.font_bbox[1]), n(t1c.font_bbox[2]), n(t1c.font_bbox[3]),
+            );
+            if doc.major_version < 2 {
+                desc.push_str(" /CharSet ");
+                desc.push_str(&pdf_literal_string(t1c.charset.as_bytes()));
+            }
+            desc.push_str(&format!(" /FontName /{name} >>"));
+            b.set(fo.desc, desc);
+            let widths_obj = fo.widths.expect("pdfTeX fonts own a /Widths object");
+            let widths: Vec<String> = t1c.widths.iter().map(|&w| n(w)).collect();
+            b.set(widths_obj, format!("[{}]", widths.join(" ")));
+            // (`pdf_create_ToUnicode_CMap(fullname, ..)`: a built-in encoding's CMap is named
+            // after the tagged font; it is the font's own, never shared)
+            let own_cmap = pdftex.enc_file.is_none().then(|| {
+                f.encoding_diff.as_deref().and_then(|names| {
+                    crate::dpx_font::type1_to_unicode_cmap(
+                        names,
+                        &f.used_chars,
+                        &format!("{}-UTF16", t1c.base_font),
+                    )
+                })
+            });
+            let to = fo
+                .tounicode
+                .filter(|_| !attr_defines_key(&f.font_attr, "ToUnicode"))
+                .map(|to| {
+                    let (to, text) = match &own_cmap {
+                        Some(Some(text)) => (if emitted_tounicode.contains(&to) { b.alloc() } else { to }, text.as_str()),
+                        _ => (to, pdftex.tounicode.as_deref().unwrap_or_default()),
+                    };
+                    if emitted_tounicode.insert(to) {
+                        b.set_stream(to, "", text.as_bytes(), true);
+                    }
+                    format!(" /ToUnicode {to} 0 R")
+                })
+                .unwrap_or_default();
+            let encoding = fo.encoding.map(|e| format!(" /Encoding {e} 0 R")).unwrap_or_default();
+            // a built-in encoding's ToUnicode is made by the font loader, a map encoding's later
+            let (before, after) = if pdftex.enc_file.is_none() { (to, String::new()) } else { (String::new(), to) };
+            b.set(
+                fo.font,
+                format!(
+                    "<< /Type /Font /Subtype /Type1{before} /Widths {widths_obj} 0 R /FirstChar {} /LastChar {}{encoding}{after} /BaseFont /{name} /FontDescriptor {} 0 R{} >>",
+                    t1c.first_char, t1c.last_char, fo.desc, font_attr_entry(&f.font_attr)
                 ),
             );
         } else {

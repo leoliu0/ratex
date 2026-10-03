@@ -258,7 +258,7 @@ fn read_index_header(d: &[u8], pos: usize) -> R<(Vec<u32>, usize)> {
 }
 
 /// `cff_index_size` for `count` objects of `datalen` bytes in total.
-fn index_size(count: usize, datalen: usize) -> usize {
+pub(crate) fn index_size(count: usize, datalen: usize) -> usize {
     if count == 0 {
         2
     } else {
@@ -279,7 +279,7 @@ fn offsize_for(datalen: usize) -> usize {
 }
 
 /// `cff_pack_index`.
-fn pack_index(items: &[Vec<u8>], out: &mut Vec<u8>) -> R<()> {
+pub(crate) fn pack_index(items: &[Vec<u8>], out: &mut Vec<u8>) -> R<()> {
     if items.len() > 0xffff {
         return Err("too many INDEX entries".into());
     }
@@ -397,15 +397,15 @@ fn op_id(key: &str) -> Option<usize> {
 }
 
 #[derive(Clone)]
-struct Entry {
-    id: usize,
+pub(crate) struct Entry {
+    pub(crate) id: usize,
     /// empty == removed (`count == 0`)
-    values: Vec<f64>,
+    pub(crate) values: Vec<f64>,
 }
 
 #[derive(Clone, Default)]
-struct Dict {
-    entries: Vec<Entry>,
+pub(crate) struct Dict {
+    pub(crate) entries: Vec<Entry>,
 }
 
 impl Dict {
@@ -481,7 +481,7 @@ impl Dict {
 
     /// `cff_dict_known`: the first entry with that key, if it has operands. (dvipdfmx scans all
     /// entries for any with `count > 0`.)
-    fn known(&self, key: &str) -> bool {
+    pub(crate) fn known(&self, key: &str) -> bool {
         match op_id(key) {
             Some(id) => self.entries.iter().any(|e| e.id == id && !e.values.is_empty()),
             None => false,
@@ -489,7 +489,7 @@ impl Dict {
     }
 
     /// `cff_dict_get`
-    fn get(&self, key: &str, idx: usize) -> R<f64> {
+    pub(crate) fn get(&self, key: &str, idx: usize) -> R<f64> {
         match self.find(key) {
             Some(e) => e
                 .values
@@ -501,7 +501,7 @@ impl Dict {
     }
 
     /// `cff_dict_set`
-    fn set(&mut self, key: &str, idx: usize, value: f64) -> R<()> {
+    pub(crate) fn set(&mut self, key: &str, idx: usize, value: f64) -> R<()> {
         let id = op_id(key).ok_or("CFF: Unknown CFF DICT operator.")?;
         match self.entries.iter_mut().find(|e| e.id == id) {
             Some(e) => match e.values.get_mut(idx) {
@@ -516,7 +516,7 @@ impl Dict {
     }
 
     /// `cff_dict_add`
-    fn add(&mut self, key: &str, count: usize) -> R<()> {
+    pub(crate) fn add(&mut self, key: &str, count: usize) -> R<()> {
         let id = op_id(key).ok_or("CFF: Unknown CFF DICT operator.")?;
         if let Some(e) = self.entries.iter().find(|e| e.id == id) {
             if e.values.len() != count {
@@ -538,7 +538,7 @@ impl Dict {
     }
 
     /// `cff_dict_pack`: the ROS entry first, then every other entry in order.
-    fn pack(&self) -> Vec<u8> {
+    pub(crate) fn pack(&self) -> Vec<u8> {
         let mut out = Vec::new();
         let ros = op_id("ROS").unwrap();
         if let Some(e) = self.entries.iter().find(|e| e.id == ros) {
@@ -548,6 +548,28 @@ impl Dict {
             put_dict_entry(e, &mut out);
         }
         out
+    }
+
+    /// `cff_dict_update` over a caller's string tables: `remap` turns the SID operand of every
+    /// string entry (`cff_get_string` + `cff_add_string(.., 1)`) into the new SID.
+    pub(crate) fn remap_sids(
+        &mut self,
+        remap: &mut dyn FnMut(u16) -> Result<u16, String>,
+    ) -> Result<(), String> {
+        for e in &mut self.entries {
+            if e.values.is_empty() {
+                continue;
+            }
+            match DICT_OPERATOR[e.id].1 {
+                Ty::Sid => e.values[0] = f64::from(remap(e.values[0] as u16)?),
+                Ty::Ros => {
+                    e.values[0] = f64::from(remap(e.values[0] as u16)?);
+                    e.values[1] = f64::from(remap(*e.values.get(1).ok_or("Invalid ROS")? as u16)?);
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     /// `cff_dict_update`: move SID operands into the new string table.
@@ -1860,7 +1882,7 @@ fn cid_dofont(cff: &CffFont, used: &BTreeSet<u16>) -> R<CffSubset> {
     Ok(CffSubset { data, last_cid, cidset: cidset_of(&set, last_cid), std_vw: None })
 }
 
-const STD_STRINGS: [&str; 391] = [
+pub(crate) const STD_STRINGS: [&str; 391] = [
     ".notdef", "space", "exclam", "quotedbl", "numbersign", "dollar", "percent", "ampersand",
     "quoteright", "parenleft", "parenright", "asterisk", "plus", "comma", "hyphen", "period",
     "slash", "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",

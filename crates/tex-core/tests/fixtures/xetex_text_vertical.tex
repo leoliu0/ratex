@@ -1,0 +1,9 @@
+\catcode`\{=1 \catcode`\}=2 \catcode`\#=6
+\tracingonline1 \showboxbreadth100 \showboxdepth100
+\font\vf="[lmroman10-regular.otf]:vertical" at 12pt
+\XeTeXuseglyphmetrics1
+\setbox0\hbox{\vf Vertical rotated text\XeTeXglyph36 }
+\showbox0
+\message{[\the\fontdimen2\vf,\the\fontdimen5\vf,\the\fontdimen6\vf]}
+\setbox0\hbox{\vf Vertical rotated text}\message{\the\wd0,\the\ht0,\the\dp0}
+\end

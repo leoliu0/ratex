@@ -94,3 +94,17 @@ fn font_failure_italic_correction_and_space_factor_match_texlive() {
         "\\hbox(11.27+2.89998)x71.17\n.\\a ab\n.\\kern 0.0\n.\\a cd\n.\\glue 3.33 plus 1.665 minus 1.11\n.\\i f\n.\\kern 1.45\n.\\glue 3.58 plus 1.79 minus 1.19333\n.\\a x:\n.\\glue 1.0\n.\\glue 4.44 plus 3.32999 minus 0.555\n.\\a y\n.\\glue 3.33 plus 1.665 minus 1.11\n.\\a x:\n.\\rule(*+*)x0.4\n.\\glue 3.33 plus 1.665 minus 1.11\n.\\a y",
     );
 }
+
+/// `:vertical` fonts advance by FreeType's vertical advance (OS/2 typo
+/// ascender minus descender without `vmtx`: 1em) with both glyph origins at
+/// (0, 0): space, quad, word widths and the box extents all follow from it.
+#[test]
+fn vertical_font_metrics_match_texlive() {
+    let eng = run_file(include_bytes!("fixtures/xetex_text_vertical.tex"));
+    let t = &eng.term;
+    has(
+        t,
+        "\\hbox(9.0+3.0)x258.0\n.\\vf Vertical\n.\\glue 12.0 plus 6.0 minus 4.0\n.\\vf rotated\n.\\glue 12.0 plus 6.0 minus 4.0\n.\\vf text\n.\\vf glyph#36",
+    );
+    has(t, "[12.0pt,5.172pt,12.0pt] 252.0pt,8.328pt,0.26399pt");
+}

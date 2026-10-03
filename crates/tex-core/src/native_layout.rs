@@ -291,15 +291,67 @@ fn layout_chars(nf: &NativeFont, face: &crate::font_program::ShapeFace, text: &s
     out.glyph_infos()
         .iter()
         .zip(out.glyph_positions())
-        .map(|(i, p)| RunGlyph {
-            gid: i.glyph_id as u16,
-            cluster: i.cluster,
-            x_adv: p.x_advance,
-            y_adv: p.y_advance,
-            x_off: p.x_offset,
-            y_off: p.y_offset,
+        .map(|(i, p)| {
+            let mut g = RunGlyph {
+                gid: i.glyph_id as u16,
+                cluster: i.cluster,
+                x_adv: p.x_advance,
+                y_adv: p.y_advance,
+                x_off: p.x_offset,
+                y_off: p.y_offset,
+            };
+            if nf.vertical {
+                xetex_vertical_metrics(face, &mut g);
+            }
+            g
         })
         .collect()
+}
+
+/// Turn rustybuzz's vertical metrics into the ones XeTeX's HarfBuzz callbacks
+/// give (XeTeXFontInst.cpp `_get_glyph_v_advance`, `_get_glyph_h_origin`,
+/// `_get_glyph_v_origin`): FreeType's vertical advance (`vmtx`, else the OS/2
+/// typographic ascender minus descender, else `hhea`), and both glyph origins
+/// at (0, 0), whereas rustybuzz centres the glyph horizontally and moves it to
+/// its own vertical origin.
+fn xetex_vertical_metrics(face: &crate::font_program::ShapeFace, g: &mut RunGlyph) {
+    use ttf_parser::GlyphId;
+    let gid = GlyphId(g.gid);
+    let tables = face.tables();
+    let hhea_height = i32::from(face.ascender()) - i32::from(face.descender());
+    let (rb_advance, ft_advance) = if tables.vmtx.is_some() {
+        let a = i32::from(face.glyph_ver_advance(gid).unwrap_or(0));
+        (a, a)
+    } else {
+        let ft = match (face.typographic_ascender(), face.typographic_descender()) {
+            (Some(a), Some(d)) => i32::from(a) - i32::from(d),
+            _ => i32::from(tables.hhea.ascender) - i32::from(tables.hhea.descender),
+        };
+        (hhea_height, ft)
+    };
+    // a zero advance is a mark whose width the shaper cleared
+    if g.y_adv != 0 {
+        g.y_adv += rb_advance - ft_advance;
+    }
+    let h_origin = if tables.hmtx.is_some() {
+        i32::from(face.glyph_hor_advance(gid).unwrap_or(0)) / 2
+    } else {
+        i32::from(face.units_per_em()) / 2
+    };
+    let v_origin = match face.glyph_y_origin(gid) {
+        Some(y) => i32::from(y),
+        None => {
+            // an empty `glyf` outline has zero extents
+            let ext = face.glyph_bounding_box(gid).map(|b| (i32::from(b.y_max), i32::from(b.y_min))).or(tables.glyf.map(|_| (0, 0)));
+            match ext {
+                Some((y_max, _)) if tables.vmtx.is_some() => y_max + i32::from(face.glyph_ver_side_bearing(gid).unwrap_or(0)),
+                Some((y_max, y_min)) => y_max + ((hhea_height - (y_max - y_min)) >> 1),
+                None => i32::from(face.ascender()),
+            }
+        }
+    };
+    g.x_off += h_origin;
+    g.y_off += v_origin;
 }
 
 /// Result of `measure_native_node`.

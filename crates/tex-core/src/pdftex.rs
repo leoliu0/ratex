@@ -488,6 +488,11 @@ impl Engine {
                         embedded.pdftex = Some(crate::pdfout::PdfTexFont {
                             tfm_name: font.tfm_name.clone(),
                             enc_file: font.encoding.as_ref().and(font.enc_name.clone()),
+                            enc_ps_name: font
+                                .enc_name
+                                .as_ref()
+                                .filter(|_| font.encoding.is_some())
+                                .and_then(|name| self.font_loader.enc_ps_names.get(name).cloned()),
                             tounicode,
                         });
                         embedded.font_attr = font_attr.clone();

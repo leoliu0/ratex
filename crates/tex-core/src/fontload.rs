@@ -78,6 +78,8 @@ pub struct FontLoader {
     pub map: crate::fontmap::FontMap,
     pub tfm_cache: crate::FxHashMap<(String, i32), Rc<Font>>,
     pub enc_cache: crate::FxHashMap<String, Rc<[String]>>,
+    /// the `/Name` an encoding file declares before its vector, by file name
+    pub enc_ps_names: crate::FxHashMap<String, String>,
     /// virtual fonts by (tfm name, resolved at size)
     pub vf_fonts: crate::FxHashMap<(String, i32), Rc<VfFont>>,
     /// engine font id of a VF-backed font -> base engine font ids
@@ -141,6 +143,7 @@ impl FontLoader {
             map: crate::fontmap::FontMap::default(),
             tfm_cache: crate::FxHashMap::default(),
             enc_cache: crate::FxHashMap::default(),
+            enc_ps_names: crate::FxHashMap::default(),
             vf_fonts: crate::FxHashMap::default(),
             vf_bases: crate::FxHashMap::default(),
             tracked_fonts: crate::FxHashMap::default(),
@@ -385,6 +388,9 @@ impl FontLoader {
         let text = String::from_utf8_lossy(&data);
         let rc: Rc<[String]> = parse_enc_names(&text)?.into();
         self.enc_cache.insert(name.to_string(), rc.clone());
+        if let Some(ps_name) = parse_enc_ps_name(&text) {
+            self.enc_ps_names.insert(name.to_string(), ps_name);
+        }
         Some(rc)
     }
 
@@ -585,6 +591,24 @@ fn strip_ps_comments(text: &str) -> String {
         }
     }
     out
+}
+
+/// pdfencoding.c `load_encoding_file`: the `/Name` that opens the file after its comment
+/// lines (`/TeXBase1Encoding [ ...`).
+pub(crate) fn parse_enc_ps_name(text: &str) -> Option<String> {
+    let rest = text
+        .lines()
+        .skip_while(|line| {
+            let line = line.trim_start();
+            line.is_empty() || line.starts_with('%')
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let rest = rest.trim_start().strip_prefix('/')?;
+    let end = rest
+        .find(|c: char| c.is_whitespace() || "[]()<>{}/%".contains(c))
+        .unwrap_or(rest.len());
+    (end > 0).then(|| rest[..end].to_string())
 }
 
 /// Glyph names from an encoding vector: `/Name [ /glyph1 /glyph2 ... ] def`.

@@ -1351,9 +1351,17 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         .map(|font| font_file_key(font, T1Transform::default()))
         .collect();
     // xdvipdfmx (`pdf_font_load_type1`) embeds a TFM font's Type 1 program as a Type1C CFF of
-    // its own, one per font; the pdfTeX writer below keeps the programs it could not convert.
+    // its own, one per font; a program it cannot read is a fatal error there.
     let mut xe_tags: BTreeSet<String> = BTreeSet::new();
     let mut xdpx_type1: HashMap<usize, crate::dpx_t1::Type1C> = HashMap::new();
+    // pdfencoding.c: the fonts of one map encoding share its /Encoding and ToUnicode CMap, made
+    // for the codes all of them use
+    struct XdpxEncoding {
+        glyphs: Vec<Option<String>>,
+        used: [bool; 256],
+        ps_name: String,
+    }
+    let mut xdpx_encodings: BTreeMap<String, XdpxEncoding> = BTreeMap::new();
     if doc.xdvipdfmx {
         for (index, font) in doc.fonts.iter().enumerate() {
             let (Some(pdftex), false, false) = (&font.pdftex, font.font_file.is_empty(), is_sfnt(font)) else {
@@ -1369,12 +1377,26 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             }
             // (a map encoding is `encoding_id >= 0`; else the program's own encoding)
             let encoding = font.encoding_diff.as_deref().filter(|_| pdftex.enc_file.is_some());
-            if let Ok(converted) =
-                crate::dpx_t1::type1_to_type1c(&font.font_file, font.length1, encoding, &font.used_chars, &tag)
-            {
-                xe_tags.insert(tag);
-                xdpx_type1.insert(index, converted);
+            let converted = crate::dpx_t1::type1_to_type1c(
+                &font.font_file,
+                font.length1,
+                encoding,
+                &font.used_chars,
+                &tag,
+            )
+            .map_err(|e| format!("xdvipdfmx:fatal: {e} (font `{}`)", pdftex.tfm_name))?;
+            xe_tags.insert(tag);
+            if let Some(enc_file) = &pdftex.enc_file {
+                let group = xdpx_encodings.entry(enc_file.clone()).or_insert_with(|| XdpxEncoding {
+                    glyphs: converted.encoding.clone(),
+                    used: [false; 256],
+                    ps_name: pdftex.enc_ps_name.clone().unwrap_or_else(|| enc_file.clone()),
+                });
+                for (all, &one) in group.used.iter_mut().zip(&converted.used) {
+                    *all |= one;
+                }
             }
+            xdpx_type1.insert(index, converted);
         }
     }
     // epdf.c `copyFont`: the map entries' programs that replaced the fonts
@@ -1681,7 +1703,9 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
                     .or_insert_with(|| if f.desc_obj > 0 { f.desc_obj as usize } else { b.alloc() })
             };
             let cidfont = if sfnt { Some(b.alloc()) } else { None };
-            let encoding = if sfnt {
+            let encoding = if own_type1 {
+                None
+            } else if sfnt {
                 Some(b.alloc())
             } else {
                 // writeenc.c: one /Encoding object per encoding file
@@ -1707,7 +1731,9 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             } else {
                 Some(*file_cache.entry(key).or_insert_with(|| b.alloc()))
             };
-            let tounicode = if sfnt {
+            let tounicode = if own_type1 {
+                None
+            } else if sfnt {
                 if f.is_native {
                     if f.to_unicode_2byte.is_empty() {
                         None
@@ -1841,6 +1867,28 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         }
     }
 
+    // pdfencoding.c `pdf_encoding_complete`: the /Encoding entry and the ToUnicode CMap (made on
+    // first use) of each map encoding
+    let mut xdpx_enc_entry: HashMap<String, String> = HashMap::new();
+    let mut xdpx_enc_tu: HashMap<String, (Option<String>, Option<usize>)> = HashMap::new();
+    for (enc_file, group) in &xdpx_encodings {
+        let entry = match crate::dpx_t1::encoding_resource(&group.glyphs, &group.used, &|g| escape_pdf_name(g)) {
+            crate::dpx_t1::EncodingResource::None => String::new(),
+            crate::dpx_t1::EncodingResource::Name(name) => format!(" /Encoding /{name}"),
+            crate::dpx_t1::EncodingResource::Dict(dict) => {
+                let obj = b.alloc();
+                b.set(obj, dict);
+                format!(" /Encoding {obj} 0 R")
+            }
+        };
+        xdpx_enc_entry.insert(enc_file.clone(), entry);
+        let text = crate::dpx_t1::to_unicode_cmap(
+            &group.glyphs,
+            &group.used,
+            &format!("{}-UTF16", group.ps_name),
+        );
+        xdpx_enc_tu.insert(enc_file.clone(), (text, None));
+    }
     for (index, ((f, fo), key)) in doc.fonts.iter().zip(&font_objs).zip(&font_keys).enumerate() {
         if let Some(xe) = &f.xe {
             write_xe_font(&mut b, doc, f, xe, fo.font, &mut xe_tags)?;
@@ -1995,32 +2043,43 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             let widths_obj = fo.widths.expect("pdfTeX fonts own a /Widths object");
             let widths: Vec<String> = t1c.widths.iter().map(|&w| n(w)).collect();
             b.set(widths_obj, format!("[{}]", widths.join(" ")));
-            // (`pdf_create_ToUnicode_CMap(fullname, ..)`: a built-in encoding's CMap is named
-            // after the tagged font; it is the font's own, never shared)
-            let own_cmap = pdftex.enc_file.is_none().then(|| {
-                f.encoding_diff.as_deref().and_then(|names| {
-                    crate::dpx_font::type1_to_unicode_cmap(
-                        names,
-                        &f.used_chars,
-                        &format!("{}-UTF16", t1c.base_font),
-                    )
-                })
-            });
-            let to = fo
-                .tounicode
-                .filter(|_| !attr_defines_key(&f.font_attr, "ToUnicode"))
-                .map(|to| {
-                    let (to, text) = match &own_cmap {
-                        Some(Some(text)) => (if emitted_tounicode.contains(&to) { b.alloc() } else { to }, text.as_str()),
-                        _ => (to, pdftex.tounicode.as_deref().unwrap_or_default()),
-                    };
-                    if emitted_tounicode.insert(to) {
-                        b.set_stream(to, "", text.as_bytes(), true);
+            let to = if attr_defines_key(&f.font_attr, "ToUnicode") {
+                String::new()
+            } else if let Some(enc_file) = &pdftex.enc_file {
+                // a map encoding's CMap is the encoding's, named after it
+                let slot = xdpx_enc_tu.get_mut(enc_file).expect("every map encoding has a group");
+                match &slot.0 {
+                    Some(text) => {
+                        let obj = *slot.1.get_or_insert_with(|| {
+                            let obj = b.alloc();
+                            b.set_stream(obj, "", text.as_bytes(), true);
+                            obj
+                        });
+                        format!(" /ToUnicode {obj} 0 R")
                     }
-                    format!(" /ToUnicode {to} 0 R")
-                })
+                    None => String::new(),
+                }
+            } else {
+                // `pdf_create_ToUnicode_CMap(fullname, enc_vec, usedchars)`: a built-in encoding's
+                // CMap is named after the tagged font and made before missing glyphs are dropped
+                let mut used = [false; 256];
+                for (code, u) in used.iter_mut().enumerate() {
+                    *u = char_is_used(&f.used_chars, code as u8);
+                }
+                match crate::dpx_t1::to_unicode_cmap(&t1c.encoding, &used, &format!("{}-UTF16", t1c.base_font)) {
+                    Some(text) => {
+                        let obj = b.alloc();
+                        b.set_stream(obj, "", text.as_bytes(), true);
+                        format!(" /ToUnicode {obj} 0 R")
+                    }
+                    None => String::new(),
+                }
+            };
+            let encoding = pdftex
+                .enc_file
+                .as_ref()
+                .map(|enc_file| xdpx_enc_entry[enc_file].clone())
                 .unwrap_or_default();
-            let encoding = fo.encoding.map(|e| format!(" /Encoding {e} 0 R")).unwrap_or_default();
             // a built-in encoding's ToUnicode is made by the font loader, a map encoding's later
             let (before, after) = if pdftex.enc_file.is_none() { (to, String::new()) } else { (String::new(), to) };
             b.set(

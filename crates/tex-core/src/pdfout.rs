@@ -437,6 +437,8 @@ pub struct PdfTexFont {
     /// the codes every font with that encoding uses. None = the program's
     /// builtin encoding, which pdfTeX leaves implicit.
     pub enc_file: Option<String>,
+    /// The `/Name` the encoding file declares (xdvipdfmx names the ToUnicode CMap after it).
+    pub enc_ps_name: Option<String>,
     /// tounicode.c `write_tounicode` CMap.
     pub tounicode: Option<std::rc::Rc<str>>,
 }

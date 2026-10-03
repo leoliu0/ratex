@@ -684,6 +684,7 @@ impl<'a> RenderCtx<'a> {
         }
         self.dpx_emit("Q");
         self.dpx.gs.pop();
+        self.dpxt_reset_fonts();
     }
 
     /// `pdf_dev_grestore_to`
@@ -692,6 +693,7 @@ impl<'a> RenderCtx<'a> {
             self.dpx_emit("Q");
             self.dpx.gs.pop();
         }
+        self.dpxt_reset_fonts();
     }
 
     /// `pdf_dev_concat`

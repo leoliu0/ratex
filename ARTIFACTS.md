@@ -130,6 +130,10 @@ python3 scripts/test_package_dist.py
 The full workspace suite includes the archive-index checks. The release
 workflow also executes an extracted archive and the native installers on each
 supported operating system.
+Linux CI removes completed dev-profile test builds before the release build
+to reclaim disk for the reference TeX Live installation and archive staging.
+XeTeX fixture paths use forward slashes when inserted into TeX input,
+including on Windows.
 
 The font suite's deliberate missing-glyph fixture sets `expect_missing_glyphs`:
 TeX Live itself emits `.notdef` for these characters. This exempts only that

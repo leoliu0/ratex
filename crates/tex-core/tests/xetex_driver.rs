@@ -206,7 +206,7 @@ fn bcontent_compensates_rule_positions() {
 /// push/pop discards its extra displacement but keeps the outer one.
 #[test]
 fn bare_pictures_preserve_dvi_displacement_until_the_containing_box_ends() {
-    let image = format!("{}/tests/fixtures/xetex_pic/tmp-1.png", env!("CARGO_MANIFEST_DIR"));
+    let image = format!("{}/tests/fixtures/xetex_pic/tmp-1.png", env!("CARGO_MANIFEST_DIR")).replace('\\', "/");
     let (_, content) = ship(&format!(
         r"\catcode`\{{=1 \catcode`\}}=2
 \font\a=cmr10 \a

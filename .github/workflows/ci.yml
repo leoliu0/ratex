@@ -117,6 +117,10 @@ jobs:
         if: runner.os == 'Linux'
         run: python3 scripts/test_package_dist.py
 
+      - name: Release completed Linux test build artifacts
+        if: runner.os == 'Linux'
+        run: cargo clean --profile dev
+
       - name: Build release ratex binary
         run: cargo build --release --locked --bin ratex
 

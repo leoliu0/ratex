@@ -727,9 +727,10 @@ mod tests {
 
     fn specials(eng: &Engine) -> Vec<String> {
         let Some(Node::Box { list, .. }) = eng.eqtb.boxed[0].as_ref() else { return Vec::new() };
+        let dir = DIR.replace('\\', "/");
         list.iter()
             .filter_map(|n| match n {
-                Node::Whatsit(w @ WhatIt::XePic { .. }, _) => Some(pic_out_text(w).replace(DIR, ".")),
+                Node::Whatsit(w @ WhatIt::XePic { .. }, _) => Some(pic_out_text(w).replace(&dir, ".")),
                 _ => None,
             })
             .collect()
@@ -739,10 +740,11 @@ mod tests {
     /// writes to the XDV file for the same input.
     #[test]
     fn pic_out_special_matches_xetex_xdv() {
+        let dir = DIR.replace('\\', "/");
         let eng = engine(&format!(
-            "\\XeTeXpicfile {DIR}/tmp-1.png width 33.3pt rotated 37.3 \
-             \\XeTeXpdffile {DIR}/multi.pdf page 2 media scaled 700 \
-             \\XeTeXpdffile {DIR}/multi.pdf "
+            "\\XeTeXpicfile {dir}/tmp-1.png width 33.3pt rotated 37.3 \
+             \\XeTeXpdffile {dir}/multi.pdf page 2 media scaled 700 \
+             \\XeTeXpdffile {dir}/multi.pdf "
         ));
         assert_eq!(
             specials(&eng),
@@ -756,10 +758,11 @@ mod tests {
 
     #[test]
     fn rotated_pictures_match_xetex_matrices() {
+        let dir = DIR.replace('\\', "/");
         let eng = engine(&format!(
-            "\\XeTeXpicfile {DIR}/tmp-1.png rotated 90 \\XeTeXpicfile {DIR}/tmp-1.png rotated -37.3 \
-             \\XeTeXpicfile {DIR}/tmp-1.png rotated 135 \\XeTeXpicfile {DIR}/tmp-1.png rotated 200.7 scaled 333 \
-             \\XeTeXpicfile {DIR}/tmp-1.png width 100.5pt "
+            "\\XeTeXpicfile {dir}/tmp-1.png rotated 90 \\XeTeXpicfile {dir}/tmp-1.png rotated -37.3 \
+             \\XeTeXpicfile {dir}/tmp-1.png rotated 135 \\XeTeXpicfile {dir}/tmp-1.png rotated 200.7 scaled 333 \
+             \\XeTeXpicfile {dir}/tmp-1.png width 100.5pt "
         ));
         let m = |s: &str| format!("pdf:image matrix {s} page 0 (./tmp-1.png)");
         assert_eq!(

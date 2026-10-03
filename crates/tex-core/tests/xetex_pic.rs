@@ -6,7 +6,7 @@
 use tex_core::engine::{Engine, EngineKind, InteractionMode};
 
 fn run(body: &str) -> Vec<String> {
-    let dir = format!("{}/tests/fixtures/xetex_pic", env!("CARGO_MANIFEST_DIR"));
+    let dir = format!("{}/tests/fixtures/xetex_pic", env!("CARGO_MANIFEST_DIR")).replace('\\', "/");
     let mut eng = Engine::new_with_kind(EngineKind::XeTeX, true);
     eng.init_primitives();
     eng.add_nullfont();
@@ -83,7 +83,7 @@ fn pdf_node_sizes_follow_page_boxes() {
 
 #[test]
 fn pdf_page_count_is_zero_for_missing_and_non_pdf_files() {
-    let dir = format!("{}/tests/fixtures/xetex_pic", env!("CARGO_MANIFEST_DIR"));
+    let dir = format!("{}/tests/fixtures/xetex_pic", env!("CARGO_MANIFEST_DIR")).replace('\\', "/");
     let lines = run(&format!(
         r"
 \immediate\write16{{C=\the\XeTeXpdfpagecount {dir}/multi.pdf }}
@@ -113,7 +113,7 @@ fn missing_picture_is_an_error_and_adds_no_node() {
 /// directory part is fixture-specific here; TL showed `"./multi.pdf"`).
 #[test]
 fn show_box_prints_picture_nodes() {
-    let dir = format!("{}/tests/fixtures/xetex_pic", env!("CARGO_MANIFEST_DIR"));
+    let dir = format!("{}/tests/fixtures/xetex_pic", env!("CARGO_MANIFEST_DIR")).replace('\\', "/");
     let lines = run(&format!(
         r"\showboxbreadth100 \showboxdepth100 \tracingonline1
 \setbox0\hbox{{\XeTeXpdffile {dir}/multi.pdf page -1 art \XeTeXpicfile {dir}/tmp-1.png }}\showbox0"

@@ -113,18 +113,20 @@ including decompression of embedded package and font files. The TeX Live
 column was re-measured with the same counter (median of seven passes); the
 4.11 G and 0.41 s first recorded here could not be reproduced.
 
-## Post-review measurements (commit `87e5563`)
+## Post-review and XeTeX-cutover measurements (commit `f979b24`)
 
-Same method and machine, median of seven passes:
+Same prepared-pass method and machine; median of three instruction-counter
+passes and seven timing passes:
 
 | Measurement | Ratex (post-review) | TeX Live 2026 `pdflatex` |
 | --- | ---: | ---: |
-| User-space instructions, `trust_own` single pass | 7.34 G | 6.42 G |
-| CPU time, `trust_own` single pass | ~0.88 s | ~0.66 s |
-| Format load | ~35 ms | — |
-| PDF serialize + write | ~36 ms | — |
+| User-space instructions, `trust_own` single pass | 7.29 G | 6.41 G |
+| CPU time, `trust_own` single pass | ~0.88 s | ~0.64 s |
+| Format load | ~32 ms | — |
+| PDF serialize + write | ~37 ms | — |
 
-Across the five benchmark documents that build (70, 90, 81, 29 and 49
-pages), a prepared pass now executes 49.3 G instructions in total, down from
-135.2 G at the baseline; their PDFs match TeX Live's in extracted text
-(`pdftotext -layout`) and in 50 dpi page renders.
+Across the current five benchmark documents (70, 89, 81, 29 and 49 pages),
+a prepared pass executes 48.8 G instructions in total, versus 48.9 G in the
+pre-XeTeX binary. All five PDFs remain byte-identical to that binary and match
+TeX Live in extracted text (`pdftotext -layout`) and 50 dpi page renders.
+The original pre-review source snapshots totaled 135.2 G instructions.

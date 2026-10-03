@@ -240,6 +240,29 @@ impl<'a> RenderCtx<'a> {
         self.dpxt.fonts.len() - 1
     }
 
+    // Keep the xdvipdfmx metric/cursor work out of pdfTeX's glyph hot path.
+    #[inline(never)]
+    pub(super) fn dpxt_tfm_position(
+        &mut self,
+        fid: u16,
+        ch: u8,
+        x: i64,
+        v: i64,
+        virtual_font: bool,
+    ) -> Option<(i64, i64, i64)> {
+        let (advance, height, depth) = self.dpx_tfm_metrics(fid, ch)?;
+        let (x, v) = self.dpx_sync(x, v);
+        self.dpx_advance_h(self.font_char_advance_sp(fid, ch), advance);
+        if virtual_font {
+            // VF packets track their physical glyphs inside their push/pop.
+            Some((x, v, advance))
+        } else {
+            self.dpx_track_box(x, v, advance, height, depth);
+            let (x, v) = self.dpx_compensate(x, v);
+            Some((x, v, advance))
+        }
+    }
+
     /// TFM Type 1 characters use the same device positions and truncating
     /// TJ adjustments as native glyphs, but their PDF strings are literal.
     pub(super) fn dpxt_tfm_char(&mut self, fid: u16, ch: u8, x: i64, y: i64, width: i64) {

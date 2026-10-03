@@ -2237,18 +2237,8 @@ impl<'a> RenderCtx<'a> {
         self.eng.ensure_vf_bases(f);
         let virtual_font = self.eng.font_loader.vf_bases.contains_key(&f);
         let (x_sp, v_sp, dvi_advance) = if self.eng.engine_kind == crate::engine::EngineKind::XeTeX {
-            let Some((advance, height, depth)) = self.dpx_tfm_metrics(f, c) else { return };
-            let (x, v) = self.dpx_sync(x_sp, v_sp);
-            self.dpx_advance_h(self.font_char_advance_sp(f, c), advance);
-            if virtual_font {
-                // VF packets have their own push/pop; track their physical
-                // glyphs rather than the virtual character's metric box.
-                (x, v, advance)
-            } else {
-                self.dpx_track_box(x, v, advance, height, depth);
-                let (x, v) = self.dpx_compensate(x, v);
-                (x, v, advance)
-            }
+            let Some(position) = self.dpxt_tfm_position(f, c, x_sp, v_sp, virtual_font) else { return };
+            position
         } else {
             (x_sp, v_sp, 0)
         };

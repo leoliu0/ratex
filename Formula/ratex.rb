@@ -1,17 +1,17 @@
 class Ratex < Formula
   desc "Fast self-contained TeX engine written in Rust"
   homepage "https://github.com/leoliu0/ratex"
-  version "0.4.7"
+  version "0.5.0"
   license any_of: ["MIT", "Apache-2.0"]
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/leoliu0/ratex/releases/download/v0.4.7/tex-suite-v0.4.7-macos-aarch64.tar.gz"
-      sha256 "4623359433c935382198d40113329d182caabcdbe47bb1cd4f8d95f0c0b09bf3"
+      url "https://github.com/leoliu0/ratex/releases/download/v0.5.0/tex-suite-v0.5.0-macos-aarch64.tar.gz"
+      sha256 "ff83f2defb1b48fe771d1ea1e267c0772cd2228f8b4bb9544d724b2196008bc1"
     end
     if Hardware::CPU.intel?
-      url "https://github.com/leoliu0/ratex/releases/download/v0.4.7/tex-suite-v0.4.7-macos-x86_64.tar.gz"
-      sha256 "14e021b33e6f5c826ab9e20870fc6eac24382931c1b625ae6cf9d978ac4f1f93"
+      url "https://github.com/leoliu0/ratex/releases/download/v0.5.0/tex-suite-v0.5.0-macos-x86_64.tar.gz"
+      sha256 "49756459ed7a6b02adc462e49d2537f9c44e758dc29566921139e05fbf0ab9dd"
     end
   end
 

@@ -316,6 +316,15 @@ impl<'a> RenderCtx<'a> {
         self.dpxt.font = None;
     }
 
+    /// `pdf_dev_reset_fonts(0)`: Q invalidates the device font and its
+    /// synthetic matrix, so the next BT must start from the identity.
+    pub(super) fn dpxt_reset_fonts(&mut self) {
+        self.dpxt.font = None;
+        self.dpxt.slant = 0.0;
+        self.dpxt.extend = 1.0;
+        self.dpxt.rotate = WMODE_HH;
+    }
+
     fn dpxt_start_string(&mut self, xpos: i64, ypos: i64, slant: f64, extend: f64, rotate: i32) {
         let delx = xpos - self.dpxt.ref_x;
         let dely = ypos - self.dpxt.ref_y;

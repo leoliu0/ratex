@@ -361,7 +361,7 @@ impl<'a, 'f> Parser<'a, 'f> {
     }
 }
 
-/// A real number as dvipdfmx prints it: at most five decimals, no trailing
+/// A real number as dvipdfmx prints it: at most eight decimals, no trailing
 /// zeros.
 pub(crate) fn fmt_num(v: f64) -> String {
     if !v.is_finite() {
@@ -370,7 +370,7 @@ pub(crate) fn fmt_num(v: f64) -> String {
     if v.fract() == 0.0 && v.abs() < 1e15 {
         return format!("{}", v as i64);
     }
-    let mut s = format!("{v:.5}");
+    let mut s = format!("{v:.8}");
     while s.ends_with('0') {
         s.pop();
     }

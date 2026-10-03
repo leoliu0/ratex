@@ -30,6 +30,10 @@ Typesetting algorithms are documented in the module comments of
 | `pdfrender/dpx.rs`, `pdfrender/dpx_text.rs` | XeTeX's xdvipdfmx-compatible PDF driver: separate cached DVI and reader positions, text matrices and glyph runs; raw TFM metric words use the driver's `sqxfw` rounding for annotation bounds |
 | `diagnostics.rs` | structured diagnostics and their output bounds |
 
+The XeTeX driver serializes PDF object numbers with eight decimal places of
+precision. Restoring graphics state invalidates the device font and synthetic
+text matrix, matching xdvipdfmx's reset before the next text run.
+
 ## Executables and dispatch
 
 `crates/tex-cli` defines these Cargo binaries: `ratex`, `texmk`, `pdflatex`,

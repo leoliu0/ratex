@@ -512,12 +512,19 @@ impl Engine {
                 }
                 crate::font_program::FontProgramKind::TrueType
                 | crate::font_program::FontProgramKind::Cff => {
+                    let face = prog.face()?;
+                    let bounds = face.global_bounding_box();
+                    let scale = 1000.0 / f64::from(prog.units_per_em);
+                    let font_bbox = [bounds.x_min, bounds.y_min, bounds.x_max, bounds.y_max]
+                        .map(|coordinate| (f64::from(coordinate) * scale).round());
                     let base_font = font
                         .map_fontname
                         .clone()
                         .unwrap_or_else(|| prog.postscript_name.clone());
                     let is_native = self.pdf_doc.native_bindings.contains_key(&(fid as usize));
                     if is_native {
+                        let ascent = (f64::from(face.ascender()) * scale).round();
+                        let descent = (f64::from(face.descender()) * scale).round();
                         let bindings = self
                             .pdf_doc
                             .native_bindings
@@ -563,8 +570,10 @@ impl Engine {
                                 last_char: 255,
                                 widths: Vec::new(),
                                 font_matrix_scale: 1.0,
-                                font_bbox: [-500.0, -300.0, 1500.0, 1200.0],
+                                font_bbox,
                                 italic_angle: 0.0,
+                                // Baseline metrics come from the font headers;
+                                // math glyph bounds can span many ems.
                                 ascent,
                                 descent,
                                 cap_height,
@@ -617,7 +626,6 @@ impl Engine {
                         } else {
                             group.map_or(own_chars, |(_, chars)| chars)
                         };
-                        let face = prog.face()?;
                         let bindings = self
                             .pdf_doc
                             .legacy_bindings
@@ -709,7 +717,7 @@ impl Engine {
                                 last_char: 255,
                                 widths: Vec::new(),
                                 font_matrix_scale: 1.0,
-                                font_bbox: [-500.0, -300.0, 1500.0, 1200.0],
+                                font_bbox,
                                 italic_angle: 0.0,
                                 ascent,
                                 descent,

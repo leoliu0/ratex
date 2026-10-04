@@ -108,6 +108,59 @@ impl Engine {
         self.lua_tex.lang.entry(id).or_default()
     }
 
+    fn lua_language_made(&self, lang: u8) -> bool {
+        self.lua_tex.lang_made[usize::from(lang >> 6)] >> (lang & 63) & 1 != 0
+    }
+
+    /// texlang.c `tex_languages[lang] != NULL`: the language has patterns,
+    /// exceptions, parameters or hjcodes, or was made by `lang.new` or by
+    /// typesetting text in it. Language 0 is made by the patterns of a format.
+    pub(crate) fn lua_language_exists(&self, lang: u8) -> bool {
+        self.lua_language_made(lang)
+            || self.lua_tex.lang.contains_key(&lang)
+            || self.lua_tex.rich_exceptions.contains_key(&lang)
+            || self.hyphen_codes.contains_key(&lang)
+            || if lang == 0 { !self.hyphen_trie.is_empty() } else { self.hyphen_tries.contains_key(&lang) }
+    }
+
+    /// texlang.c `get_language(lang)` (`new_language` when it does not exist
+    /// yet): the language is there from now on, with the `\lccode`s as its
+    /// hjcodes under `\savinghyphcodes`.
+    pub(crate) fn lua_get_language(&mut self, lang: u8) {
+        if self.lua_language_exists(lang) {
+            return;
+        }
+        self.lua_tex.lang_made[usize::from(lang >> 6)] |= 1 << (lang & 63);
+        if self.eqtb.int_params[crate::prim::IntParam::SavingHyphCodes.idx() as usize] > 0 {
+            let mut codes = Box::new([0; 256]);
+            codes.copy_from_slice(&self.eqtb.lc_code[..256]);
+            self.hyphen_codes.insert(lang, codes);
+        }
+    }
+
+    /// luatex makes the language of every character it typesets (`new_char`
+    /// reads it with `get_language`), so `lang.new()` never hands it out.
+    pub(crate) fn lua_note_text_language(&mut self) {
+        let v = self.eqtb.int_params[crate::prim::IntParam::Language.idx() as usize];
+        let lang = if (1..=255).contains(&v) { v as u8 } else { 0 };
+        self.lua_tex.lang_made[usize::from(lang >> 6)] |= 1 << (lang & 63);
+    }
+
+    /// `lang.new([id])` (llanglib.c `lang_new`): `id` is made if it is not
+    /// there yet; without one `new_language(-1)` takes the number after the
+    /// highest language there is.
+    fn lua_new_language(&mut self, id: Option<u8>) -> Result<u8, String> {
+        let id = match id {
+            Some(id) => id,
+            None => {
+                let next = (0..=255u8).rev().find(|&l| self.lua_language_exists(l)).map_or(0, |l| u16::from(l) + 1);
+                u8::try_from(next).map_err(|_| "lang.new(): undefined language".to_string())?
+            }
+        };
+        self.lua_get_language(id);
+        Ok(id)
+    }
+
     /// The current `hyphenationmin` of `lang` (0: none).
     pub(crate) fn lang_hyphenation_min(&self, lang: u8) -> usize {
         self.lua_tex.lang.get(&lang).map_or(0, |p| p.hyphenation_min.max(0) as usize)
@@ -365,7 +418,10 @@ impl Engine {
 pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
     let t: LuaTable = lua.create_table().map_err(|e| format!("{e:?}"))?;
 
-    reg!(lua, t, "check", |id: i64| -> Result<i64, String> { language_id(id).map(i64::from) });
+    reg!(lua, t, "new", |id: Option<i64>| -> Result<i64, String> {
+        let id = id.map(language_id).transpose()?;
+        with_engine(|e| e.lua_new_language(id))?.map(i64::from)
+    });
     reg!(lua, t, "patterns_add", |id: i64, text: LuaString| -> Result<(), String> {
         let id = language_id(id)?;
         let text = bytes_of(&text);

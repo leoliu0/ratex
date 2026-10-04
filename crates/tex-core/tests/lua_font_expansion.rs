@@ -294,3 +294,37 @@ end
     }
     assert_eq!(lines, ["1.02 -1.00 awayTowerWaveAwayToYo", "1.00 0.00 AVAVAVWaTyVoyesTavoWay", "0.98 -1.00 awareawrywatchtypewriterWow,", "1.00 -1.00 yo-yo.TAVAvoyagewaves."], "{content}");
 }
+
+/// LuaTeX retains a positive half-step when font shrink can cover the
+/// excess: zero glue stretch must not prematurely force a syllable break.
+#[test]
+fn shrink_half_step_preserves_zero_glue_active_path() {
+    let e = run_luatex(r####"\directlua{
+local f=font.define{name='shrink-transition',size=655360,step=1,stretch=20,shrink=20,characters={
+ [65]={width=1000000},[66]={width=1000000},[67]={width=1000000},[68]={width=1000000},[45]={width=100000}}}
+function check_shrink_transition(expected)
+ local head,tail
+ local function append(n) if tail then tail.next=n;n.prev=tail else head=n end;tail=n end
+ local function glyph(c) local n=node.new('glyph');n.font=f;n.char=c;return n end
+ append(glyph(65));append(glyph(66))
+ local d=node.new('disc');d.subtype=3;d.penalty=50;d.pre=glyph(45);append(d)
+ append(glyph(67));local g=node.new('glue');g.width=100000;append(g)
+ append(glyph(68));local p=node.new('penalty');p.penalty=10000;append(p)
+ local fill=node.new('glue');fill.stretch=65536;fill.stretch_order=2;append(fill)
+ local lines=tex.linebreak(head,{hsize=2080000,pretolerance=-1,tolerance=200,adjustspacing=2,linepenalty=0})
+ local text={}
+ for line in node.traverse_id(node.id('hlist'),lines) do
+  local chars={}
+  for n in node.traverse_id(node.id('glyph'),line.list) do table.insert(chars,string.char(n.char)) end
+  table.insert(text,table.concat(chars,''))
+ end
+ local got=table.concat(text,'|')
+ assert(got==expected,'expected '..expected..', got '..got)
+ node.flush_list(lines)
+end
+}
+\rightskip=0pt\relax \directlua{check_shrink_transition('ABC|D')}
+\rightskip=0pt plus 0.2pt\relax \directlua{check_shrink_transition('AB-|CD')}
+"####);
+    assert_clean(&e);
+}

@@ -95,13 +95,67 @@ fn opentype_font_from_table_is_embedded_with_tounicode() {
     assert!(e.term.contains("WD=47.8592ptHT=7.15999ptFN=lmroman10-regular"), "{}", e.term);
     // the table's `subfont=1` (what luaotfload supplies) names the first face of a plain font file
     e.embed_used_fonts().expect("the font program of a Lua font is embedded");
-    let text: String = e
-        .pdf_doc
-        .native_bindings
+    let bytes = tex_core::pdffile::write_pdf(&e.pdf_doc).unwrap();
+    let parsed = lopdf::Document::load_mem(&bytes).unwrap();
+    let parent = parsed
+        .objects
         .values()
-        .flat_map(|bindings| bindings.iter().flat_map(|b| b.entries.iter().map(|(_, _, t)| t.clone())))
-        .collect();
-    assert!(text.contains('A') && text.contains('V') && text.contains('o') && text.contains('f') && text.contains('e'), "ToUnicode text: {text:?}");
+        .filter_map(|object| object.as_dict().ok())
+        .find(|dict| dict.get(b"Subtype").and_then(lopdf::Object::as_name).ok() == Some(b"Type0"))
+        .expect("composite font");
+    let descendant = parsed.dereference(&parent.get(b"DescendantFonts").unwrap().as_array().unwrap()[0]).unwrap().1;
+    let descriptor = parsed.dereference(descendant.as_dict().unwrap().get(b"FontDescriptor").unwrap()).unwrap().1;
+    let descriptor = descriptor.as_dict().unwrap();
+    // The exact table above under LuaTeX 1.24 / TeX Live 2026: bounds
+    // come from the complete font program, not this table's d/p metrics.
+    let bbox: Vec<i64> = descriptor
+        .get(b"FontBBox").unwrap().as_array().unwrap()
+        .iter().map(|value| value.as_i64().unwrap()).collect();
+    assert_eq!(bbox, [-430, -290, 1417, 1127]);
+    assert_eq!(descriptor.get(b"Ascent").unwrap().as_i64().unwrap(), 1127);
+    assert_eq!(descriptor.get(b"Descent").unwrap().as_i64().unwrap(), -290);
+    let cmap = parsed.dereference(parent.get(b"ToUnicode").unwrap()).unwrap().1;
+    let cmap = String::from_utf8(cmap.as_stream().unwrap().decompressed_content().unwrap()).unwrap();
+    for unicode in ["<0041>", "<0056>", "<006F>", "<0066>", "<0065>"] {
+        assert!(cmap.contains(unicode), "missing Unicode mapping {unicode}: {cmap}");
+    }
+}
+
+/// LuaTeX's Pagella Math descriptor keeps tall glyph bounds separate from
+/// baseline metrics; conflating them changes fractions' PDF reading order.
+#[test]
+fn math_font_descriptor_uses_baseline_metrics_not_glyph_bounds() {
+    let mut e = run_luatex(
+        r#"\directlua{
+ local file = "/<embedded>/fonts/opentype/public/tex-gyre-math/texgyrepagella-math.otf"
+ if not lfs.attributes(file) then texio.write_nl("NOFONT") return end
+ local id = font.define{
+  name="pagella-math", psname="TeXGyrePagellaMath-Regular",
+  filename=file, format="opentype", embedding="subset", encodingbytes=2,
+  type="real", subfont=1, size=655360, designsize=655360,
+  characters={[65]={index=1,width=655360,height=655360}},
+ }
+ font.current(id)
+}
+\outputmode=1 \shipout\hbox{A}"#,
+    );
+    assert_eq!(e.error_count, 0, "errors: {:?}\n{}", e.diagnostics, e.term);
+    if e.term.contains("NOFONT") {
+        return;
+    }
+    let bytes = tex_core::driver::finish_pdf(&mut e, false).expect("PDF output");
+    let pdf = lopdf::Document::load_mem(&bytes).expect("valid PDF");
+    let page = *pdf.get_pages().values().next().unwrap();
+    let fonts = pdf.get_page_resources(page).unwrap().0.unwrap().get(b"Font").unwrap();
+    let fonts = pdf.dereference(fonts).unwrap().1.as_dict().unwrap();
+    let parent = pdf.dereference(fonts.iter().next().unwrap().1).unwrap().1.as_dict().unwrap();
+    let descendant = pdf.dereference(&parent.get(b"DescendantFonts").unwrap().as_array().unwrap()[0]).unwrap().1;
+    let descriptor = pdf.dereference(descendant.as_dict().unwrap().get(b"FontDescriptor").unwrap()).unwrap().1.as_dict().unwrap();
+    let bbox: Vec<i64> = descriptor.get(b"FontBBox").unwrap().as_array().unwrap()
+        .iter().map(|value| value.as_i64().unwrap()).collect();
+    assert_eq!(bbox, [-851, -1775, 3580, 2275]);
+    assert_eq!(descriptor.get(b"Ascent").unwrap().as_i64().unwrap(), 726);
+    assert_eq!(descriptor.get(b"Descent").unwrap().as_i64().unwrap(), -274);
 }
 
 /// The luaharfbuzz API luaotfload uses behaves like luahbtex's: shaping
@@ -148,6 +202,75 @@ fn luaharfbuzz_shapes_like_luahbtex() {
     assert!(line.contains("HB=81:0:500.0,123:1:833.0,43:4:444.0,50:5:444.0,103:6:333.0,125:7:556.0,103:9:333.0,104:10:639.0,116:11:528.0"), "{line}");
 }
 
+/// `/usr/bin/texlua` reports this metadata even when Lua's `io.open` is
+/// replaced: native fontloader.info does not route immutable fonts through Lua IO.
+#[test]
+fn fontloader_info_retains_native_metadata_with_replaced_lua_io() {
+    let e = run_luatex(
+        r#"\directlua{
+ local file = "/<embedded>/fonts/opentype/public/lm/lmroman10-regular.otf"
+ if not lfs.attributes(file) then texio.write_nl("NOFONT") return end
+ local open = io.open
+ io.open = function() error("Lua IO must not load immutable font metadata") end
+ local ok, info = pcall(fontloader.info, file)
+ io.open = open
+ assert(ok, info)
+ assert(info.fontname == "LMRoman10-Regular")
+ assert(info.fullname == "LMRoman10-Regular")
+ assert(info.familyname == "LM Roman 10")
+ assert(info.units_per_em == 1000 and info.italicangle == 0)
+ assert(info.pfminfo.weight == 400 and info.pfminfo.width == 5)
+ assert(info.filename == file)
+}"#,
+    );
+    assert_eq!(e.error_count, 0, "errors: {:?}\n{}", e.diagnostics, e.term);
+}
+
+/// The same SFNT seeks/reads under `/usr/bin/texlua`: metadata reads, an
+/// outline-table read, then backward seeks must keep the original file bytes.
+#[test]
+fn embedded_font_stream_preserves_metadata_to_outline_transitions() {
+    let e = run_luatex(
+        r#"\directlua{
+ local file = "/<embedded>/fonts/opentype/public/lm/lmroman10-regular.otf"
+ if not lfs.attributes(file) then texio.write_nl("NOFONT") return end
+ local f = assert(io.open(file, "rb"))
+ assert(f:read(4) == "OTTO")
+ local count = string.unpack(">I2", f:read(2))
+ f:seek("set", 12)
+ local tables = {}
+ for i = 1, count do
+  local tag, checksum, offset, length = string.unpack(">c4I4I4I4", f:read(16))
+  tables[tag] = {offset=offset,length=length}
+ end
+ local head = assert(tables.head)
+ f:seek("set", head.offset + 12)
+ assert(string.unpack(">I4", f:read(4)) == 0x5F0F3CF5)
+ f:seek("set", head.offset + 18)
+ assert(string.unpack(">I2", f:read(2)) == 1000)
+ local outline = assert(tables["CFF "])
+ f:seek("set", outline.offset)
+ assert(f:read(1):byte() == 1)
+ f:seek("set", outline.offset + outline.length - 1)
+ assert(type(f:read(1)) == "string")
+ f:seek("set", head.offset + 18)
+ assert(string.unpack(">I2", f:read(2)) == 1000)
+ assert(f:seek("end") == lfs.attributes(file, "size"))
+ f:seek("end", -1)
+ assert(type(f:read(1)) == "string" and f:read(1) == nil)
+ f:seek("set", head.offset + 12)
+ assert(string.unpack(">I4", f:read(4)) == 0x5F0F3CF5)
+ f:close()
+ assert(not pcall(f.read, f, 1))
+ local closed = assert(io.open(file, "rb"))
+ assert(closed:read(4) == "OTTO")
+ closed:close()
+ assert(not pcall(closed.read, closed, 1))
+}"#,
+    );
+    assert_eq!(e.error_count, 0, "errors: {:?}\n{}", e.diagnostics, e.term);
+}
+
 /// The font library exports luatex's member list.
 #[test]
 fn font_library_has_luatex_members() {
@@ -183,4 +306,51 @@ fn info_dictionary_names_luatex() {
     assert_eq!(text(b"Producer"), "LuaTeX-1.24.0");
     assert!(text(b"PTEX.FullBanner").starts_with("This is LuaTeX, Version 1.24.0"));
     assert!(info.get(b"PTEX_FullBanner").is_err() && info.get(b"PTEX.Fullbanner").is_err());
+}
+
+#[test]
+fn character_snapshot_retains_zero_successor_and_variant_precedence() {
+    let e = run_luatex(
+        r#"\directlua{
+ local id = font.define{
+  name="sparse-character-data", size=655360,
+  characters={
+   [66]={width=100,next=0},
+   [68]={width=100,next=69,extensible={rep=70},vert_variants={{glyph=71,advance=17}}}
+  }
+ }
+ local c = font.getcopy(id).characters
+ assert(c[66].next == 0)
+ assert(c[68].next == nil and c[68].vert_variants[1].glyph == 71)
+}"#,
+    );
+    assert_eq!(e.error_count, 0, "errors: {:?}\n{}", e.diagnostics, e.term);
+}
+
+#[test]
+fn unicode_snapshot_preserves_boundary_and_binary_mappings() {
+    let e = run_luatex(
+        r#"\directlua{
+ local short = '00a100b200c300d4'
+ local long = short .. 'a'
+ local binary = string.rep('00a1',5) .. string.char(254,255)
+ local id = font.define{name='unicode-boundary',size=655360,characters={
+  [65]={width=10,tounicode=short},
+  [66]={width=10,tounicode=long},
+  [67]={width=10,tounicode=binary},
+  [68]={width=10,tounicode=''},
+  [69]={width=10},
+  [70]={width=10,tounicode=128512},
+  [71]={width=10,tounicode={65,128512,66,67,68,69}}
+ }}
+ local c = font.getcopy(id).characters
+ assert(c[65].tounicode == short)
+ assert(c[66].tounicode == long)
+ assert(c[67].tounicode == binary)
+ assert(c[68].tounicode == '' and c[69].tounicode == nil)
+ assert(c[70].tounicode == 'D83DDE00')
+ assert(c[71].tounicode == '0041D83DDE000042004300440045')
+}"#,
+    );
+    assert_eq!(e.error_count, 0, "errors: {:?}\n{}", e.diagnostics, e.term);
 }

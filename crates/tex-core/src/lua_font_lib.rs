@@ -3,6 +3,8 @@
 //! `font.addcharacters`) and a font back to a Lua table (`font.getfont`,
 //! `font.getcopy`, `font.each`, `font.read_tfm`).
 
+use std::fmt::Write as _;
+
 use tex_lua::{CallbackLua, LuaBytes, LuaTable, Value};
 
 use crate::engine::Engine;
@@ -149,12 +151,60 @@ fn enum_field(t: &LuaTable, key: &str, default: usize, names: &[&str]) -> usize 
     default
 }
 
-fn hex4(out: &mut Vec<u8>, u: i64) {
-    out.extend_from_slice(format!("{u:04X}").as_bytes());
+/// Formatting buffer for numeric/table ToUnicode values; only long mappings
+/// need an allocation while they are being assembled.
+enum ToUnicodeBuffer {
+    Inline { bytes: [u8; 16], len: u8 },
+    Heap(Vec<u8>),
+}
+
+impl ToUnicodeBuffer {
+    fn new() -> Self {
+        Self::Inline { bytes: [0; 16], len: 0 }
+    }
+
+    fn is_empty(&self) -> bool {
+        match self {
+            Self::Inline { len, .. } => *len == 0,
+            Self::Heap(bytes) => bytes.is_empty(),
+        }
+    }
+
+    fn finish(self) -> LuaCharToUnicode {
+        match self {
+            Self::Inline { bytes, len } => LuaCharToUnicode::Inline { bytes, len },
+            Self::Heap(bytes) => LuaCharToUnicode::Heap(bytes.into_boxed_slice()),
+        }
+    }
+}
+
+impl std::fmt::Write for ToUnicodeBuffer {
+    fn write_str(&mut self, value: &str) -> std::fmt::Result {
+        match self {
+            Self::Inline { bytes, len } => {
+                let old_len = usize::from(*len);
+                if value.len() <= bytes.len() - old_len {
+                    bytes[old_len..old_len + value.len()].copy_from_slice(value.as_bytes());
+                    *len += value.len() as u8;
+                } else {
+                    let mut out = Vec::with_capacity(old_len + value.len());
+                    out.extend_from_slice(&bytes[..old_len]);
+                    out.extend_from_slice(value.as_bytes());
+                    *self = Self::Heap(out);
+                }
+            }
+            Self::Heap(bytes) => bytes.extend_from_slice(value.as_bytes()),
+        }
+        Ok(())
+    }
+}
+
+fn hex4(out: &mut ToUnicodeBuffer, u: i64) {
+    write!(out, "{u:04X}").expect("writing ToUnicode bytes cannot fail");
 }
 
 /// luatex's UTF-16 hex for one code point of a `tounicode` table/number.
-fn tounicode_hex(out: &mut Vec<u8>, u: i64) {
+fn tounicode_hex(out: &mut ToUnicodeBuffer, u: i64) {
     if u < 0xD7FF || (u > 0xDFFF && u <= 0xFFFF) {
         hex4(out, u);
     } else {
@@ -165,20 +215,20 @@ fn tounicode_hex(out: &mut Vec<u8>, u: i64) {
 }
 
 /// `characters[c].tounicode`.
-fn read_tounicode(t: &LuaTable) -> Option<Vec<u8>> {
+fn read_tounicode(t: &LuaTable) -> Option<LuaCharToUnicode> {
     let v = field(t, "tounicode")?;
     if let Some(n) = v.as_number() {
         let u = i64::from(round(n));
         if u < 0 {
             return None;
         }
-        let mut out = Vec::new();
+        let mut out = ToUnicodeBuffer::new();
         tounicode_hex(&mut out, u);
-        return Some(out);
+        return Some(out.finish());
     }
     if let Some(tab) = v.as_table() {
         let items: Vec<Value> = tab.sequence_values().unwrap_or_default();
-        let mut out = Vec::new();
+        let mut out = ToUnicodeBuffer::new();
         for item in &items {
             let Some(n) = item.as_number() else { break };
             let u = i64::from(round(n));
@@ -187,9 +237,12 @@ fn read_tounicode(t: &LuaTable) -> Option<Vec<u8>> {
             }
             tounicode_hex(&mut out, u);
         }
-        return (!out.is_empty()).then_some(out);
+        return (!out.is_empty()).then(|| out.finish());
     }
-    v.as_string_handle().map(|s| s.to_bytes())
+    v.as_string_handle().map(|s| {
+        let bytes = s.as_bytes().expect("font string belongs to the active Lua state");
+        LuaCharToUnicode::from_bytes(&bytes)
+    })
 }
 
 /// What `font_char_from_lua` needs to know about the font being read.
@@ -426,6 +479,7 @@ pub(crate) fn extensible_variants(e: &Extensible) -> Vec<MathVariant> {
 /// luatex `font_char_from_lua`.
 fn char_from_lua(t: &LuaTable, code: i32, ctx: &mut ParseCtx<'_>) -> Result<LuaCharInfo, String> {
     let mut co = LuaCharInfo::default();
+    let mut extras = LuaCharExtras::default();
     co.width = num_field(t, "width", 0);
     co.height = num_field(t, "height", 0);
     co.depth = num_field(t, "depth", 0);
@@ -436,14 +490,14 @@ fn char_from_lua(t: &LuaTable, code: i32, ctx: &mut ParseCtx<'_>) -> Result<LuaC
     co.left_protruding = num_field(t, "left_protruding", 0);
     co.right_protruding = num_field(t, "right_protruding", 0);
     co.used = bool_field(t, "used", false);
-    co.name = str_field(t, "name");
+    extras.name = str_field(t, "name");
     co.tounicode = read_tounicode(t);
     if ctx.has_math {
         co.top_accent = num_field(t, "top_accent", i32::MIN);
         co.bot_accent = num_field(t, "bot_accent", i32::MIN);
         let next = num_field(t, "next", -1);
         if next >= 0 {
-            co.next = Some(next as u32);
+            extras.next = Some(next as u32);
         }
         if let Some(ext) = field(t, "extensible").and_then(|v| v.as_table()) {
             let e = Extensible {
@@ -453,8 +507,8 @@ fn char_from_lua(t: &LuaTable, code: i32, ctx: &mut ParseCtx<'_>) -> Result<LuaC
                 rep: num_field(&ext, "rep", 0),
             };
             if e.top != 0 || e.bot != 0 || e.mid != 0 || e.rep != 0 {
-                co.vert_variants = extensible_variants(&e);
-                co.extensible = Some(e);
+                extras.vert_variants = extensible_variants(&e);
+                extras.extensible = Some(e);
             } else {
                 ctx.warnings.push(format!(
                     "lua-loaded font {} char U+{:X} has an invalid extensible field",
@@ -463,14 +517,14 @@ fn char_from_lua(t: &LuaTable, code: i32, ctx: &mut ParseCtx<'_>) -> Result<LuaC
             }
         }
         if let Some(v) = read_variants(t, "horiz_variants") {
-            co.hor_variants = v;
+            extras.hor_variants = v;
         }
         if let Some(v) = read_variants(t, "vert_variants") {
-            co.vert_variants = v;
-            co.extensible = None;
+            extras.vert_variants = v;
+            extras.extensible = None;
         }
         if let Some(mk) = field(t, "mathkern").and_then(|v| v.as_table()) {
-            co.math_kerns = MathKerns {
+            extras.math_kerns = MathKerns {
                 top_left: store_math_kerns(&mk, "top_left"),
                 top_right: store_math_kerns(&mk, "top_right"),
                 bottom_right: store_math_kerns(&mk, "bottom_right"),
@@ -485,7 +539,7 @@ fn char_from_lua(t: &LuaTable, code: i32, ctx: &mut ParseCtx<'_>) -> Result<LuaC
                 match lig_kern_key(k) {
                     Some(key) => {
                         let kern = value_number(v).map_or(0, round);
-                        co.kerns.insert(key, kern);
+                        extras.kerns.insert(key, kern);
                     }
                     None => ctx.warnings.push(format!(
                         "lua-loaded font {} char U+{:X} has an invalid kern field",
@@ -493,7 +547,7 @@ fn char_from_lua(t: &LuaTable, code: i32, ctx: &mut ParseCtx<'_>) -> Result<LuaC
                     )),
                 }
             }
-            if co.kerns.is_empty() {
+            if extras.kerns.is_empty() {
                 ctx.warnings.push(format!(
                     "lua-loaded font {} char U+{:X} has an invalid kerns field",
                     ctx.name, code
@@ -501,7 +555,7 @@ fn char_from_lua(t: &LuaTable, code: i32, ctx: &mut ParseCtx<'_>) -> Result<LuaC
             }
         }
     }
-    co.commands = read_commands(t, ctx)?;
+    extras.commands = read_commands(t, ctx)?;
     if let Some(lt) = field(t, "ligatures").and_then(|v| v.as_table()) {
         let pairs = lt.pairs::<Value, Value>().map_err(|e| format!("{e:?}"))?;
         if !pairs.is_empty() {
@@ -512,7 +566,7 @@ fn char_from_lua(t: &LuaTable, code: i32, ctx: &mut ParseCtx<'_>) -> Result<LuaC
                 match (key, entry) {
                     (Some(key), Some(entry)) if r != -1 => {
                         let op = enum_field(&entry, "type", 0, LIGATURE_TYPE_STRINGS) as u8;
-                        co.ligatures.insert(key, LuaLig { op, replacement: r as u32 });
+                        extras.ligatures.insert(key, LuaLig { op, replacement: r as u32 });
                     }
                     _ => ctx.warnings.push(format!(
                         "lua-loaded font {} char U+{:X} has an invalid ligature field",
@@ -520,13 +574,16 @@ fn char_from_lua(t: &LuaTable, code: i32, ctx: &mut ParseCtx<'_>) -> Result<LuaC
                     )),
                 }
             }
-            if co.ligatures.is_empty() {
+            if extras.ligatures.is_empty() {
                 ctx.warnings.push(format!(
                     "lua-loaded font {} char U+{:X} has an invalid ligatures field",
                     ctx.name, code
                 ));
             }
         }
+    }
+    if !extras.is_empty() {
+        co.extras = Some(Box::new(extras));
     }
     Ok(co)
 }
@@ -790,7 +847,10 @@ pub(crate) fn font_from_lua(eng: &mut Engine, f: FontId, t: &LuaTable) -> Result
             // `kerns`/`ligatures` mentioning `right_boundary` create the
             // (empty) right boundary character.
             if lf.right_boundary.is_none()
-                && lf.chars.values().any(|c| c.kerns.contains_key(&RIGHT_BOUNDARY) || c.ligatures.contains_key(&RIGHT_BOUNDARY))
+                && lf.chars.values().any(|c| {
+                    c.kerns().is_some_and(|kerns| kerns.contains_key(&RIGHT_BOUNDARY))
+                        || c.ligatures().is_some_and(|ligatures| ligatures.contains_key(&RIGHT_BOUNDARY))
+                })
             {
                 lf.right_boundary = Some(LuaCharInfo::default());
             }
@@ -1015,32 +1075,32 @@ fn char_to_lua(cx: &mut CallbackLua<'_>, lf: &LuaFont, co: &LuaCharInfo) -> Resu
     if lf.encodingbytes == 2 {
         set_int(&t, "index", co.index as i32)?;
     }
-    if let Some(name) = &co.name {
+    if let Some(name) = co.name() {
         set_bytes(&t, "name", name)?;
     }
-    if let Some(u) = &co.tounicode {
+    if let Some(u) = co.tounicode() {
         set_bytes(&t, "tounicode", u)?;
     }
-    let has_ext = co.extensible.is_some() || !co.hor_variants.is_empty() || !co.vert_variants.is_empty();
-    if let Some(next) = co.next.filter(|_| !has_ext) {
+    let has_ext = co.extensible().is_some() || !co.hor_variants().is_empty() || !co.vert_variants().is_empty();
+    if let Some(next) = co.next().filter(|_| !has_ext) {
         set_int(&t, "next", next as i32)?;
     }
     if co.used {
         set_bool(&t, "used", true)?;
     }
     if has_ext {
-        if !co.hor_variants.is_empty() {
-            let v = variants_table(cx, &co.hor_variants)?;
+        if !co.hor_variants().is_empty() {
+            let v = variants_table(cx, co.hor_variants())?;
             t.raw_set("horiz_variants", v).map_err(|e| format!("{e:?}"))?;
         }
-        if !co.vert_variants.is_empty() {
-            let v = variants_table(cx, &co.vert_variants)?;
+        if !co.vert_variants().is_empty() {
+            let v = variants_table(cx, co.vert_variants())?;
             t.raw_set("vert_variants", v).map_err(|e| format!("{e:?}"))?;
         }
     }
-    if !co.kerns.is_empty() {
+    if let Some(kerns) = co.kerns().filter(|kerns| !kerns.is_empty()) {
         let kt = cx.create_table().map_err(|e| format!("{e:?}"))?;
-        for (k, v) in &co.kerns {
+        for (k, v) in kerns {
             if *k == RIGHT_BOUNDARY {
                 kt.raw_set("right_boundary", i64::from(*v)).map_err(|e| format!("{e:?}"))?;
             } else {
@@ -1049,9 +1109,9 @@ fn char_to_lua(cx: &mut CallbackLua<'_>, lf: &LuaFont, co: &LuaCharInfo) -> Resu
         }
         t.raw_set("kerns", kt).map_err(|e| format!("{e:?}"))?;
     }
-    if !co.ligatures.is_empty() {
+    if let Some(ligatures) = co.ligatures().filter(|ligatures| !ligatures.is_empty()) {
         let lt = cx.create_table().map_err(|e| format!("{e:?}"))?;
-        for (k, lig) in &co.ligatures {
+        for (k, lig) in ligatures {
             let e = cx.create_table().map_err(|e| format!("{e:?}"))?;
             set_int(&e, "type", i32::from(lig.op))?;
             set_int(&e, "char", lig.replacement as i32)?;
@@ -1063,8 +1123,7 @@ fn char_to_lua(cx: &mut CallbackLua<'_>, lf: &LuaFont, co: &LuaCharInfo) -> Resu
         }
         t.raw_set("ligatures", lt).map_err(|e| format!("{e:?}"))?;
     }
-    let mk = &co.math_kerns;
-    if !(mk.top_right.is_empty() && mk.top_left.is_empty() && mk.bottom_right.is_empty() && mk.bottom_left.is_empty()) {
+    if let Some(mk) = co.math_kerns().filter(|kerns| !kerns.is_empty()) {
         let m = cx.create_table().map_err(|e| format!("{e:?}"))?;
         for (key, list) in [
             ("top_right", &mk.top_right),
@@ -1079,7 +1138,7 @@ fn char_to_lua(cx: &mut CallbackLua<'_>, lf: &LuaFont, co: &LuaCharInfo) -> Resu
         }
         t.raw_set("mathkern", m).map_err(|e| format!("{e:?}"))?;
     }
-    if let Some(cmds) = &co.commands {
+    if let Some(cmds) = co.commands() {
         let c = commands_table(cx, cmds)?;
         t.raw_set("commands", c).map_err(|e| format!("{e:?}"))?;
     }
@@ -1258,15 +1317,15 @@ pub(crate) fn lua_font_from_tfm(font: &Font, name: &[u8]) -> LuaFont {
                 start,
                 Box::new(|s| {
                     if s.op >= 128 {
-                        co.kerns.entry(i32::from(s.next_char)).or_insert_with(|| kern_of(s));
+                        co.extras_mut().kerns.entry(i32::from(s.next_char)).or_insert_with(|| kern_of(s));
                     } else {
-                        co.ligatures
+                        co.extras_mut().ligatures
                             .entry(i32::from(s.next_char))
                             .or_insert(LuaLig { op: s.op, replacement: u32::from(s.rem) });
                     }
                 }),
             );
-            if !co.kerns.is_empty() || !co.ligatures.is_empty() {
+            if co.kerns().is_some_and(|kerns| !kerns.is_empty()) || co.ligatures().is_some_and(|ligatures| !ligatures.is_empty()) {
                 lf.left_boundary = Some(co);
             }
         }
@@ -1285,7 +1344,7 @@ pub(crate) fn lua_font_from_tfm(font: &Font, name: &[u8]) -> LuaFont {
             ..LuaCharInfo::default()
         };
         match ci.tag {
-            TAG_LIST => co.next = Some(u32::from(ci.remainder)),
+            TAG_LIST => co.extras_mut().next = Some(u32::from(ci.remainder)),
             TAG_EXT => {
                 if let Some(e) = font.ext.get(usize::from(ci.remainder)) {
                     let e = Extensible {
@@ -1294,8 +1353,9 @@ pub(crate) fn lua_font_from_tfm(font: &Font, name: &[u8]) -> LuaFont {
                         mid: i32::from(e.mid),
                         rep: i32::from(e.rep),
                     };
-                    co.vert_variants = extensible_variants(&e);
-                    co.extensible = Some(e);
+                    let extra = co.extras_mut();
+                    extra.vert_variants = extensible_variants(&e);
+                    extra.extensible = Some(e);
                 }
             }
             TAG_LIG => {
@@ -1312,15 +1372,15 @@ pub(crate) fn lua_font_from_tfm(font: &Font, name: &[u8]) -> LuaFont {
                         if s.op >= 128 {
                             let kern = kern_of(s);
                             if is_bchar {
-                                co.kerns.entry(RIGHT_BOUNDARY).or_insert(kern);
+                                co.extras_mut().kerns.entry(RIGHT_BOUNDARY).or_insert(kern);
                             }
-                            co.kerns.entry(i32::from(s.next_char)).or_insert(kern);
+                            co.extras_mut().kerns.entry(i32::from(s.next_char)).or_insert(kern);
                         } else {
                             let lig = LuaLig { op: s.op, replacement: u32::from(s.rem) };
                             if is_bchar {
-                                co.ligatures.entry(RIGHT_BOUNDARY).or_insert(lig);
+                                co.extras_mut().ligatures.entry(RIGHT_BOUNDARY).or_insert(lig);
                             }
-                            co.ligatures.entry(i32::from(s.next_char)).or_insert(lig);
+                            co.extras_mut().ligatures.entry(i32::from(s.next_char)).or_insert(lig);
                         }
                     }),
                 );
@@ -1689,7 +1749,10 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
             Some(tex_lua::LuaValueKind::String) => Some(cx.arg(3)?),
             _ => None,
         };
-        let value = value.map(|v| v.to_bytes());
+        let value = value.map(|v| {
+            let bytes = v.as_bytes().expect("font string belongs to the active Lua state");
+            LuaCharToUnicode::from_bytes(&bytes)
+        });
         on_engine(|e| {
             if font == 0 || !e.lua_font_valid(font) {
                 return Err("that integer id is not a valid font".to_string());

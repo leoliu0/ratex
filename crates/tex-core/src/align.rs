@@ -1290,17 +1290,7 @@ impl Engine {
         // `hpack_filter` (group `align_set`, no direction) on the cell
         if self.engine_kind == crate::engine::EngineKind::LuaTeX && !self.align_is_valign {
             let list = std::mem::take(&mut inner);
-            let list = self.lua_text_passes(list);
-            inner = self.lua_pack_filter(
-                crate::lua_callbacks::Cb::HpackFilter,
-                "hpack filter",
-                "align_set",
-                0,
-                false,
-                None,
-                None,
-                list,
-            );
+            inner = self.lua_hpack_text_filter("align_set", 0, false, None, list);
         } else if self.engine_kind == crate::engine::EngineKind::LuaTeX {
             // luatex fin_col: `filtered_vpackage(..., 0, additional, 0,
             // align_set_group, -1, ...)` runs `vpack_filter` (maximum depth 0)
@@ -1926,8 +1916,9 @@ impl Engine {
                 }
             } else if !valign {
                 // tex.web append_to_vlist at fin_row time
+                let (lead, trail) = self.interline_extents(row_a, row_b);
                 if let Some(pd) = prev {
-                    let gap = bs.width as i64 - pd as i64 - row_a as i64;
+                    let gap = bs.width as i64 - pd as i64 - lead as i64;
                     rows.push(Node::Glue(if gap < lsl as i64 {
                         ls.param(crate::boxes::glue_subtype::LINE_SKIP)
                     } else {
@@ -1938,7 +1929,7 @@ impl Engine {
                         }
                     }, cur_attr));
                 }
-                prev = Some(row_b);
+                prev = Some(trail);
             }
             rows.extend(row_nodes);
             // tex.web fin_row §15724-5: the row's migrated \vadjust
@@ -2105,8 +2096,7 @@ fn set_unset_cell(
         Some(totals) => totals,
         None => {
             let (stretch, shrink) = crate::boxes::glue_sums(list);
-            let top = |v: &[i64; 4]| (0..4).rev().find(|&o| v[o] != 0).unwrap_or(0);
-            let (so, ho) = (top(&stretch), top(&shrink));
+            let (so, ho) = (crate::boxes::highest_glue_order(&stretch), crate::boxes::highest_glue_order(&shrink));
             (so, stretch[so], ho, shrink[ho])
         }
     };

@@ -962,10 +962,14 @@ pub(crate) fn bytes_of(s: &LuaString) -> Vec<u8> {
 }
 
 impl Engine {
-    /// `kpse.find_file(name, format)`: a disk path from the TeX search
-    /// path, else the path of an embedded file in the archive's virtual
+    /// `kpse.find_file(name, format)`: a file the job wrote to its output
+    /// directories, else a disk path from the TeX search path, else the path
+    /// of an embedded file in the archive's virtual
     /// tree (readable by `io.open`, see `lua_sys_embedded.lua`).
     pub(crate) fn lua_kpse_find(&mut self, name: &str, format: tex_kpse::Format) -> Option<String> {
+        if let Some(path) = self.find_job_output_file(&tex_kpse::Kpse::candidates(name, format)) {
+            return Some(crate::lua_sys::kpse_path(&path));
+        }
         if let Some(path) = self.font_loader.kpse.find(name, format) {
             return Some(crate::lua_sys::kpse_path(&path));
         }

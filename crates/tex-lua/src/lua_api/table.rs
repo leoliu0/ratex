@@ -56,6 +56,12 @@ impl LuaTable {
             .set_metatable(metatable.map(|table| &table.inner))
     }
 
+    /// Create an empty table that inherits fields from this table.
+    #[inline]
+    pub fn inherit(&self) -> LuaResult<LuaTable> {
+        self.inner.inherit().map(LuaTable::new)
+    }
+
     /// Set a field.
     #[inline]
     pub fn set(&self, key: impl IntoLua, value: impl IntoLua) -> LuaResult<()> {

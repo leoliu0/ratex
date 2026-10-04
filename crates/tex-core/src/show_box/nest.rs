@@ -223,8 +223,7 @@ impl Engine {
             return None;
         };
         let (stretch, shrink) = glue_sums(list);
-        let top = |v: &[i64; 4]| (0..4).rev().find(|&o| v[o] != 0).unwrap_or(0);
-        let (so, ko) = (top(&stretch), top(&shrink));
+        let (so, ko) = (crate::boxes::highest_glue_order(&stretch), crate::boxes::highest_glue_order(&shrink));
         Some(Item::Unset(Box::new(Unset {
             h: *h,
             d: *d,

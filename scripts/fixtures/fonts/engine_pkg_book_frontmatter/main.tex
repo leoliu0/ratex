@@ -1,0 +1,59 @@
+\documentclass[10pt,twoside,openright]{book}
+\usepackage[a5paper,inner=18mm,outer=14mm,top=18mm,bottom=18mm]{geometry}
+\usepackage{fontspec}
+\setmainfont{TeX Gyre Termes}
+\setsansfont{TeX Gyre Heros}
+\usepackage{fancyhdr}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[LE]{\thepage\quad\nouppercase{\leftmark}}
+\fancyhead[RO]{\nouppercase{\rightmark}\quad\thepage}
+\setcounter{tocdepth}{2}
+\setcounter{secnumdepth}{2}
+
+\begin{document}
+\frontmatter
+\begin{titlepage}
+  \centering\vspace*{3cm}
+  {\sffamily\LARGE A Short Book\par}\vspace{1cm}
+  {\large Collected Notes on Layout\par}\vfill
+  {\small Version one}
+\end{titlepage}
+\chapter*{Preface}
+\addcontentsline{toc}{chapter}{Preface}
+This preface is numbered with roman page counters, as the front matter of a book.
+\tableofcontents
+\listoftables
+
+\mainmatter
+\part{Foundations}
+\chapter{Boxes and glue}
+\section{Natural width}
+Text flows in boxes joined by glue that stretches and shrinks.
+\begin{table}[h]\centering\caption{Glue parameters}\begin{tabular}{lr}Stretch & 2pt\\ Shrink & 1pt\end{tabular}\end{table}
+\section{Breaking lines}
+Paragraphs break at the cheapest feasible points.
+\subsection{Penalties}
+Penalties bias the choice. $\mathrm{badness}=100\bigl(t/s\bigr)^{3}$.
+\chapter{Pages and floats}
+\section{Output routine}
+Pages are built by the output routine.
+\section{Float placement}
+Floats may defer until a suitable page.
+
+\part{Practice}
+\chapter{Style}
+\section{Fonts}
+Choosing fonts is choosing a voice.
+
+\appendix
+\chapter{Reference tables}
+\section{Constants}
+Appendix content with lettered numbering.
+\backmatter
+\chapter*{Colophon}
+\addcontentsline{toc}{chapter}{Colophon}
+Set in Termes and Heros.
+\end{document}

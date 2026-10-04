@@ -367,7 +367,7 @@ pub struct Engine {
     /// The last backed-up token read, with the input position it was read at: TeX keeps its list as `<recently read>` until something else is read.
     pub(crate) recent_pushed: Option<(Token, (usize, usize))>,
     pub(crate) parked_inputs: Vec<(Vec<crate::input::Source>, Vec<Token>)>,
-    /// fill order of the last scan_dimen unit (0=normal, 1=fil, 2=fill, 3=filll)
+    /// fill order of the last scan_dimen unit (0=normal, 1=fil, 2=fill, 3=filll, 4=fi)
     pub cur_fill_order: u8,
     /// delimiter text collected before the first # of a \def param text
     pub def_prefix: Vec<Token>,
@@ -599,8 +599,8 @@ pub struct Engine {
     /// list prefix (the list is swapped/parked by display math and paragraph
     /// capture, and its structure changes under output operations).
     pub page_box_seen: bool,
-    pub page_stretch: [i64; 4],
-    pub page_shrink: [i64; 4],
+    pub page_stretch: [i64; 5],
+    pub page_shrink: [i64; 5],
     /// tex.web `page_ins_head` chain: per-class insertion accounting state
     /// for the page under construction (height already placed, split status,
     /// breakpoint pointer, last/best ins-node records). Snapshotted with the
@@ -1304,8 +1304,8 @@ impl Engine {
             page_goal: 0x3FFF_FFFF,
             page_goal_set: false,
             page_box_seen: false,
-            page_stretch: [0; 4],
-            page_shrink: [0; 4],
+            page_stretch: [0; 5],
+            page_shrink: [0; 5],
             last_page_node_type: -1,
             last_page_penalty: 0,
             last_page_kern: 0,
@@ -2522,6 +2522,9 @@ pub struct PdfImageInfo {
     /// `image_width`/`image_height`: pixels, or sp for PDF pages
     pub image_width: i32,
     pub image_height: i32,
+    /// Header resolution in dpi (0 when the file does not specify it).
+    pub x_res: i32,
+    pub y_res: i32,
     /// `image_rotate` of PDF pages (multiples of 90 swap the axes)
     pub rotate: i32,
     /// `epdf_orig_x`/`epdf_orig_y` in sp

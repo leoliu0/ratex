@@ -1,0 +1,54 @@
+\documentclass[10pt]{article}
+\usepackage[a5paper,margin=14mm]{geometry}
+\usepackage{fontspec}
+\setmainfont{TeX Gyre Termes}
+\setsansfont{TeX Gyre Heros}
+\setmonofont{TeX Gyre Cursor}[Scale=MatchLowercase]
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage{fancyvrb}
+\lstset{basicstyle=\ttfamily\small,keywordstyle=\bfseries\color{blue},commentstyle=\itshape\color{green!40!black},
+  stringstyle=\color{red!70!black},numbers=left,numberstyle=\tiny,numbersep=5pt,frame=single,
+  breaklines=true,showstringspaces=false,captionpos=b}
+\setlist[itemize]{label=\textbullet,nosep}
+\setlist[enumerate,1]{label=(\alph*),leftmargin=*}
+\setlist[enumerate,2]{label=\roman*.,leftmargin=*,nosep}
+
+\begin{document}
+\section*{Lists and code}
+\begin{enumerate}
+  \item First choice
+    \begin{enumerate}
+      \item nested one
+      \item nested two
+    \end{enumerate}
+  \item Second choice\label{item:second}
+  \item[\textsc{x}] Custom label
+\end{enumerate}
+\begin{enumerate}[resume,label=(\alph*)]
+  \item Resumed numbering continues here
+\end{enumerate}
+\begin{description}[leftmargin=2cm,style=sameline,font=\sffamily\bfseries]
+  \item[Term] its definition
+  \item[Longer term] another definition
+\end{description}
+
+\begin{lstlisting}[language=Python,caption={Fibonacci},label=lst:fib]
+def fib(n):
+    """Return the n-th Fibonacci number."""
+    a, b = 0, 1   # start values
+    for _ in range(n):
+        a, b = b, a + b
+    return a
+print("fib(10) =", fib(10))
+\end{lstlisting}
+
+\lstinputlisting[language=C,firstline=1,lastline=6,caption={From a file}]{snippet.c}
+
+\begin{Verbatim}[numbers=left,frame=lines,commandchars=\\\{\},fontsize=\small,label=Verbatim]
+x = 1 + 2 \textbf{\{bold part\}}
+y = x ** 2
+\end{Verbatim}
+Inline: \Verb|\emph{literal}| and \lstinline[language=C]|int main(void)|.
+\end{document}

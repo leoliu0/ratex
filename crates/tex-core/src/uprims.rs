@@ -320,7 +320,7 @@ impl Engine {
     }
 
     /// directions.c `scan_direction`: a direction parameter or keyword.
-    fn scan_direction(&mut self) -> i32 {
+    pub(crate) fn scan_direction(&mut self) -> i32 {
         let t = self.get_x_raw();
         if t.is_cs() {
             if let Some(Equiv::Prim(Prim::U(

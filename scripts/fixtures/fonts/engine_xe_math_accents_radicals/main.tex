@@ -1,0 +1,19 @@
+\documentclass{article}
+\usepackage{amsmath}
+\usepackage{unicode-math}
+\setmainfont{Latin Modern Roman}
+\setmathfont{latinmodern-math.otf}
+\begin{document}
+\setbox0\hbox{$\hat{x}$}\setbox2\hbox{$x$}\setbox4\hbox{$\widehat{xyz}$}\setbox6\hbox{$xyz$}
+Accent heights: hat \the\dimexpr\ht0-\ht2\relax, widehat \the\dimexpr\ht4-\ht6\relax; widths \the\wd0\ \the\wd4\par
+$\hat{x}\ \tilde{n}\ \vec{v}\ \dot{a}\ \ddot{a}\ \bar{z}\ \widehat{ABC}\ \widetilde{ABCDEF}$\par
+$\Umathaccent 0 1 "0302{abc}\ \overbrace{xy}\ \underbrace{pq}_{n}\ \Umathaccent 7 1 "20D7{AB}$\par
+$\sqrt{x}\ \sqrt[3]{x^2+1}\ \sqrt{\frac{a+b}{c+d}}\ \Uradical 1 "221A{q}$\par
+\setbox0\hbox{$\sqrt{x}$}\setbox2\hbox{$\sqrt{\vphantom{\frac{A}{B}}x}$}\setbox4\hbox{$\sqrt{\vrule height 30pt depth 0pt}$}
+Radical boxes: small \the\ht0 +\the\dp0, fraction \the\ht2 +\the\dp2, tall \the\ht4 +\the\dp4\par
+$\left( \vrule height 6pt depth 2pt \right)\ \left[ \vrule height 24pt depth 8pt \right]\ \left\{ \vrule height 60pt depth 20pt \right\}$\par
+\setbox0\hbox{$\left( \vrule height 6pt depth 2pt \right)$}\setbox2\hbox{$\left( \vrule height 24pt depth 8pt \right)$}\setbox4\hbox{$\left( \vrule height 60pt depth 20pt \right)$}
+Delimiter extents: \the\ht0/\the\dp0, \the\ht2/\the\dp2, \the\ht4/\the\dp4; widths \the\wd0\ \the\wd2\ \the\wd4\par
+Big: \setbox0\hbox{$\bigl(\bigr)$}\the\ht0\ \setbox0\hbox{$\Bigl(\Bigr)$}\the\ht0\ \setbox0\hbox{$\biggl(\biggr)$}\the\ht0\ \setbox0\hbox{$\Biggl(\Biggr)$}\the\ht0\par
+\[ \left\lVert \frac{\sum_{i=1}^{n} x_i^{2}}{\sqrt{n}} \right\rVert \le \sqrt{\int_0^1 \sqrt{1-t^2}\,dt} \]
+\end{document}

@@ -100,20 +100,23 @@ impl Engine {
     /// dir changes, and its `text_dir_ptr` is a fresh list holding the
     /// direction of the enclosing mode (restored by [`Self::end_box_dirs`]).
     #[inline(always)]
-    pub(crate) fn begin_box_dirs(&mut self) {
+    pub(crate) fn begin_box_dirs(&mut self, direction: Option<i32>) {
         if self.engine_kind == EngineKind::LuaTeX {
-            self.begin_box_dirs_lua();
+            self.begin_box_dirs_lua(direction);
         }
     }
 
-    fn begin_box_dirs_lua(&mut self) {
+    fn begin_box_dirs_lua(&mut self, direction: Option<i32>) {
         self.eqtb.assign_int_param(IntParam::NoLocalDirs, 0, false);
         let param = match self.mode {
             Mode::Vertical | Mode::InternalVertical => IntParam::BodyDirection,
             Mode::Horizontal | Mode::RestrictedHorizontal => IntParam::TextDirection,
             _ => IntParam::MathDirection,
         };
-        let dir = (self.int_param(param) & 3) as u8;
+        let dir = (direction.unwrap_or_else(|| self.int_param(param)) & 3) as u8;
+        for p in [IntParam::BodyDirection, IntParam::ParDirection, IntParam::TextDirection] {
+            self.eqtb.assign_int_param(p, i32::from(dir), false);
+        }
         // created before the box group opens: one level below the group
         let level = self.eqtb.cur_level - 1;
         let outer = std::mem::replace(&mut self.text_dirs, vec![(level, dir)]);
@@ -231,8 +234,7 @@ impl Engine {
         let packed = if inner.is_empty() {
             None
         } else {
-            let list = self.lua_text_passes(inner);
-            let list = self.lua_hpack_filter(GROUP_LOCAL_BOX, 0, false, list);
+            let list = self.lua_hpack_text_filter(GROUP_LOCAL_BOX, 0, false, Some("TLT"), inner);
             Some(crate::boxes::hpack(list, None, crate::boxes::HBOX, &self.eqtb).node)
         };
         let slot = if right { LOCAL_RIGHT_BOX } else { LOCAL_LEFT_BOX };

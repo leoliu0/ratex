@@ -1336,6 +1336,7 @@ impl GlobalState {
         }
 
         self.object_allocator.trim_after_full_gc();
+        self.gc.trim_after_full_gc();
         self.gc.gc_emergency = false;
     }
 

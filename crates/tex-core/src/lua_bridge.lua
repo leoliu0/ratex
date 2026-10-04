@@ -535,6 +535,18 @@ local function kpse_lua_searcher(name)
   if code == nil then
     return "\n\t[kpse lua searcher] file not found: '" .. name .. "'"
   end
+  -- Match luaL_loadfile: file modules may start with a UTF-8 BOM and a
+  -- hash-prefixed interpreter line. Keep the newline for source diagnostics.
+  local start, first = 1, code:byte(1)
+  if first == 239 and code:byte(2) == 187 and code:byte(3) == 191 then
+    start, first = 4, code:byte(4)
+  end
+  if first == 35 then
+    local newline = code:find("\n", start, true)
+    code = newline and ("\n" .. code:sub(newline + 1)) or "\n"
+  elseif start == 4 then
+    code = code:sub(start)
+  end
   local f, err = load(code, "@" .. path)
   if not f then
     error("error loading module " .. name .. " from file " .. path .. ":\n\t" .. err)

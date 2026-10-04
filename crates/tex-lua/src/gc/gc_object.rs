@@ -749,20 +749,52 @@ impl From<ProtoPtr> for GcObjectPtr {
 }
 
 // ============ GC-managed Objects ============
-pub enum GcObjectOwner {
-    String(Pooled<GcString>),
-    Table(Pooled<GcTable>),
-    Function(Pooled<GcFunction>),
-    Upvalue(Pooled<GcUpvalue>),
-    Thread(Box<GcThread>),
-    Userdata(Pooled<GcUserdata>),
-    CClosure(Pooled<GcCClosure>),
-    RClosure(Pooled<GcRClosure>),
-    Proto(Pooled<GcProto>),
+/// Owns one GC allocation and, for a slot allocation, its exact strong pool Rc.
+/// Only typed conversions can couple the allocation kind with its pool type.
+pub struct GcObjectOwner {
+    pointer: GcObjectPtr,
+    pool: *const (),
+}
+
+macro_rules! pooled_gc_owner {
+    ($object:ty, $pointer:ident) => {
+        impl From<Pooled<$object>> for GcObjectOwner {
+            fn from(value: Pooled<$object>) -> Self {
+                // Validate pointer tagging while the typed allocation still
+                // owns its destruction if a debug assertion fails.
+                let pointer = GcObjectPtr::from($pointer::new(value.as_ptr()));
+                let (value, pool) = value.into_gc_parts();
+                Self {
+                    pointer: GcObjectPtr::new_tagged(value as u64, pointer.tag() as u64),
+                    pool,
+                }
+            }
+        }
+    };
+}
+
+pooled_gc_owner!(GcString, StringPtr);
+pooled_gc_owner!(GcTable, TablePtr);
+pooled_gc_owner!(GcFunction, FunctionPtr);
+pooled_gc_owner!(GcUpvalue, UpvaluePtr);
+pooled_gc_owner!(GcUserdata, UserdataPtr);
+pooled_gc_owner!(GcCClosure, CClosurePtr);
+pooled_gc_owner!(GcRClosure, RClosurePtr);
+pooled_gc_owner!(GcProto, ProtoPtr);
+
+impl From<Box<GcThread>> for GcObjectOwner {
+    fn from(value: Box<GcThread>) -> Self {
+        let pointer = GcObjectPtr::from(ThreadPtr::new(value.as_ref() as *const GcThread));
+        let value = Box::into_raw(value);
+        Self {
+            pointer: GcObjectPtr::new_tagged(value as u64, pointer.tag() as u64),
+            pool: std::ptr::null(),
+        }
+    }
 }
 
 impl GcObjectOwner {
-    /// Return the stored allocation-time size (from header.size)
+    /// Return the stored allocation-time size (from header.size).
     #[inline]
     pub fn size(&self) -> usize {
         self.header().size() as usize
@@ -770,17 +802,7 @@ impl GcObjectOwner {
 
     #[inline(always)]
     fn raw_header_ptr(&self) -> *mut GcHeader {
-        match self {
-            GcObjectOwner::String(s) => s.as_ptr() as *mut GcHeader,
-            GcObjectOwner::Table(t) => t.as_ptr() as *mut GcHeader,
-            GcObjectOwner::Function(f) => f.as_ptr() as *mut GcHeader,
-            GcObjectOwner::CClosure(c) => c.as_ptr() as *mut GcHeader,
-            GcObjectOwner::RClosure(r) => r.as_ptr() as *mut GcHeader,
-            GcObjectOwner::Upvalue(u) => u.as_ptr() as *mut GcHeader,
-            GcObjectOwner::Thread(t) => t.as_ref() as *const _ as *mut GcHeader,
-            GcObjectOwner::Userdata(u) => u.as_ptr() as *mut GcHeader,
-            GcObjectOwner::Proto(p) => p.as_ptr() as *mut GcHeader,
-        }
+        self.pointer.raw_ptr() as *mut GcHeader
     }
 
     pub fn header(&self) -> &GcHeader {
@@ -791,94 +813,81 @@ impl GcObjectOwner {
         unsafe { &*self.raw_header_ptr() }
     }
 
-    /// Get type tag of this object
     #[inline(always)]
     pub fn as_str_ptr(&self) -> Option<StringPtr> {
-        match self {
-            GcObjectOwner::String(s) => Some(StringPtr::new(s.as_ptr())),
-            _ => None,
-        }
+        self.pointer.is_string().then(|| self.pointer.as_string_ptr())
     }
 
     pub fn as_table_ptr(&self) -> Option<TablePtr> {
-        match self {
-            GcObjectOwner::Table(t) => Some(TablePtr::new(t.as_ptr())),
-            _ => None,
-        }
+        self.pointer.is_table().then(|| self.pointer.as_table_ptr())
     }
 
     pub fn as_function_ptr(&self) -> Option<FunctionPtr> {
-        match self {
-            GcObjectOwner::Function(f) => Some(FunctionPtr::new(f.as_ptr())),
-            _ => None,
-        }
+        self.pointer.is_function().then(|| self.pointer.as_function_ptr())
     }
 
     pub fn as_upvalue_ptr(&self) -> Option<UpvaluePtr> {
-        match self {
-            GcObjectOwner::Upvalue(u) => Some(UpvaluePtr::new(u.as_ptr())),
-            _ => None,
-        }
+        self.pointer.is_upvalue().then(|| self.pointer.as_upvalue_ptr())
     }
 
     pub fn as_thread_ptr(&self) -> Option<ThreadPtr> {
-        match self {
-            GcObjectOwner::Thread(t) => Some(ThreadPtr::new(t.as_ref() as *const _)),
-            _ => None,
-        }
+        self.pointer.is_thread().then(|| self.pointer.as_thread_ptr())
     }
 
     pub fn as_userdata_ptr(&self) -> Option<UserdataPtr> {
-        match self {
-            GcObjectOwner::Userdata(u) => Some(UserdataPtr::new(u.as_ptr())),
-            _ => None,
-        }
+        self.pointer.is_userdata().then(|| self.pointer.as_userdata_ptr())
     }
 
     pub fn as_closure_ptr(&self) -> Option<CClosurePtr> {
-        match self {
-            GcObjectOwner::CClosure(c) => Some(CClosurePtr::new(c.as_ptr())),
-            _ => None,
-        }
+        self.pointer.is_cclosure().then(|| self.pointer.as_cclosure_ptr())
     }
 
     pub fn as_rclosure_ptr(&self) -> Option<RClosurePtr> {
-        match self {
-            GcObjectOwner::RClosure(r) => Some(RClosurePtr::new(r.as_ptr())),
-            _ => None,
-        }
+        self.pointer.is_rclosure().then(|| self.pointer.as_rclosure_ptr())
     }
 
     pub fn as_proto_ptr(&self) -> Option<ProtoPtr> {
-        match self {
-            GcObjectOwner::Proto(p) => Some(ProtoPtr::new(p.as_ptr())),
-            _ => None,
-        }
+        self.pointer.is_proto().then(|| self.pointer.as_proto_ptr())
     }
 
     pub fn as_gc_ptr(&self) -> GcObjectPtr {
-        match self {
-            GcObjectOwner::String(s) => GcObjectPtr::from(StringPtr::new(s.as_ptr())),
-            GcObjectOwner::Table(t) => GcObjectPtr::from(TablePtr::new(t.as_ptr())),
-            GcObjectOwner::Function(f) => GcObjectPtr::from(FunctionPtr::new(f.as_ptr())),
-            GcObjectOwner::Upvalue(u) => GcObjectPtr::from(UpvaluePtr::new(u.as_ptr())),
-            GcObjectOwner::Thread(t) => GcObjectPtr::from(ThreadPtr::new(t.as_ref() as *const _)),
-            GcObjectOwner::Userdata(u) => GcObjectPtr::from(UserdataPtr::new(u.as_ptr())),
-            GcObjectOwner::CClosure(c) => GcObjectPtr::from(CClosurePtr::new(c.as_ptr())),
-            GcObjectOwner::RClosure(r) => GcObjectPtr::from(RClosurePtr::new(r.as_ptr())),
-            GcObjectOwner::Proto(p) => GcObjectPtr::from(ProtoPtr::new(p.as_ptr())),
-        }
+        self.pointer
     }
 
     pub fn as_thread_mut(&mut self) -> Option<&mut LuaState> {
-        match self {
-            GcObjectOwner::Thread(t) => Some(&mut t.data),
-            _ => None,
+        if !self.pointer.is_thread() {
+            return None;
         }
+        // The allocation remains owned here, and the exclusive owner borrow
+        // provides the same mutable access as the former Box variant.
+        Some(unsafe { &mut (*self.pointer.as_thread_ptr().as_mut_ptr()).data })
     }
 
     pub fn size_of_data(&self) -> usize {
         self.header().size() as usize
+    }
+}
+
+impl Drop for GcObjectOwner {
+    fn drop(&mut self) {
+        // SAFETY: the private typed From implementations couple this pointer's
+        // kind with its concrete allocation and Rc type. Each consumes its
+        // allocation once; this non-Copy owner reconstructs it exactly once.
+        // Pooled's existing drop still releases slots, and boxed feature paths
+        // and threads still drop their original Boxes.
+        unsafe {
+            match self.pointer.kind() {
+                GcObjectKind::String => drop(Pooled::<GcString>::from_gc_parts(self.pointer.as_string_ptr().as_mut_ptr(), self.pool)),
+                GcObjectKind::Table => drop(Pooled::<GcTable>::from_gc_parts(self.pointer.as_table_ptr().as_mut_ptr(), self.pool)),
+                GcObjectKind::Function => drop(Pooled::<GcFunction>::from_gc_parts(self.pointer.as_function_ptr().as_mut_ptr(), self.pool)),
+                GcObjectKind::Upvalue => drop(Pooled::<GcUpvalue>::from_gc_parts(self.pointer.as_upvalue_ptr().as_mut_ptr(), self.pool)),
+                GcObjectKind::Userdata => drop(Pooled::<GcUserdata>::from_gc_parts(self.pointer.as_userdata_ptr().as_mut_ptr(), self.pool)),
+                GcObjectKind::CClosure => drop(Pooled::<GcCClosure>::from_gc_parts(self.pointer.as_cclosure_ptr().as_mut_ptr(), self.pool)),
+                GcObjectKind::RClosure => drop(Pooled::<GcRClosure>::from_gc_parts(self.pointer.as_rclosure_ptr().as_mut_ptr(), self.pool)),
+                GcObjectKind::Proto => drop(Pooled::<GcProto>::from_gc_parts(self.pointer.as_proto_ptr().as_mut_ptr(), self.pool)),
+                GcObjectKind::Thread => drop(Box::from_raw(self.pointer.as_thread_ptr().as_mut_ptr())),
+            }
+        }
     }
 }
 
@@ -1041,12 +1050,67 @@ impl Default for GcList {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lua_value::userdata_trait::OpaqueUserData;
+    use std::rc::Rc;
+
+    struct OwnedResource {
+        drops: Rc<Cell<usize>>,
+        value: u32,
+    }
+
+    impl Drop for OwnedResource {
+        fn drop(&mut self) {
+            self.drops.set(self.drops.get() + 1);
+        }
+    }
+
+    fn owned_userdata(drops: &Rc<Cell<usize>>, value: u32) -> GcUserdata {
+        GcUserdata::new(
+            LuaUserdata::new(OpaqueUserData::new(OwnedResource {
+                drops: Rc::clone(drops),
+                value,
+            })),
+            0,
+            std::mem::size_of::<LuaUserdata>() as u32,
+        )
+    }
 
     #[test]
-    fn gc_header_uses_u32_index() {
-        assert_eq!(std::mem::size_of::<GcHeader>(), 12);
-        assert_eq!(GcHeader::INDEX_MAX, u32::MAX);
+    fn gc_owner_reuses_released_slots_and_outlives_its_pool() {
+        let drops = Rc::new(Cell::new(0));
+        let mut pool = crate::gc::PagedPool::new(1);
+        let first = pool.alloc(owned_userdata(&drops, 17));
+        #[cfg(not(any(miri, tex_lua_boxed_pool)))]
+        let first_ptr = first.as_ptr();
+        drop(GcObjectOwner::from(first));
+        assert_eq!(drops.get(), 1);
+
+        let reused = pool.alloc(owned_userdata(&drops, 23));
+        #[cfg(not(any(miri, tex_lua_boxed_pool)))]
+        assert_eq!(first_ptr, reused.as_ptr());
+        let owner = GcObjectOwner::from(reused);
+        drop(pool);
+        let pointer = owner.as_userdata_ptr().unwrap();
+        let resource = pointer.as_ref().data.get_trait().as_any().downcast_ref::<OwnedResource>().unwrap();
+        assert_eq!(resource.value, 23);
+        assert_eq!(drops.get(), 1);
+        drop(owner);
+        assert_eq!(drops.get(), 2);
     }
+
+    #[cfg(any(miri, tex_lua_boxed_pool, feature = "shared-proto"))]
+    #[test]
+    fn boxed_gc_owner_preserves_payload_and_drops_once() {
+        let drops = Rc::new(Cell::new(0));
+        let owner = GcObjectOwner::from(Pooled::boxed(owned_userdata(&drops, 31)));
+        let pointer = owner.as_userdata_ptr().unwrap();
+        let resource = pointer.as_ref().data.get_trait().as_any().downcast_ref::<OwnedResource>().unwrap();
+        assert_eq!(resource.value, 31);
+        assert_eq!(drops.get(), 0);
+        drop(owner);
+        assert_eq!(drops.get(), 1);
+    }
+
 
     #[test]
     fn gc_header_large_index_round_trip() {

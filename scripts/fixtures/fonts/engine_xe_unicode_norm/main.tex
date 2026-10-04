@@ -1,0 +1,16 @@
+\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+\newcommand\verdict[1]{\ifx\dec\pre\textbf{#1 equal}\else\textbf{#1 distinct}\fi}
+\begin{document}
+\def\pre{é}\def\dec{é}
+\verdict{token-level}\par
+\setbox0\hbox{é}\setbox2\hbox{é}\setbox4\hbox{ééé}\setbox6\hbox{ééé}
+\ifdim\wd0=\wd2 precomposed-width-equals-combining-width\else widths-differ\fi\par
+Precomposed \the\wd0\ combined \the\wd2\ triple-combined \the\wd4\ triple-precomposed \the\wd6\par
+\setbox0\hbox{a\char"0308}\setbox2\hbox{\"a}\setbox4\hbox{a\char"0308\char"0301}\setbox6\hbox{a\char"0301\char"0308}
+Umlaut \the\wd0\ macro-accent \the\wd2\ stacked \the\wd4\ reverse-stacked \the\wd6\par
+Visible forms: é é \'e e\char"0301 café cafeé\par
+Accent stack: a\char"0308\char"0301 o\char"0302\char"0323 é\char"0323\par
+Names: \Uchar"E9 \Uchar"65\Uchar"301\par
+\end{document}

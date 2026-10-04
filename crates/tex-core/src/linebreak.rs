@@ -37,8 +37,8 @@ struct ActiveNode {
     fitness: usize,
     demerits: i64,
     start_w: i64,
-    start_st: [i64; 4],
-    start_sh: [i64; 4],
+    start_st: [i64; 5],
+    start_sh: [i64; 5],
     start_fst: i64,
     start_fsh: i64,
     /// left margin protrusion less the width of the left local box
@@ -57,7 +57,7 @@ const NO_LOCAL_PAR: u32 = u32::MAX;
 /// line of paragraph>): the infinite stretch of \parfillskip by order.
 #[derive(Clone, Copy)]
 struct LastLineFit {
-    fill_width: [i64; 3],
+    fill_width: [i64; 4],
     fit: i64,
 }
 
@@ -88,8 +88,8 @@ fn last_line_badness(
     llf: LastLineFit,
     a: &ActiveNode,
     shortfall: i64,
-    dst: &[i64; 4],
-    dsh: &[i64; 4],
+    dst: &[i64; 5],
+    dsh: &[i64; 5],
 ) -> Option<(i32, usize, i64)> {
     const MAX_DIMEN: i64 = 0x3FFF_FFFF;
     if a.short == 0 || a.glue <= 0 {
@@ -202,6 +202,77 @@ fn find_protchar_left(slice: &[Node], eqtb: &crate::eqtb::Eqtb, protrude_chars: 
         }
     }
     0
+}
+
+/// xetex.web `cp_skipable` and `find_protchar_left/right`: descend into
+/// horizontal boxes, but stop at the first non-skipable item, even when
+/// that item cannot protrude. Native words are not ordinary whatsits here.
+fn xetex_protrusion_edge(node: &Node, left: bool) -> Option<&Node> {
+    match node {
+        Node::Ins { .. } | Node::Mark { .. } | Node::Adj(..)
+        | Node::VAdjust(..) | Node::PreAdjust(..) | Node::Penalty(..)
+        | Node::Kern(..) | Node::MathKern(0, _, _)
+        | Node::ExplicitKern(0, _) | Node::AccentKern(0, _)
+        | Node::ItalicKern(0, _) | Node::SpaceAdjKern(0, _) => None,
+        Node::Glue(glue, _) if glue.is_zero_glue() => None,
+        Node::Disc(dc) if dc.pre_break.is_empty() && dc.post_break.is_empty()
+            && dc.no_break.is_empty() && dc.replace_count == 0 => None,
+        Node::Box { kind: crate::boxes::HBOX, list, .. } if !list.is_empty() => {
+            xetex_find_protrusion_edge(list, left)
+        }
+        Node::Box { kind: crate::boxes::HBOX, w: 0, h: 0, d: 0, list, .. }
+            if list.is_empty() => None,
+        _ => Some(node),
+    }
+}
+
+fn xetex_find_protrusion_edge(nodes: &[Node], left: bool) -> Option<&Node> {
+    if left {
+        nodes.iter().find_map(|node| xetex_protrusion_edge(node, true))
+    } else {
+        nodes.iter().rev().find_map(|node| xetex_protrusion_edge(node, false))
+    }
+}
+
+/// XeTeX_ext.c `get_native_word_cp` selects the first/last shaped glyph,
+/// not a Unicode character or its advance. xetex.web `char_pw` always uses
+/// fontdimen 6 (also when XeTeXprotrudechars = 1).
+fn xetex_protrusion_char(node: &Node, left: bool) -> Option<(FontId, u32)> {
+    match node {
+        Node::Char { font, c, .. } | Node::Ligature { font, c, .. } => {
+            Some((*font, u32::from(*c)))
+        }
+        Node::NativeGlyphRun { run, start, end, .. } => {
+            let glyphs = run.glyphs.get(*start..*end)?;
+            let glyph = if left { glyphs.first()? } else { glyphs.last()? };
+            Some((run.font, u32::from(glyph.glyph_id)))
+        }
+        _ => None,
+    }
+}
+
+fn xetex_protrusion_width(eqtb: &crate::eqtb::Eqtb, node: &Node, left: bool) -> i32 {
+    let Some((f, c)) = xetex_protrusion_char(node, left) else { return 0 };
+    let Some(font) = eqtb.fonts.get(f as usize) else { return 0 };
+    let code = if let Some(native) = &font.native {
+        native.protrusion_codes.borrow().get(&(c as i32))
+            .map_or(0, |codes| codes[usize::from(!left)])
+    } else {
+        eqtb.expand.get(f as usize).map_or(0, |ex| {
+            if left { ex.lp_code(c as u8) } else { ex.rp_code(c as u8) }
+        })
+    };
+    if code == 0 { return 0 }
+    crate::tfm::round_xn_over_d(font.quad(), code, 1000)
+}
+
+fn xetex_margin_kern(eqtb: &crate::eqtb::Eqtb, node: &Node, left: bool) -> Option<Node> {
+    let width = xetex_protrusion_width(eqtb, node, left);
+    if width == 0 { return None }
+    let (font, c) = xetex_protrusion_char(node, left)?;
+    Some(Node::MarginKern {
+        side: u8::from(!left), width: -width, font, c, ex: 0, attr: node.attr(),
+    })
 }
 
 /// Font-expansion contribution of one discretionary list. The predecessor
@@ -431,8 +502,8 @@ impl Engine {
         // widths contributed by \leftskip+\rightskip to every line (tex's
         // "background"); excluded from the measured content width
         let bg_w = (params.left_skip.width + params.right_skip.width) as i64;
-        let mut bg_st = [0i64; 4];
-        let mut bg_sh = [0i64; 4];
+        let mut bg_st = [0i64; 5];
+        let mut bg_sh = [0i64; 5];
         bg_st[params.left_skip.stretch_order as usize] += params.left_skip.stretch as i64;
         bg_st[params.right_skip.stretch_order as usize] += params.right_skip.stretch as i64;
         bg_sh[params.left_skip.shrink_order as usize] += params.left_skip.shrink as i64;
@@ -447,9 +518,9 @@ impl Engine {
                     if fit > 0
                         && q.stretch > 0
                         && q.stretch_order > 0
-                        && bg_st[1..] == [0, 0, 0] =>
+                        && bg_st[1..] == [0; 4] =>
                 {
-                    let mut fill_width = [0i64; 3];
+                    let mut fill_width = [0i64; 4];
                     fill_width[q.stretch_order as usize - 1] = q.stretch as i64;
                     Some(LastLineFit {
                         fill_width,
@@ -914,8 +985,8 @@ impl Engine {
         second_pass: bool,
         extra_stretch: i32,
         bg_w: i64,
-        bg_st: [i64; 4],
-        bg_sh: [i64; 4],
+        bg_st: [i64; 5],
+        bg_sh: [i64; 5],
         last_line_fit: Option<LastLineFit>,
     ) -> Option<Rc<ActiveNode>> {
         let n = list.len();
@@ -929,8 +1000,8 @@ impl Engine {
         let lb_dead = |i: usize| lb_dead_mask.get(i).copied().unwrap_or(false);
         // cumulative measurements; discs contribute their no_break text and
         let mut cum_w = vec![0i64; n + 1];
-        let mut cum_st = vec![[0i64; 4]; n + 1];
-        let mut cum_sh = vec![[0i64; 4]; n + 1];
+        let mut cum_st = vec![[0i64; 5]; n + 1];
+        let mut cum_sh = vec![[0i64; 5]; n + 1];
         let mut cum_fst = vec![0i64; n + 1];
         let mut cum_fsh = vec![0i64; n + 1];
         let mut disc_pre_fst = vec![0i64; n];
@@ -983,7 +1054,7 @@ impl Engine {
                             Node::LuaGlyph(g) => crate::boxes::lua_glyph_dims(&self.eqtb, g).0,
                             _ => 0,
                         };
-                        (i64::from(wd), [0; 4], [0; 4], fst, fsh)
+                        (i64::from(wd), [0; 5], [0; 5], fst, fsh)
                     }
                     Node::Char { c, font, .. } => {
                         record_expansion(*font);
@@ -998,7 +1069,7 @@ impl Engine {
                         } else {
                             0
                         };
-                        (fonts.char_width(*font, *c) as i64, [0; 4], [0; 4], fst, fsh)
+                        (fonts.char_width(*font, *c) as i64, [0; 5], [0; 5], fst, fsh)
                     }
                     Node::LuaGlyph(g) => {
                         prev_exp_char = None;
@@ -1009,7 +1080,7 @@ impl Engine {
                             fst = i64::from(crate::luaexp::char_stretch(&self.eqtb, gr));
                             fsh = i64::from(crate::luaexp::char_shrink(&self.eqtb, gr));
                         }
-                        (crate::boxes::lua_glyph_dims(&self.eqtb, g).0 as i64, [0; 4], [0; 4], fst, fsh)
+                        (crate::boxes::lua_glyph_dims(&self.eqtb, g).0 as i64, [0; 5], [0; 5], fst, fsh)
                     }
                     Node::Ligature {
                         c, font, lig_width, ..
@@ -1026,11 +1097,11 @@ impl Engine {
                         } else {
                             0
                         };
-                        (*lig_width as i64, [0; 4], [0; 4], fst, fsh)
+                        (*lig_width as i64, [0; 5], [0; 5], fst, fsh)
                     }
                     Node::Glue(g, _) => {
-                        let mut st = [0i64; 4];
-                        let mut sh = [0i64; 4];
+                        let mut st = [0i64; 5];
+                        let mut sh = [0i64; 5];
                         st[g.stretch_order as usize] = g.stretch as i64;
                         sh[g.shrink_order as usize] = g.shrink as i64;
                         (g.width as i64, st, sh, 0, 0)
@@ -1070,12 +1141,12 @@ impl Engine {
                         } else {
                             (0, 0)
                         };
-                        (*k as i64, [0; 4], [0; 4], fst, fsh)
+                        (*k as i64, [0; 5], [0; 5], fst, fsh)
                     }
                     Node::ExplicitKern(k, _) | Node::AccentKern(k, _) | Node::ItalicKern(k, _) | Node::SpaceAdjKern(k, _) => {
-                        (*k as i64, [0; 4], [0; 4], 0, 0)
+                        (*k as i64, [0; 5], [0; 5], 0, 0)
                     }
-                    Node::ExKern { width, ex, .. } => ((*width + *ex) as i64, [0; 4], [0; 4], 0, 0),
+                    Node::ExKern { width, ex, .. } => ((*width + *ex) as i64, [0; 5], [0; 5], 0, 0),
                     Node::Disc(dc) => {
                         let mut fst = 0i64;
                         let mut fsh = 0i64;
@@ -1107,22 +1178,22 @@ impl Engine {
                         }
                         (
                             disc_list_width(&self.eqtb, &dc.no_break),
-                            [0; 4],
-                            [0; 4],
+                            [0; 5],
+                            [0; 5],
                             fst,
                             fsh,
                         )
                     }
-                    Node::Box { w, .. } => (*w as i64, [0; 4], [0; 4], 0, 0),
-                    Node::Rule { width: w, .. } => (*w as i64, [0; 4], [0; 4], 0, 0),
-                    Node::NativeGlyphRun { width, .. } => (*width as i64, [0; 4], [0; 4], 0, 0),
-                    Node::Whatsit(WhatIt::XePic { w, .. }, _) => (*w as i64, [0; 4], [0; 4], 0, 0),
+                    Node::Box { w, .. } => (*w as i64, [0; 5], [0; 5], 0, 0),
+                    Node::Rule { width: w, .. } => (*w as i64, [0; 5], [0; 5], 0, 0),
+                    Node::NativeGlyphRun { width, .. } => (*width as i64, [0; 5], [0; 5], 0, 0),
+                    Node::Whatsit(WhatIt::XePic { w, .. }, _) => (*w as i64, [0; 5], [0; 5], 0, 0),
                     // math-on/off nodes carry \mathsurround
-                    Node::MathKern(k, 1.., _) => (*k as i64, [0; 4], [0; 4], 0, 0),
-                    _ => (0, [0; 4], [0; 4], 0, 0),
+                    Node::MathKern(k, 1.., _) => (*k as i64, [0; 5], [0; 5], 0, 0),
+                    _ => (0, [0; 5], [0; 5], 0, 0),
                 };
                 cum_w[i + 1] = cum_w[i] + w;
-                for k in 0..4 {
+                for k in 0..5 {
                     cum_st[i + 1][k] = cum_st[i][k] + st[k];
                     cum_sh[i + 1][k] = cum_sh[i][k] + sh[k];
                 }
@@ -1134,7 +1205,7 @@ impl Engine {
                     for _ in 0..dc.replace_count {
                         i += 1;
                         cum_w[i + 1] = cum_w[i];
-                        for k in 0..4 {
+                        for k in 0..5 {
                             cum_st[i + 1][k] = cum_st[i][k];
                             cum_sh[i + 1][k] = cum_sh[i][k];
                         }
@@ -1156,9 +1227,20 @@ impl Engine {
             f.min(n)
         };
 
-        let protrude_chars =
-            self.eqtb.int_params[crate::prim::IntParam::PdfProtrudeChars.idx() as usize];
-        let start_left_prot = if lua_mode {
+        let xetex_protrusion = self.engine_kind == crate::engine::EngineKind::XeTeX;
+        let protrude_chars = self.eqtb.int_params[if xetex_protrusion {
+            IntParam::XeTeXProtrudeChars
+        } else {
+            IntParam::PdfProtrudeChars
+        }.idx() as usize];
+        let start_left_prot = if xetex_protrusion {
+            if protrude_chars > 1 {
+                xetex_find_protrusion_edge(list, true)
+                    .map_or(0, |node| xetex_protrusion_width(&self.eqtb, node, true))
+            } else {
+                0
+            }
+        } else if lua_mode {
             if protrude_chars > 1 {
                 crate::luaexp::break_left_pw(&self.eqtb, list, 0, &lb_dead_mask)
             } else {
@@ -1206,8 +1288,8 @@ impl Engine {
             fitness: DECENT,
             demerits: 0,
             start_w: 0,
-            start_st: [0; 4],
-            start_sh: [0; 4],
+            start_st: [0; 5],
+            start_sh: [0; 5],
             start_fst: 0,
             start_fsh: 0,
             // (net of the left local box, which eats into the line too)
@@ -1249,9 +1331,9 @@ impl Engine {
                     let a = actives[idx].clone();
                     let is_only = actives.len() == 1;
                     let width = endw - a.start_w + bg_w_cand;
-                    let mut dst = [0i64; 4];
-                    let mut dsh = [0i64; 4];
-                    for k in 0..4 {
+                    let mut dst = [0i64; 5];
+                    let mut dsh = [0i64; 5];
+                    for k in 0..5 {
                         dst[k] = cum_st[cand][k] - a.start_st[k] + bg_st[k];
                         dsh[k] = cum_sh[cand][k] - a.start_sh[k] + bg_sh[k];
                     }
@@ -1261,7 +1343,21 @@ impl Engine {
                     let font_sh = (cum_fsh[cand] - a.start_fsh + pre_fsh).max(0);
                     dst[0] += extra_stretch as i64; // emergency-pass background
                     let target = line_metrics(params, a.line + 1).1 as i64;
-                    let right_prot = if lua_mode {
+                    let right_prot = if xetex_protrusion {
+                        if protrude_chars > 1 {
+                            let edge = if $is_disc {
+                                match list.get(cand) {
+                                    Some(Node::Disc(dc)) if !dc.pre_break.is_empty() => dc.pre_break.last(),
+                                    _ => xetex_find_protrusion_edge(&list[a.pos..cand], false),
+                                }
+                            } else {
+                                xetex_find_protrusion_edge(&list[a.pos..cand], false)
+                            };
+                            edge.map_or(0, |node| xetex_protrusion_width(&self.eqtb, node, false))
+                        } else {
+                            0
+                        }
+                    } else if lua_mode {
                         if protrude_chars > 1 && cand < n {
                             crate::luaexp::break_right_pw(&self.eqtb, list, a.pos, cand, $is_disc, &lb_dead_mask)
                         } else {
@@ -1376,7 +1472,15 @@ impl Engine {
                         };
                         shortfall = if font_sh > -shortfall {
                             if line_sh_steps > 0 {
-                                -(font_sh / line_sh_steps) / 2
+                                // LuaTeX's max_shrink_ratio is negative, so
+                                // its retained half-step is positive. With
+                                // zero glue shrink, the pdfTeX sign would
+                                // prematurely deactivate this active path.
+                                if LUA {
+                                    (font_sh / line_sh_steps) / 2
+                                } else {
+                                    -(font_sh / line_sh_steps) / 2
+                                }
                             } else {
                                 0
                             }
@@ -1395,7 +1499,7 @@ impl Engine {
                         (0, DECENT)
                     } else if shortfall > 0 {
                         // stretching
-                        if dst[1] != 0 || dst[2] != 0 || dst[3] != 0 {
+                        if dst[1..] != [0; 4] {
                             let mut r = (0, DECENT); // infinite stretch
                             if let Some(llf) = last_line_fit {
                                 match last_line_badness(llf, &a, shortfall, &dst, &dsh)
@@ -1543,7 +1647,25 @@ impl Engine {
                         &cum_fst,
                         &cum_fsh,
                     );
-                    let left_prot = if lua_mode {
+                    let left_prot = if xetex_protrusion {
+                        if protrude_chars > 1 {
+                            let edge = if $is_disc {
+                                match list.get(cand) {
+                                    Some(Node::Disc(dc)) if !dc.post_break.is_empty() => dc.post_break.first(),
+                                    Some(Node::Disc(dc)) => list.get(after_prune(cand + dc.replace_count)..)
+                                        .and_then(|nodes| xetex_find_protrusion_edge(nodes, true)),
+                                    _ => list.get(after_prune(cand)..)
+                                        .and_then(|nodes| xetex_find_protrusion_edge(nodes, true)),
+                                }
+                            } else {
+                                list.get(after_prune(cand)..)
+                                    .and_then(|nodes| xetex_find_protrusion_edge(nodes, true))
+                            };
+                            edge.map_or(0, |node| xetex_protrusion_width(&self.eqtb, node, true))
+                        } else {
+                            0
+                        }
+                    } else if lua_mode {
                         if protrude_chars > 1 {
                             crate::luaexp::break_left_pw(&self.eqtb, list, cand, &lb_dead_mask)
                         } else {
@@ -1736,8 +1858,10 @@ impl Engine {
                     let endw = cum_w[i] + disc_list_width(&self.eqtb, &dc.pre_break);
                     // luatex: syllable discretionaries (subtype > automatic)
                     // only break in the second pass
-                    if second_pass || dc.subtype <= 2 {
-                        consider!(i, true, pen, BreakType::Hyphenated, false, endw);
+                    // tex.web try_break: a penalty of 10000 or more forbids
+                    // the break (also a hyphen's), -10000 or less forces it
+                    if (second_pass || dc.subtype <= 2) && pen < INF_PENALTY {
+                        consider!(i, true, pen, BreakType::Hyphenated, pen <= EJECT_PENALTY, endw);
                     }
                 }
                 _ => {}
@@ -1890,6 +2014,7 @@ impl Engine {
             let last = bp.pos >= list.len();
             let mut break_disc: Option<crate::boxes::DiscNode> = None;
             let mut broke_at_disc = false;
+            let mut protrusion_pre_break = false;
             // tex.web §881: a math-node break stays on the line with width 0
             // (etex.ch adjusts the LR stack there); math nodes pruned from
             // the next line's start adjust it only after this line's LR end
@@ -1914,6 +2039,7 @@ impl Engine {
                         if !lua_order {
                             seg.push(Node::Disc(crate::boxes::DiscNode::new(Vec::new(), Vec::new(), Vec::new(), 0)));
                         }
+                        protrusion_pre_break = !dc.pre_break.is_empty();
                         for nn in std::mem::take(&mut dc.pre_break) {
                             push_dims(&self.eqtb, nn, &mut seg, &mut nat_w);
                         }
@@ -1996,9 +2122,35 @@ impl Engine {
                 };
                 seg.splice(at..at, lb);
             }
-            let protrude_chars =
-                self.eqtb.int_params[crate::prim::IntParam::PdfProtrudeChars.idx() as usize];
-            if protrude_chars > 0 && self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            let xetex_protrusion = self.engine_kind == crate::engine::EngineKind::XeTeX;
+            let protrude_chars = self.eqtb.int_params[if xetex_protrusion {
+                IntParam::XeTeXProtrudeChars
+            } else {
+                IntParam::PdfProtrudeChars
+            }.idx() as usize];
+            if protrude_chars > 0 && xetex_protrusion {
+                // xetex.web post_line_break: the right kern precedes the
+                // breakpoint glue (parfillskip on the final line). A nonempty
+                // discretionary pre-break list uses its final node directly.
+                let ins = if last && matches!(seg.last(), Some(Node::Glue(..))) {
+                    seg.len() - 1
+                } else {
+                    seg.len()
+                };
+                let right_edge = if protrusion_pre_break {
+                    seg.last()
+                } else {
+                    xetex_find_protrusion_edge(&seg[..ins], false)
+                };
+                if let Some(kern) = right_edge.and_then(|node| xetex_margin_kern(&self.eqtb, node, false)) {
+                    seg.insert(ins, kern);
+                }
+                if let Some(kern) = xetex_find_protrusion_edge(&seg, true)
+                    .and_then(|node| xetex_margin_kern(&self.eqtb, node, true))
+                {
+                    seg.insert(0, kern);
+                }
+            } else if protrude_chars > 0 && self.engine_kind == crate::engine::EngineKind::LuaTeX {
                 // luatex post_line_break: the right margin kern goes before
                 // the break glue (before \parfillskip on the last line), the
                 // left one in front of the first node of the line
@@ -2222,7 +2374,7 @@ impl Engine {
         let target64 = target as i64;
         let mut t = 0i64;
         let mut d = 0i64;
-        let mut stretch = [0i64; 4];
+        let mut stretch = [0i64; 5];
         let mut shrink = 0i64;
         let mut best_cost = 1073741823i64;
         let mut best_split = 0;
@@ -2356,8 +2508,9 @@ impl Engine {
         for _ in 0..snaps {
             self.report_discarded_snap();
         }
+        let upwards = self.xe_upwards();
         if let Some((i, height)) = rest.iter().enumerate().find_map(|(i, n)| match n {
-            Node::Box { h, .. } | Node::Rule { height: h, .. } => Some((i, *h)),
+            Node::Box { h, d, .. } | Node::Rule { height: h, depth: d, .. } => Some((i, if upwards { *d } else { *h })),
             _ => None,
         }) {
             // tex.web §968 new_skip_param(split_top_skip_code)
@@ -2893,11 +3046,11 @@ fn start_state<const LUA: bool>(
     cand: usize,
     is_disc: bool,
     cum_w: &[i64],
-    cum_st: &[[i64; 4]],
-    cum_sh: &[[i64; 4]],
+    cum_st: &[[i64; 5]],
+    cum_sh: &[[i64; 5]],
     cum_fst: &[i64],
     cum_fsh: &[i64],
-) -> (i64, [i64; 4], [i64; 4], i64, i64) {
+) -> (i64, [i64; 5], [i64; 5], i64, i64) {
     let n = list.len();
     if is_disc && cand < n {
         if let Node::Disc(dc) = &list[cand] {

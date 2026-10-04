@@ -1,0 +1,20 @@
+\documentclass[11pt]{article}
+\usepackage[a5paper,margin=16mm]{geometry}
+\usepackage{fontspec}
+\setmainfont{TeX Gyre Pagella}
+\setsansfont{TeX Gyre Heros}
+\usepackage[authoryear,round]{natbib}
+\usepackage[colorlinks=true,citecolor=blue]{hyperref}
+\bibliographystyle{plainnat}
+
+\begin{document}
+\section*{Typography and typesetting systems}
+Early work by \citet{knuth84} established the machinery that later authors
+extended \citep{lamport94,beeton07}. The font collection described in
+\citep[see][p.~7]{gyre12} came much later. \citeauthor{lamport94} wrote of structure,
+while \citeyear{knuth84} marks the first edition. Multiple groups agree
+\citep{knuth84,lamport94}; compare \citealp{gyre12}.
+
+\nocite{*}
+\bibliography{refs}
+\end{document}

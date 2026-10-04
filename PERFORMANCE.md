@@ -130,3 +130,21 @@ a prepared pass executes 48.8 G instructions in total, versus 48.9 G in the
 pre-XeTeX binary. All five PDFs remain byte-identical to that binary and match
 TeX Live in extracted text (`pdftotext -layout`) and 50 dpi page renders.
 The original pre-review source snapshots totaled 135.2 G instructions.
+
+## Engine-coverage verification
+
+Paired prepared-pass counters, three samples per document, comparing the
+XeTeX-cutover baseline binary with the verified engine-coverage binary
+(`5db6ea7872b5`):
+
+| Measurement | Baseline | Engine-coverage source |
+| --- | ---: | ---: |
+| `trust_own` instructions | 7.335 G | 7.342 G |
+| Five-document instruction total | 49.015 G | 49.058 G |
+
+The measured total increased by 0.088%; all five PDFs are byte-identical.
+The expanded isolated TeX Live 2026 gate passes all 127 fixtures: 23 pdfTeX,
+45 LuaLaTeX and 59 XeLaTeX. Cold Unicode math completes under the unchanged
+512 MiB resident-memory limit. Immutable font metadata uses exact precomputed
+values and byte windows instead of inflating full font programs during scans.
+

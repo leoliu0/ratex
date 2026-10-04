@@ -222,6 +222,25 @@ impl Engine {
         i32::from(self.eqtb.char_class(character))
     }
 
+    /// `XeTeX_upwards` (`\XeTeXupwardsmode>0`).
+    #[inline]
+    pub(crate) fn xe_upwards(&self) -> bool {
+        self.eqtb.int_params[IntParam::XeTeXUpwardsMode.idx() as usize] > 0
+    }
+
+    /// The extents `append_to_vlist` measures a box by: the distance of its
+    /// far edge from the previous baseline and the depth the next box starts
+    /// from, `(height, depth)` normally and `(depth, height)` while stacking
+    /// upwards.
+    #[inline]
+    pub(crate) fn interline_extents<T>(&self, height: T, depth: T) -> (T, T) {
+        if self.xe_upwards() {
+            (depth, height)
+        } else {
+            (height, depth)
+        }
+    }
+
     /// `\XeTeXinterchartoks <class> <class> = <general text>`.
     pub fn do_xetex_interchartoks_assign(&mut self, owner: crate::token::CsId) {
         let global = self.take_assignment_prefixes("\\XeTeXinterchartoks");
@@ -241,6 +260,64 @@ impl Engine {
             .inter_char_toks(c1, c2)
             .map(|toks| toks.as_ref().clone())
             .unwrap_or_default()
+    }
+
+    /// `scan_glyph_number`: `/name`, case-insensitive `U<char>`, or a
+    /// numeric glyph ID. Unicode operands use XeTeX's 16-bit `scan_char_num`.
+    fn scan_xetex_protrusion_glyph(&mut self, font: &crate::native_font::NativeFont) -> i32 {
+        if self.scan_keyword(b"/") {
+            let name = self.scan_file_name();
+            font.program
+                .shape_face()
+                .and_then(|face| face.glyph_index_by_name(&name))
+                .map_or(0, |glyph| i32::from(glyph.0))
+        } else if self.scan_keyword(b"u") {
+            let mut character = self.scan_int();
+            if !(0..=65535).contains(&character) {
+                self.error(&format!("Bad character code ({character})"));
+                character = 0;
+            }
+            i32::from(font.map_char(character as u32))
+        } else {
+            self.scan_int()
+        }
+    }
+
+    /// Native-font protrusion queries share the assignment's glyph grammar
+    /// for both integer scanning and `\the`.
+    pub(crate) fn xetex_native_font_code(&mut self, f: u16, p: Prim) -> Option<i32> {
+        if self.engine_kind != EngineKind::XeTeX || !matches!(p, Prim::LpCode | Prim::RpCode) {
+            return None;
+        }
+        let font = self.eqtb.fonts.get(f as usize)?.native.clone()?;
+        let glyph = self.scan_xetex_protrusion_glyph(&font);
+        let side = usize::from(p == Prim::RpCode);
+        let value = font.protrusion_codes.borrow().get(&glyph).map_or(0, |codes| codes[side]);
+        Some(value)
+    }
+
+    /// XeTeX font-code assignments are global and do not clamp their values.
+    pub(crate) fn xetex_native_font_code_assign(&mut self, f: u16, p: Prim) -> bool {
+        if self.engine_kind != EngineKind::XeTeX || !matches!(p, Prim::LpCode | Prim::RpCode) {
+            return false;
+        }
+        let Some(font) = self.eqtb.fonts.get(f as usize).and_then(|font| font.native.clone()) else {
+            return false;
+        };
+        let glyph = self.scan_xetex_protrusion_glyph(&font);
+        self.scan_optional_equals();
+        let value = self.scan_int();
+        let side = usize::from(p == Prim::RpCode);
+        let mut codes = font.protrusion_codes.borrow_mut();
+        if value != 0 {
+            codes.entry(glyph).or_insert([0; 2])[side] = value;
+        } else if let Some(entry) = codes.get_mut(&glyph) {
+            entry[side] = 0;
+            if *entry == [0; 2] {
+                codes.remove(&glyph);
+            }
+        }
+        true
     }
 
     /// `\XeTeXglyph <glyph number>` (xetex.web "Implement \XeTeXglyph").

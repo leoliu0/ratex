@@ -1,0 +1,53 @@
+\documentclass[11pt]{report}
+\usepackage[a5paper,margin=16mm]{geometry}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+\setsansfont{Latin Modern Sans}
+\usepackage{amsmath}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage[hidelinks,bookmarksopen]{hyperref}
+\usepackage{bookmark}
+\usepackage{etoolbox}
+\patchcmd{\chapter}{\thispagestyle{plain}}{\thispagestyle{empty}}{}{}
+\renewcommand{\thesection}{\Roman{section}}
+\renewcommand{\thechapter}{\arabic{chapter}}
+
+\title{Annual Report}\author{Analytics Team}\date{14 November 2023}
+\begin{document}
+\maketitle
+\begin{abstract}
+This report summarises throughput, latency, and cost for three services.
+The abstract is typeset in the report class with its own heading.
+\end{abstract}
+\tableofcontents
+\listoftables
+\chapter{Overview}\label{ch:overview}
+\section{Scope}
+Three services are covered; see Chapter~\ref{ch:results} for numbers and
+Appendix~\ref{app:method} for methodology.
+\begin{enumerate}[label=\textbf{R\arabic*.},leftmargin=*]
+  \item Throughput targets
+  \item Latency budgets
+  \item Cost ceilings
+\end{enumerate}
+\section{Audience}
+Managers and engineers.
+\chapter{Results}\label{ch:results}
+\section{Measured throughput}
+\begin{table}[ht]\centering
+\caption{Throughput by service}\label{tab:tp}
+\begin{tabular}{@{}lrr@{}}\toprule Service & Req/s & Share\\\midrule
+auth & 1200 & 40\%\\ search & 1500 & 50\%\\ mail & 300 & 10\%\\\bottomrule\end{tabular}
+\end{table}
+Table~\ref{tab:tp} lists the numbers. The total is $1200+1500+300=3000$ requests per second.
+\appendix
+\chapter{Methodology}\label{app:method}
+\section{Sampling}
+Samples were taken hourly; Chapter~\ref{ch:results} uses their median.
+\chapter{Glossary}
+\begin{description}[style=nextline]
+  \item[Latency] Time between request and response.
+  \item[Throughput] Requests served per second.
+\end{description}
+\end{document}

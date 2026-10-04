@@ -1,0 +1,8 @@
+\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+\begin{document}
+Before the broken script.
+\typeout{Running the broken script}
+\directlua{dofile("engine_broken_syntax.lua")}
+\end{document}

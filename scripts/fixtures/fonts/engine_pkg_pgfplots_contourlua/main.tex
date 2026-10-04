@@ -1,0 +1,33 @@
+\documentclass[11pt]{article}
+\usepackage[a5paper,margin=14mm]{geometry}
+\usepackage{fontspec}
+\setmainfont{TeX Gyre Termes}
+\setsansfont{TeX Gyre Heros}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usetikzlibrary{pgfplots.contourlua}
+\makeatletter
+% LuaTeX computes the level sets with the pgfplots Lua backend; engines
+% without \directlua draw the same contours from a prepared table.
+\newcommand{\levelsets}{%
+  \ifpgfplots@LUA@supported
+    \addplot3[contour lua={levels={1,4,9},labels=true},domain=-3.5:3.5,y domain=-3.5:3.5,samples=29] {x^2+y^2};
+  \else
+    \addplot3[contour prepared={labels=true}] table {contours.dat};
+  \fi}
+\makeatother
+
+\begin{document}
+\section*{Level sets of $f(x,y)=x^{2}+y^{2}$}
+\begin{center}
+\begin{tikzpicture}
+\begin{axis}[
+  width=.9\linewidth,height=.9\linewidth,axis equal image,
+  title={Contours at 1, 4 and 9},
+  xlabel={$x$},ylabel={$y$},
+  view={0}{90},xmin=-3.5,xmax=3.5,ymin=-3.5,ymax=3.5]
+  \levelsets
+\end{axis}
+\end{tikzpicture}
+\end{center}
+\end{document}

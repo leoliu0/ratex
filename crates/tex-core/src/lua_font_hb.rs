@@ -1,15 +1,15 @@
 //! `luaharfbuzz` (the HarfBuzz binding shipped with luahbtex and used by
 //! luaotfload's harf renderer), implemented over rustybuzz/ttf-parser.
 //!
-//! Rust provides the primitive operations on parsed faces (handles into a
-//! thread-local face store); the class layer (`Face`, `Font`, `Buffer`,
+//! Rust provides the primitive operations on Lua-owned parsed faces; the
+//! class layer (`Face`, `Font`, `Buffer`,
 //! `Feature`, `Tag`, `Script`, `Direction`, `Language`, `Blob`, `ot`, ...) is
 //! Lua with the member names of luaharfbuzz.
 
-use std::cell::RefCell;
+use std::any::Any;
 use std::rc::Rc;
 
-use tex_lua::{CallbackLua, Lua, LuaApi, LuaBytes, LuaString, LuaTable};
+use tex_lua::{CallbackLua, Lua, LuaApi, LuaBytes, LuaString, LuaTable, UserDataTrait, Value};
 
 struct HbFace {
     // Field order matters: `face` borrows `_data` and must drop first.
@@ -17,17 +17,30 @@ struct HbFace {
     _data: Rc<Vec<u8>>,
 }
 
-thread_local! {
-    static FACES: RefCell<Vec<Rc<HbFace>>> = const { RefCell::new(Vec::new()) };
+/// The Lua handle owns the font bytes; closing a font releases them immediately,
+/// and unreachable HarfBuzz faces release them when Lua collects the handle.
+struct FaceHandle(Option<Rc<HbFace>>);
+
+impl UserDataTrait for FaceHandle {
+    fn type_name(&self) -> &'static str {
+        "luaharfbuzz.face"
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
 }
 
-fn face(id: i64) -> Result<Rc<HbFace>, String> {
-    FACES.with(|f| {
-        f.borrow()
-            .get((id - 1) as usize)
-            .cloned()
-            .ok_or_else(|| "luaharfbuzz: invalid face".to_string())
-    })
+fn face(value: Value) -> Result<Rc<HbFace>, String> {
+    let handle = value
+        .as_userdata::<FaceHandle>()
+        .ok_or_else(|| "luaharfbuzz: invalid face".to_string())?;
+    let handle = handle.borrow().map_err(|e| format!("{e:?}"))?;
+    handle.0.clone().ok_or_else(|| "luaharfbuzz: closed face".to_string())
 }
 
 fn tag_of(n: i64) -> ttf_parser::Tag {
@@ -59,6 +72,53 @@ fn layout_table<'a>(
     }
 }
 
+fn weight_name(weight: u16) -> &'static str {
+    match weight {
+        ..=150 => "Thin",
+        151..=250 => "ExtraLight",
+        251..=350 => "Light",
+        351..=450 => "Regular",
+        451..=550 => "Medium",
+        551..=650 => "Demi",
+        651..=750 => "Bold",
+        751..=850 => "ExtraBold",
+        _ => "Black",
+    }
+}
+
+fn embedded_face_meta(
+    cx: &mut CallbackLua<'_>,
+    info: &tex_kpse::EmbeddedFontInfo,
+    filename: &LuaString,
+) -> Result<LuaTable, tex_lua::LuaError> {
+    let t = cx.create_table_with_capacity(0, 17)?;
+    for (key, value) in [
+        ("fontname", info.fontname),
+        ("fullname", info.fullname),
+        ("familyname", info.familyname),
+        ("copyright", info.copyright),
+        ("version", info.version),
+        ("weight", weight_name(info.weight)),
+    ] {
+        t.set(key, cx.create_bytes(value.as_bytes())?)?;
+    }
+    t.set("italicangle", f64::from(f32::from_bits(info.italic_angle_bits)))?;
+    t.set("units_per_em", i64::from(info.units_per_em))?;
+    t.set("ascent", i64::from(info.ascent))?;
+    t.set("descent", -i64::from(info.descender))?;
+    t.set("glyphcnt", i64::from(info.glyph_count))?;
+    t.set("glyphmax", i64::from(info.glyph_count) - 1)?;
+    t.set("glyphmin", 0i64)?;
+    t.set("filename", filename)?;
+    t.set("table_version", 20190101i64)?;
+    let pfminfo = cx.create_table_with_capacity(0, 3)?;
+    pfminfo.set("weight", i64::from(info.weight))?;
+    pfminfo.set("width", i64::from(info.width))?;
+    pfminfo.set("panose_set", false)?;
+    t.set("pfminfo", pfminfo)?;
+    Ok(t)
+}
+
 const DEFAULT_LANGUAGE_INDEX: i64 = 0xFFFF;
 
 pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
@@ -70,6 +130,26 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
         };
     }
 
+    native!("embedded_info", |cx| {
+        let filename = cx.arg::<LuaString>(1)?;
+        let faces = filename.as_str().and_then(|path| tex_kpse::embedded_font_info(&path));
+        match faces {
+            Some([info]) => {
+                let t = embedded_face_meta(cx, info, &filename)?;
+                cx.push(t)
+            }
+            Some(infos) if !infos.is_empty() => {
+                let t = cx.create_table_with_capacity(infos.len(), 0)?;
+                for (index, info) in infos.iter().enumerate() {
+                    let meta = embedded_face_meta(cx, info, &filename)?;
+                    t.raw_seti(index as i64 + 1, meta)?;
+                }
+                cx.push(t)
+            }
+            _ => cx.push(Option::<i64>::None),
+        }
+    });
+
     native!("face_new", |cx| {
         let data = cx.arg::<LuaString>(1)?.to_bytes();
         let index = cx.arg::<Option<i64>>(2)?.unwrap_or(0).max(0) as u32;
@@ -78,15 +158,18 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
         let slice: &'static [u8] = unsafe { std::mem::transmute::<&[u8], &'static [u8]>(data.as_slice()) };
         match rustybuzz::Face::from_slice(slice, index) {
             Some(face) => {
-                let id = FACES.with(|f| {
-                    let mut f = f.borrow_mut();
-                    f.push(Rc::new(HbFace { face, _data: data }));
-                    f.len() as i64
-                });
-                cx.push(id)
+                let handle = cx.create_userdata(FaceHandle(Some(Rc::new(HbFace { face, _data: data }))))?;
+                cx.push(handle)
             }
             None => cx.push(Option::<i64>::None),
         }
+    });
+
+    native!("face_close", |cx| {
+        let value: Value = cx.arg(1)?;
+        let handle = value.as_userdata::<FaceHandle>().ok_or_else(|| cx.error("luaharfbuzz: invalid face"))?;
+        handle.borrow_mut().map_err(|e| err(cx, e))?.0 = None;
+        Ok(0)
     });
 
     native!("face_info", |cx| {
@@ -380,19 +463,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
         t.set("width", i64::from(f.face.width().to_number()))?;
         t.set("ascent", i64::from(f.face.ascender()))?;
         t.set("descent", -i64::from(f.face.descender()))?;
-        let w = f.face.weight().to_number();
-        let name = match w {
-            ..=150 => "Thin",
-            151..=250 => "ExtraLight",
-            251..=350 => "Light",
-            351..=450 => "Regular",
-            451..=550 => "Medium",
-            551..=650 => "Demi",
-            651..=750 => "Bold",
-            751..=850 => "ExtraBold",
-            _ => "Black",
-        };
-        t.set("weight_name", LuaBytes(name.as_bytes().to_vec()))?;
+        t.set("weight_name", cx.create_bytes(weight_name(f.face.weight().to_number()).as_bytes())?)?;
         cx.push(t)
     });
 
@@ -801,17 +872,24 @@ local function face_meta(h, filename)
 end
 fontloader.fields = function() return FIELDS end
 fontloader.info = function(filename)
-  local _, data = load_face(filename, 0)
+  if type(filename) == "string" then
+    local meta = N.embedded_info(filename)
+    if meta then return meta end
+  end
+  local h, data = load_face(filename, 0)
   local count = ttc_count(data)
   if count > 1 then
     local out = {}
     for i = 0, count - 1 do
-      local h = load_face(filename, i)
-      out[#out + 1] = face_meta(h, filename)
+      local hi = i == 0 and h or N.face_new(data, i)
+      out[#out + 1] = face_meta(hi, filename)
+      N.face_close(hi)
     end
     return out
   end
-  return face_meta((load_face(filename, 0)), filename)
+  local meta = face_meta(h, filename)
+  N.face_close(h)
+  return meta
 end
 local Loaded = {}
 fontloader.open = function(filename, fontname)
@@ -820,15 +898,18 @@ fontloader.open = function(filename, fontname)
   if fontname and count > 1 then
     local found
     for i = 0, count - 1 do
-      local hi = load_face(filename, i)
+      local hi = i == 0 and h or N.face_new(data, i)
       if N.face_name(hi, 6) == fontname then found = hi break end
+      N.face_close(hi)
     end
     if not found then error("font loading failed for " .. filename .. "(" .. fontname .. ")") end
     h = found
   end
   return setmetatable({ h = h, filename = filename }, Loaded)
 end
-fontloader.close = function(font) font.h = nil end
+fontloader.close = function(font)
+  if font.h then N.face_close(font.h) font.h = nil end
+end
 fontloader.to_table = function(font)
   if not font.h then return false end
   local t = face_meta(font.h, font.filename)

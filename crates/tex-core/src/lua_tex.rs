@@ -25,13 +25,13 @@ fn glue_tuple(g: &Glue) -> GlueTuple {
         i64::from(g.width),
         i64::from(g.stretch),
         i64::from(g.shrink),
-        i64::from(g.stretch_order),
-        i64::from(g.shrink_order),
+        i64::from(crate::lua_node_pack::lua_order_of(g.stretch_order)),
+        i64::from(crate::lua_node_pack::lua_order_of(g.shrink_order)),
     )
 }
 
 fn order(v: i64) -> u8 {
-    v.clamp(0, 3) as u8
+    crate::lua_node_pack::engine_order(v.clamp(0, 4) as i32)
 }
 
 /// The glue of a `setglue` call: `ltexlib.c` stores `lua_tointeger`
@@ -80,6 +80,10 @@ pub(crate) struct TexState {
     pub texio_noescape: bool,
     /// `lang.*` values per language.
     pub lang: crate::FxHashMap<u8, crate::lua_lang::LangParams>,
+    /// Languages brought into being as texlang.c `new_language` does when
+    /// nothing else (patterns, parameters, hjcodes) records them: `lang.new`
+    /// and text typeset in them. Bit `l` of word `l / 64`.
+    pub lang_made: [u64; 4],
     /// `\hjcode`/`lang.sethjcode` values the 8-bit table of the language
     /// cannot hold: characters above 255 and codes above 255.
     pub hj_wide: crate::FxHashMap<(u8, i32), i32>,

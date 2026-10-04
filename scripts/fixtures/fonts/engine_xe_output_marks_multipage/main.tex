@@ -1,0 +1,22 @@
+\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+\setlength\textheight{12\baselineskip}
+\setlength\textwidth{20em}
+\pagestyle{headings}
+\makeatletter
+\newcommand\filler[1]{\par #1 paragraph one has enough words to take several short lines of text in this narrow page, then more words so it keeps going for a while.\par}
+\makeatother
+\begin{document}
+\tableofcontents
+\section{Alpha}\filler{Alpha}\filler{Alpha two}
+\section{Beta}\filler{Beta}\filler{Beta two}\filler{Beta three}
+\subsection{Beta sub}\filler{Beta sub}
+\newpage
+\section{Gamma}\filler{Gamma}\footnote{Footnote on the gamma page with a number.}
+\filler{Gamma two}\filler{Gamma three}
+\section{Delta}\filler{Delta}\filler{Delta two}\filler{Delta three}\filler{Delta four}
+\clearpage
+\section{Epsilon}\filler{Epsilon}
+Last section is on page \pageref{last}.\label{last}
+\end{document}

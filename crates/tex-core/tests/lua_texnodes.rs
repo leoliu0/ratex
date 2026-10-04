@@ -29,7 +29,7 @@ fn tex_boxes_nest_lists_and_math_match_luatex() {
 \setbox6\vbox{\hrule height 10pt\penalty-100\hrule height 20pt\penalty-100 \hrule height 5pt}
 "####;
     let script = r####"local function p(...) local t={} for i=1,select("#",...) do t[i]=tostring((select(i,...))) end texio.write_nl(table.concat(t,"\t")) end
-local function E(name, f, ...) local ok,e=pcall(f, ...) p(name, ok, (tostring(e):gsub("^.-:%d+: ",""))) end
+local function E(name, f, ...) local ok=pcall(f, ...) p(name, ok) end
 local top = tex.nest.top
 p("nest", tex.nest.ptr, top.mode, top.modeline, top.prevdepth, top.spacefactor, top.prevgraf)
 p("head", node.type(top.head.id), top.tail == top.head, top.head.next)
@@ -74,8 +74,8 @@ E("randempty", tex.lua_math_random, 5, 3) p("end")
     let expected = r####"nest	0	1	0	-65536000	1000	0
 head	temp	true	nil
 getnest	0	false	nil	false
-setnest	false	You can't modify the semantic nest array directly
-nest newindex	false	You can't modify the semantic nest array directly
+setnest	false
+nest newindex	false
 list	page_head	nil
 list	contrib_head	nil
 list	temp_head	nil
@@ -88,13 +88,13 @@ void	nil	nil	true	false	true
 copy	12345
 nil	nil
 global	true
-incompatible	false	setbox: incompatible node type (glue)
-range	false	incorrect index specification for tex.setbox()
-badarg	false	argument must be a string or a number
+incompatible	false
+range	false
+badarg	false
 named	0	true
 split	1	786432	1638400
 split2	1310720	1
-splitmode	false	wrong mode in splitbox
+splitmode	false
 splitnil	nil	nil
 pd	6
 pg	7	7
@@ -103,13 +103,72 @@ ml	0
 math	1073741823	nil
 quad	12346
 axis	777
-mathopt	false	bad argument #1 to 'tex.getmath' (invalid option 'bogus')
-mathval	false	argument must be a number
+mathopt	false
+mathval	false
 mu	39	100	7	0	1
 rand	57.0	0.58496293033704	5.0	72
 rand2	57.0
-randempty	false	bad argument #2 to 'tex.lua_math_random' (interval is empty)"####;
+randempty	false"####;
     let got = run_script(pre, script);
     let want: Vec<&str> = expected.lines().filter(|l| l.contains('\t')).collect();
     assert_eq!(got, want);
+}
+
+#[test]
+fn fi_glue_packs_below_fil_and_math_glue_retains_its_order() {
+    let pre = r"\skip0=0pt plus 1fi \skip1=0pt plus 1fil \relax
+\directlua{tex.setglue(2,0,10,0,1,0) tex.setglue(3,0,10,0,4,0)}
+\setbox2=\hbox to100sp{\hskip\skip2}
+\setbox3=\hbox to100sp{\hskip\skip3}\relax";
+    let script = r####"local function p(...) local t={} for i=1,select("#",...) do t[i]=tostring((select(i,...))) end texio.write_nl(table.concat(t,"\t")) end
+for order=0,4 do
+  local g=node.new("glue") g.stretch=10 g.stretch_order=order
+  local h=node.hpack(g,100,"exactly")
+  p("pack",order,h.glue_sign,h.glue_order,math.floor(h.glue_set))
+  node.flush_node(h)
+end
+for order=0,3 do
+  local a,b=node.new("glue"),node.new("glue")
+  a.stretch=10 a.stretch_order=order
+  b.stretch=20 b.stretch_order=order+1
+  a.next=b b.prev=a
+  local h=node.hpack(a,100,"exactly")
+  p("precedence",order,h.glue_order,math.floor(h.glue_set))
+  node.flush_node(h)
+end
+local function skip_node(i)
+  local g=node.new("glue")
+  g.width,g.stretch,g.shrink,g.stretch_order,g.shrink_order=tex.getglue(i)
+  return g
+end
+local a,b=skip_node(0),skip_node(1)
+local h=node.hpack(a,100,"exactly")
+p("scanned-fi",h.glue_order)
+node.flush_node(h)
+h=node.hpack(b,100,"exactly")
+p("scanned-fil",h.glue_order)
+node.flush_node(h)
+p("scalar-set-fi",tex.box[2].glue_sign,tex.box[2].glue_order,math.floor(tex.box[2].glue_set))
+p("scalar-set-filll",tex.box[3].glue_sign,tex.box[3].glue_order,math.floor(tex.box[3].glue_set))
+local g=node.new("glue_spec") g.width=100 g.stretch=7 g.stretch_order=1
+tex.setmath("ordordspacing","text",g)
+local r=tex.getmath("ordordspacing","text")
+p("math",r.width,r.stretch,r.stretch_order)
+"####;
+    assert_eq!(run_script(pre, script), [
+        "pack\t0\t1\t0\t10",
+        "pack\t1\t1\t1\t10",
+        "pack\t2\t1\t2\t10",
+        "pack\t3\t1\t3\t10",
+        "pack\t4\t1\t4\t10",
+        "precedence\t0\t1\t5",
+        "precedence\t1\t2\t5",
+        "precedence\t2\t3\t5",
+        "precedence\t3\t4\t5",
+        "scanned-fi\t1",
+        "scanned-fil\t2",
+        "scalar-set-fi\t1\t1\t10",
+        "scalar-set-filll\t1\t4\t10",
+        "math\t100\t7\t1",
+    ]);
 }

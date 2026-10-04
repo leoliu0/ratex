@@ -22,7 +22,11 @@ fn main() {
                          static PACKAGE_DIR_NAMES: &[u8] = &[];\n\
                          static PACKAGE_DIRS: PackedTable<2> = PackedTable(&[]);\n\
                          static PACKAGE_MEMBER_DIRS: PackedTable<1> = PackedTable(&[]);\n\
-                         static EMBEDDED_FONT_FACES: &[EmbeddedFontFace] = &[];\n";
+                         static EMBEDDED_FONT_FACES: &[EmbeddedFontFace] = &[];\n\
+                         static EMBEDDED_FONT_INFOS: &[EmbeddedFontInfo] = &[];\n\
+                         static PACKAGE_FONT_INFO: PackedTable<5> = PackedTable(&[]);\n\
+                         static FONT_METADATA_WINDOWS: PackedTable<3> = PackedTable(&[]);\n\
+                         static FONT_METADATA_BYTES: &[u8] = &[];\n";
         std::fs::write(out.join("packages_index.rs"), generated).unwrap();
         return;
     }
@@ -99,6 +103,8 @@ fn main() {
     let mut chunks: Vec<(usize, usize, usize)> = Vec::new();
     let mut chunk = Vec::with_capacity(CHUNK_TARGET);
     let mut font_faces = Vec::new();
+    let mut font_infos = BTreeMap::new();
+    let mut font_windows = BTreeMap::new();
     for entry in archives.iter_mut().flat_map(|archive| archive.entries().unwrap()) {
         let mut entry = entry.unwrap();
         if !entry.header().entry_type().is_file() {
@@ -148,6 +154,13 @@ fn main() {
             || name.ends_with(".otc");
         if is_font {
             let count = ttf_parser::fonts_in_collection(&data).unwrap_or(1);
+            let mut infos = Vec::new();
+            let mut metadata_ranges = Vec::new();
+            let collection = data.starts_with(b"ttcf");
+            if collection {
+                let extra = if data.get(4..8) == Some(&[0, 2, 0, 0]) { 12 } else { 0 };
+                metadata_ranges.push((0, (12 + count as usize * 4 + extra).min(data.len())));
+            }
             for face_idx in 0..count {
                 if let Ok(face) = ttf_parser::Face::parse(&data, face_idx) {
                     // Legacy name 1 (Family) and name 2 (Subfamily) preserve distinct optical
@@ -169,7 +182,49 @@ fn main() {
                         italic,
                         xe,
                     ));
+                    infos.push(font_info(&face, face_idx));
+                    let raw = face.raw_face();
+                    let header = if collection {
+                        let at = 12 + face_idx as usize * 4;
+                        u32::from_be_bytes(data[at..at + 4].try_into().unwrap()) as usize
+                    } else {
+                        0
+                    };
+                    metadata_ranges.push((header, header + 12 + raw.table_records.len() as usize * 16));
+                    for record in raw.table_records {
+                        if record.tag == ttf_parser::Tag::from_bytes(b"CFF ") {
+                            let start = record.offset as usize;
+                            if let Some(table) = data.get(start..start + record.length as usize) {
+                                if let Some(length) = cff_metadata_length(table) {
+                                    metadata_ranges.push((start, start + length));
+                                }
+                            }
+                            continue;
+                        }
+                        let length = if record.tag == ttf_parser::Tag::from_bytes(b"post") {
+                            record.length.min(32)
+                        } else if [
+                            *b"name", *b"OS/2", *b"head", *b"maxp", *b"hhea", *b"vhea",
+                            *b"VORG", *b"STAT", *b"fvar", *b"avar", *b"MVAR", *b"HVAR",
+                            *b"VVAR", *b"GPOS", *b"GSUB",
+                        ].contains(&record.tag.to_bytes()) {
+                            record.length
+                        } else {
+                            continue;
+                        };
+                        let start = record.offset as usize;
+                        let end = start + length as usize;
+                        if data.get(start..end).is_some() {
+                            metadata_ranges.push((start, end));
+                        }
+                    }
                 }
+            }
+            // A malformed collection must use the runtime parser's existing
+            // error path, not expose the subset of faces that happened to parse.
+            if count > 0 && infos.len() == count as usize {
+                font_infos.insert(name.to_owned(), infos);
+                font_windows.insert(name.to_owned(), font_metadata_windows(&data, metadata_ranges));
             }
         }
     }
@@ -217,12 +272,28 @@ fn main() {
     let mut names = Vec::new();
     let mut folded = BTreeMap::new();
     let mut index_table = Vec::with_capacity(index.len() * 24);
+    let mut font_info_table = Vec::new();
+    let mut complete_font_infos = Vec::new();
+    let mut metadata_window_table = Vec::new();
+    let mut metadata_bytes = Vec::new();
     for (position, (name, (chunk, offset, length, in_tex_tree))) in index.into_iter().enumerate() {
         push_u32s(
             &mut index_table,
             [names.len(), name.len(), chunk, offset, length, usize::from(in_tex_tree)],
         );
         push_u32s(&mut member_dir_table, [directories[&member_dirs[&name]]]);
+        if let Some(infos) = font_infos.remove(&name) {
+            let windows = font_windows.remove(&name).unwrap();
+            push_u32s(&mut font_info_table, [
+                position, complete_font_infos.len(), infos.len(),
+                metadata_window_table.len() / 12, windows.len(),
+            ]);
+            for (offset, bytes) in windows {
+                push_u32s(&mut metadata_window_table, [offset, metadata_bytes.len(), bytes.len()]);
+                metadata_bytes.extend_from_slice(&bytes);
+            }
+            complete_font_infos.extend(infos);
+        }
         names.extend_from_slice(name.as_bytes());
         folded.entry(name.to_ascii_lowercase()).or_insert(position);
     }
@@ -239,6 +310,9 @@ fn main() {
     std::fs::write(out.join("package_dir_names.bin"), &dir_names).unwrap();
     std::fs::write(out.join("package_dirs.bin"), &dir_table).unwrap();
     std::fs::write(out.join("package_member_dirs.bin"), &member_dir_table).unwrap();
+    std::fs::write(out.join("package_font_info.bin"), &font_info_table).unwrap();
+    std::fs::write(out.join("font_metadata_windows.bin"), &metadata_window_table).unwrap();
+    std::fs::write(out.join("font_metadata_bytes.bin"), &metadata_bytes).unwrap();
 
     let mut generated =
         std::io::BufWriter::new(std::fs::File::create(out.join("packages_index.rs")).unwrap());
@@ -251,6 +325,9 @@ fn main() {
         ("PACKAGE_DIR_NAMES", "package_dir_names.bin", None),
         ("PACKAGE_DIRS", "package_dirs.bin", Some(2)),
         ("PACKAGE_MEMBER_DIRS", "package_member_dirs.bin", Some(1)),
+        ("PACKAGE_FONT_INFO", "package_font_info.bin", Some(5)),
+        ("FONT_METADATA_WINDOWS", "font_metadata_windows.bin", Some(3)),
+        ("FONT_METADATA_BYTES", "font_metadata_bytes.bin", None),
     ] {
         let bytes = format!("include_bytes!(concat!(env!(\"OUT_DIR\"), \"/{file}\"))");
         match fields {
@@ -277,7 +354,71 @@ fn main() {
         .unwrap();
     }
     writeln!(generated, "];").unwrap();
+    writeln!(generated, "static EMBEDDED_FONT_INFOS: &[EmbeddedFontInfo] = &[").unwrap();
+    for info in complete_font_infos {
+        writeln!(
+            generated,
+            "    EmbeddedFontInfo {{ face_index: {}, fontname: {:?}, fullname: {:?}, familyname: {:?}, copyright: {:?}, version: {:?}, units_per_em: {}, glyph_count: {}, ascent: {}, descender: {}, italic_angle_bits: {}, weight: {}, width: {} }},",
+            info.face_index, info.fontname, info.fullname, info.familyname,
+            info.copyright, info.version, info.units_per_em, info.glyph_count,
+            info.ascent, info.descender, info.italic_angle_bits, info.weight, info.width
+        )
+        .unwrap();
+    }
+    writeln!(generated, "];").unwrap();
     generated.flush().unwrap();
+}
+
+/// CFF1's Header, Name INDEX, Top DICT INDEX and String INDEX are the
+/// contiguous metadata prefix read before any glyph or subroutine program.
+fn cff_metadata_length(data: &[u8]) -> Option<usize> {
+    if data.first() != Some(&1) {
+        return None;
+    }
+    let mut cursor = usize::from(*data.get(2)?);
+    if cursor < 4 {
+        return None;
+    }
+    data.get(..cursor)?;
+    for _ in 0..3 {
+        let count = usize::from(u16::from_be_bytes(data.get(cursor..cursor + 2)?.try_into().ok()?));
+        cursor += 2;
+        if count == 0 {
+            continue;
+        }
+        let width = usize::from(*data.get(cursor)?);
+        if !(1..=4).contains(&width) {
+            return None;
+        }
+        cursor += 1;
+        let last_at = cursor.checked_add(count * width)?;
+        let last = data.get(last_at..last_at + width)?.iter().fold(0usize, |value, &byte| {
+            (value << 8) | usize::from(byte)
+        });
+        cursor = (last_at + width).checked_add(last.checked_sub(1)?)?;
+        data.get(..cursor)?;
+    }
+    Some(cursor)
+}
+
+/// Coalesce exact metadata byte ranges so reads spanning adjacent tables stay
+/// metadata-only. Glyph/outline requests still read the original archive.
+fn font_metadata_windows(data: &[u8], mut ranges: Vec<(usize, usize)>) -> Vec<(usize, Vec<u8>)> {
+    ranges.sort_unstable();
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for (start, end) in ranges {
+        if start >= end {
+            continue;
+        }
+        if let Some(last) = merged.last_mut() {
+            if start <= last.1 {
+                last.1 = last.1.max(end);
+                continue;
+            }
+        }
+        merged.push((start, end));
+    }
+    merged.into_iter().map(|(start, end)| (start, data[start..end].to_vec())).collect()
 }
 
 fn push_u32s<const N: usize>(table: &mut Vec<u8>, values: [usize; N]) {
@@ -884,6 +1025,56 @@ fn best_name(face: &ttf_parser::Face, name_id: u16) -> Option<String> {
         }
     }
     best_match.map(|(_, s)| s)
+}
+
+/// The Lua font loader's metadata, kept separate from XeTeX's name selection.
+struct FontInfo {
+    face_index: u32,
+    fontname: String,
+    fullname: String,
+    familyname: String,
+    copyright: String,
+    version: String,
+    units_per_em: u16,
+    glyph_count: u16,
+    ascent: i16,
+    descender: i16,
+    italic_angle_bits: u32,
+    weight: u16,
+    width: u16,
+}
+
+fn font_info(face: &ttf_parser::Face, face_index: u32) -> FontInfo {
+    let name = |name_id| {
+        let mut best = None;
+        for record in face.names() {
+            if record.name_id == name_id {
+                if let Some(decoded) = record.to_string() {
+                    // Match Lua face_name: first decodable record, then the
+                    // last decodable Windows record, irrespective of language.
+                    if best.is_none() || record.platform_id == ttf_parser::PlatformId::Windows {
+                        best = Some(decoded);
+                    }
+                }
+            }
+        }
+        best.unwrap_or_default()
+    };
+    FontInfo {
+        face_index,
+        fontname: name(6),
+        fullname: name(4),
+        familyname: name(1),
+        copyright: name(0),
+        version: name(5),
+        units_per_em: face.units_per_em(),
+        glyph_count: face.number_of_glyphs(),
+        ascent: face.ascender(),
+        descender: face.descender(),
+        italic_angle_bits: face.italic_angle().unwrap_or(0.0).to_bits(),
+        weight: face.weight().to_number(),
+        width: face.width().to_number(),
+    }
 }
 
 /// What XeTeX's font manager (`XeTeXFontMgr_FC::readNames`,

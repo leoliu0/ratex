@@ -10,7 +10,7 @@ embedded TeX package archive, shipped as one executable named `ratex`.
 
 ## Verification
 
-The Linux release workflow runs the font and graphics fixtures listed in
+The Linux CI and release workflows run the font, graphics and engine fixtures listed in
 [`scripts/fixtures/fonts/manifest.json`](scripts/fixtures/fonts/manifest.json)
 through the built binary (`scripts/test_fonts.py`) with filesystem isolation,
 pdf.js and Poppler rendering/text extraction, and TeX Live 2026 as the
@@ -21,6 +21,14 @@ the C and WebAssembly libraries, and the browser module are tested as well.
 The exact minimum documents from [#17](https://github.com/leoliu0/ratex/issues/17)
 and [#18](https://github.com/leoliu0/ratex/issues/18) run under LuaLaTeX and
 XeLaTeX respectively, checking Spanish text, embedded fonts and rendering.
+LuaLaTeX and XeLaTeX also have subsystem probes and paired package-interaction
+documents: source loading, token scanners, register/group scope, Lua callbacks,
+node ownership, fonts, math, Unicode, bidirectional text, CJK line breaking and
+vertical typesetting. Their complete extracted text is compared with the matching
+TeX Live 2026 engine, alongside font-program checks and both renderers.
+Use `scripts/test_fonts.py --engine lualatex` or `--engine xelatex` with
+`--ratex` and `--output` to select a suite; its report groups failures by engine
+and feature family and retains compilation and viewer evidence.
 See [PERFORMANCE.md](PERFORMANCE.md) for how speed is measured.
 
 ## Issue assistant

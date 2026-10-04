@@ -597,6 +597,67 @@ pub(crate) fn glyph_to_scalar(glyph: &str) -> Option<char> {
     chars.next().is_none().then_some(scalar)
 }
 
+/// agl.c `skip_modifier` table: accent names a small-cap glyph may carry.
+const AGL_MODIFIERS: &[&str] = &[
+    "acute", "breve", "caron", "cedilla", "circumflex", "dieresis", "dotaccent", "grave",
+    "hungarumlaut", "macron", "ogonek", "ring", "tilde", "commaaccent", "slash", "ampersand",
+    "exclam", "exclamdown", "question", "questiondown",
+];
+
+/// agl.c `var_list` suffixes (after the leading `small` entry, which
+/// `agl_base_name` handles): style variants whose base glyph carries the
+/// text. `big`/`Big`/`bigg`/`Bigg`/`text`/`display` are TeX's math sizes.
+const AGL_VARIANT_SUFFIXES: &[&str] = &[
+    "swash", "superior", "inferior", "numerator", "denominator", "oldstyle", "display", "text",
+    "big", "bigg", "Big", "Bigg",
+];
+
+/// agl.c `agl_normalized_name`: the base glyph name of a style/size variant
+/// (`summationtext` -> `summation`, `Asmall` -> `a`), when it is one.
+fn agl_base_name(name: &str) -> Option<String> {
+    if let Some(stem) = name.strip_suffix("small").filter(|s| !s.is_empty()) {
+        let rest = ["AE", "OE", "Eth", "Thorn"]
+            .iter()
+            .find_map(|c| stem.strip_prefix(c))
+            .or_else(|| stem.strip_prefix(|c: char| c.is_ascii_uppercase()))
+            .or_else(|| AGL_MODIFIERS.contains(&stem).then_some(""));
+        if rest.is_some_and(|r| r.is_empty() || AGL_MODIFIERS.contains(&r)) {
+            return Some(stem.chars().map(|c| c.to_ascii_lowercase()).collect());
+        }
+    }
+    AGL_VARIANT_SUFFIXES
+        .iter()
+        .find_map(|s| name.strip_suffix(s).filter(|b| !b.is_empty()))
+        .map(str::to_owned)
+}
+
+/// agl.c `agl_sput_UTF16BE`/`agl_get_unicodes`: the text xdvipdfmx writes in
+/// a Type 1 font's /ToUnicode for a glyph name. Underscore-joined components
+/// resolve independently, and a component the glyph list lacks (or maps only
+/// to one private-use code point) is retried as its base glyph, which is how
+/// CMEX10's `parenleftbigg`, `summationtext` or `radicalbig` get "(", "∑", "√".
+pub(crate) fn dpx_glyph_to_unicode(glyph: &str) -> Option<String> {
+    let name = glyph.split('.').next().unwrap_or(glyph);
+    if name.is_empty() || name.starts_with('_') {
+        return None;
+    }
+    let mut out = String::new();
+    for part in name.split('_') {
+        let mut text = glyph_to_unicode(part);
+        let private = text.as_deref().is_some_and(|t| {
+            let mut it = t.chars();
+            matches!((it.next(), it.next()), (Some(c), None) if (0xE000..=0xF8FF).contains(&(c as u32)))
+        });
+        if text.is_none() || private {
+            if let Some(base) = agl_base_name(part).and_then(|b| glyph_to_unicode(&b)) {
+                text = Some(base);
+            }
+        }
+        out.push_str(&text?);
+    }
+    Some(out)
+}
+
 /// Merged Adobe Glyph List + pdfglyphlist + texglyphlist (tex entries
 /// override AGL: they may map to comma-separated Unicode sequences).
 /// Sorted by glyph name for binary search.

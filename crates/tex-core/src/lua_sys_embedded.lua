@@ -10,6 +10,9 @@ local sub, find, match, byte = string.sub, string.find, string.match, string.byt
 local tointeger = math.tointeger
 
 local is_path, read_file = S.embedded_is_path, S.embedded_read
+local open_buffer, close_buffer = S.embedded_open, S.embedded_close
+local slice_buffer, newline_buffer = S.embedded_slice, S.embedded_newline
+local number_prefix = S.embedded_number_prefix
 local real_open, real_lines, real_type, real_close = io.open, io.lines, io.type, io.close
 local real_loadfile, real_dofile = loadfile, dofile
 
@@ -40,42 +43,42 @@ end
 
 -- the Lua `read` formats over the in-memory contents
 local function read_number(f)
-  local data, pos = f.data, f.pos + 1
+  local data, pos = number_prefix(f.buffer, f.pos + 1), 1
   local _, after = find(data, "^%s*", pos)
   pos = after + 1
   local text = match(data, "^[+-]?0[xX]%x*%.?%x*[pP][+-]?%d+", pos)
     or match(data, "^[+-]?0[xX]%x*%.?%x*", pos)
     or match(data, "^[+-]?%d*%.?%d*[eE][+-]?%d+", pos)
     or match(data, "^[+-]?%d*%.?%d*", pos)
-  f.pos = pos - 1 + #(text or "")
+  f.pos = f.pos + pos - 1 + #(text or "")
   return text and tonumber(text) or nil
 end
 
 local function read_one(f, fmt)
-  local data, pos = f.data, f.pos
+  local size, pos = f.size, f.pos
   if type(fmt) == "number" then
     local n = tointeger(fmt) or error("bad argument to 'read' (number has no integer representation)", 3)
-    if pos >= #data then return nil end
+    if pos >= size then return nil end
     f.pos = pos + n
-    if f.pos > #data then f.pos = #data end
-    return sub(data, pos + 1, pos + n)
+    if f.pos > size then f.pos = size end
+    return slice_buffer(f.buffer, pos + 1, pos + n)
   end
   if type(fmt) ~= "string" then error("bad argument to 'read' (invalid format)", 3) end
   local what = match(fmt, "^%*?(.)")
   if what == "n" then return read_number(f) end
   if what == "a" then
-    f.pos = #data
-    return sub(data, pos + 1)
+    f.pos = size
+    return slice_buffer(f.buffer, pos + 1, size)
   end
   if what == "l" or what == "L" then
-    if pos >= #data then return nil end
-    local stop = find(data, "\n", pos + 1, true)
+    if pos >= size then return nil end
+    local stop = newline_buffer(f.buffer, pos + 1)
     if stop == nil then
-      f.pos = #data
-      return sub(data, pos + 1)
+      f.pos = size
+      return slice_buffer(f.buffer, pos + 1, size)
     end
     f.pos = stop
-    return sub(data, pos + 1, what == "L" and stop or stop - 1)
+    return slice_buffer(f.buffer, pos + 1, what == "L" and stop or stop - 1)
   end
   error("bad argument to 'read' (invalid format)", 3)
 end
@@ -110,7 +113,7 @@ function methods.seek(f, whence, offset)
   local base
   if whence == "set" then base = 0
   elseif whence == "cur" then base = f.pos
-  elseif whence == "end" then base = #f.data
+  elseif whence == "end" then base = f.size
   else error("bad argument #1 to 'seek' (invalid option '" .. tostring(whence) .. "')", 2) end
   local target = base + (tointeger(offset) or error("bad argument #2 to 'seek' (number has no integer representation)", 2))
   if target < 0 then return failure("Invalid argument", 22) end
@@ -121,7 +124,7 @@ end
 function methods.close(f)
   check(f, "close")
   f.closed = true
-  f.data = nil
+  if f.buffer then close_buffer(f.buffer) f.buffer = nil end
   return true
 end
 
@@ -140,7 +143,9 @@ function methods.setvbuf(f)
   return true
 end
 
-vfile.__close = function(f) if not f.closed then f.closed = true f.data = nil end end
+vfile.__close = function(f)
+  if not f.closed then methods.close(f) end
+end
 
 local function open_virtual(name, mode)
   mode = mode == nil and "r" or mode
@@ -148,10 +153,10 @@ local function open_virtual(name, mode)
     error("bad argument #2 to 'open' (invalid mode)", 3)
   end
   if find(mode, "[wa+]") then return failure(name .. ": Read-only file system", EROFS) end
-  local data = read_file(name)
-  if data then return setmetatable({ data = data, pos = 0, name = name }, vfile) end
+  local buffer, size = open_buffer(name)
+  if buffer then return setmetatable({ buffer = buffer, size = size, pos = 0, name = name }, vfile) end
   if lfs.attributes(name, "mode") == "directory" then
-    return setmetatable({ data = "", pos = 0, name = name, directory = true }, vfile)
+    return setmetatable({ size = 0, pos = 0, name = name, directory = true }, vfile)
   end
   return failure(name .. ": No such file or directory", ENOENT)
 end

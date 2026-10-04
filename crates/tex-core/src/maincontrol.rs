@@ -2209,6 +2209,8 @@ impl Engine {
             depth: 0,
             image_width: 0,
             image_height: 0,
+            x_res: 0,
+            y_res: 0,
             rotate: 0,
             orig_x: 0,
             orig_y: 0,
@@ -2380,6 +2382,8 @@ impl Engine {
                     "Unsupported or invalid image `{file}` (expected PDF, JPEG, or PNG); valid SVG is also accepted"
                 )));
         }
+        info.x_res = x_res;
+        info.y_res = y_res;
         if bundled && info.kind != ImageKind::Pdf {
             info.resource_bytes = Some(std::sync::Arc::new(bytes));
         }

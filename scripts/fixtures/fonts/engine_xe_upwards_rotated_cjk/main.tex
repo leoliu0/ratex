@@ -1,0 +1,16 @@
+\documentclass{article}
+\usepackage{fontspec}
+\usepackage{graphicx}
+\setmainfont{Latin Modern Roman}
+\begin{document}
+\font\vf="[FandolSong-Regular.otf]:vertical" at 14pt
+\font\hf="[FandolSong-Regular.otf]" at 14pt
+\setbox0\hbox{\vf 春眠不觉晓}\setbox2\hbox{\hf 春眠不觉晓}
+Vertical font: width \the\wd0\ height \the\ht0\ depth \the\dp0; horizontal font: width \the\wd2\ height \the\ht2\ depth \the\dp2\par
+\XeTeXupwardsmode=1
+\setbox4\hbox{\vf 春眠不觉晓}
+Upwards: \the\XeTeXupwardsmode, width \the\wd4\ height \the\ht4\par
+\XeTeXupwardsmode=0
+\fbox{\rotatebox{-90}{\hf 春眠不觉晓}} \fbox{\rotatebox{90}{\hf 花落知多少}}\par
+\setbox6\hbox{\rotatebox{-90}{\hf 春眠不觉晓}}Rotated horizontal text box \the\wd6\ x\the\ht6+\the\dp6\par
+\end{document}

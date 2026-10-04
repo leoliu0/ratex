@@ -27,6 +27,27 @@ fn glyph_text(lf: &LuaFont, tounicode: Option<&[u8]>, c: u32) -> String {
 }
 
 impl RenderCtx<'_> {
+    /// luatex pdfpage.c `calc_pdfpos` and pdfglyph.c `setup_fontparameters`:
+    /// quantize the origin in PDF coordinates and retain tenths of a width unit.
+    #[inline(never)]
+    pub(super) fn lua_set_text_state(&mut self, h: i64, ratio: i32) {
+        let coordinate_scale = 10f64.powi(self.decimal_digits as i32);
+        let digits = if self.decimal_digits < 4 { 5 } else { 6 };
+        let font_scale = 10f64.powi(digits);
+        let size = (self.last_f_size as f64 / SP_PER_BP * font_scale).round() / font_scale;
+        self.lua_k1 = coordinate_scale / SP_PER_BP;
+        self.lua_k2 = 10000.0 / (coordinate_scale * size * (1.0 + ratio as f64 / 1000.0));
+        self.lua_tj_h = (h as f64 * self.lua_k1).round() as i64;
+        self.lua_cw = 0;
+    }
+
+    pub(super) fn lua_tj_gap(&self, h: i64) -> i64 {
+        let position = ((h as f64 * self.lua_k1 - self.lua_tj_h as f64) * self.lua_k2).round() as i64;
+        // The C implementation divides integers before i64round: truncate,
+        // rather than rounding a second time at the coarser TJ precision.
+        (position - self.lua_cw) / 10
+    }
+
     /// Output glyph `c` of the Lua font `f` with its origin at (`x`, `y`)
     /// (`y` is the baseline, downwards) displaced by (`xoff`, `yoff`), the
     /// glyph being expanded by `ex` millionths (the glyph's `ex_glyph`).
@@ -56,7 +77,7 @@ impl RenderCtx<'_> {
         let width = crate::luaexp::expanded_width(ci.width, ex);
         let ex = ex / 1000;
         let (px, py) = (x + i64::from(xoff), y - i64::from(yoff));
-        if ci.commands.is_some() {
+        if ci.commands().is_some() {
             self.lua_vf_packet(f, c, ex, px, py);
         } else {
             self.lua_real_glyph(f, &lf, c, px, py, ex);
@@ -90,7 +111,7 @@ impl RenderCtx<'_> {
                 return;
             }
         };
-        let text = glyph_text(lf, ci.tounicode.as_deref(), c);
+        let text = glyph_text(lf, ci.tounicode(), c);
         let run = Rc::new(crate::native_layout::NativeRun {
             font: fid,
             text: Rc::from(text.as_str()),
@@ -114,20 +135,12 @@ impl RenderCtx<'_> {
             tag: None,
             span: None,
         });
-        let (_, m) = divide_scaled(at_size_sp, ONE_HUNDRED_BP_SP, 6);
         let (binding, code) = self.eng.pdf_doc.get_or_alloc_native_code(fid as usize, gid, &text);
         let ratio = ex;
-        self.begin_hex_string(x, y, fid, binding, ratio);
+        self.begin_lua_cid_string(x, y, fid, binding, ratio);
         use std::fmt::Write;
         let _ = write!(&mut self.content, "{code:04X}");
-        let nom_sp = self.native_glyph_nom_advance_sp(fid, gid);
-        let (_, nom_out) = if self.cur_tm_a == 0 {
-            divide_scaled(nom_sp, m, 4)
-        } else {
-            let (_, out) = divide_scaled(round_xn_over_d(nom_sp, 1000, 1000 + self.cur_tm_a as i64), m, 4);
-            (0, out)
-        };
-        self.delta_h += nom_out;
+        self.lua_cw += self.lua_pdf_glyph_width(fid, gid);
     }
 
     /// luatex `do_vf_packet`: run the commands of virtual character `c` of
@@ -135,9 +148,9 @@ impl RenderCtx<'_> {
     fn lua_vf_packet(&mut self, vf_f: u16, c: u32, ex: i32, x: i64, y: i64) {
         let Some(vf_font) = self.eng.eqtb.fonts.get(vf_f as usize).cloned() else { return };
         let Some(lf) = vf_font.lua.clone() else { return };
-        let Some(commands) = lf.chars.get(&c).and_then(|ci| ci.commands.clone()) else { return };
+        let Some(commands) = lf.chars.get(&c).and_then(|ci| ci.commands()) else { return };
         let mut st = VfState { vf_f, c, ex, x, y, fs: lf.size, local_font: 0, h: 0, v: 0, stack: Vec::new(), in_lua: false };
-        for cmd in &commands {
+        for cmd in commands {
             if !self.vf_command(&mut st, cmd) {
                 return;
             }
@@ -231,7 +244,7 @@ impl RenderCtx<'_> {
             );
             return;
         };
-        if tci.commands.is_some() && !(k == st.c && local_font == st.vf_f) {
+        if tci.commands().is_some() && !(k == st.c && local_font == st.vf_f) {
             self.lua_vf_packet(local_font, k, st.ex, px, py);
         } else {
             self.lua_real_glyph(local_font, &tf, k, px, py, st.ex);

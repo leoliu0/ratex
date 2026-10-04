@@ -1,0 +1,12 @@
+\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+\begin{document}
+Text typeset before the Lua failure must not be published.
+\typeout{Entering the failing Lua chunk}
+\directlua{
+  local code = 6 * 7
+  error("engine-lua-failure-" .. code)
+}
+Text after the failure.
+\end{document}

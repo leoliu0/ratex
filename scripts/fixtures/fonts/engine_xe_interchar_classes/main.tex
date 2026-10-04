@@ -1,0 +1,23 @@
+\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+\begin{document}
+\XeTeXinterchartokenstate=1
+\XeTeXcharclass`a=1 \XeTeXcharclass`b=1 \XeTeXcharclass`0=2 \XeTeXcharclass`1=2 \XeTeXcharclass`,=3
+\XeTeXinterchartoks 1 2={[L2D]} \XeTeXinterchartoks 2 1={[D2L]}
+\XeTeXinterchartoks 4095 1={[<]} \XeTeXinterchartoks 1 4095={[>]}
+\XeTeXinterchartoks 1 1={\textbf{.}}
+Classes: a=\the\XeTeXcharclass`a, 0=\the\XeTeXcharclass`0, z=\the\XeTeXcharclass`z, comma=\the\XeTeXcharclass`,\par
+Mixed: ab01 a1 1a abb 1,1 a,a\par
+Outer: \the\XeTeXinterchartoks 1 2 ; unset: \the\XeTeXinterchartoks 3 3 .\par
+{\XeTeXinterchartoks 1 2={[inner L2D]}\XeTeXcharclass`1=3
+ Inner: ab01 a1 11 a,1 \par
+ {\XeTeXinterchartoks 1 2={[nested]}\XeTeXinterchartokenstate=0 Nested off: ab01 a1\par}
+ Back in inner: a0\par}
+After group: a0 a1 1a ab,\par
+{\XeTeXinterchartoks 1 2=\expandafter{\the\XeTeXinterchartoks 1 2 [copy]}a0\par}
+\setbox0\hbox{a0}\setbox2\hbox{\XeTeXinterchartokenstate=0 a0}
+Widths: with tokens \the\wd0 without \the\wd2\par
+\hbox{a\hbox{0}1b}\par
+Nonascii: \XeTeXcharclass"E9=1 é0 0é\par
+\end{document}

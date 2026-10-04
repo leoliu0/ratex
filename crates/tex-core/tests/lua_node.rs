@@ -141,6 +141,44 @@ fn node_ligaturing_and_kerning() {
 }
 
 #[test]
+fn node_properties_are_cleared_on_free_and_recursive_release() {
+    let out = run_lua(
+        r#"
+node.set_properties_mode(true, false)
+local properties = node.direct.get_properties_table()
+local glyph = node.new("glyph")
+local handle = node.direct.todirect(glyph)
+properties[handle] = { marker = "old glyph" }
+node.free(glyph)
+P("free", properties[handle] == nil)
+local replacement = node.new("glyph")
+P("replacement", node.getproperty(replacement) == nil)
+node.free(replacement)
+
+local box = node.new("hlist")
+local child = node.new("glyph")
+local child_handle = node.direct.todirect(child)
+box.list = child
+properties[child_handle] = { marker = "child" }
+node.flush_node(box)
+P("recursive", properties[child_handle] == nil)
+
+node.set_properties_mode(false, false)
+local disabled = node.new("glyph")
+local disabled_handle = node.direct.todirect(disabled)
+properties[disabled_handle] = { marker = "retained" }
+node.free(disabled)
+P("disabled", properties[disabled_handle].marker)
+node.flush_properties_table()
+"#,
+    );
+    assert_eq!(
+        out,
+        ["free\ttrue", "replacement\ttrue", "recursive\ttrue", "disabled\tretained"]
+    );
+}
+
+#[test]
 fn probe_from_env() {
     let Ok(file) = std::env::var("LUA_PROBE") else { return };
     let code = std::fs::read_to_string(file).unwrap();

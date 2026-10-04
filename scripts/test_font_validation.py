@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from test_fonts import HAS_FONTTOOLS, HAS_PYPDF, parse_content_stream_ops, validate_pdf_font_embedding
+from test_fonts import HAS_FONTTOOLS, HAS_PYPDF, parse_content_stream_ops, text_matches_reference, validate_pdf_font_embedding
 
 if HAS_PYPDF:
     from pypdf import PdfWriter
@@ -35,6 +35,16 @@ def type1_program(builtin: dict[int, str], glyphs: list[str]) -> tuple[bytes, in
         + b"end\nend\nmark currentfile closefile\n"
     )
     return clear + eexec.encrypt(b"\0\0\0\0" + private, 55665)[0], len(clear)
+
+
+class TextOracleTests(unittest.TestCase):
+    def test_character_order_and_multiplicity_are_not_normalized_away(self):
+        self.assertFalse(text_matches_reference("Result: 11", "Result: 1"))
+        self.assertFalse(text_matches_reference("AB", "BA"))
+
+    def test_canonical_unicode_and_line_wrapping_match(self):
+        self.assertTrue(text_matches_reference("Cafe\u0301\nquantity: 11", "Café quantity: 11"))
+        self.assertFalse(text_matches_reference("Café quantity: 11", "Cafe quantity: 11"))
 
 
 @unittest.skipUnless(HAS_PYPDF, "pypdf is required")

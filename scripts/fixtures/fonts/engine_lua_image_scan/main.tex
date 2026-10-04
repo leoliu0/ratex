@@ -1,0 +1,57 @@
+\documentclass{article}
+\usepackage{fontspec}
+\usepackage{graphicx}
+\setmainfont{Latin Modern Roman}
+\setmonofont{Latin Modern Mono}
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\begin{document}
+\ttfamily
+\directlua{
+function say(...)
+  local a = table.pack(...)
+  local t = {}
+  for i = 1, a.n do t[i] = tostring(a[i]) end
+  tex.sprint(-2, table.concat(t, " "))
+  tex.sprint("\\par")
+end
+local png = img.scan{filename = "engine_asset.png"}
+say("png", png.width, png.height, png.xres, png.yres)
+say("png-size", png.xsize, png.ysize, png.transform, png.rotation)
+local scaled = img.scan{filename = "engine_asset.png", width = tex.sp("96bp")}
+say("png-scaled", scaled.width, scaled.height, scaled.xsize, scaled.ysize)
+local p2 = img.scan{filename = "engine_asset.pdf", page = 2, pagebox = "media"}
+say("pdf-p2", p2.pages, p2.page, p2.width, p2.height, p2.xsize, p2.ysize)
+local p3 = img.scan{filename = "engine_asset.pdf", page = 3, pagebox = "media"}
+say("pdf-p3", p3.page, p3.bbox and p3.bbox[3], p3.bbox and p3.bbox[4])
+local crop = img.scan{filename = "engine_asset.pdf", page = 1, pagebox = "crop"}
+say("pdf-crop", crop.bbox[1], crop.bbox[2], crop.bbox[3], crop.bbox[4])
+}
+\setbox0\hbox{\includegraphics[width=96bp]{engine_asset.png}}
+\setbox1\hbox{\includegraphics[page=2]{engine_asset.pdf}}
+\setbox2\hbox{\includegraphics[page=1,height=25bp]{engine_asset.pdf}}
+\directlua{
+say("boxes", tex.box[0].width, tex.box[0].height, tex.box[1].width, tex.box[1].height, tex.box[2].width, tex.box[2].height)
+local n = tex.box[0].list
+say("node", node.type(n.id), n.subtype)
+}
+\box0\hspace{4pt}\box1\hspace{4pt}\box2\par
+\directlua{
+local image = img.scan{filename = "engine_asset.pdf", page = 3, pagebox = "media"}
+local boxed = img.node(image)
+tex.box[3] = node.hpack(boxed)
+say("img-node", node.type(boxed.id), boxed.width, tex.box[3].width, image.width)
+}
+\copy3\hspace{4pt}\directlua{
+local image = img.scan{filename = "engine_asset.png", width = tex.sp("24bp")}
+img.write(image)
+}
+\par
+\saveimageresource page 2 {engine_asset.pdf}
+\edef\resA{\the\lastsavedimageresourceindex}
+\saveimageresource {engine_asset.png}
+\edef\resB{\the\lastsavedimageresourceindex}
+\directlua{say("resources", \resA > 0, \resB > 0, \resA ~= \resB)}
+\useimageresource\resA\hspace{4pt}\useimageresource\resB\hspace{4pt}\useimageresource\resA\par
+\directlua{say("pages", \the\lastsavedimageresourcepages)}
+\end{document}

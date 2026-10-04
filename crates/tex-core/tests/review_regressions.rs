@@ -74,6 +74,26 @@ fn selector_fast_path_preserves_delimiters_guards_and_unselected_arguments() {
     assert!(e.term.contains("GUARD=OK"), "{}", e.term);
 }
 
+#[test]
+fn the_expands_protected_operands_without_unprotecting_the_outer_definition() {
+    // LuaTeX 1.24 / TeX Live 2026: 777|/Dur 4; the ordinary protected
+    // macro remains unexpanded in the surrounding definition.
+    let e = engine(
+        r"\count0=777 \toks0={/Dur 4}
+\protected\def\protectedcount{\count0}
+\protected\def\protectedtoks{\toks0}
+\edef\result{\the\protectedcount|\the\protectedtoks}
+\def\expected{777|/Dur 4}
+\ifx\result\expected\message{OPERANDS=OK}\else\message{OPERANDS=BAD}\fi
+\edef\guarded{\protectedcount}
+\def\expectedguarded{\protectedcount}
+\ifx\guarded\expectedguarded\message{GUARD=OK}\else\message{GUARD=BAD}\fi
+\end",
+    );
+    assert!(e.term.contains("OPERANDS=OK"), "{}", e.term);
+    assert!(e.term.contains("GUARD=OK"), "{}", e.term);
+}
+
 fn engine(source: &str) -> Engine {
     let mut engine = Engine::new(true);
     engine.init_primitives();

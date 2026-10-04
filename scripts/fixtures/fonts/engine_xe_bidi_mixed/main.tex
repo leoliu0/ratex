@@ -1,0 +1,17 @@
+\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+\begin{document}
+\TeXXeTstate=1
+Left: abc 123 \beginR abc 123 def\endR\ end\par
+\beginR first \beginL nested LTR 42\endL\ second\endR\par
+\setbox0\hbox{\beginR ab cd\endR}\setbox2\hbox{ab cd}
+Widths equal \ifdim\wd0=\wd2 yes\else no\fi\ (\the\wd0, \the\wd2)\par
+\hbox to 150pt{\beginR right\hfil\endR}\par
+\hbox to 150pt{\beginR\hfil left\endR}\par
+\noindent\beginR one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen\endR\par
+\setbox4\vbox{\hsize=120pt \noindent\beginR alpha beta gamma delta epsilon zeta eta theta iota kappa\endR\par}
+Lines in reversed paragraph: \the\dimexpr\ht4+\dp4\relax\par
+\leavevmode\beginR\vrule width 10pt height 5pt\kern 7pt\vrule width 3pt height 8pt\endR\ \vrule width 10pt height 5pt\kern 7pt\vrule width 3pt height 8pt\par
+\beginR\textbf{bold}~\textit{italic}~\texttt{mono}\endR\par
+\end{document}

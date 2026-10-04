@@ -1,0 +1,42 @@
+\documentclass[11pt]{article}
+\usepackage[a5paper,margin=16mm]{geometry}
+\usepackage{fontspec}
+\setmainfont{TeX Gyre Termes}
+\setsansfont{TeX Gyre Heros}
+\usepackage{amsmath,amsthm}
+\usepackage{graphicx}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=teal,urlcolor=magenta,
+  pdftitle={Cross-reference matrix},pdfauthor={Ratex fixture},bookmarksnumbered=true]{hyperref}
+\usepackage[capitalise,noabbrev]{cleveref}
+\newtheorem{theorem}{Theorem}[section]
+\crefname{theorem}{Theorem}{Theorems}
+
+\begin{document}
+\tableofcontents
+\section{Setup}\label{sec:setup}
+We state \cref{thm:main} in \cref{sec:results}; its proof uses \cref{eq:a,eq:b}.
+The summary appears on \cpageref{sec:end} and the table in \cref{tab:data}.
+\begin{equation}\label{eq:a} a^{2}+b^{2}=c^{2}\end{equation}
+\begin{equation}\label{eq:b} c = \sqrt{a^{2}+b^{2}}\end{equation}
+\clearpage
+\section{Results}\label{sec:results}
+\begin{theorem}\label{thm:main}
+\Cref{eq:a} and \cref{eq:b} are equivalent for $c\ge0$.
+\end{theorem}
+\subsection{Numbers}\label{subsec:numbers}
+\begin{table}[ht]
+\centering\caption{Counts}\label{tab:data}
+\begin{tabular}{lr}\hline x & 1\\ y & 2\\\hline\end{tabular}
+\end{table}
+\begin{figure}[ht]
+\centering\fbox{\rule{0pt}{1.2cm}\rule{3cm}{0pt}}
+\caption{A placeholder box}\label{fig:box}
+\end{figure}
+\Cref{fig:box,tab:data} are floats; \cref{sec:setup,subsec:numbers,sec:results} are sections.
+Jump to \nameref{sec:end} (\autoref{sec:end}) or visit \url{https://example.org/ratex}.
+\footnote{Footnotes keep hyperlinks: see \hyperref[sec:setup]{the setup}.}
+\clearpage
+\section{Summary}\label{sec:end}
+\Cref{thm:main} on \cpageref{thm:main}; \cref{eq:a} through \cref{eq:b} as a range:
+\crefrange{eq:a}{eq:b}.
+\end{document}

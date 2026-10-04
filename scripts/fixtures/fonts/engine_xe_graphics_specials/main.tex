@@ -1,0 +1,19 @@
+\documentclass{article}
+\usepackage{fontspec}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\setmainfont{Latin Modern Roman}
+\begin{document}
+\newcommand\meas[1]{\setbox0\hbox{#1}\the\wd0 x\the\ht0+\the\dp0}
+Picture: \meas{\includegraphics[width=3cm]{swatch.png}}; scaled \meas{\includegraphics[height=1cm]{swatch.png}}\par
+\includegraphics[width=3cm]{swatch.png}\quad\includegraphics[height=1cm,angle=90]{swatch.png}\quad\XeTeXpicfile swatch.png scaled 800\par
+Rotated 90: \meas{\rotatebox{90}{Rotated text}}; 30 degrees: \meas{\rotatebox{30}{Rotated text}}; origin: \meas{\rotatebox[origin=c]{45}{Box}}\par
+\rotatebox{90}{Vertical}\ \rotatebox{30}{Slanted}\ \scalebox{2}{Big}\ \scalebox{1}[0.4]{Squashed}\ \reflectbox{Mirror}\ \resizebox{3cm}{!}{Resized}\par
+Scale \meas{\scalebox{2}{Big}} versus \meas{Big}; reflect \meas{\reflectbox{Mirror}}; resize \meas{\resizebox{3cm}{!}{Resized}}\par
+\textcolor{red}{Red \textbf{bold red} \textcolor{blue}{blue nested} red again} black\par
+\colorbox{yellow}{Yellow \textcolor{magenta}{magenta}}\ \fcolorbox{green}{white}{Framed}\par
+\special{pdf:literal direct q 0.8 0.1 0.1 rg 0 0 40 6 re f Q}\hbox to 40pt{\hss Rule\hss}\kern 10pt
+\special{pdf:literal q 0 0.5 0 RG 2 w 0 0 m 30 12 l S Q}\hbox to 30pt{}\kern 5pt Bar\par
+\vbox to 20pt{\vss\hbox{\special{pdf:bcolor [0 0 1]}Blue special\special{pdf:ecolor}} \rotatebox{90}{\textcolor{red}{R}}\vss} after\par
+\raisebox{4pt}{\rotatebox{20}{\textbf{Raised tilt}}} baseline \raisebox{-3pt}[0pt][0pt]{Lowered}\par
+\end{document}

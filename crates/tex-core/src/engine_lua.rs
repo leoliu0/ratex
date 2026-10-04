@@ -96,7 +96,7 @@ impl LuaEngine {
 
         // 10. fontloader and luaharfbuzz (lua_font_hb.rs)
         crate::lua_font_hb::install(&mut self.lua)?;
-        crate::lua_lpeg::install(&mut self.lua)?;
+        tex_lua::lpeg::install(&mut self.lua)?;
         crate::lua_bridge::install(&mut self.lua)?;
         crate::lua_sys::install(&mut self.lua)?;
 
@@ -134,10 +134,13 @@ impl Engine {
         if self.lua_print_queue.is_empty() {
             return;
         }
-        let lines = LuaLines { lines: std::mem::take(&mut self.lua_print_queue).into() };
-        if self.ensure_input_stack_room(1) {
-            self.input.push_lua_lines(lines);
+        // Scanner lookahead belongs below the inserted Lua output, just
+        // like pending back_input below a newly begun TeX token list.
+        if !self.prepare_token_list_push(0) {
+            return;
         }
+        let lines = LuaLines { lines: std::mem::take(&mut self.lua_print_queue).into() };
+        self.input.push_lua_lines(lines);
     }
 
     /// ltexlib.c `luac_store` for a string: `cattable` is checked here as

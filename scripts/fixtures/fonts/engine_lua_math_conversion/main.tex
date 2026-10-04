@@ -1,0 +1,59 @@
+\documentclass{article}
+\usepackage{unicode-math}
+\setmainfont{Latin Modern Roman}
+\setmonofont{Latin Modern Mono}
+\setmathfont{Latin Modern Math}
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\begin{document}
+\ttfamily
+\directlua{
+function say(...)
+  local a = table.pack(...)
+  local t = {}
+  for i = 1, a.n do t[i] = tostring(a[i]) end
+  tex.sprint(-2, table.concat(t, " "))
+  tex.sprint("\\par")
+end
+local types = node.types()
+function dump(list, depth)
+  local out = {}
+  for n in node.traverse(list) do
+    local name = node.type(n.id)
+    if n.id == node.id("glyph") then
+      out[rawlen(out) + 1] = "g" .. n.char
+    elseif n.id == node.id("hlist") or n.id == node.id("vlist") then
+      out[rawlen(out) + 1] = name .. "(" .. dump(n.list) .. ")"
+    elseif n.id == node.id("glue") or n.id == node.id("kern") or n.id == node.id("rule") then
+      out[rawlen(out) + 1] = string.sub(name, 1, 1) .. n.subtype
+    else
+      out[rawlen(out) + 1] = name
+    end
+  end
+  return table.concat(out, " ")
+end
+function mathbox(label, n)
+  local b = tex.box[n]
+  say(label, "w", b.width, "h", b.height, "d", b.depth, dump(b.list))
+end
+}
+\setbox0\hbox{$\frac{a}{b}$}\directlua{mathbox("frac", 0)}
+\setbox0\hbox{$\sqrt[3]{x+1}$}\directlua{mathbox("root", 0)}
+\setbox0\hbox{$\hat{x}\widehat{xy}\overline{z}$}\directlua{mathbox("accent", 0)}
+\setbox0\hbox{$\left(\frac{a}{b}\right)$}\directlua{mathbox("fence", 0)}
+\setbox0\hbox{$\left\lbrace\frac{\frac{a}{b}}{\frac{c}{d}}\right\rbrace$}\directlua{mathbox("tall", 0)}
+\setbox0\hbox{$\underbrace{a+b}_{n}$}\directlua{mathbox("underbrace", 0)}
+\setbox0\hbox{$\Umathaccent "0 "0 "0302 x$}\directlua{mathbox("Umathaccent", 0)}
+\setbox0\hbox{$\Uradical "0 "0221A {y}$}\directlua{mathbox("Uradical", 0)}
+\setbox0\hbox{$\Udelimiter "4 "0 "0028 x$}\directlua{mathbox("Udelimiter", 0)}
+\setbox0\hbox{$\Umathchar "0 "0 "0041 \Umathchar "7 "0 "0042$}\directlua{mathbox("Umathchar", 0)}
+\setbox0\hbox{$\displaystyle\frac{a}{b}$}\setbox1\hbox{$\textstyle\frac{a}{b}$}\directlua{say("styles", tex.box[0].height > tex.box[1].height, tex.box[0].width > tex.box[1].width, tex.box[0].height, tex.box[1].height)}
+\directlua{say("params", \number\Umathaxis\textstyle, \number\Umathfractionrule\displaystyle, \number\Umathradicalrule\textstyle, \number\Umathoverbarrule\textstyle, \number\Umathfractionnumup\displaystyle, \number\Umathradicalvgap\displaystyle)}
+\setbox0\hbox{$a$}
+\directlua{
+local g = node.has_glyph(tex.box[0].list)
+local f = font.getfont(g.font)
+local mp = f.mathparameters
+say("math-font", f.format, f.psname, g.char, mp.AxisHeight, mp.FractionRuleThickness, mp.RadicalDisplayStyleVerticalGap)
+}
+\end{document}

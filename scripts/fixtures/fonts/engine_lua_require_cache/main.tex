@@ -1,0 +1,66 @@
+\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+\setmonofont{Latin Modern Mono}
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\begin{document}
+\ttfamily
+\directlua{
+function say(...)
+  local a = table.pack(...)
+  local t = {}
+  for i = 1, a.n do t[i] = tostring(a[i]) end
+  tex.sprint(-2, table.concat(t, " "))
+  tex.sprint("\\par")
+end
+
+local m = require("engine_mod_counter")
+say("table", type(m), "loads", m.loads, "name", m.name)
+say("bump", m.bump(), m.bump())
+local again = require("engine_mod_counter")
+say("cached", again == m, again.n, engine_counter_loads)
+package.loaded["engine_mod_counter"] = nil
+local fresh = require("engine_mod_counter")
+say("reload", fresh == m, fresh.loads, fresh.n, engine_counter_loads)
+
+say("scalar", require("engine_mod_scalar"), require("engine_mod_scalar"), engine_scalar_loads)
+say("nothing", require("engine_mod_nothing"), package.loaded["engine_mod_nothing"], engine_nothing_loads)
+say("false", require("engine_mod_false"), require("engine_mod_false"), engine_false_loads)
+say("selfset", require("engine_mod_selfset"))
+say("dotted", require("engine_pkg.inner").path_name, require("engine_pkg.inner").kind)
+
+local ok, err = pcall(require, "engine_mod_broken")
+say("broken", ok, string.find(err, "module failed in load 1", 1, true) ~= nil, package.loaded["engine_mod_broken"])
+ok, err = pcall(require, "engine_mod_broken")
+say("broken-again", ok, string.find(err, "module failed in load 2", 1, true) ~= nil, engine_broken_loads)
+
+ok, err = pcall(require, "engine_mod_missing")
+say("missing", ok, string.find(err, "engine_mod_missing", 1, true) ~= nil)
+
+package.preload["engine_pre"] = function(name, extra2)
+  engine_pre_loads = (engine_pre_loads or 0) + 1
+  return {name = name, loads = engine_pre_loads}
+end
+local pre = require("engine_pre")
+say("preload", pre.name, pre.loads, require("engine_pre") == pre, engine_pre_loads)
+
+local seen = {}
+table.insert(package.searchers, 1, function(name)
+  seen[rawlen(seen) + 1] = name
+  if name == "engine_mod_shadow" then
+    return function(n, e) return "custom:" .. n .. ":" .. tostring(e) end, "virtual-data"
+  end
+  return "no custom module " .. name
+end)
+say("shadowed", require("engine_mod_shadow"), select(2, require("engine_mod_shadow")))
+package.loaded["engine_mod_shadow"] = nil
+table.remove(package.searchers, 1)
+say("restored", require("engine_mod_shadow"))
+table.insert(package.searchers, function(name)
+  seen[rawlen(seen) + 1] = "last:" .. name
+  if name == "engine_late" then return function() return "late-module" end end
+end)
+say("late", require("engine_late"), require("engine_mod_scalar"), table.concat(seen, ","))
+}
+\end{document}

@@ -1,0 +1,21 @@
+\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+\newfontfamily\heros{TeX Gyre Heros}[Scale=MatchLowercase]
+\newfontfamily\herosu{TeX Gyre Heros}
+\newfontfamily\herosx{TeX Gyre Heros}[Scale=1.25]
+\newfontfamily\tracked{TeX Gyre Pagella}[LetterSpace=20,WordSpace={1.5,0.5,0.25}]
+\newfontfamily\pag{TeX Gyre Pagella}
+\newfontfamily\fb{lmmonoslant10-regular.otf}[AutoFakeBold=3]
+\newfontfamily\slanted{TeX Gyre Pagella}[FakeSlant=0.3]
+\newfontfamily\ext{TeX Gyre Pagella}[FakeStretch=1.3]
+\begin{document}
+\newcommand\meas[1]{\setbox0\hbox{#1 xHxgxH}\the\wd0\ x\the\ht0}
+Match lowercase \meas\heros, unscaled \meas\herosu, 1.25 \meas\herosx\par
+{\heros Scaled sans} and {\herosu Unscaled sans} and {\herosx Big sans}\par
+\setbox0\hbox{\tracked A B C}\setbox2\hbox{\pag A B C}
+Tracking delta \the\dimexpr\wd0-\wd2\relax\par
+{\tracked Tracked words stay readable}\par
+{\slanted Slanted fake} \meas\slanted\ {\ext Stretched fake} \meas\ext against \meas\pag\par
+{\fb Bold fake} \meas\fb\par
+\end{document}

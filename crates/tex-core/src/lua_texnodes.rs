@@ -55,6 +55,26 @@ pub(crate) struct Link {
     pub tail: u32,
     /// Fingerprint of the nodes at the last synchronisation.
     pub fp: u64,
+    /// `node.write` links the nodes Lua appends into the list without
+    /// importing what the list already held: `head` is then a `temp` node
+    /// ahead of the appended nodes alone and `span` says where the engine
+    /// copy of them stands. `None`: `head` ties the whole list (or box).
+    pub span: Option<WrittenSpan>,
+}
+
+/// The engine copy of the nodes `node.write` appended: `len` nodes from index
+/// `start` of the engine vector of the target (`page_list` as a whole for
+/// [`Target::Contrib`]).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct WrittenSpan {
+    pub start: usize,
+    pub len: usize,
+    /// `page_processed` when the span began ([`Target::Contrib`]): once the
+    /// page builder has moved on the span is no longer trusted.
+    pub mark: usize,
+    /// Lua call level that began the span: the engine owns the nodes when
+    /// that call ends, for TeX may run on before an enclosing call goes on.
+    pub depth: i64,
 }
 
 /// Lists LuaTeX has but the engine does not keep as lists: what Lua stored
@@ -155,7 +175,11 @@ impl Engine {
     /// The head of the linked list of `t`, importing it on first use.
     pub(crate) fn lua_list_link(&mut self, t: Target) -> u32 {
         if let Some(i) = self.lua_link_index(t) {
-            return self.lua_tex.links[i].head;
+            // nodes written with `node.write` stand for the end of the list
+            // only: tie the rest of it to them first
+            if self.lua_tex.links[i].span.is_none() || self.lua_widen_written(i) {
+                return self.lua_tex.links[i].head;
+            }
         }
         self.lua_tex.links.retain(|l| l.target != t);
         let list = self.lua_target_list(t);
@@ -169,7 +193,7 @@ impl Engine {
         let head = self.lua_new_node(TEMP, 0);
         self.lua_nodes.node_mut(head).next = first;
         let fp = self.lua_nodes.fingerprint(first, true);
-        self.lua_tex.links.push(Link { target: t, head, tail: 0, fp });
+        self.lua_tex.links.push(Link { target: t, head, tail: 0, fp, span: None });
         head
     }
 
@@ -190,6 +214,261 @@ impl Engine {
         self.lua_nodes.tail_of(l.head)
     }
 
+    // ------------------------------------------------------- node.write
+
+    /// The number of nodes of the engine vector `node.write` appends to for `t`.
+    fn lua_target_len(&self, t: Target) -> Option<usize> {
+        match t {
+            Target::Cur => Some(self.cur_list.len()),
+            Target::Contrib => Some(self.page_list.len()),
+            _ => None,
+        }
+    }
+
+    fn lua_target_vec(&mut self, t: Target) -> Option<&mut Vec<Node>> {
+        match t {
+            Target::Cur => Some(&mut self.cur_list),
+            Target::Contrib => Some(&mut self.page_list),
+            _ => None,
+        }
+    }
+
+    /// The engine list still holds the copy `s` describes where it was put.
+    fn lua_span_holds(&self, t: Target, s: &WrittenSpan) -> bool {
+        self.lua_target_len(t).is_some_and(|n| n >= s.start + s.len)
+            && (t != Target::Contrib || self.page_processed == s.mark)
+    }
+
+    /// ... and nothing stands behind it.
+    fn lua_span_at_end(&self, t: Target, s: &WrittenSpan) -> bool {
+        self.lua_span_holds(t, s) && self.lua_target_len(t) == Some(s.start + s.len)
+    }
+
+    /// `node.write`: Lua appends the list at `h` to the current list. In
+    /// LuaTeX the nodes themselves become part of the list, so every handle
+    /// Lua kept still points into it: it walks on into nodes written later,
+    /// and what Lua changes in a node stays part of the list. The engine
+    /// list is a `Vec<Node>`: it gets a copy of the nodes at once, while the
+    /// nodes stay the [`Link`] of the current list until the Lua call that
+    /// wrote them ends (see [`Self::lua_sync_links`]), which carries later
+    /// changes over to the copy. Nothing of the list written to is imported
+    /// unless Lua asks for the list (`tex.nest`, see [`Self::lua_list_link`]).
+    pub(crate) fn lua_node_write(&mut self, h: u32) {
+        if !self.lua_nodes.valid(h) {
+            return;
+        }
+        let t = self.lua_level_target(self.saved_lists.len());
+        let i = self.lua_written_link(t);
+        let tail = self.lua_link_tail(i);
+        // the last node of the written list; Lua writing nodes the list
+        // holds already would make a ring
+        let mut last = h;
+        loop {
+            if last == tail {
+                return;
+            }
+            let next = self.lua_nodes.next(last);
+            if !self.lua_nodes.valid(next) {
+                break;
+            }
+            last = next;
+        }
+        self.lua_nodes.couple(tail, h);
+        let (head, span, explicit_tail) = {
+            let l = &self.lua_tex.links[i];
+            (l.head, l.span, l.tail != 0)
+        };
+        if explicit_tail {
+            self.lua_tex.links[i].tail = last;
+        }
+        let Some(span) = span else { return };
+        let copy = self.lua_nodes.copy_list(h);
+        let nodes = self.lua_nodes_to_engine(i64::from(copy));
+        let added = nodes.len();
+        if let Some(list) = self.lua_target_vec(t) {
+            list.extend(nodes);
+        }
+        // The fingerprint stays unless the nodes are the first of the link:
+        // the ones Lua wrote earlier may have changed since the engine took
+        // its copy, and the next synchronisation copies the chain again.
+        let fp = if tail == head { Some(self.lua_nodes.fingerprint(h, true)) } else { None };
+        let l = &mut self.lua_tex.links[i];
+        l.span = Some(WrittenSpan { len: span.len + added, ..span });
+        if let Some(fp) = fp {
+            l.fp = fp;
+        }
+    }
+
+    /// The link `node.write` appends to at `t`: the one that ties the list
+    /// to Lua already, or a new link of appended nodes that stands at the
+    /// end of the engine list.
+    fn lua_written_link(&mut self, t: Target) -> usize {
+        if let Some(i) = self.lua_link_index(t) {
+            let span = self.lua_tex.links[i].span;
+            match span {
+                None => return i,
+                Some(s) if self.lua_span_at_end(t, &s) => return i,
+                Some(_) => {
+                    // the engine put nodes behind the written ones, or the
+                    // page builder moved on: the nodes stay as Lua left them
+                    let mut old = self.lua_tex.links.remove(i);
+                    self.lua_sync_written(&mut old);
+                }
+            }
+        }
+        self.lua_tex.links.retain(|l| l.target != t);
+        let span = WrittenSpan {
+            start: self.lua_target_len(t).unwrap_or(0),
+            len: 0,
+            mark: self.page_processed,
+            depth: crate::lua_bridge::lua_call_level(),
+        };
+        let head = self.lua_new_node(TEMP, 0);
+        self.lua_tex.links.push(Link { target: t, head, tail: 0, fp: 0, span: Some(span) });
+        self.lua_tex.links.len() - 1
+    }
+
+    /// Carry the changes Lua made to the nodes it appended with `node.write`
+    /// over to their engine copy.
+    fn lua_sync_written(&mut self, l: &mut Link) {
+        let Some(span) = l.span else { return };
+        let first = self.lua_nodes.next(l.head);
+        // Lua freed what it wrote (TeX owns it): the copy stays as it is
+        if first != 0 && !self.lua_nodes.valid(first) {
+            return;
+        }
+        let fp = self.lua_nodes.fingerprint(first, true);
+        if fp == l.fp {
+            return;
+        }
+        l.fp = fp;
+        if !self.lua_span_holds(l.target, &span) {
+            return;
+        }
+        let copy = self.lua_nodes.copy_list(first);
+        let nodes = self.lua_nodes_to_engine(i64::from(copy));
+        let len = nodes.len();
+        if let Some(list) = self.lua_target_vec(l.target) {
+            list.splice(span.start..span.start + span.len, nodes).for_each(drop);
+            l.span = Some(WrittenSpan { len, ..span });
+        }
+    }
+
+    /// Tie the whole list of the target to the nodes Lua appended with
+    /// `node.write`: the engine nodes before and after their copy are
+    /// imported and chained around them. False when the engine list does not
+    /// hold the copy any more; the link is gone then.
+    fn lua_widen_written(&mut self, i: usize) -> bool {
+        let mut l = self.lua_tex.links.remove(i);
+        self.lua_sync_written(&mut l);
+        let Some(span) = l.span else { return false };
+        let t = l.target;
+        if !self.lua_span_holds(t, &span) {
+            return false;
+        }
+        let floor = if t == Target::Contrib { self.page_processed.min(self.page_list.len()) } else { 0 };
+        let end = span.start + span.len;
+        let (before, after) = match self.lua_target_vec(t) {
+            Some(v) if floor <= span.start => (v[floor..span.start].to_vec(), v[end..].to_vec()),
+            _ => return false,
+        };
+        let chain = {
+            let c = self.lua_nodes.next(l.head);
+            if self.lua_nodes.valid(c) { c } else { 0 }
+        };
+        let mut first = self.lua_nodes_from_engine(before) as u32;
+        if first != 0 {
+            let tail = self.lua_nodes.tail_of(first);
+            self.lua_nodes.couple(tail, chain);
+        } else {
+            first = chain;
+        }
+        let rest = self.lua_nodes_from_engine(after) as u32;
+        if rest != 0 {
+            if first == 0 {
+                first = rest;
+            } else {
+                let tail = self.lua_nodes.tail_of(first);
+                self.lua_nodes.couple(tail, rest);
+            }
+        }
+        self.lua_nodes.node_mut(l.head).next = first;
+        l.span = None;
+        l.fp = self.lua_nodes.fingerprint(first, true);
+        self.lua_tex.links.insert(i, l);
+        true
+    }
+
+    /// The Lua call that wrote the nodes of `l` with `node.write` ended: the
+    /// engine owns them.
+    fn lua_release_written(&mut self, l: &Link) {
+        let first = self.lua_nodes.next(l.head);
+        self.lua_nodes.flush_list(first);
+        self.lua_nodes.flush_node(l.head);
+    }
+
+    /// `node.last_node`: take the last node off the current list and hand it
+    /// to Lua.
+    pub(crate) fn lua_last_node(&mut self) -> u32 {
+        let t = self.lua_level_target(self.saved_lists.len());
+        if let Some(i) = self.lua_link_index(t) {
+            let (head, span) = {
+                let l = &self.lua_tex.links[i];
+                (l.head, l.span)
+            };
+            let tail = self.lua_link_tail(i);
+            let ends_list = match span {
+                None => true,
+                Some(s) => self.lua_span_at_end(t, &s),
+            };
+            if ends_list && tail != head {
+                // the last node of the linked nodes: unhook it
+                let mut before = head;
+                loop {
+                    let next = self.lua_nodes.next(before);
+                    if next == tail || next == 0 {
+                        break;
+                    }
+                    before = next;
+                }
+                self.lua_nodes.node_mut(before).next = 0;
+                self.lua_nodes.node_mut(tail).prev = 0;
+                if self.lua_tex.links[i].tail == tail {
+                    self.lua_tex.links[i].tail = if before == head { 0 } else { before };
+                }
+                if span.is_some() {
+                    let mut l = self.lua_tex.links.remove(i);
+                    self.lua_sync_written(&mut l);
+                    self.lua_tex.links.insert(i, l);
+                }
+                return tail;
+            }
+            if span.is_none() {
+                // the list is tied to Lua as a whole and has no node left
+                return 0;
+            }
+        }
+        let node = match t {
+            // material the page builder took is not on the list any more
+            Target::Contrib => {
+                let processed = self.page_processed.min(self.page_list.len());
+                if self.page_list.len() > processed { self.page_list.pop() } else { None }
+            }
+            _ => self.lua_target_vec(t).and_then(Vec::pop),
+        };
+        let Some(node) = node else { return 0 };
+        // a span that began at the old end of the list begins at the new one
+        let len = self.lua_target_len(t).unwrap_or(0);
+        for l in &mut self.lua_tex.links {
+            if l.target == t {
+                if let Some(s) = &mut l.span {
+                    s.start = s.start.min(len);
+                }
+            }
+        }
+        self.lua_nodes_from_engine(vec![node]) as u32
+    }
+
     // ------------------------------------------------------------ boxes
 
     /// `tex.getbox`: the box of register `k` as a node (0: void). The node
@@ -206,7 +485,7 @@ impl Engine {
         let h = self.lua_nodes_from_engine(vec![b]) as u32;
         if h != 0 {
             let fp = self.lua_nodes.fingerprint(h, false);
-            self.lua_tex.links.push(Link { target: t, head: h, tail: 0, fp });
+            self.lua_tex.links.push(Link { target: t, head: h, tail: 0, fp, span: None });
         }
         h
     }
@@ -223,7 +502,7 @@ impl Engine {
         let node = self.lua_export_copy(h);
         self.eqtb.assign_box(k, node, global);
         let fp = self.lua_nodes.fingerprint(h, false);
-        self.lua_tex.links.push(Link { target: t, head: h, tail: 0, fp });
+        self.lua_tex.links.push(Link { target: t, head: h, tail: 0, fp, span: None });
     }
 
     /// The engine form of node `h` alone (a copy; `h` stays).
@@ -233,14 +512,22 @@ impl Engine {
     }
 
     /// Write the lists Lua changed back to the engine. `last` ends all links
-    /// (the outermost Lua call ended, or TeX is about to run).
+    /// (the outermost Lua call ended, or TeX is about to run). Nodes
+    /// appended with `node.write` belong to the engine when the Lua call
+    /// that wrote them ends, which is when a nested call ends too (TeX runs
+    /// on after it).
     pub(crate) fn lua_sync_links(&mut self, last: bool) {
         if self.lua_tex.links.is_empty() {
             return;
         }
+        let level = crate::lua_bridge::lua_call_level();
         let mut links = std::mem::take(&mut self.lua_tex.links);
         links.retain(|l| self.lua_nodes.valid(l.head));
         for l in &mut links {
+            if l.span.is_some() {
+                self.lua_sync_written(l);
+                continue;
+            }
             match l.target {
                 Target::Box(k) => {
                     let fp = self.lua_nodes.fingerprint(l.head, false);
@@ -265,9 +552,15 @@ impl Engine {
                 }
             }
         }
-        if !last {
-            self.lua_tex.links = links;
+        let mut kept = Vec::new();
+        for l in links {
+            match l.span {
+                Some(s) if last || s.depth >= level => self.lua_release_written(&l),
+                _ if !last => kept.push(l),
+                _ => {}
+            }
         }
+        self.lua_tex.links = kept;
     }
 
     // ----------------------------------------------------------- shipout
@@ -394,21 +687,22 @@ impl Engine {
         let widow = self.eqtb.int_params[IntParam::WidowPenalty.idx() as usize];
         let list = self.lua_nodes_to_engine(i64::from(head));
         let probe = (self.eqtb.int_params[IntParam::Looseness.idx() as usize] != 0).then(|| list.clone());
+        // tex.linebreak returns an append_to_vlist result, not the line
+        // breaker's internal zero-glue placeholders. Keep packing callbacks
+        // until each line is appended, isolated from the enclosing paragraph.
+        let saved_par_lines = std::mem::take(&mut self.lua_par_lines);
+        self.lua_par_lines.hold = true;
         // the engine breaks a list that ends in its \parfillskip glue
         let (lines, record) = self.break_paragraph_with_record(list, widow, false);
 
         let (mut depth, mut graf) = (self.ignore_depth(), 0i64);
         let mut out = Vec::new();
         if let Node::Box { list, .. } = lines {
-            for n in &list {
-                if let Node::Box { kind, d, .. } = n {
-                    if *kind == boxes::HBOX {
-                        graf += 1;
-                        depth = *d;
-                    }
-                }
-            }
-            out = list;
+            graf = list
+                .iter()
+                .filter(|n| matches!(n, Node::Box { kind, .. } if *kind == boxes::HBOX))
+                .count() as i64;
+            (out, depth) = self.fill_line_interline(self.ignore_depth(), list, false);
         }
         let first = self.lua_nodes_from_engine(out) as u32;
 
@@ -432,6 +726,7 @@ impl Engine {
         self.mode = saved_mode;
         self.prev_graf = saved_pg;
         self.prev_depth = saved_pd;
+        self.lua_par_lines = saved_par_lines;
         Ok((first, record.demerits, actual, i64::from(depth), graf))
     }
 
@@ -844,8 +1139,8 @@ pub(crate) fn install(lua: &mut Lua, t: &LuaTable) -> Result<(), String> {
                 i64::from(g.width),
                 i64::from(g.stretch),
                 i64::from(g.shrink),
-                i64::from(g.stretch_order),
-                i64::from(g.shrink_order),
+                i64::from(crate::lua_node_pack::lua_order_of(g.stretch_order)),
+                i64::from(crate::lua_node_pack::lua_order_of(g.shrink_order)),
             )
         })
     });
@@ -870,7 +1165,7 @@ pub(crate) fn install(lua: &mut Lua, t: &LuaTable) -> Result<(), String> {
             }
             let g = e.math_glue_value(i, j);
             Variadic(
-                [g.width, g.stretch, g.shrink, i32::from(g.stretch_order), i32::from(g.shrink_order)]
+                [g.width, g.stretch, g.shrink, crate::lua_node_pack::lua_order_of(g.stretch_order), crate::lua_node_pack::lua_order_of(g.shrink_order)]
                     .into_iter()
                     .map(|v| UdValue::Integer(i64::from(v)))
                     .collect(),
@@ -882,7 +1177,7 @@ pub(crate) fn install(lua: &mut Lua, t: &LuaTable) -> Result<(), String> {
     });
     reg!(lua, t, "math_set_glue", |i: i64, j: i64, w: i64, st: i64, sh: i64, so: i64, sho: i64, global: bool| -> Result<(), String> {
         with_engine(|e| {
-            let value = [0, w as i32, st as i32, sh as i32, so as i32, sho as i32];
+            let value = [0, w as i32, st as i32, sh as i32, i32::from(crate::lua_node_pack::engine_order(so as i32)), i32::from(crate::lua_node_pack::engine_order(sho as i32))];
             e.eqtb.assign_math_glue_param(i as u32, j as u8, value, global)
         })
     });

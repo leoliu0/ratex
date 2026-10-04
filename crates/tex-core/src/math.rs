@@ -167,7 +167,7 @@ pub(crate) fn finish_math_group(mut inner: NodeList, flatten: i32, attr: crate::
             Some(Node::Scripts { nucleus, sup: None, sub: None, .. })
                 if matches!(
                     nucleus.first(),
-                    Some(Node::MathChar { fam: 255, class, .. }) if *class != CL_ORD && bit(*class)
+                    Some(Node::MathChar { fam: 255, class, .. }) if bit(*class)
                 ) =>
             {
                 let mut n = inner.pop().unwrap();
@@ -1106,10 +1106,7 @@ impl Engine {
             // an over-wide formula fit)
             if w + q > z {
                 let can_squeeze = e != 0
-                    && (w - r0.shrink[0] + q <= z
-                        || r0.shrink[1] != 0
-                        || r0.shrink[2] != 0
-                        || r0.shrink[3] != 0);
+                    && (w - r0.shrink[0] + q <= z || r0.shrink[1..] != [0; 4]);
                 if can_squeeze {
                     if let Node::Box { list, .. } = r0.node {
                         r0 = hpack(list, Some((z - q) as i32), HBOX, &self.eqtb);
@@ -1201,7 +1198,7 @@ impl Engine {
                     let own_s = if self.is_luamath() { 0 } else { s };
                     let ab = self.app_display(lr_box.as_ref(), ab, 0, z, own_s, x);
                     let (th, td) = match &ab {
-                        Node::Box { h, d, .. } => (*h as i64, *d as i64),
+                        Node::Box { h, d, .. } => self.interline_extents(*h as i64, *d as i64),
                         _ => (0, 0),
                     };
                     if let Some(g) = ilg(self.prev_depth, th) {
@@ -1252,7 +1249,7 @@ impl Engine {
             // \glue(\baselineskip) between \abovedisplayskip and the
             // display box; omitting it tightens every display by ~4pt.
             let (lh, ld) = match &line {
-                Node::Box { h, d, .. } => (*h as i64, *d as i64),
+                Node::Box { h, d, .. } => self.interline_extents(*h as i64, *d as i64),
                 _ => (0, 0),
             };
             if let Some(g) = ilg(self.prev_depth, lh) {
@@ -1268,7 +1265,7 @@ impl Engine {
                     page.push(Node::Penalty(crate::scaled::INF_PENALTY, self.eqtb.cur_attr));
                     let ab = self.app_display(lr_box.as_ref(), ab, z - aw, z, s, x);
                     let (th, td) = match &ab {
-                        Node::Box { h, d, .. } => (*h as i64, *d as i64),
+                        Node::Box { h, d, .. } => self.interline_extents(*h as i64, *d as i64),
                         _ => (0, 0),
                     };
                     // tex.web §22598 appends the tag box via append_to_vlist:
@@ -2017,6 +2014,15 @@ impl Engine {
         if xe_char {
             crate::xemath_prims::xe_char_field(&mut field);
         }
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            // texmath.c scan_math stores only the family and character of
+            // an unbraced math character field, not its original noad class.
+            if let [Node::MathChar { fam, class, .. }] = field.as_mut_slice() {
+                if *fam != crate::boxes::NO_FAM {
+                    *class = CL_ORD;
+                }
+            }
+        }
         field
     }
 
@@ -2669,10 +2675,9 @@ impl Engine {
         }
     }
 
-    /// LuaTeX `\Ustack {<mlist>}` (texmath.c `setup_math_style`): an Ord
-    /// noad whose nucleus is the braced subformula. Unlike plain braces the
-    /// group never reduces to a single character noad; luatex scans it in
-    /// the numerator style, which only `\mathstyle` could observe.
+    /// LuaTeX `\Ustack {<mlist>}` (texmath.c `setup_math_style`): scan an
+    /// Ord nucleus in numerator style, then apply `close_math_group`'s
+    /// ordinary field reduction just as for any other braced math field.
     pub(crate) fn do_ustack(&mut self) {
         self.flush_math_limits();
         self.skip_spaces_relax();
@@ -2685,15 +2690,8 @@ impl Engine {
         self.math_style_stack.push(math_style_of(num_style(g)));
         let inner = self.scan_math_group_braced(ScanKind::Brace);
         self.math_style_stack.pop();
-        let mut nucleus = Vec::with_capacity(inner.len() + 1);
-        nucleus.push(Node::MathChar {
-            fam: 255,
-            c: 0,
-            class: CL_ORD,
-            origin: MathDiagnosticOrigin::default(), attr: self.eqtb.cur_attr,
-        });
-        nucleus.extend(inner);
-        self.append_mlist_node(Node::Scripts { nucleus, sup: None, sub: None, options: 0, attr: self.eqtb.cur_attr });
+        let flatten = self.math_flatten_mode();
+        self.append_mlist_node(finish_math_group(inner, flatten, self.eqtb.cur_attr));
     }
 
     /// 1mu = quad of family 2 at the current math size / 18 (tex.web §767).

@@ -1,0 +1,79 @@
+\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+\setmonofont{Latin Modern Mono}
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\begin{document}
+\ttfamily
+\newcommand\xshow[1]{[#1]}
+\newcommand\twice[1]{#1#1}
+\directlua{
+function say(...)
+  local a = table.pack(...)
+  local t = {}
+  for i = 1, a.n do t[i] = tostring(a[i]) end
+  tex.sprint(-2, table.concat(t, " "))
+  tex.sprint("\\par")
+end
+local f = lua.get_functions_table()
+local function define(name, fn)
+  local id = luatexbase.new_luafunction(name)
+  f[id] = fn
+  token.set_lua(name, id)
+end
+define("scanall", function()
+  local a = token.scan_int()
+  local kw = token.scan_keyword("plus")
+  local b = token.scan_int()
+  local d = token.scan_dimen()
+  local s = token.scan_string()
+  say("scan", a, kw, b, d, s)
+end)
+define("scanargs", function()
+  local x = token.scan_argument(false)
+  local y = token.scan_argument(true)
+  say("argument", x, y)
+end)
+define("getnext", function()
+  local t = token.get_next()
+  local u = token.get_next()
+  say("get_next", t.csname, t.cmdname, u.cmdname, u.mode, u.command)
+  token.put_next(t, u)
+end)
+define("scanunits", function()
+  local d = token.scan_dimen()
+  local g = token.scan_glue()
+  local fl = token.scan_float()
+  say("units", d, g.width, g.stretch, g.stretch_order, g.shrink, g.shrink_order, fl)
+end)
+define("definer", function()
+  local count = token.scan_int()
+  token.set_macro("lastscan", "n=" .. count, "global")
+  token.set_macro("localmac", "inside-" .. count)
+  say("define", token.get_macro("lastscan"), token.is_defined("lastscan"), token.is_defined("undefinedyet"))
+end)
+define("kinds", function()
+  local t = token.create("xshow")
+  local c = token.create("count")
+  say("kinds", t.cmdname, t.protected, t.mode ~= nil, c.cmdname, token.create(65, 11).cmdname, token.create(65, 11).command, token.create(35, 6).cmdname)
+  say("macro-kinds", token.create("localmac").cmdname, token.create("undefinedyet").cmdname, token.create("scanall").cmdname)
+end)
+}
+\count255=7
+\dimen255=3pt
+\scanall 12 plus 30 2.5pt {braced text}
+\scanall \count255 plus \count255 \dimen255 {\string\xshow}
+\scanargs {a b} {\twice{ab}}
+\getnext\xshow x
+\getnext A\relax
+\scanunits 1cm 4pt plus 1fil 1.5
+\scanunits \dimen255 \dimen255 minus 2pt \number\count255
+\begingroup
+\definer \number\numexpr\count255*6\relax
+\edef\probe{\lastscan/\localmac}
+\directlua{say("in-group", token.get_macro("probe"), token.is_defined("localmac"))}
+\endgroup
+\directlua{say("after-group", token.get_macro("lastscan"), token.is_defined("localmac"), token.get_macro("localmac"))}
+\kinds
+\end{document}

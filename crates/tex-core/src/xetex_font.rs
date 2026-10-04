@@ -265,6 +265,7 @@ impl Engine {
             x_height: 0,
             cap_height: 0,
             bbox_cache: Default::default(),
+            protrusion_codes: Default::default(),
         };
         // ot_get_font_metrics
         let font_slant = d2fix(

@@ -686,10 +686,10 @@ impl Engine {
         }
     }
 
-    /// Make room for one new token list of `len` tokens on top of the input
-    /// stack. Pending pushback is older than the new list, so it moves into
-    /// its own list underneath.
-    fn prepare_token_list_push(&mut self, len: usize) -> bool {
+    /// Make room for one inserted input source with `len` tokens. Pending
+    /// pushback is older than the new source, so it moves into its own list
+    /// underneath (also used for Lua's pseudo-file output).
+    pub(crate) fn prepare_token_list_push(&mut self, len: usize) -> bool {
         if !self.ensure_token_list_room(len) {
             return false;
         }
@@ -1296,19 +1296,24 @@ impl Engine {
                 }
                 Prim::IfFontChar => {
                     let f = self.scan_font_id();
-                    let c = if self.is_native_font(f) {
+                    let lua_font = self.eqtb.fonts.get(f as usize).is_some_and(|font| font.lua_font().is_some());
+                    let c = if lua_font || self.is_native_font(f) {
                         self.scan_unicode_character_code("\\iffontchar")
                     } else {
                         self.scan_character_code("\\iffontchar") as u32
                     };
-                    self.native_char_present(f, c).unwrap_or_else(|| {
-                        u8::try_from(c).ok().is_some_and(|byte| {
-                            self.eqtb
-                                .fonts
-                                .get(f as usize)
-                                .is_some_and(|font| font.exists_char(byte))
+                    if lua_font {
+                        self.eqtb.fonts.get(f as usize).is_some_and(|font| font.lua_char_exists(c))
+                    } else {
+                        self.native_char_present(f, c).unwrap_or_else(|| {
+                            u8::try_from(c).ok().is_some_and(|byte| {
+                                self.eqtb
+                                    .fonts
+                                    .get(f as usize)
+                                    .is_some_and(|font| font.exists_char(byte))
+                            })
                         })
-                    })
+                    }
                 }
                 Prim::IfEOF => {
                     let n = self.scan_int();

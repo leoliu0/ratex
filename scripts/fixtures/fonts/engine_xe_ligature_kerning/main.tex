@@ -1,0 +1,26 @@
+\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+\newfontfamily\plain{Latin Modern Roman}[Ligatures=NoCommon,Kerning=Off]
+\newfontfamily\kerned{Latin Modern Roman}[Ligatures=NoCommon,Kerning=On]
+\newfontfamily\ligs{Latin Modern Roman}[Ligatures=Common,Kerning=Off]
+\newfontfamily\tracked{Latin Modern Roman}[Ligatures=NoCommon,Kerning=On,LetterSpace=15]
+\newfontfamily\spaced{Latin Modern Roman}[WordSpace={2,0,0}]
+\newdimen\kerngain
+\newcommand\sh[2]{\setbox0\hbox{#1 #2}\the\wd0}
+\newcommand\diff[3]{#1: \sh{\plain}{#1} $\to$ \sh{\kerned}{#1}}
+\begin{document}
+\diff{AV}{}{}\par
+\diff{To}{}{}\par
+\diff{WAVE}{}{}\par
+\diff{LT}{}{}\par
+\setbox0\hbox{\plain AVAVAV}\setbox2\hbox{\kerned AVAVAV}\setbox4\hbox{\plain TeX}\setbox6\hbox{\kerned TeX}
+Letter pairs gained \the\dimexpr\wd0-\wd2\relax\ and TeX \the\dimexpr\wd4-\wd6\relax\par
+fi: \sh\plain{fi}, \sh\ligs{fi}; ffl: \sh\plain{ffl}, \sh\ligs{ffl}; ffi \sh\ligs{ffi}\par
+\plain office difficult flow\par
+\ligs office difficult flow\par
+\kerned AVA To Ty Yo\par
+\tracked AVA To Ty Yo: \sh\tracked{AVATo} against \sh\kerned{AVATo}\par
+\setbox0\hbox{\spaced a b}\setbox2\hbox{a b}
+Word space delta \the\dimexpr\wd0-\wd2\relax\par
+\end{document}

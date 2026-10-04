@@ -1,0 +1,24 @@
+\documentclass[11pt]{article}
+\usepackage[a5paper,margin=16mm]{geometry}
+\usepackage{fontspec}
+\setmainfont{TeX Gyre Pagella}[Numbers=OldStyle,Ligatures=TeX,SmallCapsFont={TeX Gyre Pagella},SmallCapsFeatures={Letters=SmallCaps}]
+\setsansfont{TeX Gyre Heros}[Scale=MatchLowercase]
+\setmonofont{TeX Gyre Cursor}[Scale=MatchLowercase]
+\newfontfamily\lmfont{Latin Modern Roman}[Numbers=Lining]
+\usepackage{siunitx}
+\sisetup{mode=text}
+\usepackage{microtype}
+
+\begin{document}
+\section*{Font features in running text}
+Old-style numerals by default: 1234567890 in the year 2024.
+\textsc{Small Capitals Request} are drawn by the OpenType \texttt{smcp} feature.
+Ligatures from TeX input: ``quoted'' --- dash -- range 10--20, and fi fl ffi.
+
+{\lmfont Lining digits in Latin Modern: 1234567890.\par}
+{\addfontfeature{Numbers=Lining}Lining digits via \texttt{\textbackslash addfontfeature}: 1234567890.\par}
+{\sffamily Sans text scaled to lowercase: 0123456789.\par}
+{\ttfamily Monospace: x = 42;\par}
+Quantity \qty{12.5}{\kilo\gram} and \SI{3e8}{\meter\per\second} set with siunitx text mode.
+Italic \emph{emphasis}, \textbf{bold}, and \textbf{\emph{bold italic}} all share one family.
+\end{document}

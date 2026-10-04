@@ -280,13 +280,13 @@ pub fn type1_to_unicode_cmap(glyph_names: &[String], used: &[u64; 4], cmap_name:
         }
         let Some(name) = glyph_names.get(code).filter(|n| !n.is_empty() && *n != ".notdef") else { continue };
         let mut d = Vec::new();
-        if let Some(ch) = crate::pdf_fonts::glyph_to_scalar(name) {
-            if (0xE000..=0xF8FF).contains(&(ch as u32)) {
-                continue;
-            }
+        // `fi` stays U+FB01 (its glyph-list scalar); everything else, including
+        // TeX size/style variants and private-use names, resolves as agl.c does
+        let scalar = crate::pdf_fonts::glyph_to_scalar(name).filter(|ch| !(0xE000..=0xF8FF).contains(&(*ch as u32)));
+        if let Some(ch) = scalar {
             utf16be(ch as u32, &mut d);
         } else {
-            let Some(text) = crate::pdf_fonts::glyph_to_unicode(name) else { continue };
+            let Some(text) = crate::pdf_fonts::dpx_glyph_to_unicode(name) else { continue };
             if text.chars().any(|ch| (0xE000..=0xF8FF).contains(&(ch as u32))) {
                 continue;
             }

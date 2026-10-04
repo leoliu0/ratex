@@ -23,6 +23,7 @@ mod test;
 mod compiler;
 mod gc;
 mod lib_registry;
+pub mod lpeg;
 mod lua_api;
 mod lua_value;
 mod lua_vm;

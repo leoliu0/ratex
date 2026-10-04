@@ -1,0 +1,50 @@
+\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+\setmonofont{Latin Modern Mono}
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\begin{document}
+\ttfamily
+\directlua{
+function say(...)
+  local a = table.pack(...)
+  local t = {}
+  for i = 1, a.n do t[i] = tostring(a[i]) end
+  tex.sprint(-2, table.concat(t, " "))
+  tex.sprint("\\par")
+end
+}
+\setbox3\hbox{\pdfextension literal {q /EngBoxA gs 0.1 0.1 0.8 rg 0 -2 12 7 re f Q }\kern 14pt Resource Text \vrule width 3pt height 5pt depth 2pt}
+\saveboxresource attr {/Group << /S /Transparency >>} resources {/ExtGState << /EngBoxA << /ca 0.4 >> >>} 3
+\edef\resA{\the\lastsavedboxresourceindex}
+\setbox4\vbox{\hsize 40pt \noindent narrow vbox text here}
+\saveboxresource 4
+\edef\resB{\the\lastsavedboxresourceindex}
+\setbox3\hbox{changed after save}
+\setbox0\hbox{\useboxresource\resA}
+\setbox1\hbox{\useboxresource\resB}
+\directlua{
+local a, b = tex.box[0], tex.box[1]
+local ra, rb = a.list, b.list
+say("distinct", \resA > 0, \resA ~= \resB, ra.index ~= rb.index)
+say("node", node.type(ra.id), ra.subtype, rb.subtype)
+say("sizes", ra.width, ra.height, ra.depth, rb.width, rb.height, rb.depth)
+say("keeps-saved-content", ra.width ~= tex.box[3].width, ra.width > 4000000)
+}
+\hbox{\useboxresource\resA\kern 10pt\useboxresource\resA}
+\useboxresource\resB
+\par
+\setbox5\hbox{\useboxresource\resA}
+\directlua{
+local copy = node.copy(tex.box[5].list)
+say("copied", node.type(copy.id), copy.index == tex.box[5].list.index, copy.width == tex.box[5].list.width)
+node.free(copy)
+local h = node.new("rule", 1)
+h.width, h.height, h.depth = tex.sp("12pt"), tex.sp("6pt"), tex.sp("1pt")
+h.index = tex.box[5].list.index
+tex.box[6] = node.hpack(h)
+say("lua-made", tex.box[6].width == tex.sp("12pt"), node.has_field(h, "index"))
+}
+\copy6
+\end{document}

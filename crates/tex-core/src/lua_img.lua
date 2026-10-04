@@ -216,6 +216,7 @@ local function scan_into(a)
   d.imagetype = I.info(obj, "type")
   a.width, a.height, a.depth = num(obj, "width"), num(obj, "height"), num(obj, "depth")
   d.xsize, d.ysize = num(obj, "xsize"), num(obj, "ysize")
+  d.xres, d.yres = num(obj, "xres"), num(obj, "yres")
   d.rotation = num(obj, "rotation")
   d.pages = num(obj, "pages")
   if d.imagetype == "pdf" then

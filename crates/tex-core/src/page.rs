@@ -59,7 +59,7 @@ fn x_over_n(x: i64, n: i64) -> i64 {
 /// dropped, whatsits/marks/insertions stay, and a `split_top_skip` glue
 /// shrunk by the first box's height opens the list. Scanning stops at the
 /// first box/rule; everything after it is untouched.
-fn prune_page_top_list(list: NodeList, topskip: &Glue, snaps: &mut usize, attr: crate::boxes::Attr) -> NodeList {
+fn prune_page_top_list(list: NodeList, topskip: &Glue, snaps: &mut usize, attr: crate::boxes::Attr, upwards: bool) -> NodeList {
     let mut out: NodeList = Vec::new();
     let mut it = list.into_iter();
     loop {
@@ -73,9 +73,9 @@ fn prune_page_top_list(list: NodeList, topskip: &Glue, snaps: &mut usize, attr: 
             | Some(n @ Node::Whatsit(_, _)) => out.push(n),
             Some(n) => {
                 let h = match &n {
-                    Node::Box { h, .. }
-                    | Node::Rule { height: h, .. }
-                    | Node::NativeGlyphRun { height: h, .. } => *h as i64,
+                    Node::Box { h, d, .. }
+                    | Node::Rule { height: h, depth: d, .. }
+                    | Node::NativeGlyphRun { height: h, depth: d, .. } => (if upwards { *d } else { *h }) as i64,
                     Node::Glue(_, _) | Node::Kern(_, _) | Node::ExplicitKern(_, _) | Node::Penalty(_, _) => {
                         continue
                     }
@@ -102,9 +102,9 @@ fn prune_page_top_list(list: NodeList, topskip: &Glue, snaps: &mut usize, attr: 
 /// stands for `q=null` (the artificial end-of-list forced break, i.e. the
 /// whole list is the top part). `best_cut=Some(i)` cuts before `list[i]`.
 fn page_vert_break(list: &[Node], w: i64, d: i64) -> (Option<usize>, i64) {
-    // active_height[1..6]: cur, finite stretch, fil, fill, filll, shrink
+    // Finite stretch, fil, fill, filll, fi, and finite shrink.
     let mut cur: i64 = 0;
-    let mut act = [0i64; 5];
+    let mut act = [0i64; 6];
     let mut prev_dp: i64 = 0;
     let mut least_cost: i64 = AWFUL_BAD as i64;
     let mut best: Option<usize> = None;
@@ -144,9 +144,9 @@ fn page_vert_break(list: &[Node], w: i64, d: i64) -> (Option<usize>, i64) {
                     if !prev_breakable {
                         cur += prev_dp + g.width as i64;
                         prev_dp = 0;
-                        let so = (g.stretch_order as usize).min(3);
+                        let so = (g.stretch_order as usize).min(4);
                         act[so] += g.stretch as i64;
-                        act[4] += g.shrink as i64;
+                        act[5] += g.shrink as i64;
                         if prev_dp > d {
                             cur += prev_dp - d;
                             prev_dp = d;
@@ -211,15 +211,15 @@ fn page_vert_break(list: &[Node], w: i64, d: i64) -> (Option<usize>, i64) {
         // champion check (tex.web @18985): only penalties < inf_penalty
         if pi < INF_PENALTY as i64 {
             let mut b: i64 = if cur < w {
-                if act[1] != 0 || act[2] != 0 || act[3] != 0 {
+                if act[1..5] != [0; 4] {
                     0
                 } else {
                     badness(c32(w - cur), c32(act[0])) as i64
                 }
-            } else if cur - w > act[4] {
+            } else if cur - w > act[5] {
                 AWFUL_BAD as i64
             } else {
-                badness(c32(cur - w), c32(act[4])) as i64
+                badness(c32(cur - w), c32(act[5])) as i64
             };
             if b < AWFUL_BAD as i64 {
                 b = if pi <= EJECT_PENALTY as i64 {
@@ -247,9 +247,9 @@ fn page_vert_break(list: &[Node], w: i64, d: i64) -> (Option<usize>, i64) {
                 Node::Glue(g, _) => {
                     cur += prev_dp + g.width as i64;
                     prev_dp = 0;
-                    let so = (g.stretch_order as usize).min(3);
+                    let so = (g.stretch_order as usize).min(4);
                     act[so] += g.stretch as i64;
-                    act[4] += g.shrink as i64;
+                    act[5] += g.shrink as i64;
                 }
                 Node::Kern(k, _) | Node::ExplicitKern(k, _) => {
                     cur += prev_dp + *k as i64;
@@ -341,10 +341,10 @@ struct PageState {
     total: i64,
     /// "recent contributions": depth folded forward into height
     depth: i64,
-    /// stretch by glue order (0 = pt, 1 = fil, 2 = fill, 3 = filll)
-    stretch: [i64; 4],
+    /// stretch by glue order (0 = pt, 1 = fil, 2 = fill, 3 = filll, 4 = fi)
+    stretch: [i64; 5],
     /// shrink by glue order
-    shrink: [i64; 4],
+    shrink: [i64; 5],
     /// running `\insertpenalties`
     insert_penalties: i64,
     /// page insertion chain for this page, ascending by class (tex.web
@@ -376,8 +376,8 @@ impl PageState {
         PageState {
             total: 0,
             depth: 0,
-            stretch: [0; 4],
-            shrink: [0; 4],
+            stretch: [0; 5],
+            shrink: [0; 5],
             insert_penalties: 0,
             ins: Vec::new(),
             ins_ord: 0,
@@ -659,7 +659,10 @@ impl Engine {
                         }
                         let ts =
                             self.eqtb.dim_params[crate::prim::DimParam::TopSkip.idx() as usize];
-                        let pad = (ts as i64 - h as i64).max(0) as i32;
+                        // xetex.web: the pad is measured against the box's depth
+                        // while stacking upwards
+                        let lead = if self.xe_upwards() { d } else { h };
+                        let pad = (ts as i64 - lead as i64).max(0) as i32;
                         self.page_list.insert(
                             idx,
                             Node::Glue(Glue {
@@ -790,8 +793,8 @@ impl Engine {
     /// by order (tex.web @1042)
     fn contribute_glue(&mut self, st: &mut PageState, g: &Glue) {
         self.contribute_gap(st, g.width as i64);
-        let so = (g.stretch_order as usize).min(3);
-        let ho = (g.shrink_order as usize).min(3);
+        let so = (g.stretch_order as usize).min(4);
+        let ho = (g.shrink_order as usize).min(4);
         st.stretch[so] += g.stretch as i64;
         st.shrink[ho] += g.shrink as i64;
     }
@@ -875,8 +878,8 @@ impl Engine {
             if let Some(sk) = self.eqtb.skip.get(usize::from(skip_reg)) {
                 let sk = *sk;
                 self.page_goal -= sk.width as i64;
-                let so = (sk.stretch_order as usize).min(3);
-                let ho = (sk.shrink_order as usize).min(3);
+                let so = (sk.stretch_order as usize).min(4);
+                let ho = (sk.shrink_order as usize).min(4);
                 st.stretch[so] += sk.stretch as i64;
                 st.shrink[ho] += sk.shrink as i64;
             }
@@ -999,10 +1002,10 @@ impl Engine {
     fn break_cost(&self, st: &PageState, penalty: i32) -> (i64, i32) {
         let goal = self.page_goal();
         let b: i64 = if st.total < goal {
-            // tex.web §1003: if any infinite stretch exists (fil/fill/filll),
+            // tex.web §1003: if any infinite stretch exists (fi/fil/fill/filll),
             // the badness is zero; calling badness on the magnitude of the
             // infinite stretch treats it as finite and assigns deplorable cost.
-            if st.stretch[1] != 0 || st.stretch[2] != 0 || st.stretch[3] != 0 {
+            if st.stretch[1..] != [0; 4] {
                 0
             } else {
                 let want = (goal - st.total).min(i32::MAX as i64 / 2) as i32;
@@ -1208,7 +1211,7 @@ impl Engine {
                             let pos = (base + i).min(queue.len());
                             let rest: NodeList = queue.drain(pos..).collect();
                             let mut snaps = 0;
-                            let pruned = prune_page_top_list(rest, &topskip, &mut snaps, self.eqtb.cur_attr);
+                            let pruned = prune_page_top_list(rest, &topskip, &mut snaps, self.eqtb.cur_attr, self.xe_upwards());
                             for _ in 0..snaps {
                                 self.report_discarded_snap();
                             }
@@ -1315,8 +1318,8 @@ impl Engine {
         self.page_depth = 0;
         // tex.web "Start a new current page" clears depth before \output.
         self.eqtb.dim_params[DimParam::PageDepth.idx() as usize] = 0;
-        self.page_stretch = [0; 4];
-        self.page_shrink = [0; 4];
+        self.page_stretch = [0; 5];
+        self.page_shrink = [0; 5];
         self.page_prev_depth = self.ignore_depth();
         self.page_goal = 0x3FFF_FFFF;
         self.page_goal_set = false;
@@ -1373,9 +1376,10 @@ impl Engine {
                     // reaches box_there through the fold (tex.web §19955
                     // reset + re-contribution)
                     self.page_box_seen = true;
+                    let upwards = self.xe_upwards();
                     let h = match &self.page_list[fb] {
-                        Node::Box { h, .. } => *h,
-                        Node::Rule { height: h, .. } => *h,
+                        Node::Box { h, d, .. } => if upwards { *d } else { *h },
+                        Node::Rule { height: h, depth: d, .. } => if upwards { *d } else { *h },
                         _ => unreachable!(),
                     };
                     let ts = self.eqtb.dim_params[DimParam::TopSkip.idx() as usize];
@@ -1396,15 +1400,15 @@ impl Engine {
                     let mut depth = 0i64;
                     let mut prev_d = self.ignore_depth();
                     let md64 = self.max_depth();
-                    let mut stretch = [0i64; 4];
-                    let mut shrink = [0i64; 4];
+                    let mut stretch = [0i64; 5];
+                    let mut shrink = [0i64; 5];
                     for node in &self.page_list[..self.page_processed] {
                         match node {
                             Node::Glue(g, _) => {
                                 total += depth + g.width as i64;
                                 depth = 0;
-                                let so = (g.stretch_order as usize).min(3);
-                                let ho = (g.shrink_order as usize).min(3);
+                                let so = (g.stretch_order as usize).min(4);
+                                let ho = (g.shrink_order as usize).min(4);
                                 stretch[so] += g.stretch as i64;
                                 if so > 0 && g.width != 0 {
                                     stretch[so] += g.width as i64;
@@ -1560,8 +1564,8 @@ impl Engine {
         self.page_goal_set = false;
         self.page_total = 0;
         self.page_depth = 0;
-        self.page_stretch = [0; 4];
-        self.page_shrink = [0; 4];
+        self.page_stretch = [0; 5];
+        self.page_shrink = [0; 5];
         self.page_best_break = None;
         self.page_best_cost = 0;
         self.page_break_penalty = 0;

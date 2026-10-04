@@ -336,10 +336,10 @@ impl Engine {
             let Some(ci) = lf.char_info(c) else {
                 return CharTag::None;
             };
-            if ci.extensible.is_some() || !ci.hor_variants.is_empty() || !ci.vert_variants.is_empty() {
+            if ci.extensible().is_some() || !ci.hor_variants().is_empty() || !ci.vert_variants().is_empty() {
                 return CharTag::Ext;
             }
-            return match ci.next {
+            return match ci.next() {
                 Some(n) => CharTag::List(n),
                 None => CharTag::None,
             };
@@ -359,12 +359,12 @@ impl Engine {
         if let Some(lf) = &font.lua {
             let ci = lf.char_info(c)?;
             if horizontal {
-                return (!ci.hor_variants.is_empty()).then(|| ci.hor_variants.clone());
+                return (!ci.hor_variants().is_empty()).then(|| ci.hor_variants().to_vec());
             }
-            if !ci.vert_variants.is_empty() {
-                return Some(ci.vert_variants.clone());
+            if !ci.vert_variants().is_empty() {
+                return Some(ci.vert_variants().to_vec());
             }
-            let e = ci.extensible?;
+            let e = ci.extensible()?;
             return Some(extensible_variants(e.top, e.bot, e.mid, e.rep));
         }
         if horizontal || c >= 256 {
@@ -495,11 +495,12 @@ impl Engine {
         else {
             return 0;
         };
+        let Some(kerns) = ci.math_kerns() else { return 0 };
         let arr = match side {
-            0 => &ci.math_kerns.top_right,
-            1 => &ci.math_kerns.top_left,
-            2 => &ci.math_kerns.bottom_right,
-            _ => &ci.math_kerns.bottom_left,
+            0 => &kerns.top_right,
+            1 => &kerns.top_left,
+            2 => &kerns.bottom_right,
+            _ => &kerns.bottom_left,
         };
         if arr.is_empty() {
             return 0;

@@ -1,0 +1,80 @@
+\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Mono}
+\setmonofont{Latin Modern Mono}
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\begin{document}
+\directlua{
+function say(...)
+  local a = table.pack(...)
+  local t = {}
+  for i = 1, a.n do t[i] = tostring(a[i]) end
+  tex.sprint(-2, table.concat(t, " "))
+  tex.sprint("\\par")
+end
+local GLYPH, DISC, HLIST = node.id("glyph"), node.id("disc"), node.id("hlist")
+lines = {}
+recording = false
+luatexbase.add_to_callback("post_linebreak_filter", function(head, groupcode)
+  if not recording then return true end
+  for line in node.traverse_id(HLIST, head) do
+    local s, discs = {}, 0
+    for n in node.traverse(line.list) do
+      if n.id == GLYPH then
+        s[rawlen(s) + 1] = utf8.char(n.char)
+      elseif n.id == DISC then
+        discs = discs + 1
+        local replaced = {}
+        for r in node.traverse(n.replace) do replaced[rawlen(replaced) + 1] = utf8.char(r.char) end
+        s[rawlen(s) + 1] = "|" .. table.concat(replaced)
+      end
+    end
+    lines[rawlen(lines) + 1] = table.concat(s) .. "/" .. discs
+  end
+  return head
+end, "engine.disc.lines")
+function flush_lines(label)
+  recording = false
+  say(label, "prevgraf", tex.prevgraf, table.concat(lines, " "))
+  lines = {}
+end
+xlang = lang.new()
+xid = lang.id(xlang)
+lang.hyphenation(xlang, "ab-ra-ca-dab-ra")
+lang.hyphenation(xlang, "ex-am-ple")
+local words = {}
+for w in string.gmatch(lang.hyphenation(xlang), "[^ ]+") do words[rawlen(words) + 1] = w end
+table.sort(words)
+say("lang", xid > 0, table.concat(words, ","))
+}
+\newcommand\rec{\directlua{recording = true}}
+\hsize=3.5em \parfillskip=0pt plus 1fil \tolerance=10000 \hbadness=10000 \emergencystretch=0pt
+\lefthyphenmin=1 \righthyphenmin=1
+\prehyphenchar=`- \hyphenchar\font=`-
+\language=\directlua{tex.sprint(xid)}
+\rec abracadabra\par
+\directlua{flush_lines("exception")}
+\language=\directlua{tex.sprint(xid)}
+\rec abracadabra example abracadabra\par
+\directlua{flush_lines("exception.par")}
+\language=\directlua{tex.sprint(xid)}
+\hsize=4em
+\rec exam\discretionary{<}{>}{=}ple tail\par
+\directlua{flush_lines("explicit.disc")}
+\hsize=5em
+\rec long\-est word\par
+\directlua{flush_lines("soft.hyphen")}
+\hsize=4em
+\rec x\discretionary{}{}{}y-zz\par
+\directlua{flush_lines("empty.disc")}
+\hsize=14em
+\language=0
+\lefthyphenmin=2 \righthyphenmin=3
+\setbox0\vbox{\hsize=2.2em \noindent ratexing\par}
+\directlua{
+local n = 0
+for line in node.traverse_id(node.id("hlist"), tex.box[0].list) do n = n + 1 end
+say("english", n)
+}
+\end{document}

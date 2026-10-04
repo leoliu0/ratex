@@ -1,0 +1,21 @@
+\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+\newfontfamily\texmap{Latin Modern Roman}[Mapping=tex-text]
+\newfontfamily\psmap{Latin Modern Roman}[Mapping=tex-ps]
+\newfontfamily\nomap{Latin Modern Roman}[Ligatures=NoCommon]
+\newfontfamily\rawmap{Latin Modern Roman}[Ligatures=NoCommon,Mapping=tex-text]
+\begin{document}
+\newcommand\sample{``quoted'' -- dash --- em, it's `single' ?`!` <<guil>>}
+\newcommand\meas[1]{\setbox0\hbox{#1\sample}\the\wd0}
+tex-text: {\texmap\sample}\par
+tex-ps: {\psmap\sample}\par
+none: {\nomap\sample}\par
+Widths tex-text \meas\texmap, tex-ps \meas\psmap, none \meas\nomap, nolig+text \meas\rawmap\par
+\font\mapped="Latin Modern Roman:mapping=tex-text" at 10pt
+\font\plainf="Latin Modern Roman" at 10pt
+{\mapped ``A'' -- ---}\ {\plainf ``A'' -- ---}\par
+\setbox0\hbox{\mapped ---}\setbox2\hbox{\plainf ---}
+Em dash widths \the\wd0\ \the\wd2\par
+\setbox0\hbox{\mapped ``}\setbox2\hbox{\plainf ``}\ifdim\wd0=\wd2 same-open-quote\else open-quote-differs\fi\par
+\end{document}

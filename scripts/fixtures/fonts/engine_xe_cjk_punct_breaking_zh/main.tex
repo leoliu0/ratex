@@ -1,0 +1,28 @@
+\documentclass{article}
+\usepackage{fontspec}
+\usepackage{xeCJK}
+\setmainfont{Latin Modern Roman}
+\setCJKmainfont{FandolSong-Regular.otf}[BoldFont=FandolSong-Bold.otf]
+\setCJKsansfont{FandolHei-Regular.otf}
+\xeCJKsetup{PunctStyle=banjiao}
+\begin{document}
+\newbox\tb
+\setbox\tb\vbox{\hsize=9em \noindent 春眠不觉晓，处处闻啼鸟。夜来风雨声，花落知多少？「完」\par}
+Lines banjiao: \the\ht\tb\ height \the\ht\tb\par
+\unvbox\tb
+\xeCJKsetup{PunctStyle=quanjiao}
+\setbox\tb\vbox{\hsize=9em \noindent 春眠不觉晓，处处闻啼鸟。夜来风雨声，花落知多少？「完」\par}
+Quanjiao height \the\ht\tb\par
+\unvbox\tb
+\xeCJKsetup{PunctStyle=kaiming}
+{\sffamily\bfseries Mixed 中文English混排，数字123与标点。}\par
+\xeCJKsetup{CJKecglue={\hskip 0.5em}}
+中文English间距，中文 English with explicit space, 数字123结束。\par
+\setbox0\hbox{中文English}\setbox2\hbox{中文 English}
+Glue widths \the\wd0\ \the\wd2\par
+\xeCJKsetup{CJKglue={\hskip 0pt plus 1pt}}
+\setbox\tb\vbox{\hsize=7em \noindent 北京欢迎你，开幕式《春》，「标点」结束。\par}
+Hang \the\ht\tb\par
+\unvbox\tb
+\setbox0\hbox{\textbf{粗体}\textit{斜体}}\the\wd0\par
+\end{document}

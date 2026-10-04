@@ -1,0 +1,16 @@
+\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{TeX Gyre Pagella}
+\begin{document}
+\uppercase{éàüñøç ÿ ß} / \lowercase{ÉÀÜÑØÇ ŸΩ}\par
+{\uccode`ß=`S \uppercase{ß}\ \lccode`Ω=`ω \lowercase{Ω}\ \uccode`æ="D8 \uppercase{æ}}\par
+\edef\x{\Uchar"E9 \Uchar"20AC \Uchar"41 }Edef: \x\par
+\Ucharcat 97 11 \Ucharcat 233 11 \Ucharcat 37 12 \Ucharcat 123 12\par
+\catcode`\é=11 \def\café{COFFEE}\café\ \csname café\endcsname\ \string\café\par
+\count1=`é \count2="E9 \count3=`😀
+Codes: \the\count1\ \the\count2\ \the\count3\ sf \the\sfcode`é\ lc \the\lccode`É\ uc \the\uccode`é\ math \the\mathcode`é\par
+\def\br#1{[#1]}\expandafter\br\detokenize{héllo wörld}\par
+\scantokens{Scanned: \Uchar"3B1 \Uchar"3B2 \Uchar"3B3 }\par
+\setbox0\hbox{\Uchar"E9 }\setbox2\hbox{é}\setbox4\hbox{\char"E9}
+Same width \the\wd0 \the\wd2 \the\wd4\par
+\end{document}

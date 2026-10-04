@@ -1,0 +1,36 @@
+\documentclass[11pt]{report}
+\usepackage[a5paper,margin=16mm]{geometry}
+\usepackage{fontspec}
+\setmainfont{TeX Gyre Pagella}
+\setsansfont{TeX Gyre Heros}
+\usepackage[english]{babel}
+\babelprovide[import,hyphenrules=nohyphenation]{spanish}
+\babelprovide[import,hyphenrules=nohyphenation]{portuguese}
+\usepackage{csquotes}
+\usepackage{amsmath}
+
+\begin{document}
+\tableofcontents
+\listoftables
+\chapter{Mixed languages}
+The main language is English and today is \today.
+
+\begin{otherlanguage}{spanish}
+\chapter{Introducci\'on}
+Este cap\'itulo est\'a en espa\~nol: \textquestiondown C\'omo est\'as? Hoy es \today.
+El \'indice se titula <<\contentsname>> y la lista <<\listtablename>>.
+Prueba de \chaptername{} y de \tablename.
+\end{otherlanguage}
+
+\begin{otherlanguage}{portuguese}
+\chapter{Introdu\c{c}\~ao}
+Este cap\'itulo est\'a em portugu\^es: n\~ao h\'a problemas. Hoje \'e \today.
+Os nomes: \contentsname{} e \listtablename; \chaptername{} e \tablename.
+\end{otherlanguage}
+
+\chapter{Switching inline}
+English with \foreignlanguage{spanish}{una frase en espa\~nol} and
+\foreignlanguage{portuguese}{uma frase em portugu\^es} in one sentence.
+Dates: \foreignlanguage{spanish}{\today}; \foreignlanguage{portuguese}{\today}.
+Numbers $\sum_{k=1}^{3}k=6$ stay language independent.
+\end{document}

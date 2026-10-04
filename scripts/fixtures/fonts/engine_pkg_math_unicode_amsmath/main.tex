@@ -1,0 +1,61 @@
+\documentclass[11pt]{article}
+\usepackage[a5paper,margin=18mm]{geometry}
+\usepackage{amsmath}
+\usepackage{mathtools}
+\usepackage{unicode-math}
+\setmainfont{TeX Gyre Pagella}
+\setsansfont{TeX Gyre Heros}
+\setmonofont{TeX Gyre Cursor}
+\setmathfont{texgyrepagella-math.otf}
+\setmathfont{latinmodern-math.otf}[range={cal,bfcal},StylisticSet=1]
+\DeclarePairedDelimiter{\abs}{\lvert}{\rvert}
+\DeclarePairedDelimiter{\norm}{\lVert}{\rVert}
+\DeclareMathOperator{\Tr}{Tr}
+
+\begin{document}
+\section*{Spectral identities}
+
+Let $A\in\mathbb{R}^{2\times 2}$ be symmetric with eigenvalues $\lambda_1,\lambda_2$.
+Then, with $\mu \coloneqq \tfrac12\Tr A$ and $\delta \coloneqq \tfrac12\abs{\lambda_1-\lambda_2}$,
+\begin{align}
+  \lambda_{1,2} &= \mu \pm \delta, \label{eq:eig}\\
+  \Tr A^{2} &= \lambda_1^{2}+\lambda_2^{2} = 2\mu^{2}+2\delta^{2}. \label{eq:tr}
+\end{align}
+Equation~\eqref{eq:eig} fixes the spectrum, and \eqref{eq:tr} its second moment, hence
+\begin{equation}
+  \norm{A}_{F}^{2} = \sum_{\mathclap{i,j=1}}^{2} a_{ij}^{2}
+  = \underbrace{\lambda_1^{2}+\lambda_2^{2}}_{\text{trace of square}}.
+  \label{eq:frob}
+\end{equation}
+
+\subsection*{A piecewise definition}
+\[
+  \operatorname{sgn}(x)=
+  \begin{dcases}
+    -1 & \text{if } x<0,\\
+    \phantom{-}0 & \text{if } x=0,\\
+    +1 & \text{if } x>0.
+  \end{dcases}
+\]
+
+\subsection*{Matrices and arrows}
+\[
+  \mathbf{R}(\theta)=\begin{pmatrix}\cos\theta & -\sin\theta\\ \sin\theta & \phantom{-}\cos\theta\end{pmatrix}
+  \xrightarrow[\text{rotate by }\pi]{\theta\to\pi}
+  \begin{bmatrix}-1&0\\0&-1\end{bmatrix}
+\]
+Blackboard $\mathbb{N}\subset\mathbb{Z}\subset\mathbb{Q}\subset\mathbb{R}\subset\mathbb{C}$,
+calligraphic $\mathcal{L}\mathcal{F}$, bold italic $\symbfit{x}$,
+and the Greek set $\alpha\beta\gamma\Gamma\Delta\Omega\partial\nabla$.
+
+\begin{gather*}
+  \int_{-\infty}^{\infty} e^{-x^{2}}\,dx=\sqrt{\pi},\qquad
+  \prod_{k=1}^{n}\Bigl(1+\tfrac{1}{k}\Bigr)=n+1,\\
+  \lim_{n\to\infty}\Bigl(1+\tfrac1n\Bigr)^{n}=e.
+\end{gather*}
+\begin{multline}
+  \sum_{k=0}^{n}\binom{n}{k}x^{k}y^{n-k}=(x+y)^{n}
+  \quad\text{and}\quad\\
+  \sum_{\substack{0\le i\le n\\ i\ \text{even}}}\binom{n}{i}=2^{\,n-1}.
+\end{multline}
+\end{document}

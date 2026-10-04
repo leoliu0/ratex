@@ -78,7 +78,7 @@ impl StringInterner {
         #[cfg(feature = "shared-proto")]
         {
             let _ = string_pool;
-            GcObjectOwner::String(Pooled::boxed(GcString::new(
+            GcObjectOwner::from(Pooled::boxed(GcString::new(
                 lua_string,
                 current_white,
                 size,
@@ -87,7 +87,7 @@ impl StringInterner {
 
         #[cfg(not(feature = "shared-proto"))]
         {
-            GcObjectOwner::String(string_pool.alloc(GcString::new(lua_string, current_white, size)))
+            GcObjectOwner::from(string_pool.alloc(GcString::new(lua_string, current_white, size)))
         }
     }
 

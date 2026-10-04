@@ -369,6 +369,11 @@ pub struct RenderCtx<'a> {
     /// luatex `pdf.h.m`/`pdf.v.m`: where the current `cm` origin is, in units
     /// of the last output digit from the page's bottom left
     lua_cm: (i64, i64),
+    /// LuaTeX's quantized TJ origin, 1/10000-em glyph pen and conversion factors.
+    lua_tj_h: i64,
+    lua_cw: i64,
+    lua_k1: f64,
+    lua_k2: f64,
     /// `callback_defined(process_rule)` when the shipout started: 0 none,
     /// positive a function, -1 registered as `false`
     process_rule_cb: i8,
@@ -550,6 +555,10 @@ impl Engine {
             origin_h: 0,
             origin_v: page_height_sp,
             lua_cm: (0, 0),
+            lua_tj_h: 0,
+            lua_cw: 0,
+            lua_k1: 0.0,
+            lua_k2: 0.0,
             page_height_sp,
             scaled_out: 0,
             page_mode: true,
@@ -1155,7 +1164,12 @@ impl<'a> RenderCtx<'a> {
         // etex.ch: shipping right-to-left, x is the vlist's right edge and
         // boxes and rules hang leftwards from it
         let rtl = self.cur_dir == 1;
-        let mut cur_y = y;
+        // xetex.web `vlist_out`: a box marked upwards starts at its bottom
+        // edge (`cur_v+depth`) and every item moves the position up. The
+        // caller left that box's `box_lr` and extents in place.
+        let up = self.box_lr == crate::boxes::BOX_UPWARDS
+            && self.eng.engine_kind == crate::engine::EngineKind::XeTeX;
+        let mut cur_y = if up { y + self.box_h_sp + self.box_d_sp } else { y };
         let mut glue_state = GlueState::default();
         // pdfTeX `final_skip` of \pdfsnapy nodes set by \pdfsnapycomp
         let mut final_skips: Vec<(usize, i64)> = Vec::new();
@@ -1192,7 +1206,7 @@ impl<'a> RenderCtx<'a> {
                         // tex.web: a box's shift_amount is horizontal when
                         // the box sits in a VLIST (display boxes arrive here
                         // centered via shift = s + d)
-                        let baseline = cur_y + bh;
+                        let baseline = if up { cur_y - bd } else { cur_y + bh };
                         self.ship_hlist(
                             inner,
                             x + sh,
@@ -1203,13 +1217,16 @@ impl<'a> RenderCtx<'a> {
                         );
                     } else {
                         // vbox/vtop: the shift is horizontal
-                        self.ship_vlist(inner, x + sh, cur_y, *glue_sign, *glue_order, *glue_set);
+                        let top = if up { cur_y - bd - bh } else { cur_y };
+                        self.ship_vlist(inner, x + sh, top, *glue_sign, *glue_order, *glue_set);
                     }
                     self.left_edge_sp = saved.0;
                     self.box_w_sp = saved.1;
                     self.box_h_sp = saved.2;
                     self.box_d_sp = saved.3;
-                    cur_y += bh + bd;
+                    // an empty box moves down even when stacking upwards
+                    // (xetex.web adds height+depth unconditionally for it)
+                    cur_y = if up && !inner.is_empty() { cur_y - bd - bh } else { cur_y + bh + bd };
                 }
                 Node::Rule {
                     width,
@@ -1226,12 +1243,21 @@ impl<'a> RenderCtx<'a> {
                         *width as i64
                     };
                     let (rh, rd) = (*height as i64, *depth as i64);
-                    let y1 = cur_y + rh; // top of rule
-                    self.place_rule((*width, *height, *depth, *subtype, *index), if rtl { x - w_sp } else { x }, y1 + rd, w_sp, rh + rd);
-                    cur_y += rh + rd;
+                    let ht = rh + rd;
+                    // the rule's lower edge is the new position, below
+                    // the space it reserves when stacking upwards
+                    if up {
+                        cur_y -= ht;
+                    }
+                    let bottom = if up { cur_y } else { cur_y + ht };
+                    self.place_rule((*width, *height, *depth, *subtype, *index), if rtl { x - w_sp } else { x }, bottom, w_sp, ht);
+                    if !up {
+                        cur_y += ht;
+                    }
                 }
                 Node::Glue(g, _) => {
-                    cur_y += glue_state.advance(g, sign, order, set);
+                    let adv = glue_state.advance(g, sign, order, set);
+                    cur_y += if up { -adv } else { adv };
                 }
                 Node::NativeGlyphRun {
                     run,
@@ -1258,7 +1284,8 @@ impl<'a> RenderCtx<'a> {
                             };
                             if w_sp > 0 && adv > 0 {
                                 let rx = if rtl { x - w_sp } else { x };
-                                self.place_rule((*width, *height, *depth, *subtype, 0), rx, cur_y + adv, w_sp, adv);
+                                let bottom = if up { cur_y - adv } else { cur_y + adv };
+                                self.place_rule((*width, *height, *depth, *subtype, 0), rx, bottom, w_sp, adv);
                             }
                         }
                         LeaderBody::Box(b) => {
@@ -1280,13 +1307,15 @@ impl<'a> RenderCtx<'a> {
                         }
                     }
                     let _ = lw;
-                    cur_y += adv;
+                    // rule leaders go through `fin_rule` and so move up;
+                    // box leaders move down as xetex.web leaves them
+                    cur_y += if up && matches!(body, LeaderBody::Rule { .. }) { -adv } else { adv };
                 }
                 Node::Kern(k, _)
                 | Node::ExplicitKern(k, _)
                 | Node::AccentKern(k, _) | Node::ItalicKern(k, _) | Node::SpaceAdjKern(k, _)
                 | Node::MarginKern { width: k, .. } => {
-                    cur_y += *k as i64;
+                    cur_y += if up { -(*k as i64) } else { *k as i64 };
                 }
                 Node::Penalty(_, _) | Node::Mark { .. } => {}
                 Node::Whatsit(w @ crate::boxes::WhatIt::XePic { h, d, .. }, _) => {
@@ -1337,10 +1366,12 @@ impl<'a> RenderCtx<'a> {
                 }
                 Node::Ins { box_node, .. } => {
                     if let Node::Box { list: inner, .. } = &**box_node {
+                        self.box_lr = 0;
                         self.ship_vlist(inner, x, cur_y, 0, 0, 0.0);
                     }
                 }
                 Node::VAdjust(items, _) | Node::PreAdjust(items, _) => {
+                    self.box_lr = 0;
                     self.ship_vlist(items, x, cur_y, 0, 0, 0.0);
                 }
                 _ => {}
@@ -1917,25 +1948,32 @@ impl<'a> RenderCtx<'a> {
         if num == self.last_f && at_size_sp == self.last_f_size {
             return;
         }
-        let (font_size_pdf, _) = divide_scaled(at_size_sp, ONE_HUNDRED_BP_SP, 6);
+        let digits = if self.eng.engine_kind == crate::engine::EngineKind::LuaTeX {
+            if self.decimal_digits < 4 { 5 } else { 6 }
+        } else {
+            4
+        };
+        let (font_size_pdf, _) = divide_scaled(at_size_sp, ONE_HUNDRED_BP_SP, digits + 2);
         self.content.push_str("/F");
         push_i64(&mut self.content, i64::from(num));
         self.content.push_str(&self.eng.pdf_doc.resname_prefix);
         self.content.push(' ');
-        self.push_real(font_size_pdf, 4);
+        self.push_real(font_size_pdf, digits);
         self.content.push_str(" Tf");
         self.last_f = num;
         self.last_f_size = at_size_sp;
     }
 
-    /// pdfTeX `pdf_set_text_pos(v, v_out, f)`: emit `Tm` (scaled matrix) or
-    /// the relative `Td` move, keeping `pdf_h`/`pdf_v` on the sp raster.
+    /// pdfTeX uses scaled `Tm` or relative `Td`; LuaTeX always writes an
+    /// absolute matrix, avoiding accumulated moves between font transitions.
     /// `new_tm_a` is the effective auto-expand ratio (thousandths) of the
     /// glyph being placed — inherited through VF expansion, not recomputed
     /// from the base font id.
     fn set_text_pos(&mut self, cur_h: i64, cur_v: i64, v: i64, v_out: i64, new_tm_a: i32) {
         self.content.push(' ');
-        if new_tm_a != 0 || self.cur_tm_a != 0 {
+        if new_tm_a != 0 || self.cur_tm_a != 0
+            || self.eng.engine_kind == crate::engine::EngineKind::LuaTeX
+        {
             self.push_real(1000 + new_tm_a as i64, 3);
             self.content.push_str(" 0 0 1 ");
             self.push_bp(cur_h - self.origin_h);
@@ -1956,6 +1994,9 @@ impl<'a> RenderCtx<'a> {
         }
         self.tj_start_h = self.pdf_h;
         self.delta_h = 0;
+        if self.eng.engine_kind == crate::engine::EngineKind::LuaTeX {
+            self.lua_set_text_state(cur_h, new_tm_a);
+        }
     }
 
     /// pdfTeX `pdf_begin_string(f)` + the char emission of `output_one_char`.
@@ -1979,39 +2020,44 @@ impl<'a> RenderCtx<'a> {
         if self.pdf_f != f || self.cur_font != binding.resource_key(f) {
             self.end_string();
             self.set_font(f, binding);
+            must_set_text_pos |= self.eng.engine_kind == crate::engine::EngineKind::LuaTeX;
         }
-        let at_size_sp = self
-            .eng
-            .eqtb
-            .fonts
-            .get(f as usize)
-            .map(|ff| ff.at_size as i64)
-            .unwrap_or(0);
-        let (_, m) = divide_scaled(at_size_sp, ONE_HUNDRED_BP_SP, 6);
-        let gap = cur_h - (self.tj_start_h + self.delta_h);
-        let (s, s_out) = if self.cur_tm_a == 0 {
-            divide_scaled(gap, m, 3)
+        let (s, s_out) = if self.eng.engine_kind == crate::engine::EngineKind::LuaTeX {
+            (self.lua_tj_gap(cur_h), 0)
         } else {
-            let (s, _) = divide_scaled(
-                round_xn_over_d(gap, 1000, 1000 + self.cur_tm_a as i64),
-                m,
-                3,
-            );
-            // s_out is unused when |s| >= 32768: the matrix is reset below
-            let s_out = if s.abs() < GAP_SPLIT_LIMIT {
-                let mut o = round_xn_over_d(
-                    round_xn_over_d(m, s.abs(), 1000),
-                    1000 + self.cur_tm_a as i64,
-                    1000,
-                );
-                if s < 0 {
-                    o = -o;
-                }
-                o
+            let at_size_sp = self
+                .eng
+                .eqtb
+                .fonts
+                .get(f as usize)
+                .map(|ff| ff.at_size as i64)
+                .unwrap_or(0);
+            let (_, m) = divide_scaled(at_size_sp, ONE_HUNDRED_BP_SP, 6);
+            let gap = cur_h - (self.tj_start_h + self.delta_h);
+            if self.cur_tm_a == 0 {
+                divide_scaled(gap, m, 3)
             } else {
-                0
-            };
-            (s, s_out)
+                let (s, _) = divide_scaled(
+                    round_xn_over_d(gap, 1000, 1000 + self.cur_tm_a as i64),
+                    m,
+                    3,
+                );
+                // s_out is unused when |s| >= 32768: the matrix is reset below
+                let s_out = if s.abs() < GAP_SPLIT_LIMIT {
+                    let mut o = round_xn_over_d(
+                        round_xn_over_d(m, s.abs(), 1000),
+                        1000 + self.cur_tm_a as i64,
+                        1000,
+                    );
+                    if s < 0 {
+                        o = -o;
+                    }
+                    o
+                } else {
+                    0
+                };
+                (s, s_out)
+            }
         };
         let (v, v_out) = if (cur_v - self.pdf_v).abs() >= self.min_bp_val {
             divide_scaled(self.pdf_v - cur_v, ONE_HUNDRED_BP_SP, self.decimal_digits + 2)
@@ -2040,7 +2086,11 @@ impl<'a> RenderCtx<'a> {
             }
             push_i64(&mut self.content, -s);
             self.content.push('(');
-            self.delta_h += s_out;
+            if self.eng.engine_kind == crate::engine::EngineKind::LuaTeX {
+                self.lua_cw += s * 10;
+            } else {
+                self.delta_h += s_out;
+            }
         }
         self.doing_string = true;
     }
@@ -2093,6 +2143,15 @@ impl<'a> RenderCtx<'a> {
             .get(f as usize)
             .map(|ff| ff.at_size as i64)
             .unwrap_or(0);
+        if self.eng.engine_kind == crate::engine::EngineKind::LuaTeX {
+            if at_size_sp != 0 {
+                // `w` already includes glyph expansion; the TJ pen is nominal.
+                self.lua_cw += round_xn_over_d(
+                    w, 10_000_000, at_size_sp * (1000 + i64::from(self.cur_tm_a)),
+                );
+            }
+            return;
+        }
         let (_, m) = divide_scaled(at_size_sp, ONE_HUNDRED_BP_SP, 6);
         let s_out = if self.cur_tm_a == 0 {
             let (_, out) = divide_scaled(w, m, 4);
@@ -2398,7 +2457,7 @@ impl<'a> RenderCtx<'a> {
         }
     }
 
-    fn begin_hex_string(
+    fn begin_lua_cid_string(
         &mut self,
         cur_h: i64,
         cur_v: i64,
@@ -2417,39 +2476,9 @@ impl<'a> RenderCtx<'a> {
         {
             self.end_string();
             self.set_font(f, binding);
+            must_set_text_pos = true;
         }
-        let at_size_sp = self
-            .eng
-            .eqtb
-            .fonts
-            .get(f as usize)
-            .map(|ff| ff.at_size as i64)
-            .unwrap_or(0);
-        let (_, m) = divide_scaled(at_size_sp, ONE_HUNDRED_BP_SP, 6);
-        let gap = cur_h - (self.tj_start_h + self.delta_h);
-        let (s, s_out) = if self.cur_tm_a == 0 {
-            divide_scaled(gap, m, 3)
-        } else {
-            let (s, _) = divide_scaled(
-                round_xn_over_d(gap, 1000, 1000 + self.cur_tm_a as i64),
-                m,
-                3,
-            );
-            let s_out = if s.abs() < GAP_SPLIT_LIMIT {
-                let mut o = round_xn_over_d(
-                    round_xn_over_d(m, s.abs(), 1000),
-                    1000 + self.cur_tm_a as i64,
-                    1000,
-                );
-                if s < 0 {
-                    o = -o;
-                }
-                o
-            } else {
-                0
-            };
-            (s, s_out)
-        };
+        let s = self.lua_tj_gap(cur_h);
         let (v, v_out) = if (cur_v - self.pdf_v).abs() >= self.min_bp_val {
             divide_scaled(self.pdf_v - cur_v, ONE_HUNDRED_BP_SP, self.decimal_digits + 2)
         } else {
@@ -2464,7 +2493,6 @@ impl<'a> RenderCtx<'a> {
             self.set_text_pos(cur_h, cur_v, v, v_out, ratio);
         }
         let s = if must_set_text_pos { 0 } else { s };
-        let s_out = if must_set_text_pos { 0 } else { s_out };
         if !self.doing_string {
             self.content.push_str(" [");
             if s == 0 {
@@ -2479,26 +2507,18 @@ impl<'a> RenderCtx<'a> {
             }
             push_i64(&mut self.content, -s);
             self.content.push('<');
-            self.delta_h += s_out;
+            self.lua_cw += s * 10;
         }
         self.doing_string = true;
         self.doing_hex_string = true;
     }
 
-    fn native_glyph_nom_advance_sp(&mut self, fid: u16, gid: u16) -> i64 {
+    /// Match the native font's integer-thousandth /W values, in Lua's 1/10000-em pen.
+    fn lua_pdf_glyph_width(&mut self, fid: u16, gid: u16) -> i64 {
         if let Some(&adv) = self.advance_cache.get(&(fid, u32::from(gid))) {
             return adv;
         }
-        let at_size_sp = self
-            .eng
-            .eqtb
-            .fonts
-            .get(fid as usize)
-            .map(|ff| ff.at_size as i64)
-            .unwrap_or(0);
-        let adv_sp = if at_size_sp <= 0 {
-            0
-        } else if let Some(program) = self
+        let width = if let Some(program) = self
             .eng
             .eqtb
             .fonts
@@ -2513,8 +2533,7 @@ impl<'a> RenderCtx<'a> {
                     let adv = face
                         .glyph_hor_advance(ttf_parser::GlyphId(gid))
                         .unwrap_or(0) as f64;
-                    let pdf_width = (adv * 1000.0 / upem as f64).round() as i64;
-                    round_xn_over_d(at_size_sp, pdf_width, 1000)
+                    (adv * 1000.0 / upem as f64).round() as i64 * 10
                 } else {
                     0
                 }
@@ -2524,8 +2543,8 @@ impl<'a> RenderCtx<'a> {
         } else {
             0
         };
-        self.advance_cache.insert((fid, u32::from(gid)), adv_sp);
-        adv_sp
+        self.advance_cache.insert((fid, u32::from(gid)), width);
+        width
     }
 
 

@@ -144,7 +144,7 @@ impl ObjectAllocator {
             current_white,
             size,
         ));
-        let gc_table = GcObjectOwner::Table(ptr);
+        let gc_table = GcObjectOwner::from(ptr);
         let ptr = gc_table.as_table_ptr().unwrap();
         gc.trace_object(gc_table)?;
         Ok(LuaValue::table(ptr))
@@ -156,7 +156,7 @@ impl ObjectAllocator {
     pub fn create_proto(&mut self, gc: &mut GC, chunk: LuaProto) -> LuaResult<ProtoPtr> {
         let current_white = gc.current_white;
         let size = std::mem::size_of::<GcProto>() as u32 + chunk.proto_data_size;
-        let gc_proto = GcObjectOwner::Proto(self.proto_pool.alloc(GcProto::new(
+        let gc_proto = GcObjectOwner::from(self.proto_pool.alloc(GcProto::new(
             chunk,
             current_white,
             size,
@@ -180,7 +180,7 @@ impl ObjectAllocator {
         let upval_size = upvalue_store.len() * std::mem::size_of::<UpvaluePtr>();
         let size = std::mem::size_of::<GcFunction>() as u32 + upval_size as u32;
 
-        let gc_func = GcObjectOwner::Function(self.function_pool.alloc(GcFunction::new(
+        let gc_func = GcObjectOwner::from(self.function_pool.alloc(GcFunction::new(
             LuaRawFunction::new(chunk, upvalue_store),
             current_white,
             size,
@@ -203,7 +203,7 @@ impl ObjectAllocator {
         let current_white = gc.current_white;
         let size = std::mem::size_of::<CFunction>() as u32
             + (upvalues.len() as u32 * std::mem::size_of::<LuaValue>() as u32);
-        let gc_func = GcObjectOwner::CClosure(self.cclosure_pool.alloc(GcCClosure::new(
+        let gc_func = GcObjectOwner::from(self.cclosure_pool.alloc(GcCClosure::new(
             CClosureFunction::new(func, upvalues),
             current_white,
             size,
@@ -226,7 +226,7 @@ impl ObjectAllocator {
         let current_white = gc.current_white;
         let size = std::mem::size_of::<GcRClosure>() as u32
             + (upvalues.len() as u32 * std::mem::size_of::<LuaValue>() as u32);
-        let gc_func = GcObjectOwner::RClosure(self.rclosure_pool.alloc(GcRClosure::new(
+        let gc_func = GcObjectOwner::from(self.rclosure_pool.alloc(GcRClosure::new(
             RClosureFunction::new(func, upvalues),
             current_white,
             size,
@@ -250,7 +250,7 @@ impl ObjectAllocator {
         // Must happen after boxing so the heap address is stable.
         // No-op for open upvalues (v already points to valid stack slot).
         pooled.data.fix_closed_ptr();
-        let gc_uv = GcObjectOwner::Upvalue(pooled);
+        let gc_uv = GcObjectOwner::from(pooled);
         let ptr = gc_uv.as_upvalue_ptr().unwrap();
         gc.trace_object(gc_uv)?;
         Ok(ptr)
@@ -262,7 +262,7 @@ impl ObjectAllocator {
     pub fn create_userdata(&mut self, gc: &mut GC, userdata: LuaUserdata) -> CreateResult {
         let current_white = gc.current_white;
         let size = std::mem::size_of::<LuaUserdata>();
-        let gc_userdata = GcObjectOwner::Userdata(self.userdata_pool.alloc(GcUserdata::new(
+        let gc_userdata = GcObjectOwner::from(self.userdata_pool.alloc(GcUserdata::new(
             userdata,
             current_white,
             size as u32,
@@ -279,7 +279,7 @@ impl ObjectAllocator {
         let current_white = gc.current_white;
         let size = std::mem::size_of::<LuaState>();
         let mut gc_thread =
-            GcObjectOwner::Thread(Box::new(GcThread::new(thread, current_white, size as u32)));
+            GcObjectOwner::from(Box::new(GcThread::new(thread, current_white, size as u32)));
         let ptr = gc_thread.as_thread_ptr().unwrap();
         gc_thread.as_thread_mut().unwrap().set_thread_ptr(ptr);
 
@@ -302,12 +302,13 @@ impl ObjectAllocator {
     pub fn trim_after_full_gc(&mut self) {
         self.table_pool.release_empty_pages();
         self.string_pool.release_empty_pages();
+        self.function_pool.release_empty_pages();
         self.cclosure_pool.release_empty_pages();
         self.rclosure_pool.release_empty_pages();
         self.upvalue_pool.release_empty_pages();
         self.userdata_pool.release_empty_pages();
         self.proto_pool.release_empty_pages();
         self.call_info_pool.release_empty_pages();
-        self.userdata_pool.release_empty_pages();
+        self.strings.check_shrink();
     }
 }

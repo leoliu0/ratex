@@ -213,12 +213,10 @@ impl Engine {
         }
     }
 
-    /// LuaTeX `\gluestretchorder`/`\glueshrinkorder`: LuaTeX counts a
-    /// `fi` order below `fil`, so every infinite order is one higher than
-    /// e-TeX's.
+    /// LuaTeX `\gluestretchorder`/`\glueshrinkorder`: `fi` precedes `fil`.
     fn scan_lua_glue_order(&mut self, p: Prim) -> i32 {
         let order = self.scan_etex_glue_field(if p == Prim::LuaGlueStretchOrder { 2 } else { 3 });
-        if order > 0 { order + 1 } else { 0 }
+        i32::from(crate::boxes::glue_order_rank(order as u8))
     }
 
     /// tex.web @<Scan an optional space@>: one expanding fetch; consume a
@@ -669,6 +667,10 @@ impl Engine {
                     ) => {
                         let f = self.scan_font_id() as usize;
                         if let Some(code) = self.lua_font_code(f as u16, p) {
+                            v = i64::from(code);
+                            break 'scan_loop;
+                        }
+                        if let Some(code) = self.xetex_native_font_code(f as u16, p) {
                             v = i64::from(code);
                             break 'scan_loop;
                         }
@@ -1583,6 +1585,10 @@ impl Engine {
                 self.cur_fill_order = order;
                 break 'attach_sign Self::attach_fraction(cur_val, f);
             }
+            if inf && self.engine_kind == crate::engine::EngineKind::LuaTeX && self.scan_unit_keyword(b"fi") {
+                self.cur_fill_order = crate::boxes::GLUE_FI;
+                break 'attach_sign Self::attach_fraction(cur_val, f);
+            }
             if let Some(unit_sp) = self.scan_internal_unit() {
                 // internal dimension: no optional space (attach_sign)
                 break 'attach_sign Self::nx_plus_y_fraction(cur_val, f, unit_sp);
@@ -2169,8 +2175,12 @@ impl Engine {
                 self.emit_the_tokens(tokens, capture_for_show);
             }};
         }
+        // Internal operands expand protected macros even inside \edef:
+        // the outer token-list scanner's protection does not apply here.
+        let prev_expanded_scan = self.in_expanded_scan;
+        self.in_expanded_scan = false;
         self.skip_spaces();
-        let mut t = self.get_token();
+        let mut t = self.get_x_raw();
         if t.is_cs()
             && matches!(
                 self.eqtb.resolve(t.cs_id()),
@@ -2181,8 +2191,9 @@ impl Engine {
             // \pdfprimitive marker (even inside an expanded text)
             let target = self.pdf_primitive_target();
             self.push_token(target);
-            t = self.get_token();
+            t = self.get_x_raw();
         }
+        self.in_expanded_scan = prev_expanded_scan;
         if !t.is_cs() {
             self.push_token(t);
             self.error("You can't use `\\the' after ");
@@ -2387,6 +2398,8 @@ impl Engine {
             ) => {
                 let f = self.scan_font_id() as usize;
                 let v = if let Some(code) = self.lua_font_code(f as u16, p) {
+                    code
+                } else if let Some(code) = self.xetex_native_font_code(f as u16, p) {
                     code
                 } else {
                     let c = self.scan_character_code(font_character_code_primitive(p));
@@ -2942,6 +2955,7 @@ impl Engine {
                     1 => s.push_str("fil"),
                     2 => s.push_str("fill"),
                     3 => s.push_str("filll"),
+                    crate::boxes::GLUE_FI => s.push_str("fi"),
                     _ => {}
                 }
             }
@@ -2956,6 +2970,7 @@ impl Engine {
                     1 => s.push_str("fil"),
                     2 => s.push_str("fill"),
                     3 => s.push_str("filll"),
+                    crate::boxes::GLUE_FI => s.push_str("fi"),
                     _ => {}
                 }
             }
@@ -2986,8 +3001,26 @@ impl Engine {
     }
 
     fn scan_font_char_dimen(&mut self, p: Prim) -> i32 {
+        // A Lua font (luatex) has a character table of its own that reaches every
+        // code point, not just the 256 slots of a TFM.
+        let lua_dimensions = |engine: &Self, font: u16, character: i32| -> Option<(i32, i32, i32, i32)> {
+            let lua = engine.eqtb.fonts.get(font as usize)?.lua_font()?;
+            let info = lua.char_info(u32::try_from(character).ok()?);
+            Some(info.map_or((0, 0, 0, 0), |c| (c.width, c.height, c.depth, c.italic)))
+        };
         let font = self.scan_font_id();
         let (character, source) = self.scan_int_with_source();
+        if character <= 0x10_FFFF {
+            if let Some((width, height, depth, italic)) = lua_dimensions(self, font, character) {
+                return match p {
+                    Prim::FontCharWd => width,
+                    Prim::FontCharHt => height,
+                    Prim::FontCharDp => depth,
+                    Prim::FontCharIc => italic,
+                    _ => unreachable!(),
+                };
+            }
+        }
         if let Ok(scalar) = u32::try_from(character) {
             if let Some((width, height, depth, italic)) = self.native_char_dimensions(font, scalar)
             {

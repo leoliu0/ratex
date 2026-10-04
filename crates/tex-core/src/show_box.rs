@@ -199,7 +199,9 @@ impl<'a> BoxDisplay<'a> {
 
     fn print_glue(&mut self, d: i32, order: u8, unit: &str) {
         self.print_scaled(d);
-        if order > 3 {
+        if order == crate::boxes::GLUE_FI {
+            self.print("fi");
+        } else if order > 3 {
             self.print("foul");
         } else if order > 0 {
             self.print("fil");
@@ -1704,7 +1706,7 @@ impl Engine {
         }
         d.print_nl("total height ");
         d.print_scaled(self.page_total as i32);
-        for (i, unit) in ["", "fil", "fill", "filll"].iter().enumerate() {
+        for (i, unit) in [(0, ""), (crate::boxes::GLUE_FI as usize, "fi"), (1, "fil"), (2, "fill"), (3, "filll")] {
             if self.page_stretch[i] != 0 {
                 d.print(" plus ");
                 d.print_scaled(self.page_stretch[i] as i32);

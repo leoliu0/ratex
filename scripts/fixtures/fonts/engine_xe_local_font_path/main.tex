@@ -1,0 +1,17 @@
+\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+\newfontface\slanted{lmmonoslant10-regular.otf}[Path=./fonts/]
+\newfontface\slantedkern{lmmonoslant10-regular.otf}[Path=./fonts/,Kerning=Off,Ligatures=NoCommon,Scale=1.2]
+\newfontface\fakebold{lmmonoslant10-regular.otf}[Path=./fonts/,AutoFakeBold=2.5]
+\font\bracket="[fonts/lmmonoslant10-regular.otf]" at 11pt
+\font\bracketfeat="[fonts/lmmonoslant10-regular.otf]:+liga;-kern" at 11pt
+\begin{document}
+\newcommand\meas[1]{\setbox0\hbox{#1}\the\wd0}
+Local path: {\slanted Slanted mono fi fl ffi} width \meas{\slanted Slanted mono}\par
+Scaled and unligatured: {\slantedkern Slanted mono fi fl ffi} width \meas{\slantedkern Slanted mono}\par
+Synthetic bold: {\fakebold Fake bold slanted} width \meas{\fakebold Fake bold slanted}\par
+Bracket syntax: {\bracket Bracketed local file 0123456789} type \the\XeTeXfonttype\bracket\par
+Bracket features: {\bracketfeat AVAVA fi fl} width \setbox0\hbox{\bracketfeat AVAVA fi}\the\wd0 versus \setbox0\hbox{\bracket AVAVA fi}\the\wd0\par
+Mixed: Roman, {\slanted slanted}, \texttt{typewriter}, {\bracket bracket} and back.\par
+\end{document}

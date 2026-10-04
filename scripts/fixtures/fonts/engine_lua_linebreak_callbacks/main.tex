@@ -1,0 +1,84 @@
+\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Mono}
+\setmonofont{Latin Modern Mono}
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\begin{document}
+\directlua{
+function say(...)
+  local a = table.pack(...)
+  local t = {}
+  for i = 1, a.n do t[i] = tostring(a[i]) end
+  tex.sprint(-2, table.concat(t, " "))
+  tex.sprint("\\par")
+end
+local GLYPH, GLUE, HLIST = node.id("glyph"), node.id("glue"), node.id("hlist")
+recording = false
+report = {}
+function describe(head)
+  local lines = {}
+  for line in node.traverse_id(HLIST, head) do
+    local s = {}
+    for n in node.traverse(line.list) do
+      if n.id == GLYPH then s[rawlen(s) + 1] = utf8.char(n.char)
+      elseif n.id == GLUE then s[rawlen(s) + 1] = "_" end
+    end
+    lines[rawlen(lines) + 1] = table.concat(s)
+  end
+  return lines
+end
+luatexbase.add_to_callback("post_linebreak_filter", function(head, groupcode)
+  if recording then
+    local d = describe(head)
+    report[rawlen(report) + 1] = rawlen(d) .. ":" .. table.concat(d, "|")
+  end
+  return true
+end, "engine.lb.report")
+function finish(label)
+  recording = false
+  say(label, table.concat(report, " ; "))
+  report = {}
+end
+luatexbase.add_to_callback("linebreak_filter", function(head, is_display)
+  if not recording then return false end
+  local width = tex.sp("5em")
+  local lines, info = tex.linebreak(head, {hsize = width, tolerance = 10000, pretolerance = -1, emergencystretch = 0})
+  report[rawlen(report) + 1] = "info:" .. info.prevgraf .. ":" .. tostring(info.looseness)
+  return lines
+end, "engine.lb.narrow")
+}
+\newcommand\rec{\directlua{recording = true}}
+\hsize=20em \tolerance=10000
+\rec aaa bbb ccc ddd eee fff\par
+\directlua{finish("narrow")}
+\directlua{luatexbase.remove_from_callback("linebreak_filter", "engine.lb.narrow")}
+\rec aaa bbb ccc ddd eee fff\par
+\directlua{finish("natural")}
+\directlua{
+local GLUE = node.id("glue")
+luatexbase.add_to_callback("pre_linebreak_filter", function(head, groupcode)
+  if not recording then return true end
+  local subtypes = {}
+  for n in node.traverse_id(GLUE, head) do
+    subtypes[rawlen(subtypes) + 1] = n.subtype
+    if n.next then
+      n.width = tex.sp("2em")
+      n.stretch = 0
+      n.shrink = 0
+    end
+  end
+  report[rawlen(report) + 1] = "glues:" .. table.concat(subtypes, ",") .. ":" .. groupcode
+  return true
+end, "engine.lb.wide")
+}
+\rec ppp qqq\par
+\directlua{finish("glue")}
+\hsize=9em
+\parshape 3 1em 4em 0em 6em 2em 6em
+\rec aa bb cc dd ee ff gg hh ii jj\par
+\directlua{finish("parshape")}
+\hangindent=3em \hangafter=-2
+\rec aa bb cc dd ee ff gg hh ii jj\par
+\directlua{finish("hang")}
+\end{document}

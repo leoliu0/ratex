@@ -56,8 +56,6 @@ pub struct NativeTextState {
     /// `prev_class` / `space_class` of the inter-character token machinery.
     pub prev_class: u16,
     pub space_class: u16,
-    /// The character put back by an `\XeTeXinterchartoks` insertion.
-    pub backed_up_char: Option<u32>,
     /// Physical source for the buffered run, captured before shipout.
     pub source: Option<(u32, u32)>,
     /// \noboundary before a character: suppress its left boundary

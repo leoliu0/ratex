@@ -303,6 +303,7 @@ impl Engine {
     /// current Lua font. Ligatures, kerns and hyphens are built later by the
     /// text passes (`new_ligkern`).
     pub(crate) fn append_lua_glyph(&mut self, c: u32) {
+        self.lua_note_text_language();
         let glyph = self.new_lua_glyph(c);
         self.cur_list.push(glyph);
         self.space_factor = self.space_factor_of(c);
@@ -629,6 +630,7 @@ impl Engine {
             );
             match &n {
                 Node::Box { h, d, .. } => {
+                    let (lead, trail) = self.interline_extents(*h, *d);
                     if interline {
                         if self.prev_depth > self.ignore_depth() {
                             let bs = self.eqtb.glue_params[GlueParam::BaselineSkip.idx() as usize]
@@ -636,7 +638,7 @@ impl Engine {
                             let ls =
                                 self.eqtb.glue_params[GlueParam::LineSkip.idx() as usize].clone();
                             let lsl = self.eqtb.dim_params[DimParam::LineSkipLimit.idx() as usize];
-                            let b = bs.width as i64 - self.prev_depth as i64 - *h as i64;
+                            let b = bs.width as i64 - self.prev_depth as i64 - lead as i64;
                             let glue = if b < lsl as i64 {
                                 ls.param(glue_subtype::LINE_SKIP)
                             } else {
@@ -656,7 +658,7 @@ impl Engine {
                             self.page_append(Node::Glue(glue, self.eqtb.cur_attr));
                         }
                     }
-                    self.prev_depth = *d;
+                    self.prev_depth = trail;
                 }
                 Node::Rule { .. } => {
                     // tex.web §1067/§1068: hrule in vmode does NOT get interline
@@ -725,6 +727,9 @@ impl Engine {
     }
 
     pub fn append_char(&mut self, c: u8) {
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            self.lua_note_text_language();
+        }
         // tex.web §1034: a character starting a chain in unrestricted
         // horizontal mode first checks the paragraph's language
         if self.mode == Mode::Horizontal && self.native_text.lig_chain.is_none() {
@@ -1315,13 +1320,34 @@ impl Engine {
         self.flush_native_text();
         // (character keywords), not control sequences)
         let mut box_attr = self.eqtb.cur_attr;
+        let mut box_dir = None;
         if self.engine_kind == crate::engine::EngineKind::LuaTeX && kind <= 2 {
-            // LuaTeX scan_full_spec: `attr <n> = <v>` keywords come first
-            while self.scan_keyword(b"attr") {
-                let n = self.scan_attribute_num();
-                self.scan_optional_equals();
-                let v = self.scan_int();
-                box_attr = self.eqtb.attr_lists.with_value(box_attr, n as i32, v);
+            // scan_full_spec permits attributes on either side of one
+            // direction directive; the dimension specification comes last.
+            loop {
+                self.skip_spaces_relax();
+                if self.scan_keyword(b"attr") {
+                    let n = self.scan_attribute_num();
+                    self.scan_optional_equals();
+                    let v = self.scan_int();
+                    box_attr = self.eqtb.attr_lists.with_value(box_attr, n as i32, v);
+                    continue;
+                }
+                if box_dir.is_none() {
+                    if self.scan_keyword(b"bdir") {
+                        let v = self.scan_int();
+                        box_dir = Some(if (0..=3).contains(&v) { v } else {
+                            self.error("Bad direction");
+                            0
+                        });
+                        continue;
+                    }
+                    if self.scan_keyword(b"dir") {
+                        box_dir = Some(self.scan_direction());
+                        continue;
+                    }
+                }
+                break;
             }
         }
         let mut target: Option<(i32, bool)> = None; // (dim, is_spread)
@@ -1389,7 +1415,7 @@ impl Engine {
         };
         self.push_group_level_coded(LevelType::Box, meta);
         if kind <= 2 {
-            self.begin_box_dirs();
+            self.begin_box_dirs(box_dir);
         }
 
         self.box_targets.push(target);
@@ -1510,6 +1536,9 @@ impl Engine {
         // `\boxmaxdepth` is scoped to the vbox group and package() uses the
         // value that is still current before unsave (tex.web §1102).
         let box_max_depth = self.eqtb.dim_params[DimParam::BoxMaxDepth.idx() as usize];
+        // xetex.web package(): `u:=XeTeX_upwards_state` before unsave; the
+        // box is stacked upwards when the mode was on inside the group.
+        let upwards = self.xe_upwards();
         self.pop_group();
         self.prev_depth = pd;
         self.space_factor = sf;
@@ -1594,7 +1623,10 @@ impl Engine {
             _ => {}
         }
         let mut node = res.node;
-        if let Node::Box { shift: s, subtype, .. } = &mut node {
+        if let Node::Box { shift: s, subtype, lr, .. } = &mut node {
+            if matches!(kind, 1 | 2) {
+                *lr = if upwards { boxes::BOX_UPWARDS } else { 0 };
+            }
             *s += shift;
             // luatex package(): `\hbox` boxes are `box_list`
             if matches!(kind, 0 | 6) {
@@ -1727,6 +1759,7 @@ impl Engine {
                         node
                     };
                     if let Node::Box { h, d, .. } = &node {
+                        let (lead, trail) = self.interline_extents(*h, *d);
                         if self.prev_depth > self.ignore_depth() {
                             let bs = self.eqtb.glue_params
                                 [crate::prim::GlueParam::BaselineSkip.idx() as usize]
@@ -1736,7 +1769,7 @@ impl Engine {
                                 .clone();
                             let lsl = self.eqtb.dim_params
                                 [crate::prim::DimParam::LineSkipLimit.idx() as usize];
-                            let diff = bs.width as i64 - self.prev_depth as i64 - *h as i64;
+                            let diff = bs.width as i64 - self.prev_depth as i64 - lead as i64;
 
                             let glue = if diff < lsl as i64 {
                                 ls.param(glue_subtype::LINE_SKIP)
@@ -1752,7 +1785,7 @@ impl Engine {
                             // \vsplit breakpoint)
                             self.cur_list.push(Node::Glue(glue, self.eqtb.cur_attr));
                         }
-                        self.prev_depth = *d;
+                        self.prev_depth = trail;
                     }
                     self.cur_list.push(node);
                 }
@@ -3221,23 +3254,21 @@ impl Engine {
 
         self.end_char_chain();
         let lua_mode = self.engine_kind == crate::engine::EngineKind::LuaTeX;
-        if lua_mode {
-            // LuaTeX line_break(): hyphenate, ligature and kern first
+        let lua_head = if lua_mode {
             let list = std::mem::take(&mut self.cur_list);
-            self.cur_list = self.lua_text_passes(list);
-        }
-        let pfs = self.eqtb.glue_params[GlueParam::ParFillSkip.idx() as usize]
-            .param(glue_subtype::PAR_FILL_SKIP);
-        // tex.web §16074: a trailing glue node is REPLACED by the infinite
-        // penalty ("removing a space if it was there, since spaces usually
-        // precede blank lines"); otherwise the penalty is appended. Without
-        // this, a space after \end{tabular} survives into the final line and
-        // forces a phantom second line in float/tabular paragraphs.
-        match self.cur_list.last_mut() {
-            Some(slot @ Node::Glue(_, _)) => *slot = Node::Penalty(10000, self.eqtb.cur_attr),
-            _ => self.cur_list.push(Node::Penalty(10000, self.eqtb.cur_attr)),
-        }
-        self.cur_list.push(Node::Glue(pfs, self.eqtb.cur_attr));
+            self.lua_prepare_paragraph(list)
+        } else {
+            let pfs = self.eqtb.glue_params[GlueParam::ParFillSkip.idx() as usize]
+                .param(glue_subtype::PAR_FILL_SKIP);
+            // tex.web §16074: replace trailing glue with the infinite
+            // penalty; otherwise append it, followed by \parfillskip.
+            match self.cur_list.last_mut() {
+                Some(slot @ Node::Glue(_, _)) => *slot = Node::Penalty(10000, self.eqtb.cur_attr),
+                _ => self.cur_list.push(Node::Penalty(10000, self.eqtb.cur_attr)),
+            }
+            self.cur_list.push(Node::Glue(pfs, self.eqtb.cur_attr));
+            0
+        };
         let content = std::mem::take(&mut self.cur_list);
         // tex.web §21764/§21181: the widow penalty before the final line is
         // \displaywidowpenalty when a display interrupted the paragraph
@@ -3250,8 +3281,7 @@ impl Engine {
         // paragraph itself, in which case its lines already carry their
         // interline glue
         let (lines, lua_lines) = if lua_mode {
-            let content = self.lua_pre_linebreak(content);
-            match self.lua_linebreak_filter(content, self.in_display_init) {
+            match self.lua_paragraph_filters(lua_head, self.in_display_init) {
                 Ok(list) => (boxes::vpack(list, None, boxes::VBOX, &self.eqtb).node, true),
                 Err(content) => {
                     self.lua_par_lines.hold = true;
@@ -3410,7 +3440,7 @@ impl Engine {
     /// baselineskip/lineskip glue (tex.web append_to_vlist §17438-17440):
     /// used when a paragraph's lines land in an internal vlist, which the
     /// page builder never processes
-    fn fill_line_interline(&mut self, outer_prev_depth: i32, list: NodeList, main: bool) -> (NodeList, i32) {
+    pub(crate) fn fill_line_interline(&mut self, outer_prev_depth: i32, list: NodeList, main: bool) -> (NodeList, i32) {
         let lua_mode = self.engine_kind == crate::engine::EngineKind::LuaTeX;
         let ignore_depth = self.ignore_depth();
         let bs = self.eqtb.glue_params[GlueParam::BaselineSkip.idx() as usize].clone();
@@ -3442,7 +3472,7 @@ impl Engine {
                     out.push(n);
                 }
                 Node::Box { h, d, .. } => {
-                    let (h, d) = (h, d);
+                    let (h, d) = self.interline_extents(h, d);
                     let mut node = n;
                     // luatex append_to_vlist: the callback supplies the
                     // nodes and the depth instead of the interline glue

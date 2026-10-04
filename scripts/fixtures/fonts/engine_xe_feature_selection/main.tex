@@ -1,0 +1,21 @@
+\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{TeX Gyre Pagella}
+\newfontfamily\oldnum{TeX Gyre Pagella}[Numbers={OldStyle,Proportional}]
+\newfontfamily\sccaps{TeX Gyre Pagella}[Letters=SmallCaps]
+\newfontfamily\dutch{TeX Gyre Pagella}[Script=Latin,Language=Dutch]
+\newfontfamily\turk{TeX Gyre Pagella}[Script=Latin,Language=Turkish]
+\newfontfamily\ssone{TeX Gyre Pagella}[StylisticSet=1]
+\newfontfamily\rawfr{TeX Gyre Pagella}[RawFeature={+frac}]
+\newfontfamily\tab{TeX Gyre Pagella}[Numbers=Monospaced]
+\newcommand\wdof[2]{\setbox0\hbox{#1 #2}\the\wd0}
+\begin{document}
+Lining \wdof{}{1234567890}; oldstyle \wdof{\oldnum}{1234567890}; tabular \wdof{\tab}{1111111111}; proportional \wdof{}{1111111111}\par
+{\oldnum Year 1984 and 2026}\par
+{\sccaps Small Caps Heading}: \wdof{\sccaps}{Heading} against \wdof{}{Heading}\par
+Dutch \wdof{\dutch}{IJsselmeer ijs}; Turkish \wdof{\turk}{Istanbul fi}; default \wdof{}{IJsselmeer ijs} \wdof{}{Istanbul fi}\par
+{\rawfr 1/2 3/4} versus 1/2 3/4: \wdof{\rawfr}{1/2} \wdof{}{1/2}\par
+Stylistic set one: {\ssone Qg ay} \wdof{\ssone}{Qgay} \wdof{}{Qgay}\par
+{\addfontfeature{Ligatures=NoCommon}fi fl ffi} and {\addfontfeature{Ligatures=Common}fi fl ffi}\par
+Ligature widths \wdof{\addfontfeature{Ligatures=NoCommon}}{ffi} \wdof{}{ffi} and discretionary \wdof{\addfontfeature{Ligatures=Rare}}{ct st}\par
+\end{document}

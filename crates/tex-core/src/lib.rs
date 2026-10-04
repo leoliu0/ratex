@@ -72,7 +72,6 @@ mod lua_pdfscanner;
 mod lua_tex;
 mod lua_texnodes;
 mod lua_ud;
-mod lua_lpeg;
 pub mod lua_node;
 mod lua_node_conv;
 pub mod lua_node_tables;

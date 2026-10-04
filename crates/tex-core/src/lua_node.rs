@@ -325,7 +325,7 @@ pub struct NodeStore {
     pub fix_node_lists: bool,
     /// the Lua table `node.get_properties_table()` returns
     pub props: Option<tex_lua::LuaTable>,
-    /// `node.set_properties_mode`: (enabled, auto-clean on free)
+    /// `node.set_properties_mode`: (enabled, inherit on copy)
     pub props_mode: (bool, bool),
 }
 
@@ -383,6 +383,13 @@ impl NodeStore {
     }
 
     fn release(&mut self, n: u32) {
+        if self.props_mode.0 {
+            if let Some(props) = &self.props {
+                props
+                    .raw_set(i64::from(n), None::<i64>)
+                    .expect("clearing released node properties");
+            }
+        }
         let slot = &mut self.nodes[n as usize];
         *slot = LNode::blank(FREE_ID, 0);
         self.free.push(n);
@@ -757,6 +764,18 @@ impl NodeStore {
                 self.nodes[r as usize].f[2] = c as i32;
             }
         }
+        if self.props_mode.0 {
+            if let Some(props) = &self.props {
+                if let Ok(Some(source)) = props.raw_get::<Option<tex_lua::LuaTable>>(i64::from(n)) {
+                    let property = if self.props_mode.1 {
+                        source.inherit().expect("allocating inherited node properties")
+                    } else {
+                        source
+                    };
+                    let _ = props.raw_set(i64::from(r), property);
+                }
+            }
+        }
         r
     }
 
@@ -769,7 +788,7 @@ impl NodeStore {
     pub fn copy_range(&mut self, mut p: u32, end: u32) -> u32 {
         let mut head = 0;
         let mut q = 0;
-        while p != end && p != 0 {
+        while p != end && self.valid(p) {
             let s = self.copy_node(p);
             if head == 0 {
                 head = s;
@@ -1001,6 +1020,21 @@ impl NodeStore {
             Ok('l') => Val::Nil,
             _ => Val::Int(i64::from(node.f[2])),
         }
+    }
+
+    /// Whether `n.<name>` holds a node handle (what `direct.setfield` takes
+    /// as an integer): the links, the attribute list, the lists and nodes
+    /// the type owns and the value of a user defined whatsit of node kind.
+    pub fn is_node_field(&self, n: u32, name: &str) -> bool {
+        if matches!(name, "next" | "prev" | "attr") {
+            return true;
+        }
+        let node = &self.nodes[n as usize];
+        resolve(node.id, node.subtype, name).is_some_and(|f| match f.kind {
+            K::N => true,
+            K::V => matches!(u8::try_from(node.f[1]).map(char::from), Ok('a') | Ok('n')),
+            _ => false,
+        })
     }
 
     /// `n.<name> = v`; errors name the field like LuaTeX does.

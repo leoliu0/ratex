@@ -65,6 +65,9 @@ pub struct NativeFont {
     pub cap_height: i32,
     /// Glyph bounding boxes (`sGlyphBoxes`).
     pub bbox_cache: Rc<std::cell::RefCell<crate::FxHashMap<u16, crate::native_layout::GlyphBBox>>>,
+    /// Global `\lpcode` / `\rpcode` values, indexed by glyph ID rather than Unicode.
+    /// XeTeX also accepts arbitrary signed IDs through its numeric operand.
+    pub protrusion_codes: Rc<std::cell::RefCell<crate::FxHashMap<i32, [i32; 2]>>>,
 }
 
 impl NativeFont {

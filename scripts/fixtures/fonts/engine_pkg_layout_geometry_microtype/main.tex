@@ -1,0 +1,36 @@
+\documentclass[10pt,twoside]{article}
+\usepackage[a5paper,inner=20mm,outer=12mm,top=22mm,bottom=20mm,headheight=14pt,marginparwidth=12mm]{geometry}
+\usepackage{fontspec}
+\setmainfont{TeX Gyre Pagella}
+\setsansfont{TeX Gyre Heros}
+\usepackage[protrusion=true]{microtype}
+\usepackage{fancyhdr}
+\usepackage{multicol}
+\usepackage{lipsum}
+\usepackage{ragged2e}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[LE]{\thepage\hfill\textsc{\leftmark}}
+\fancyhead[RO]{\textit{\rightmark}\hfill\thepage}
+\fancyfoot[C]{\small -- \thepage\ --}
+\renewcommand{\sectionmark}[1]{\markright{\thesection.\ #1}}
+\renewcommand{\headrulewidth}{0.5pt}
+
+\begin{document}
+\section{Justified columns}
+\begin{multicols}{2}
+\lipsum[1]
+\end{multicols}
+\subsection{Footnotes and margin notes}
+Protrusion hangs punctuation---quotes, hyphens, commas, and full stops--- into the margin.\footnote{A footnote at the bottom of the text block.}
+\marginpar{\footnotesize margin note}
+\begin{RaggedRight}
+\lipsum[2]
+\end{RaggedRight}
+\newpage
+\section{Second section}
+\lipsum[3-4]
+\newpage
+\section{Third section}
+Last page text with a \textsc{Small-Caps} word, an \textit{italic} word, and figures 0123456789.
+\end{document}

@@ -1,0 +1,105 @@
+\documentclass[10pt]{article}
+\usepackage[a5paper,margin=14mm,headheight=14pt]{geometry}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+\setsansfont{Latin Modern Sans}
+\usepackage{array,booktabs,longtable}
+\usepackage{siunitx}
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{Sample ledger}
+\fancyhead[R]{page \thepage\ of \pageref{LastPage}}
+\renewcommand{\headrulewidth}{0.4pt}
+
+\begin{document}
+\begin{longtable}{@{}r l S[table-format=3.2] S[table-format=4.0]@{}}
+\caption{Ledger of generated samples.}\label{tab:ledger}\\
+\toprule
+\textbf{No.} & \textbf{Label} & {\textbf{Weight}} & {\textbf{Square}}\\
+\midrule
+\endfirsthead
+\multicolumn{4}{@{}l}{\small\emph{Table \ref{tab:ledger} continued from previous page}}\\
+\toprule
+\textbf{No.} & \textbf{Label} & {\textbf{Weight}} & {\textbf{Square}}\\
+\midrule
+\endhead
+\midrule
+\multicolumn{4}{r@{}}{\small\emph{Continued on next page}}\\
+\endfoot
+\bottomrule
+\multicolumn{4}{@{}l}{\small Total rows: 70}\\
+\endlastfoot
+1 & Bravo-01 & \num{1.50} & \num{1} \\
+2 & Charlie-02 & \num{3.00} & \num{4} \\
+3 & Delta-03 & \num{4.50} & \num{9} \\
+4 & Echo-04 & \num{6.00} & \num{16} \\
+5 & Foxtrot-05 & \num{7.50} & \num{25} \\
+6 & Golf-06 & \num{9.00} & \num{36} \\
+7 & Hotel-07 & \num{10.50} & \num{49} \\
+8 & India-08 & \num{12.00} & \num{64} \\
+9 & Juliet-09 & \num{13.50} & \num{81} \\
+10 & Alpha-10 & \num{15.00} & \num{100} \\
+11 & Bravo-11 & \num{16.50} & \num{121} \\
+12 & Charlie-12 & \num{18.00} & \num{144} \\
+13 & Delta-13 & \num{19.50} & \num{169} \\
+14 & Echo-14 & \num{21.00} & \num{196} \\
+15 & Foxtrot-15 & \num{22.50} & \num{225} \\
+16 & Golf-16 & \num{24.00} & \num{256} \\
+17 & Hotel-17 & \num{25.50} & \num{289} \\
+18 & India-18 & \num{27.00} & \num{324} \\
+19 & Juliet-19 & \num{28.50} & \num{361} \\
+20 & Alpha-20 & \num{30.00} & \num{400} \\
+21 & Bravo-21 & \num{31.50} & \num{441} \\
+22 & Charlie-22 & \num{33.00} & \num{484} \\
+23 & Delta-23 & \num{34.50} & \num{529} \\
+24 & Echo-24 & \num{36.00} & \num{576} \\
+25 & Foxtrot-25 & \num{37.50} & \num{625} \\
+26 & Golf-26 & \num{39.00} & \num{676} \\
+27 & Hotel-27 & \num{40.50} & \num{729} \\
+28 & India-28 & \num{42.00} & \num{784} \\
+29 & Juliet-29 & \num{43.50} & \num{841} \\
+30 & Alpha-30 & \num{45.00} & \num{900} \\
+31 & Bravo-31 & \num{46.50} & \num{961} \\
+32 & Charlie-32 & \num{48.00} & \num{1024} \\
+33 & Delta-33 & \num{49.50} & \num{1089} \\
+34 & Echo-34 & \num{51.00} & \num{1156} \\
+35 & Foxtrot-35 & \num{52.50} & \num{1225} \\
+36 & Golf-36 & \num{54.00} & \num{1296} \\
+37 & Hotel-37 & \num{55.50} & \num{1369} \\
+38 & India-38 & \num{57.00} & \num{1444} \\
+39 & Juliet-39 & \num{58.50} & \num{1521} \\
+40 & Alpha-40 & \num{60.00} & \num{1600} \\
+41 & Bravo-41 & \num{61.50} & \num{1681} \\
+42 & Charlie-42 & \num{63.00} & \num{1764} \\
+43 & Delta-43 & \num{64.50} & \num{1849} \\
+44 & Echo-44 & \num{66.00} & \num{1936} \\
+45 & Foxtrot-45 & \num{67.50} & \num{2025} \\
+46 & Golf-46 & \num{69.00} & \num{2116} \\
+47 & Hotel-47 & \num{70.50} & \num{2209} \\
+48 & India-48 & \num{72.00} & \num{2304} \\
+49 & Juliet-49 & \num{73.50} & \num{2401} \\
+50 & Alpha-50 & \num{75.00} & \num{2500} \\
+51 & Bravo-51 & \num{76.50} & \num{2601} \\
+52 & Charlie-52 & \num{78.00} & \num{2704} \\
+53 & Delta-53 & \num{79.50} & \num{2809} \\
+54 & Echo-54 & \num{81.00} & \num{2916} \\
+55 & Foxtrot-55 & \num{82.50} & \num{3025} \\
+56 & Golf-56 & \num{84.00} & \num{3136} \\
+57 & Hotel-57 & \num{85.50} & \num{3249} \\
+58 & India-58 & \num{87.00} & \num{3364} \\
+59 & Juliet-59 & \num{88.50} & \num{3481} \\
+60 & Alpha-60 & \num{90.00} & \num{3600} \\
+61 & Bravo-61 & \num{91.50} & \num{3721} \\
+62 & Charlie-62 & \num{93.00} & \num{3844} \\
+63 & Delta-63 & \num{94.50} & \num{3969} \\
+64 & Echo-64 & \num{96.00} & \num{4096} \\
+65 & Foxtrot-65 & \num{97.50} & \num{4225} \\
+66 & Golf-66 & \num{99.00} & \num{4356} \\
+67 & Hotel-67 & \num{100.50} & \num{4489} \\
+68 & India-68 & \num{102.00} & \num{4624} \\
+69 & Juliet-69 & \num{103.50} & \num{4761} \\
+70 & Alpha-70 & \num{105.00} & \num{4900} \\
+\end{longtable}
+Table~\ref{tab:ledger} spans several pages.\label{LastPage}
+\end{document}

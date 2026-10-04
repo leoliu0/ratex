@@ -26,6 +26,10 @@ pub(crate) enum XeParam {
 
 pub use crate::eqtb::{CHAR_CLASS_BOUNDARY, CHAR_CLASS_IGNORED};
 
+/// Name of the token list holding the character put back by an
+/// `\XeTeXinterchartoks` insertion (xetex.web `backed_up_char`).
+const BACKED_UP_CHAR: &str = "<backed_up_char>";
+
 /// Build a native word node of `text` in `font` (`new_native_word_node` +
 /// `set_native_metrics`). The font must be a native font.
 pub fn native_word(eqtb: &Eqtb, font: FontId, text: &str, actual_text: bool, use_glyph_metrics: bool) -> Node {
@@ -452,6 +456,21 @@ impl Engine {
         }
     }
 
+    /// tex.web's `(state=token_list) and (token_type=backed_up_char)`: the
+    /// character `tok` just fetched was delivered by the list an
+    /// `\XeTeXinterchartoks` insertion put it back on. Anything that backs
+    /// the character up again (`\futurelet`, the optional-space scan after a
+    /// dimension, ...) turns it into an ordinary `backed_up` list, which
+    /// `back_input` makes by first ending the finished lists below it; that
+    /// is seen here as the character having been read from `pushed`.
+    fn xe_is_backed_up_char(&self, tok: crate::token::Token) -> bool {
+        self.pushed_read != tok
+            && matches!(
+                self.input.stack.last(),
+                Some(crate::input::Source::TokList { toks, pos, name: BACKED_UP_CHAR, .. }) if *pos >= toks.len()
+            )
+    }
+
     /// `check_for_inter_char_toks`: true when a token list was inserted (the
     /// character has been put back and must not be processed now).
     fn xe_check_inter_char(&mut self, scalar: u32, is_letter: bool) -> bool {
@@ -460,10 +479,10 @@ impl Engine {
         if !self.xe_interchar_enabled() || sc == CHAR_CLASS_IGNORED {
             return false;
         }
+        let tok = crate::token::Token::unicode_char(if is_letter { 11 } else { 12 }, scalar);
         let prev = self.native_text.prev_class;
         let toks = if prev == CHAR_CLASS_BOUNDARY {
-            if self.native_text.backed_up_char == Some(scalar) {
-                self.native_text.backed_up_char = None;
+            if self.xe_is_backed_up_char(tok) {
                 None
             } else {
                 self.xe_interchar_toks(CHAR_CLASS_BOUNDARY, sc)
@@ -472,9 +491,8 @@ impl Engine {
             self.xe_interchar_toks(prev, sc)
         };
         if let Some(toks) = toks {
-            let cc = if is_letter { 11 } else { 12 };
-            self.push_token(crate::token::Token::unicode_char(cc, scalar));
-            self.native_text.backed_up_char = Some(scalar);
+            self.push_tokens_named(vec![tok], BACKED_UP_CHAR);
+            self.pushed_read = crate::token::Token(0);
             self.push_tokens_named(toks, "<XeTeXinterchartoks>");
             if prev != CHAR_CLASS_BOUNDARY {
                 self.native_text.prev_class = CHAR_CLASS_BOUNDARY;

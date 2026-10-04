@@ -542,6 +542,16 @@ impl LuaTableRef {
         Ok(())
     }
 
+    /// Create an empty table that inherits fields from this table.
+    pub fn inherit(&self) -> LuaResult<LuaTableRef> {
+        let vm = self.inner.global_state_mut()?;
+        let table = vm.main_state().create_table_ref(0, 0)?;
+        let metatable = vm.main_state().create_table_ref(0, 1)?;
+        metatable.set("__index", self.to_value())?;
+        table.set_metatable(Some(&metatable))?;
+        Ok(table)
+    }
+
     // ==================== Write ====================
 
     /// Set a string-keyed value.

@@ -1,0 +1,53 @@
+\documentclass[11pt]{article}
+\usepackage[a5paper,margin=16mm]{geometry}
+\usepackage{fontspec}
+\setmainfont{TeX Gyre Pagella}
+\setsansfont{TeX Gyre Heros}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage{rotating}
+\usepackage{mwe}
+\captionsetup{font=small,labelfont=bf,labelsep=period,justification=raggedright,singlelinecheck=false}
+\captionsetup[sub]{font=footnotesize}
+
+\begin{document}
+\listoffigures
+\bigskip
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}[t]{.45\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{example-image-a}
+    \caption{First panel}\label{fig:a}
+  \end{subfigure}\hfill
+  \begin{subfigure}[t]{.45\linewidth}
+    \centering
+    \includegraphics[width=\linewidth,angle=90,origin=c,height=.6\linewidth,keepaspectratio]{example-image-b}
+    \caption{Rotated second panel}\label{fig:b}
+  \end{subfigure}
+  \caption{Two example images placed side by side; panels~\subref{fig:a} and~\subref{fig:b} share a baseline.}\label{fig:pair}
+\end{figure}
+
+Figure~\ref{fig:pair} contains \ref{fig:a} and \ref{fig:b}.
+\begin{figure}[H]
+  \centering
+  \scalebox{0.5}[0.35]{\fbox{\includegraphics[width=.5\linewidth]{example-image-c}}}
+  \caption{A scaled, framed image}\label{fig:scaled}
+\end{figure}
+\begin{table}[H]
+  \centering
+  \caption{Inline table beside nothing}\label{tab:t}
+  \begin{tabular}{lr}\hline Item & Qty\\\hline nuts & 12\\ bolts & 40\\\hline\end{tabular}
+\end{table}
+
+\begin{sidewaysfigure}
+  \centering
+  \includegraphics[width=.6\linewidth]{example-image-16x9}
+  \caption{Sideways figure with a 16:9 image}\label{fig:wide}
+\end{sidewaysfigure}
+See Figures~\ref{fig:scaled} and~\ref{fig:wide} and Table~\ref{tab:t}.
+\end{document}

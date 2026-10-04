@@ -145,6 +145,22 @@ for cold Lua font-database startup. The macOS 15 arm64 release builder uses
 Rust 1.98.1 after a Rust 1.99 dependency-archive failure; regular macOS CI
 continues to exercise the latest stable compiler.
 
+Linux CI and release builds run the engine subsystem probes and paired
+LuaLaTeX/XeLaTeX package-interaction documents from the same manifest.
+`compare_text` fixtures compare the complete whitespace/NFC-normalized text
+from both Poppler and pdf.js with the matching TeX Live 2026 reference, preserving
+character order and multiplicity; expected excerpts alone are not a parity check.
+`reference_passes` and `reference_bibtex` cover multipass references and
+bibliographies. Reference compilation, page-count and viewer failures fail the
+gate rather than being treated as unavailable comparison data.
+The workflows upload `target/font-evidence-full/report.json` and failed-case
+artifacts even when the gate fails. The report includes engine/family counts,
+failure reasons, executable identity, reference versions and bounded subprocess
+output; retained case directories contain the PDFs, renders and logs.
+Text mismatch reasons identify the first differing normalized character and
+include bounded surrounding excerpts, so a shared prefix does not hide a later
+ordering, duplication or missing-character failure.
+
 The font suite's deliberate missing-glyph fixture sets `expect_missing_glyphs`:
 TeX Live itself emits `.notdef` for these characters. This exempts only that
 resolution check; the expected warning, font-program bounds, text and render

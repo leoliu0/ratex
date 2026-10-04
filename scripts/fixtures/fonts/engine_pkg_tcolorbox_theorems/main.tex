@@ -1,0 +1,35 @@
+\documentclass[11pt]{article}
+\usepackage[a5paper,margin=16mm]{geometry}
+\usepackage{fontspec}
+\setmainfont{TeX Gyre Pagella}
+\setsansfont{TeX Gyre Heros}
+\usepackage{amsmath}
+\usepackage{tikz}
+\usepackage[most]{tcolorbox}
+\tcbset{enhanced,fonttitle=\sffamily\bfseries,colback=blue!4,colframe=blue!50!black}
+\newtcbtheorem[number within=section]{result}{Result}{colback=green!5,colframe=green!40!black}{res}
+\newtcolorbox{callout}[1][]{colback=yellow!12,colframe=orange!70!black,title=Note,#1}
+
+\begin{document}
+\section{Boxes}
+\begin{tcolorbox}[title=Plain box,sidebyside,lower separated=false]
+Left side of the box.
+\tcblower
+Right side after the lower part.
+\end{tcolorbox}
+
+\begin{result}{Pythagoras}{pyth}
+For a right triangle, $a^{2}+b^{2}=c^{2}$.
+\end{result}
+\begin{result}{Binomial}{bin}
+$(x+y)^{2}=x^{2}+2xy+y^{2}$.
+\end{result}
+\begin{callout}
+Results~\ref{res:pyth} and~\ref{res:bin} are numbered inside section~1.
+\end{callout}
+
+\section{A breakable box across pages}
+\begin{tcolorbox}[breakable,title=Long box,colframe=purple!60!black,colback=purple!3]
+\foreach \i in {1,...,22}{Line number \i{} of the breakable colour box, with enough text to wrap sometimes.\par}
+\end{tcolorbox}
+\end{document}

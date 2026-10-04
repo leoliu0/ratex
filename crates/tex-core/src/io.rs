@@ -595,6 +595,29 @@ impl Engine {
         Some(true)
     }
 
+    /// A relative file the job itself wrote lives in the auxiliary/output
+    /// directory, not the working directory, so a lookup by name (Lua's
+    /// `kpse.find_file`, `require`, `io.open`) must see it there once TeX has
+    /// closed it, exactly as `\input`/`\openin` do. `names` are the candidate
+    /// spellings of the request, most specific first; absolute requests are
+    /// not job files.
+    pub(crate) fn find_job_output_file<S: AsRef<str>>(&self, names: &[S]) -> Option<std::path::PathBuf> {
+        let out = (!self.out_dir.is_empty()).then(|| std::path::Path::new(&self.out_dir));
+        for dir in self.aux_dir.as_deref().into_iter().chain(out) {
+            for name in names {
+                let name = name.as_ref();
+                if name.is_empty() || std::path::Path::new(name).is_absolute() {
+                    continue;
+                }
+                let path = dir.join(crate::tex_bytes::text_to_path(name));
+                if path.tex_is_file() {
+                    return Some(path);
+                }
+            }
+        }
+        None
+    }
+
     /// A file whose name holds bytes that are not valid UTF-8 (TeX reads
     /// 8-bit names): the exact name beside the job's files.
     fn resolve_raw_input_path(&mut self, raw_name: &str) -> Option<std::path::PathBuf> {
@@ -2188,7 +2211,7 @@ impl Engine {
         if increment.stretch != 0 {
             if value.stretch_order == increment.stretch_order {
                 value.stretch = value.stretch.wrapping_add(increment.stretch);
-            } else if value.stretch_order < increment.stretch_order {
+            } else if crate::boxes::glue_order_rank(value.stretch_order) < crate::boxes::glue_order_rank(increment.stretch_order) {
                 value.stretch = increment.stretch;
                 value.stretch_order = increment.stretch_order;
             }
@@ -2196,7 +2219,7 @@ impl Engine {
         if increment.shrink != 0 {
             if value.shrink_order == increment.shrink_order {
                 value.shrink = value.shrink.wrapping_add(increment.shrink);
-            } else if value.shrink_order < increment.shrink_order {
+            } else if crate::boxes::glue_order_rank(value.shrink_order) < crate::boxes::glue_order_rank(increment.shrink_order) {
                 value.shrink = increment.shrink;
                 value.shrink_order = increment.shrink_order;
             }

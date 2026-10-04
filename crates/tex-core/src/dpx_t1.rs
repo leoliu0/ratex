@@ -2641,7 +2641,7 @@ pub fn to_unicode_cmap(glyphs: &[Option<String>], used: &[bool; 256], cmap_name:
             continue;
         }
         if let Some(name) = glyphs.get(code).and_then(|g| g.as_deref()) {
-            crate::pdf_fonts::glyph_to_unicode(name)?;
+            crate::pdf_fonts::dpx_glyph_to_unicode(name)?;
             names[code] = name.to_owned();
             bits[code / 64] |= 1 << (code % 64);
         }

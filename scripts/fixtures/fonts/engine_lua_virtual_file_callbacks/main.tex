@@ -1,0 +1,56 @@
+\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+\setmonofont{Latin Modern Mono}
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\begin{document}
+\ttfamily
+\directlua{
+function say(...)
+  local a = table.pack(...)
+  local t = {}
+  for i = 1, a.n do t[i] = tostring(a[i]) end
+  tex.sprint(-2, table.concat(t, " "))
+  tex.sprint("\\par")
+end
+virtual = {
+  ["engine_virtual_a"] = {"Virtual file A says: \\textbf{alpha} \\the\\numexpr 6*7\\relax\\par"},
+  ["engine_virtual_b"] = {"line one of B", "line two of B", "line three of B"},
+}
+opened = {}
+luatexbase.add_to_callback("find_read_file", function(id, name)
+  opened[rawlen(opened) + 1] = id .. ":" .. name
+  if virtual[name] then return name end
+  return kpse.find_file(name, "tex")
+end, "engine.virtual.find")
+luatexbase.add_to_callback("open_read_file", function(name)
+  local lines = virtual[name]
+  if not lines then return nil end
+  local index = 0
+  return {
+    reader = function(env)
+      index = index + 1
+      return lines[index]
+    end,
+    close = function(env) opened[rawlen(opened) + 1] = "closed:" .. name end,
+  }
+end, "engine.virtual.open")
+}
+\makeatletter\@@input engine_virtual_a \makeatother
+\openin3=engine_virtual_b
+\endlinechar=-1
+\ifeof3 \directlua{say("openin", "eof")}\else
+\readline3 to \lineone \readline3 to \linetwo
+\texttt{\lineone}|\texttt{\linetwo}|\ifeof3 eof\else more\fi\par
+\readline3 to \linethree \readline3 to \linefour
+\texttt{\linethree}|\ifeof3 eof\else more\fi\par
+\closein3
+\endlinechar=13
+\fi
+\directlua{
+luatexbase.remove_from_callback("find_read_file", "engine.virtual.find")
+luatexbase.remove_from_callback("open_read_file", "engine.virtual.open")
+say("opened", table.concat(opened, " "))
+}
+\end{document}

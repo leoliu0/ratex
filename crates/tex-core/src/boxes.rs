@@ -44,6 +44,25 @@ pub fn eqtb_fonts<'a>(eqtb: &'a crate::eqtb::Eqtb) -> EqtbFonts<'a> {
 pub const GLUE_FIL: u8 = 1;
 pub const GLUE_FILL: u8 = 2;
 pub const GLUE_FILLL: u8 = 3;
+/// LuaTeX's `fi` order. Keep the existing TeX wire values of fil/fill/filll.
+pub const GLUE_FI: u8 = 4;
+
+pub(crate) const fn glue_order_rank(order: u8) -> u8 {
+    match order {
+        0 => 0,
+        GLUE_FI => 1,
+        order => order + 1,
+    }
+}
+
+pub(crate) fn highest_glue_order(totals: &[i64; 5]) -> usize {
+    if totals[3] != 0 { 3 }
+    else if totals[2] != 0 { 2 }
+    else if totals[1] != 0 { 1 }
+    else if totals[GLUE_FI as usize] != 0 { GLUE_FI as usize }
+    else { 0 }
+}
+
 
 pub const HBOX: u8 = 0;
 pub const VBOX: u8 = 1;
@@ -52,6 +71,11 @@ pub const VTOP: u8 = 2;
 /// e-TeX `box_lr` values (etex.ch "reversed"/"dlist").
 pub const BOX_LR_REVERSED: u8 = 1;
 pub const BOX_LR_DLIST: u8 = 2;
+
+/// XeTeX marks a vlist packed while `\XeTeXupwardsmode>0` with subtype 1
+/// (xetex.web `vpackage`); `vlist_out` then stacks its contents upwards. The
+/// subtype shares the `lr` field, which only hlists use otherwise.
+pub const BOX_UPWARDS: u8 = 1;
 
 /// Math-node kinds of `Node::MathKern`: e-TeX's math-node subtype plus one
 /// (kind 0 is an unconverted `\mkern`). etex.ch: before=0, after=1,
@@ -1452,38 +1476,27 @@ fn clamp_i32(v: i64) -> i32 {
 }
 
 /// choose glue sign/order/ratio per tex.web hpack §649: check the highest
-/// nonzero stretch (or shrink) order first — filll, fill, fil, normal.
+/// nonzero stretch (or shrink) order first — filll, fill, fil, fi, normal.
 /// If that total is 0 the sign reverts to normal with ratio 0.
 pub fn compute_glue_set(
     target: i64,
     natural: i64,
-    stretch: [i64; 4],
-    shrink: [i64; 4],
+    stretch: [i64; 5],
+    shrink: [i64; 5],
 ) -> (u8, u8, f64) {
     let x = target - natural;
     if x == 0 {
         return (0, 0, 0.0);
     }
-    let pick = |v: &[i64; 4]| -> usize {
-        if v[3] != 0 {
-            3
-        } else if v[2] != 0 {
-            2
-        } else if v[1] != 0 {
-            1
-        } else {
-            0
-        }
-    };
     if x > 0 {
-        let o = pick(&stretch);
+        let o = highest_glue_order(&stretch);
         if stretch[o] != 0 {
             (1, o as u8, x as f64 / stretch[o] as f64)
         } else {
             (0, 0, 0.0)
         }
     } else {
-        let o = pick(&shrink);
+        let o = highest_glue_order(&shrink);
         if shrink[o] != 0 {
             (2, o as u8, (-x) as f64 / shrink[o] as f64)
         } else {
@@ -1498,8 +1511,8 @@ pub struct PackResult {
     pub badness: i32,
     /// requested − natural along the packing axis ("x" in tex.web hpack)
     pub delta: i64,
-    pub stretch: [i64; 4],
-    pub shrink: [i64; 4],
+    pub stretch: [i64; 5],
+    pub shrink: [i64; 5],
     pub sign: u8,
     pub order: u8,
     /// etex.ch `LR_problems` found by hpack's TeXXeT check:
@@ -1510,8 +1523,8 @@ pub struct PackResult {
 pub struct PackRecord {
     pub badness: i32,
     pub delta: i64,
-    pub stretch: [i64; 4],
-    pub shrink: [i64; 4],
+    pub stretch: [i64; 5],
+    pub shrink: [i64; 5],
     pub sign: u8,
     pub order: u8,
 }
@@ -1529,9 +1542,9 @@ impl PackResult {
     }
 }
 
-pub(crate) fn glue_sums(list: &[Node]) -> ([i64; 4], [i64; 4]) {
-    let mut stretch = [0i64; 4];
-    let mut shrink = [0i64; 4];
+pub(crate) fn glue_sums(list: &[Node]) -> ([i64; 5], [i64; 5]) {
+    let mut stretch = [0i64; 5];
+    let mut shrink = [0i64; 5];
     for n in list {
         let g = match n {
             Node::Glue(g, _) => g,
@@ -1550,8 +1563,8 @@ fn finish_glue(
     mut list: NodeList,
     target: i64,
     natural: i64,
-    stretch: [i64; 4],
-    shrink: [i64; 4],
+    stretch: [i64; 5],
+    shrink: [i64; 5],
     horizontal: bool,
     eqtb: &crate::eqtb::Eqtb,
 ) -> (NodeList, u8, u8, f64, i32, i64) {
@@ -1725,7 +1738,7 @@ pub fn vpack_add_md(
             glue_sign: sign,
             glue_order: order,
             glue_set: set,
-            lr: 0,
+            lr: if eqtb.int_params[crate::prim::IntParam::XeTeXUpwardsMode.idx() as usize] > 0 { BOX_UPWARDS } else { 0 },
             dir: 0, attr: eqtb.cur_attr, subtype: 0,
         },
         badness: bad,
@@ -2094,7 +2107,7 @@ pub fn hpack_expand(
     let mut font_stretch: i64 = 0;
     let mut font_shrink: i64 = 0;
     if x > 0 {
-        let no_inf = stretch[1] == 0 && stretch[2] == 0 && stretch[3] == 0;
+        let no_inf = stretch[1..] == [0; 4];
         if no_inf {
             collect_char_stretch(eng, &list, &mut font_stretch, true);
             if font_stretch > 0 {
@@ -2103,7 +2116,7 @@ pub fn hpack_expand(
             }
         }
     } else if x < 0 {
-        let no_inf = shrink[1] == 0 && shrink[2] == 0 && shrink[3] == 0;
+        let no_inf = shrink[1..] == [0; 4];
         if no_inf {
             collect_char_stretch(eng, &list, &mut font_shrink, false);
             if font_shrink > 0 {

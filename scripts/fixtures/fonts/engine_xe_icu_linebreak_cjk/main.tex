@@ -1,0 +1,21 @@
+\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{FandolSong-Regular.otf}
+\newcount\n
+\begin{document}
+\XeTeXlinebreaklocale "zh"
+\XeTeXlinebreakskip=0pt plus 1pt
+\newcommand\try[2]{\setbox0\vbox{\hsize=#1 \tolerance=10000 \hbadness=10000 \parindent=0pt #2\par\global\n=\prevgraf}\the\n}
+Lines at 6em: \try{6em}{春眠不觉晓处处闻啼鸟夜来风雨声花落知多少}; 9em: \try{9em}{春眠不觉晓处处闻啼鸟夜来风雨声花落知多少}\par
+\vbox{\hsize=7em \parindent=0pt 春眠不觉晓处处闻啼鸟，夜来风雨声。花落知多少？}
+\XeTeXlinebreakpenalty=10000
+\vbox{\hsize=7em \parindent=0pt \XeTeXlinebreakpenalty=10000 春眠不觉晓处处闻啼鸟，夜来风雨声。}
+\XeTeXlinebreakpenalty=0
+Penalty restored: \the\XeTeXlinebreakpenalty\par
+\XeTeXlinebreaklocale "en"
+\vbox{\hsize=7em \parindent=0pt 春眠不觉晓处处闻啼鸟夜来风雨声。}
+\XeTeXlinebreaklocale "zh"
+\XeTeXlinebreakskip=2pt
+\setbox0\hbox{春眠不觉}
+Skip 2pt: \the\wd0 \try{6em}{春眠不觉晓处处闻啼鸟夜来风雨声}\par
+\end{document}

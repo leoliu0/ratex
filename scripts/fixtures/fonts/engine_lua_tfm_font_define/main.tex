@@ -1,0 +1,41 @@
+\documentclass{article}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\begin{document}
+\directlua{
+function say(...)
+  local a = table.pack(...)
+  local t = {}
+  for i = 1, a.n do t[i] = tostring(a[i]) end
+  tex.sprint(-2, table.concat(t, " "))
+  tex.sprint("\\par")
+end
+}
+\newcommand\fontinfo[1]{\directlua{
+local f = font.getfont(font.current())
+say("#1", f.format, f.name, f.size, f.designsize, f.characters[65].width, f.characters[string.byte("f")].width, f.parameters.slant, f.parameters.space)
+}}
+\fontinfo{rm}
+\textbf{\fontinfo{bf}}
+\textit{\fontinfo{it}}
+{\ttfamily\fontinfo{tt}}
+\font\cmx=cmr10 at 12pt
+{\cmx\fontinfo{cmr10-12pt}}
+{\large\fontinfo{large}}
+\setbox0\hbox{efe}
+\directlua{
+local id = font.current()
+local f = font.getfont(id)
+local code = string.byte("f")
+f.characters[code].width = f.characters[code].width * 3
+local newid = font.define(f)
+tex.sprint("\\setbox1\\hbox{\\setfontid" .. newid .. " efe}")
+say("define", newid ~= id, f.characters[code].width)
+}
+\directlua{say("widths", tex.box[0].width, tex.box[1].width, tex.box[1].width - tex.box[0].width)}
+\box0\par\box1\par
+Fiffi ``quoted'' ---\par
+Z\"urich na\"{\i}ve fa\c{c}ade\par
+\end{document}

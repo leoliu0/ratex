@@ -1,0 +1,55 @@
+\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+\setmonofont{Latin Modern Mono}
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\begin{document}
+\ttfamily
+\directlua{
+function say(...)
+  local a = table.pack(...)
+  local t = {}
+  for i = 1, a.n do t[i] = tostring(a[i]) end
+  tex.sprint(-2, table.concat(t, " "))
+  tex.sprint("\\par")
+end
+local lpeg = require("lpeg")
+local P, R, S, C, Ct, Cs = lpeg.P, lpeg.R, lpeg.S, lpeg.C, lpeg.Ct, lpeg.Cs
+local nl = string.char(10)
+local field = C((1 - S("," .. nl))^0)
+local record = Ct(C((1 - S("," .. nl))^1) * (P(",") * field)^0)
+local newline = P(nl)
+local csv = Ct(record * (newline * record)^0 * newline^-1)
+local handle = assert(io.open("engine_data.csv", "rb"))
+local content = handle:read("a")
+handle:close()
+local rows = lpeg.match(csv, content)
+say("parsed", rawlen(rows), rawlen(rows[1]), rows[1][1], rows[4][1], rows[2][3])
+local total = 0
+local lines = {}
+for i = 2, rawlen(rows) do
+  local qty, price = tonumber(rows[i][2]), tonumber(rows[i][3])
+  total = total + qty * price
+  lines[rawlen(lines) + 1] = rows[i][1] .. " " .. (qty * price)
+end
+say("totals", table.concat(lines, " ; "), total, math.type(total), math.type(tonumber(rows[2][2])))
+local digits = R("09")
+say("subst", lpeg.match(Cs(((digits^1 / function(n) return "<" .. n .. ">" end) + 1)^0), "a1b22c333"))
+local out = assert(io.open("engine_generated.tex", "wb"))
+out:write("\\def\\generatedvalue{" .. total .. "}", string.char(10))
+out:write("\\edef\\generatedrows{", rawlen(rows) - 1, "}", string.char(10))
+out:write("\\textbf{generated} by Lua: \\generatedrows\\ rows\\par", string.char(10))
+out:close()
+say("written", lfs.attributes("engine_generated.tex", "size") > 0, lfs.attributes("engine_generated.tex", "mode"), kpse.find_file("engine_generated.tex", "tex") ~= nil)
+}
+\makeatletter\@@input engine_generated.tex \makeatother
+\directlua{say("macro", token.get_macro("generatedvalue"), token.get_macro("generatedrows"))}
+\directlua{
+local lines = {}
+for line in io.lines("engine_generated.tex") do lines[rawlen(lines) + 1] = string.len(line) end
+say("lines", table.concat(lines, ","))
+local ok = os.remove("engine_generated.tex")
+say("removed", ok, lfs.attributes("engine_generated.tex"), io.open("engine_generated.tex", "rb"))
+}
+\end{document}

@@ -49,6 +49,61 @@ font-map replacement. Native-word widths contribute to `\predisplaysize`;
 vertical-top math nuclei are reboxed as vertical lists, preserving their
 baseline and limit placement.
 
+LuaTeX keeps one linked list through text passes and the pre-linebreak,
+linebreak, and horizontal packing filters. With property cleanup enabled,
+`lua_node.rs` removes a freed node's Lua property before recycling its handle.
+Use `None::<i64>` to write Lua nil: Rust `()` produces zero return values,
+not a value accepted by `LuaTable::raw_set`.
+
+Lua glue orders are normal, fi, fil, fill, and filll (0–4). The engine keeps
+the existing TeX wire values and stores fi as `GLUE_FI`; translate at Lua
+boundaries with `lua_node_pack` rather than copying the internal order.
+
+LuaTeX native PDF `FontBBox` describes the complete font program in 1000-unit
+coordinates. `Ascent` and `Descent` come from baseline metrics in the font
+headers, not the potentially multi-em math glyph bounds. Per-character Lua
+metrics remain typesetting metrics, not a substitute for either.
+
+Lua PDF text follows [upstream positioning](https://github.com/TeX-Live/texlive-source/blob/trunk/texk/web2c/luatexdir/pdf/pdfpage.c):
+font changes establish an absolute text matrix. The glyph pen retains
+1/10000-em units and truncates when emitting coarser TJ adjustments; pdfTeX
+keeps its integer-sp raster and relative text moves.
+
+Lua characters keep scalar metrics inline; kerning, ligatures, math variants
+and kerns, successors, extensible recipes and virtual packets live in optional
+`LuaCharExtras`. Ordinary characters allocate no extras. Packet presence is
+distinct from its contents, so an empty packet is not an absent packet.
+Short ToUnicode byte sequences also stay inline; long sequences retain owned
+storage. Font snapshots and rendering read the exact bytes through borrowed
+accessors without allocating a glyph-sized copy.
+
+LuaTeX's expansion solver retains a positive shrink half-step; pdfTeX keeps
+its negative half-step. With no glue stretch, that distinction determines
+whether an expandable discretionary candidate stays active.
+
+Embedded Lua file handles keep file bytes outside the Lua string heap.
+Immutable SFNT fonts have exact build-time metadata byte ranges, including
+table directories, names, baseline metrics, layout/variation tables and CFF
+metadata INDEXes. Seeking and reading those ranges does not inflate the
+complete font. Reads outside them materialize the original program; line,
+numeric and whole-file reads retain their normal semantics. Explicit close
+releases any decoded buffer immediately, even when the handle stays live.
+`loadfile` and `dofile` still read complete chunks. `LuaBytes` transfers its
+owned byte vector into the VM without a second full-buffer copy.
+
+`fontloader.info` also reuses parsed SFNT metadata for exact immutable virtual
+paths. Its name selection and returned values match the runtime parser;
+project and external fonts still use that parser, without basename shadowing.
+
+LPeg captures are traced by the Lua VM rather than held as independent
+registry roots. Unreachable pattern/closure cycles are collectable, while
+live patterns retain their captured values across collection.
+
+Lua GC ownership records retain each slot's strong pool reference but reuse
+the allocation's tagged pointer for its type. Concrete typed conversions and
+destruction preserve slot reuse, boxed allocations and pool lifetime; moving
+between generations does not copy an allocation or change collection pacing.
+
 ## Executables and dispatch
 
 `crates/tex-cli` defines these Cargo binaries: `ratex`, `texmk`, `pdflatex`,

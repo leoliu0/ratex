@@ -189,10 +189,16 @@ impl UserDataTrait for NodeUd {
 impl Engine {
     /// `setfield`; `direct` selects the integer form of node and attribute
     /// values.
-    fn lua_set_node_field(&mut self, n: u32, name: &str, v: SetVal, _direct: bool) -> Result<(), String> {
+    fn lua_set_node_field(&mut self, n: u32, name: &str, v: SetVal, direct: bool) -> Result<(), String> {
         if !self.lua_nodes.valid(n) {
             return Ok(());
         }
+        // direct nodes are integers: a field that holds a node (list) takes
+        // the handle, and keeps the list it names alive
+        let v = match v {
+            SetVal::Int(i) if direct && self.lua_nodes.is_node_field(n, name) => SetVal::Node(i as u32),
+            v => v,
+        };
         // `mark` and `write` take token lists
         let (id, sub) = (self.lua_nodes.id(n), self.lua_nodes.subtype(n));
         if (id == MARK && name == "mark") || (id == WHATSIT && sub == ws::WRITE && matches!(name, "data" | "value")) {
@@ -1573,18 +1579,11 @@ impl Engine {
     }
 
     pub(crate) fn lua_flush_node(&mut self, n: u32) {
-        if self.lua_nodes.props_mode.1 {
-            self.lua_clear_property(n);
-        }
         self.lua_nodes.flush_node(n);
     }
 
     pub(crate) fn lua_copy_node(&mut self, n: u32) -> u32 {
-        let c = self.lua_nodes.copy_node(n);
-        if self.lua_nodes.props_mode.0 {
-            self.lua_copy_property(n, c);
-        }
-        c
+        self.lua_nodes.copy_node(n)
     }
 
     pub(crate) fn lua_copy_range(&mut self, p: u32, stop: u32) -> u32 {
@@ -1604,21 +1603,6 @@ impl Engine {
         head
     }
 
-    fn lua_clear_property(&mut self, n: u32) {
-        if let Some(t) = &self.lua_nodes.props {
-            let _ = t.raw_set(i64::from(n), ());
-        }
-    }
-
-    fn lua_copy_property(&mut self, from: u32, to: u32) {
-        if let Some(t) = &self.lua_nodes.props {
-            if let Ok(v) = t.raw_get::<Value>(i64::from(from)) {
-                if !v.is_nil() {
-                    let _ = t.raw_set(i64::from(to), v);
-                }
-            }
-        }
-    }
 }
 
 fn install_lists(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
@@ -1692,11 +1676,13 @@ fn install_lists(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
             if !s.valid(h) || s.id(h) != DISC {
                 return;
             }
-            let get = |i: usize| if top > i { value_int(&args[i]) as i32 } else { 0 };
+            let get = |i: usize| args.get(i).map_or(0, |v| value_int(v) as i32);
             let nd = s.node_mut(h);
-            nd.f[0] = get(1);
-            nd.f[1] = get(2);
-            nd.f[2] = get(3);
+            // LuaTeX clears missing list arguments; subtype and penalty
+            // below change only when those optional arguments are present.
+            for (i, slot) in [(1, 0), (2, 1), (3, 2)] {
+                nd.f[slot] = get(i);
+            }
             if top > 4 {
                 nd.subtype = value_int(&args[4]) as u16;
             }
@@ -1903,16 +1889,12 @@ fn install_lists(lua: &mut Lua, n: &LuaTable) -> Result<(), String> {
         with_engine(|e| e.lua_family_font(fam as i32, size.unwrap_or(0) as i32))
     });
     nat!(lua, n, "last_node", || -> Result<i64, String> {
-        with_engine(|e| match e.cur_list.pop() {
-            Some(node) => e.lua_nodes_from_engine(vec![node]),
-            None => 0,
-        })
+        with_engine(|e| i64::from(e.lua_last_node()))
     });
+    // the nodes stay Lua's handles to the list they joined (see
+    // `lua_texnodes`): LuaTeX links them into the current list itself
     nat!(lua, n, "write", |h: Option<i64>| -> Result<(), String> {
-        with_engine(|e| {
-            let nodes = e.lua_nodes_to_engine(i64::from(handle32(h)));
-            e.cur_list.extend(nodes);
-        })
+        with_engine(|e| e.lua_node_write(handle32(h)))
     });
     nat!(lua, n, "prepend_prevdepth", |h: Option<i64>, prev: Option<i64>, ud: bool| -> Result<Variadic<UdValue>, String> {
         with_engine(|e| e.lua_prepend_prevdepth(handle32(h), prev.unwrap_or(0) as i32, ud))

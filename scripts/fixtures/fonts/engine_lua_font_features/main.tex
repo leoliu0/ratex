@@ -1,0 +1,63 @@
+\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+\setmonofont{Latin Modern Mono}
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\newfontfamily\ffligon{Latin Modern Roman}[Ligatures=Common]
+\newfontfamily\ffligoff{Latin Modern Roman}[Ligatures=NoCommon]
+\newfontfamily\ffkernoff{Latin Modern Roman}[Kerning=Off]
+\newfontfamily\ffold{Latin Modern Roman}[Numbers=OldStyle]
+\newfontfamily\fflining{Latin Modern Roman}[Numbers=Lining]
+\newfontfamily\ffzero{Latin Modern Roman}[RawFeature={+zero}]
+\newfontfamily\ffsc{TeX Gyre Termes}[Letters=SmallCaps]
+\newfontfamily\fffrac{TeX Gyre Termes}[Fractions=On]
+\newfontfamily\ffcsc{TeX Gyre Termes}[Letters=Uppercase]
+\newcommand\probe[3]{\setbox0\hbox{#2 #3}\directlua{probe("#1")}\leavevmode\box0\par}
+\begin{document}
+\ttfamily
+\directlua{
+function say(...)
+  local a = table.pack(...)
+  local t = {}
+  for i = 1, a.n do t[i] = tostring(a[i]) end
+  tex.sprint(-2, table.concat(t, " "))
+  tex.sprint("\\par")
+end
+local GLYPH, KERN, DISC = node.id("glyph"), node.id("kern"), node.id("disc")
+function probe(label)
+  local b = tex.box[0]
+  local glyphs, codes, kerns = 0, {}, 0
+  for n in node.traverse(b.list) do
+    if n.id == GLYPH then
+      glyphs = glyphs + 1
+      codes[rawlen(codes) + 1] = n.char
+    elseif n.id == KERN then
+      kerns = kerns + 1
+    elseif n.id == DISC then
+      local inner = {}
+      for g in node.traverse(n.replace) do inner[rawlen(inner) + 1] = g.char end
+      codes[rawlen(codes) + 1] = "d" .. table.concat(inner, "+")
+    end
+  end
+  say(label, "glyphs", glyphs, "kerns", kerns, "width", b.width, "codes", table.concat(codes, " "))
+end
+}
+\probe{liga-on}{\ffligon}{office}
+\probe{liga-off}{\ffligoff}{office}
+\probe{kern-on}{\ffligon}{AVAWA}
+\probe{kern-off}{\ffkernoff}{AVAWA}
+\probe{old}{\ffold}{2024}
+\probe{lining}{\fflining}{2024}
+\probe{zero}{\ffzero}{1000}
+\probe{smallcaps}{\ffsc}{Small Caps}
+\probe{frac}{\fffrac}{1/2 3/4}
+\probe{upper}{\ffcsc}{lower}
+\directlua{
+local f = font.getfont(font.current())
+say("current", f.format, f.size, f.designsize, f.fullname ~= nil, f.characters[65].width)
+local ids = {}
+for id, tfmdata in font.each() do ids[rawlen(ids) + 1] = tostring(tfmdata ~= nil) end
+say("each", rawlen(ids) >= 3, ids[1])
+}
+\end{document}

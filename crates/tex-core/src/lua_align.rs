@@ -150,8 +150,7 @@ impl Engine {
     fn lua_mark_unset(&mut self, p: u32, cell: &Cell) {
         let Some(Node::Box { list, .. }) = &cell.packed else { return };
         let (stretch, shrink) = crate::boxes::glue_sums(list);
-        let top = |v: &[i64; 4]| (0..4).rev().find(|&o| v[o] != 0).unwrap_or(0);
-        let (so, ho) = (top(&stretch), top(&shrink));
+        let (so, ho) = (crate::boxes::highest_glue_order(&stretch), crate::boxes::highest_glue_order(&shrink));
         let nd = self.lua_nodes.node_mut(p);
         nd.id = UNSET;
         nd.subtype = cell.span;

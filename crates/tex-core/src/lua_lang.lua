@@ -9,8 +9,6 @@ local tointeger = math.tointeger
 local lang = {}
 _G.lang = lang
 
-local next_id = 0
-
 local function id_of(l, name)
   local id = L.lang_id(l)
   if not id then
@@ -19,15 +17,14 @@ local function id_of(l, name)
   return id
 end
 
+-- llanglib.c `lang_new`: a number makes (or finds) that language, none the
+-- one after the highest there is (texlang.c `new_language(-1)`)
 function lang.new(id)
-  if id == nil then
-    id = next_id
-  else
+  if id ~= nil then
     id = tointeger(tonumber(id) or error("bad argument #1 to 'new' (number expected)", 2))
+    if id == nil then error("lang.new(): undefined language", 2) end
   end
-  L.check(id)
-  if id >= next_id then next_id = id + 1 end
-  return L.lang_new(id)
+  return L.lang_new(L.new(id))
 end
 
 function lang.id(l) return id_of(l, "id") end

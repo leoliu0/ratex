@@ -60,6 +60,27 @@ def text_contains_expected(expected: str, text: str) -> bool:
         return True
     return False
 
+def text_matches_reference(actual: str, reference: str) -> bool:
+    """Compare complete text layers, preserving character order and multiplicity."""
+    actual = re.sub(r"\s+", "", unicodedata.normalize("NFC", actual))
+    reference = re.sub(r"\s+", "", unicodedata.normalize("NFC", reference))
+    return actual == reference
+
+
+def text_difference_context(actual: str, reference: str) -> str:
+    actual = re.sub(r"\s+", "", unicodedata.normalize("NFC", actual))
+    reference = re.sub(r"\s+", "", unicodedata.normalize("NFC", reference))
+    index = next(
+        (i for i, (a, b) in enumerate(zip(actual, reference)) if a != b),
+        min(len(actual), len(reference)),
+    )
+    start = max(0, index - 80)
+    end = index + 160
+    return (
+        f"normalized character {index}: "
+        f"Ratex={actual[start:end]!r}; reference={reference[start:end]!r}"
+    )
+
 try:
     import numpy as np
     from PIL import Image
@@ -1667,6 +1688,8 @@ class FontTestHarness:
         else:
             engine_flags = ["-pdf", "-interaction=nonstopmode", "-halt-on-error"]
 
+        if case.get("compare_text") or case.get("reference_passes", 1) > 1:
+            engine_flags.append("--keep-logs")
         if case.get("expected_output_substrings"):
             # the transcript is where TeX reports them (texmk shows no engine output)
             engine_flags.append("--keep-logs")
@@ -1735,6 +1758,8 @@ class FontTestHarness:
             stdout = (work_dir / "compile.log").read_text(errors="replace")
             stderr = child.get("spawn_error") or ""
             duration_s = child["elapsed_seconds"]
+            timed_out = child["timed_out"]
+            spawn_error = child["spawn_error"]
         else:
             proc = subprocess.run(
                 exec_cmd,
@@ -1750,6 +1775,8 @@ class FontTestHarness:
             stdout = proc.stdout
             stderr = proc.stderr
             duration_s = round(time.perf_counter() - t0, 3)
+            timed_out = False
+            spawn_error = None
 
         pdf_stem = Path(main_tex).stem
         pdf_path = work_dir / f"{pdf_stem}.pdf"
@@ -1757,6 +1784,8 @@ class FontTestHarness:
 
         return {
             "exit_code": exit_code,
+            "timed_out": timed_out,
+            "spawn_error": spawn_error,
             "stdout": stdout,
             "stderr": stderr,
             "duration_s": duration_s,
@@ -1826,36 +1855,65 @@ class FontTestHarness:
             ref_env["OPENTYPEFONTS"] = os.pathsep.join(f"{r}/fonts/opentype//" for r in self.extra_tds_roots) + os.pathsep
             ref_env["TTFONTS"] = os.pathsep.join(f"{r}/fonts/truetype//" for r in self.extra_tds_roots) + os.pathsep
 
-        cmd = [ref_bin, "-interaction=nonstopmode", "-halt-on-error", main_tex]
+        tex_cmd = [ref_bin, "-interaction=nonstopmode", "-halt-on-error", main_tex]
+        passes = max(1, int(case.get("reference_passes", 1)))
+        commands = [tex_cmd]
+        if case.get("reference_bibtex"):
+            bibtex = Path(ref_bin).parent / ("bibtex.exe" if sys.platform == "win32" else "bibtex")
+            if not bibtex.is_file():
+                return {
+                    "skipped": True,
+                    "error": f"Reference BibTeX binary not found beside {ref_bin}",
+                    "pdf_valid": False,
+                    "pdf_path": None,
+                }
+            commands.append([str(bibtex), Path(main_tex).stem])
+            passes = max(2, passes)
+        commands.extend([tex_cmd] * (passes - 1))
         t0 = time.perf_counter()
-        if run_bounded:
-            child = run_bounded(
-                cmd,
-                cwd=work_dir,
-                output_path=work_dir / "ref_compile.log",
-                timeout=self.args.timeout,
-                env=ref_env,
-                max_bytes=DEFAULT_MAX_CAPTURE_BYTES,
-            )
-            exit_code = child["returncode"]
-            stdout = (work_dir / "ref_compile.log").read_text(errors="replace")
-            stderr = child.get("spawn_error") or ""
-            duration_s = child["elapsed_seconds"]
-        else:
-            proc = subprocess.run(
-                cmd,
-                cwd=work_dir,
-                env=ref_env,
-                capture_output=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=self.args.timeout,
-                check=False,
-            )
-            exit_code = proc.returncode
-            stdout = proc.stdout
-            stderr = proc.stderr
-            duration_s = round(time.perf_counter() - t0, 3)
+        stdout_parts, stderr_parts = [], []
+        timed_out = False
+        spawn_error = None
+        exit_code = None
+        for step, cmd in enumerate(commands, 1):
+            remaining = self.args.timeout - (time.perf_counter() - t0)
+            if remaining <= 0:
+                timed_out = True
+                break
+            log_path = work_dir / f"ref_compile_{step}.log"
+            if run_bounded:
+                child = run_bounded(
+                    cmd,
+                    cwd=work_dir,
+                    output_path=log_path,
+                    timeout=remaining,
+                    env=ref_env,
+                    max_bytes=DEFAULT_MAX_CAPTURE_BYTES,
+                )
+                exit_code = child["returncode"]
+                stdout_parts.append(log_path.read_text(errors="replace"))
+                stderr_parts.append(child["spawn_error"] or "")
+                timed_out = child["timed_out"]
+                spawn_error = child["spawn_error"]
+            else:
+                proc = subprocess.run(
+                    cmd,
+                    cwd=work_dir,
+                    env=ref_env,
+                    capture_output=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=remaining,
+                    check=False,
+                )
+                exit_code = proc.returncode
+                stdout_parts.append(proc.stdout)
+                stderr_parts.append(proc.stderr)
+            if exit_code != 0 or timed_out or spawn_error:
+                break
+        stdout = "\n".join(stdout_parts)
+        stderr = "\n".join(stderr_parts)
+        duration_s = round(time.perf_counter() - t0, 3)
 
         pdf_stem = Path(main_tex).stem
         pdf_path = work_dir / f"{pdf_stem}.pdf"
@@ -1866,6 +1924,8 @@ class FontTestHarness:
             "engine": ref_engine,
             "bin": ref_bin,
             "exit_code": exit_code,
+            "timed_out": timed_out,
+            "spawn_error": spawn_error,
             "stdout": stdout,
             "stderr": stderr,
             "duration_s": duration_s,
@@ -1897,6 +1957,8 @@ class FontTestHarness:
 
             rust_res = self.run_case_rust(case, case_dir, rust_work, copy_case=True)
 
+            if rust_res.get("timed_out") or rust_res.get("spawn_error") or rust_res["exit_code"] is None:
+                reasons.append("Negative fixture did not finish an engine run")
             if rust_res["exit_code"] == 0:
                 reasons.append(
                     f"Negative test '{case_name}' unexpectedly succeeded with exit code 0 (expected nonzero exit)"
@@ -1914,6 +1976,21 @@ class FontTestHarness:
                         f"Expected target-specific error diagnostic from {expected_errs} not found in output"
                     )
 
+            if self.args.skip_reference:
+                ref_res = {"skipped": True, "note": "Explicitly skipped via --skip-reference"}
+            else:
+                ref_res = self.run_case_reference(case, case_dir, ref_work)
+                if ref_res.get("skipped"):
+                    reasons.append(ref_res.get("error", "Reference run skipped"))
+                elif ref_res.get("timed_out") or ref_res.get("spawn_error") or ref_res["exit_code"] is None:
+                    reasons.append("Negative reference fixture did not finish an engine run")
+                elif ref_res["exit_code"] == 0 or ref_res.get("pdf_valid"):
+                    reasons.append("Reference did not reproduce the expected failure without a PDF")
+                if expected_errs and not ref_res.get("skipped"):
+                    ref_output = (ref_res.get("stdout") or "") + (ref_res.get("stderr") or "")
+                    if not any(e.lower() in ref_output.lower() for e in expected_errs):
+                        reasons.append("Reference failure did not include the fixture's target error")
+
             status = "pass" if not reasons else "fail"
             safe_rust = {k: (str(v) if isinstance(v, Path) else v) for k, v in rust_res.items()}
             return {
@@ -1922,7 +1999,7 @@ class FontTestHarness:
                 "status": status,
                 "reasons": reasons,
                 "rust": safe_rust,
-                "reference": {"skipped": True, "note": "Negative test"},
+                "reference": ref_res,
                 "comparison": {"compared": False},
             }
 
@@ -2120,15 +2197,27 @@ class FontTestHarness:
         comparison: dict[str, Any] = {}
         ref_poppler_png_paths: list[Path] = []
         ref_pdfjs_png_paths: list[Path] = []
+        ref_text = ""
 
         if not self.args.skip_reference:
             ref_res = self.run_case_reference(case, case_dir, ref_work)
             if ref_res.get("skipped"):
                 reasons.append(ref_res.get("error", "Reference run skipped"))
+            elif ref_res.get("timed_out") or ref_res.get("spawn_error"):
+                reasons.append("Reference engine run timed out or could not start")
             elif ref_res.get("exit_code") != 0:
                 reasons.append(f"Reference compilation failed (exit code {ref_res['exit_code']})")
+            elif not ref_res.get("pdf_valid") or not ref_res.get("pdf_path"):
+                reasons.append("Reference did not produce a valid PDF")
             elif ref_res.get("pdf_valid") and ref_res.get("pdf_path"):
                 ref_pdf_path = Path(ref_res["pdf_path"])
+                ref_text, ref_text_errors = extract_text(ref_pdf_path)
+                reasons.extend(f"Reference: {error}" for error in ref_text_errors)
+                if case.get("compare_text") and not text_matches_reference(rust_text, ref_text):
+                    reasons.append(
+                        f"Poppler text differs from {ref_res['engine']}: "
+                        + text_difference_context(rust_text, ref_text)
+                    )
 
                 # Poppler render & comparison
                 ref_render_dir = case_out_dir / "ref_render"
@@ -2144,9 +2233,17 @@ class FontTestHarness:
                 # pdf.js reference render & comparison
                 if self.pdfjs_info.get("available") and pdfjs_png_paths:
                     ref_pdfjs_render_dir = case_out_dir / "ref_pdfjs_render"
-                    ref_pdfjs_png_paths, _, pdfjs_ref_errs = self.render_pdfjs(
+                    ref_pdfjs_png_paths, ref_pdfjs_result, pdfjs_ref_errs = self.render_pdfjs(
                         ref_pdf_path, ref_pdfjs_render_dir
                     )
+                    reasons.extend(f"Reference: {error}" for error in pdfjs_ref_errs)
+                    if case.get("compare_text") and ref_pdfjs_result:
+                        reference_text = " ".join(p.get("text", "") for p in ref_pdfjs_result.get("pages", []))
+                        if not text_matches_reference(all_pj_text, reference_text):
+                            reasons.append(
+                                f"pdf.js text differs from {ref_res['engine']}: "
+                                + text_difference_context(all_pj_text, reference_text)
+                            )
                     if ref_pdfjs_png_paths:
                         pdfjs_comp, pdfjs_comp_errors = compare_renders(
                             pdfjs_png_paths, ref_pdfjs_png_paths, case, label="pdf.js"
@@ -2190,6 +2287,7 @@ class FontTestHarness:
                 "engine": safe_ref.get("engine"),
                 "exit_code": safe_ref.get("exit_code"),
                 "pdf_valid": safe_ref.get("pdf_valid"),
+                "text_excerpt": ref_text[:2000],
                 "stdout_excerpt": (safe_ref.get("stdout") or "")[-4096:],
                 "stderr_excerpt": (safe_ref.get("stderr") or "")[-4096:],
             },
@@ -2210,6 +2308,11 @@ class FontTestHarness:
             if missing:
                 print(f"Error: Unknown cases: {sorted(missing)}", file=sys.stderr)
                 return 1
+        if self.args.engine:
+            selected_cases = [c for c in selected_cases if c.get("engine", "pdflatex") in self.args.engine]
+        if not selected_cases:
+            print("Error: No cases match the requested engines/cases", file=sys.stderr)
+            return 1
 
         year_error = self.reference_year_error(selected_cases)
         if year_error:
@@ -2278,9 +2381,10 @@ class FontTestHarness:
 
         jobs = max(1, int(self.args.jobs))
         with cf.ThreadPoolExecutor(max_workers=jobs) as executor:
-            future_to_case = {executor.submit(self.execute_case, c): c["name"] for c in selected_cases}
+            future_to_case = {executor.submit(self.execute_case, c): c for c in selected_cases}
             for future in cf.as_completed(future_to_case):
-                cname = future_to_case[future]
+                case = future_to_case[future]
+                cname = case["name"]
                 try:
                     case_res = future.result()
                     results[cname] = case_res
@@ -2305,12 +2409,28 @@ class FontTestHarness:
                         "rust": {},
                     }
                     print(f"[ERR ] {cname:<28} ({exc})")
+                results[cname]["engine"] = case.get("engine", "pdflatex")
+                results[cname]["coverage_family"] = case.get("coverage_family", "fonts")
 
         total_duration = round(time.perf_counter() - t0, 3)
 
         passed_count = sum(1 for r in results.values() if r["status"] == "pass")
         failed_count = sum(1 for r in results.values() if r["status"] != "pass")
         overall_ok = (failed_count == 0) and (len(results) == len(selected_cases))
+        coverage: dict[str, Any] = {}
+        for result in results.values():
+            engine = result["engine"]
+            family = result["coverage_family"]
+            engine_counts = coverage.setdefault(engine, {"total": 0, "passed": 0, "failed": 0, "families": {}})
+            family_counts = engine_counts["families"].setdefault(
+                family, {"total": 0, "passed": 0, "failed": 0, "failures": []}
+            )
+            status = "passed" if result["status"] == "pass" else "failed"
+            for counts in (engine_counts, family_counts):
+                counts["total"] += 1
+                counts[status] += 1
+            if status == "failed":
+                family_counts["failures"].append({"name": result["name"], "reasons": result.get("reasons", [])})
 
         report = {
             "ok": overall_ok,
@@ -2328,6 +2448,7 @@ class FontTestHarness:
                 "failed": failed_count,
                 "duration_s": total_duration,
             },
+            "coverage": coverage,
             "cases": results,
         }
 
@@ -2338,6 +2459,15 @@ class FontTestHarness:
         print("=" * 60)
         print(f"Result:     {'ALL PASSED' if overall_ok else 'FAILURES DETECTED'}")
         print(f"Summary:    {passed_count}/{len(selected_cases)} passed ({total_duration}s)")
+        for engine, counts in sorted(coverage.items()):
+            print(
+                f"{engine}: {counts['passed']}/{counts['total']} passed "
+                f"across {len(counts['families'])} feature families"
+            )
+            for family, family_counts in sorted(counts["families"].items()):
+                if family_counts["failed"]:
+                    names = ", ".join(f["name"] for f in family_counts["failures"])
+                    print(f"  {family}: {family_counts['failed']} failed ({names})")
         print(f"Report:     {report_file}")
 
         return 0 if overall_ok else 1
@@ -2348,6 +2478,8 @@ def main() -> int:
     parser.add_argument("--ratex", type=Path, required=True, help="Path to ratex binary")
     parser.add_argument("--output", type=Path, required=True, help="Output directory")
     parser.add_argument("--case", type=str, action="append", help="Specific case(s) to run")
+    parser.add_argument("--engine", action="append", choices=("pdflatex", "xelatex", "lualatex"),
+                        help="Run only fixtures for the selected engine(s)")
     parser.add_argument("--reference-pdflatex", type=Path, help="Reference pdfLaTeX executable")
     parser.add_argument("--reference-xelatex", type=Path, help="Reference XeLaTeX executable")
     parser.add_argument("--reference-lualatex", type=Path, help="Reference LuaLaTeX executable")

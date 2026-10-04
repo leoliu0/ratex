@@ -1,0 +1,19 @@
+\documentclass{article}
+\usepackage{amsmath}
+\usepackage{unicode-math}
+\setmainfont{STIXTwoText-Regular.otf}
+\setmathfont{STIXTwoMath-Regular.otf}
+\setmathfont{latinmodern-math.otf}[range={\mathscr,\mathbfscr},StylisticSet=1]
+\begin{document}
+Alphabets: $\symbf{AB}\ \symit{ab}\ \symbfit{ab}\ \symbb{RNZ}\ \symscr{LF}\ \symfrak{gl}\ \symsf{S}\ \symtt{T}\ \symup{u}$\par
+Greek: $\alpha\,\beta\,\Gamma\,\symbf{\Omega}\,\symbfit{\omega}\,\symbb{\pi}$\par
+Operators: $\sum_{i=1}^{n} i\ \prod_{k}^{m} k\ \int_0^\infty e^{-x}dx\ \bigcup_{j} A_j$\par
+\[ \sum_{i=1}^{n} i = \frac{n(n+1)}{2}\qquad \int_0^\infty e^{-x^2}\,dx = \frac{\sqrt\pi}{2} \]
+\setbox0\hbox{$\displaystyle\sum_{i=1}^{n}$}\setbox2\hbox{$\textstyle\sum_{i=1}^{n}$}
+Sum boxes display \the\wd0 x\the\ht0+\the\dp0, text \the\wd2 x\the\ht2+\the\dp2\par
+\setbox0\hbox{$\displaystyle\int_0^1$}\setbox2\hbox{$\textstyle\int_0^1$}
+Integral boxes \the\ht0+\the\dp0 and \the\ht2+\the\dp2\par
+$\mathchoice{D}{T}{S}{SS}\ x^{\mathchoice{D}{T}{S}{SS}}\ {\scriptstyle S}\ {\scriptscriptstyle SS}$\par
+$a \mathbin{\star} b \mathrel{\sim} c \mathopen{\langle} d \mathclose{\rangle} \mathpunct{,} e \mathord{\infty}$\par
+$\Umathchar"2 1 "2211 + \Umathchar"0 0 "1D6FC$\par
+\end{document}

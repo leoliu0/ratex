@@ -1,0 +1,39 @@
+\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+\setmonofont{Latin Modern Mono}
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\begin{document}
+\ttfamily
+\directlua{
+function say(...)
+  local a = table.pack(...)
+  local t = {}
+  for i = 1, a.n do t[i] = tostring(a[i]) end
+  tex.sprint(-2, table.concat(t, " "))
+  tex.sprint("\\par")
+end
+local half = pdf.reserveobj()
+pdf.immediateobj(half, "<< /Type /ExtGState /ca 0.25 /CA 0.25 >>")
+local direct = pdf.immediateobj("<< /Type /ExtGState /ca 1 >>")
+pdf.setpageresources("/ExtGState << /EngHalf " .. half .. " 0 R /EngFull " .. direct .. " 0 R >>")
+say("objects", half > 0, direct > 0, half ~= direct, direct > half)
+local res = pdf.getpageresources()
+say("page-resources", res ~= nil, string.find(res, "EngHalf", 1, true) ~= nil, string.find(res, "EngFull", 1, true) ~= nil)
+}
+\newcommand\swatch[2]{\hbox to 50pt{#1\hss}\ #2\par}
+\swatch{\pdfextension literal {q 1 0 0 rg 0 0 40 10 re f Q }}{solid-red}
+\swatch{\pdfextension literal {q /EngHalf gs 1 0 0 rg 0 0 40 10 re f Q }}{alpha-red}
+\swatch{\latelua{pdf.print("q /EngFull gs 0 0 1 rg 0 0 40 10 re f Q ")}}{late-blue}
+\swatch{\pdfextension literal {q /EngHalf gs 0 0.6 0 rg 0 0 40 10 re f Q }\pdfextension literal {q /EngFull gs 0 0 0 RG 1 w 0 0 40 10 re S Q }}{alpha-green-outline}
+\directlua{
+local list = node.new("whatsit", "pdf_literal")
+say("whatsit", node.type(list.id), list.subtype, node.subtype("pdf_literal"))
+list.data = "q 0.9 0.6 0 rg 0 0 40 10 re f Q "
+list.mode = 0
+tex.box[7] = node.hpack(list, tex.sp("50pt"), "exactly")
+say("lua-literal", tex.box[7].width == tex.sp("50pt"), tex.box[7].list.data)
+}
+\swatch{\copy7}{lua-orange}
+\end{document}

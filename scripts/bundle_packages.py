@@ -1849,6 +1849,26 @@ SUPPLEMENT_PACKAGES = {
         "select": [("tex/lualatex/luacode", None)],
         "map_files": [],
     },
+    "lualatex-math": {
+        "version": "1.12",
+        "revision": 77682,
+        "license": "LPPL-1.3c",
+        "upstream_url": "https://mirror.ctan.org/systems/texlive/tlnet/archive/lualatex-math.tar.xz",
+        "upstream_sha256": "244c0a4256ddcfdf3475f798eb98afb7e175c5c7232b4a83b302b8d9bafbcf63",
+        "upstream_size_bytes": 3340,
+        "select": [("tex/lualatex/lualatex-math", None)],
+        "map_files": [],
+    },
+    "luavlna": {
+        "version": "0.1n",
+        "revision": 77682,
+        "license": "LPPL-1.3",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/luavlna.tar.xz",
+        "upstream_sha256": "176cfebacbaa950dec01370d86c68d1c0c8c1ef9db52fcfc4bd991ca3a684e0c",
+        "upstream_size_bytes": 9280,
+        "select": [("tex/luatex/luavlna", None)],
+        "map_files": [],
+    },
     # XeTeX (xelatex) runtime fonts. The archive lacked the OpenType files that
     # real XeLaTeX documents load by name: ctex's default fontset, unicode-math's
     # default math font, stix2 and the other maintained math/text OpenType
@@ -2386,6 +2406,14 @@ SOURCE_ARCHIVES_INFO = {
         "license": "OFL-1.1 / LPPL-1.3c",
         "provenance": "Official TeX Live source archive containing fdsymbol.dtx and fdsymbol.ins source files",
     },
+    "lualatex-math": {
+        "archive": "lualatex-math.source.tar.xz",
+        "url": "https://mirror.ctan.org/systems/texlive/tlnet/archive/lualatex-math.source.tar.xz",
+        "sha256": "7a3af6f83bcca2c80e954a8d6899c7de9277a84ede6e436f22c3b950dc603af1",
+        "size_bytes": 9532,
+        "license": "LPPL-1.3c",
+        "provenance": "Official TeX Live source archive containing the LuaLaTeX mathematics package's DocStrip and Lua sources",
+    },
 }
 
 
@@ -2765,6 +2793,60 @@ LANGUAGE_DAT_ENTRIES = [
     ("pinyin", "loadhyph-zh-latn-pinyin.tex", []),
 ]
 
+# Unicode text-pattern loaders and typesetting minima from their upstream
+# hyph-utf8 headers (the same resources named by LANGUAGE_DAT_ENTRIES).
+LANGUAGE_LUA_PATTERNS = {
+    "loadhyph-en-gb.tex": ("en-gb", 2, 3),
+    "loadhyph-en-us.tex": ("en-us", 2, 3),
+    "loadhyph-eu.tex": ("eu", 2, 2),
+    "loadhyph-fr.tex": ("fr", 2, 2),
+    "loadhyph-de-1901.tex": ("de-1901", 2, 2),
+    "loadhyph-de-1996.tex": ("de-1996", 2, 2),
+    "loadhyph-de-ch-1901.tex": ("de-ch-1901", 2, 2),
+    "loadhyph-el-polyton.tex": ("el-polyton", 1, 1),
+    "loadhyph-el-monoton.tex": ("el-monoton", 1, 1),
+    "loadhyph-grc.tex": ("grc", 1, 1),
+    "loadhyph-es.tex": ("es", 2, 2),
+    "loadhyph-pt.tex": ("pt", 2, 3),
+    "loadhyph-ru.tex": ("ru", 2, 2),
+}
+
+
+def language_dat_lua(available_basenames):
+    """Describe only physically bundled Unicode patterns; other loaders dump
+    their patterns at format generation, as in TeX Live's language.dat.lua."""
+    lines = ["-- Deterministically generated LuaTeX hyphenation configuration", "return {"]
+    entries = []
+    for lang, loader, aliases in LANGUAGE_DAT_ENTRIES:
+        synonyms = "{" + ", ".join(json.dumps(a) for a in aliases) + "}"
+        fields = [f"loader={json.dumps(loader)}", f"synonyms={synonyms}"]
+        if lang == "english":
+            fields.extend(['special="language0"', "lefthyphenmin=2", "righthyphenmin=3"])
+        elif loader in LANGUAGE_LUA_PATTERNS:
+            code, left, right = LANGUAGE_LUA_PATTERNS[loader]
+            patterns = f"hyph-{code}.pat.txt"
+            if patterns not in available_basenames:
+                raise RuntimeError(f"Missing Unicode hyphenation patterns: {patterns}")
+            exceptions = f"hyph-{code}.hyp.txt"
+            if exceptions not in available_basenames:
+                exceptions = ""
+            fields.extend([
+                f"lefthyphenmin={left}", f"righthyphenmin={right}",
+                f"patterns={json.dumps(patterns)}", f"hyphenation={json.dumps(exceptions)}",
+            ])
+        else:
+            continue
+        lines.append(f"  [{json.dumps(lang)}]={{" + ", ".join(fields) + "},")
+        entries.append(lang)
+    lines.append("}")
+    content = ("\n".join(lines) + "\n").encode()
+    return content, {
+        "output_file": "tex/generic/config/language.dat.lua",
+        "sha256": hashlib.sha256(content).hexdigest(),
+        "size_bytes": len(content),
+        "languages": entries,
+    }
+
 LOADER_DEPENDENCY_CLOSURE = {
     "hyphen.tex": [],
     "dumyhyph.tex": [],
@@ -2835,6 +2917,12 @@ def generate_language_dat(combined_dir):
         f.write(content)
     os.utime(target_full, (FIXED_MTIME, FIXED_MTIME))
 
+    lua_content, lua_provenance = language_dat_lua(available_basenames)
+    lua_target = os.path.join(combined_dir, lua_provenance["output_file"])
+    with open(lua_target, "wb") as f:
+        f.write(lua_content)
+    os.utime(lua_target, (FIXED_MTIME, FIXED_MTIME))
+
     fhash = sha256_file(target_full)
     fsz = os.path.getsize(target_full)
     print(f"  Generated {target_rel}: {len(LANGUAGE_DAT_ENTRIES)} languages, {fsz} bytes, sha256={fhash[:16]}...")
@@ -2843,6 +2931,7 @@ def generate_language_dat(combined_dir):
         "sha256": fhash,
         "size_bytes": fsz,
         "total_languages": len(LANGUAGE_DAT_ENTRIES),
+        "lua": lua_provenance,
         "validated_loaders": sorted(LOADER_DEPENDENCY_CLOSURE.keys()),
         "entries": [
             {"language": lang, "loader": loader, "synonyms": aliases}
@@ -3582,6 +3671,8 @@ def build_supplement(assets_dir, lock_file_path, cache_dir, legal_dir):
     # Consolidate pdftex.map: main records stay byte-identical; the declared
     # roots contribute records for still-unmapped TFMs whose files exist.
     available = set(main_by_basename) | {os.path.basename(r) for r in added}
+    lua_content, lua_provenance = language_dat_lua(available)
+    added[lua_provenance["output_file"]] = lua_content
     main_map = main_contents[PDFTEX_MAP_REL].decode()
     header = [line for line in main_map.splitlines(keepends=True) if line.startswith("%")]
     map_lines = {}
@@ -3638,6 +3729,7 @@ def build_supplement(assets_dir, lock_file_path, cache_dir, legal_dir):
         "precedence": "read before the main archive; its members shadow same-named main members",
         "packages": package_records,
         "notices": notice_records,
+        "hyphenation_config": lua_provenance,
         "map_roots": {
             "output_map": PDFTEX_MAP_REL,
             "total_entries": len(map_lines),

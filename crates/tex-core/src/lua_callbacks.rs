@@ -275,15 +275,20 @@ impl Engine {
         (head, tail)
     }
 
-    /// Take the list behind a `temp` head back to the engine and free the
-    /// head.
-    pub(crate) fn lua_list_from_head(&mut self, head: u32) -> NodeList {
+    /// Detach the list behind a `temp` head, preserving its Lua identities.
+    fn lua_detach_list_head(&mut self, head: u32) -> u32 {
         let first = self.lua_nodes.next(head);
         if first != 0 {
             self.lua_nodes.node_mut(head).next = 0;
             self.lua_nodes.node_mut(first).prev = 0;
         }
         self.lua_nodes.flush_node(head);
+        first
+    }
+
+    /// Take the list behind a `temp` head back to the engine and free the head.
+    pub(crate) fn lua_list_from_head(&mut self, head: u32) -> NodeList {
+        let first = self.lua_detach_list_head(head);
         self.lua_nodes_to_engine(i64::from(first))
     }
 
@@ -379,9 +384,26 @@ impl Engine {
         }
     }
 
-    /// `lua_hpack_filter` for the group `group`.
-    pub(crate) fn lua_hpack_filter(&mut self, group: &str, size: i32, exactly: bool, list: NodeList) -> NodeList {
-        self.lua_pack_filter(Cb::HpackFilter, "hpack filter", group, size, exactly, None, Some("TLT"), list)
+
+    /// Keep one Lua list through the text passes and horizontal packing filter.
+    pub(crate) fn lua_hpack_text_filter(
+        &mut self,
+        group: &str,
+        size: i32,
+        exactly: bool,
+        dir: Option<&str>,
+        list: NodeList,
+    ) -> NodeList {
+        if list.is_empty() {
+            return list;
+        }
+        let (head, tail) = self.lua_list_with_head(list);
+        self.lua_text_passes_on(head, tail);
+        let mut first = self.lua_detach_list_head(head);
+        if first != 0 && self.cb_defined(Cb::HpackFilter) {
+            first = self.lua_pack_filter_list(Cb::HpackFilter, "hpack filter", group, size, exactly, None, dir, first);
+        }
+        self.lua_nodes_to_engine(i64::from(first))
     }
 
     /// `lua_vpack_filter`; the output box goes to `pre_output_filter`.
@@ -418,9 +440,8 @@ impl Engine {
             None => (0, false),
         };
         if kind == 0 {
-            let list = self.lua_text_passes(inner);
             let group = if adjusted { GROUP_ADJUSTED_HBOX } else { GROUP_HBOX };
-            self.lua_hpack_filter(group, size, exactly, list)
+            self.lua_hpack_text_filter(group, size, exactly, Some("TLT"), inner)
         } else {
             let group = if kind == 2 { GROUP_VTOP } else { GROUP_VBOX };
             self.lua_vpack_filter(group, size, exactly, box_max_depth, inner)
@@ -436,54 +457,60 @@ impl Engine {
     }
 }
 impl Engine {
-    /// The paragraph list as Lua sees it in `pre_linebreak_filter`: the
-    /// final penalty typed `linepenalty`. The head is returned; the
-    /// paragraph's last node before `\parfillskip` is the penalty.
-    fn lua_paragraph_to_lua(&mut self, content: NodeList) -> u32 {
-        let first = self.lua_nodes_from_engine(content) as u32;
-        if first != 0 {
-            let tail = self.lua_nodes.tail_of(first);
+    /// Run the text passes and finish the paragraph without exporting its
+    /// nodes between callbacks: Lua properties and node identity belong to
+    /// the same list through hyphenation, shaping and the line-break filters.
+    pub(crate) fn lua_prepare_paragraph(&mut self, content: NodeList) -> u32 {
+        let (head, tail) = self.lua_list_with_head(content);
+        self.lua_text_passes_on(head, tail);
+        let mut tail = self.lua_nodes.tail_of(head);
+        if tail != head && self.lua_nodes.id(tail) == crate::lua_node::GLUE {
             let before = self.lua_nodes.prev(tail);
-            if before != 0 && self.lua_nodes.id(before) == crate::lua_node::PENALTY {
-                self.lua_nodes.node_mut(before).subtype = 2;
-            }
+            self.lua_nodes.couple(before, 0);
+            self.lua_nodes.flush_node(tail);
+            tail = before;
         }
-        first
+        let penalty = self.lua_new_node(crate::lua_node::PENALTY, 2);
+        self.lua_nodes.node_mut(penalty).f[0] = 10000;
+        self.lua_nodes.couple(tail, penalty);
+        let pfs = self.eqtb.glue_params[crate::prim::GlueParam::ParFillSkip.idx() as usize]
+            .param(crate::boxes::glue_subtype::PAR_FILL_SKIP);
+        let fill = self.import_glue(&pfs, u16::from(crate::boxes::glue_subtype::PAR_FILL_SKIP));
+        self.lua_nodes.couple(penalty, fill);
+        self.lua_detach_list_head(head)
     }
 
-    /// luatex `lua_node_filter(pre_linebreak_filter_callback, ...)` on the
-    /// paragraph `content`.
-    pub(crate) fn lua_pre_linebreak(&mut self, content: NodeList) -> NodeList {
-        if content.is_empty() || !self.cb_defined(Cb::PreLinebreakFilter) {
-            return content;
+    /// `pre_linebreak_filter` on the same linked list as the text passes.
+    fn lua_pre_linebreak_list(&mut self, first: u32) -> u32 {
+        if first == 0 || !self.cb_defined(Cb::PreLinebreakFilter) {
+            return first;
         }
         let group = self.lua_line_break_group();
-        let first = self.lua_paragraph_to_lua(content);
         let rets = self.lua_cb_call(Cb::PreLinebreakFilter, "node filter", vec![CbArg::Node(first), CbArg::str(group)]);
         match rets.as_deref().and_then(|r| r.first()) {
-            None | Some(CbRet::Bool(true)) => self.lua_nodes_to_engine(i64::from(first)),
+            None | Some(CbRet::Bool(true)) => first,
             Some(CbRet::Bool(false)) => {
                 self.lua_nodes.flush_list(first);
-                Vec::new()
+                0
             }
-            Some(CbRet::Node(h)) => self.lua_nodes_to_engine(i64::from(*h)),
-            Some(CbRet::Nil) => Vec::new(),
+            Some(CbRet::Node(h)) => *h,
+            Some(CbRet::Nil) => 0,
             Some(other) => {
                 let msg = format!("bad argument #1 (node expected, got {})", other.type_name());
                 self.lua_callback_failed("node filter", &msg);
-                self.lua_nodes_to_engine(i64::from(first))
+                first
             }
         }
     }
 
-    /// luatex `lua_linebreak_callback`: Lua breaks the paragraph itself.
-    /// `Ok(lines)` when the callback returned a node list (the lines),
-    /// `Err(content)` when the built-in line breaker has to run.
-    pub(crate) fn lua_linebreak_filter(&mut self, content: NodeList, display: bool) -> Result<NodeList, NodeList> {
-        if content.is_empty() || !self.cb_defined(Cb::LinebreakFilter) {
-            return Err(content);
+    /// Run both paragraph filters before the single export to the engine.
+    /// `Ok(lines)` is a custom vertical list; `Err(content)` needs the built-in
+    /// line breaker. The caller supplies the paragraph's already-finished head.
+    pub(crate) fn lua_paragraph_filters(&mut self, first: u32, display: bool) -> Result<NodeList, NodeList> {
+        let first = self.lua_pre_linebreak_list(first);
+        if first == 0 || !self.cb_defined(Cb::LinebreakFilter) {
+            return Err(self.lua_nodes_to_engine(i64::from(first)));
         }
-        let first = self.lua_paragraph_to_lua(content);
         let rets = self.lua_cb_call(Cb::LinebreakFilter, "linebreak", vec![CbArg::Node(first), CbArg::Bool(display)]);
         match rets.as_deref().and_then(|r| r.first()) {
             Some(CbRet::Node(h)) => Ok(self.lua_nodes_to_engine(i64::from(*h))),

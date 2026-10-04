@@ -20,13 +20,13 @@ fn vint(v: &Value) -> i64 {
 }
 
 fn lua_order(o: u8) -> i32 {
-    if o == 0 { 0 } else { i32::from(o) + 1 }
+    i32::from(boxes::glue_order_rank(o))
 }
 
 pub(crate) fn engine_order(o: i32) -> u8 {
     match o {
         i32::MIN..=0 => 0,
-        1 => 1,
+        1 => boxes::GLUE_FI,
         o => (o - 1).min(3) as u8,
     }
 }
@@ -35,16 +35,17 @@ pub(crate) fn lua_order_of(o: u8) -> i32 {
     lua_order(o)
 }
 
-/// glyph_width / glyph_height / glyph_depth of luatex.
+/// `pack_width` / glyph_height / glyph_depth of luatex.
 fn glyph_whd(e: &Engine, n: u32) -> (i32, i32, i32) {
     let f = e.lua_nodes.node(n).f;
-    boxes::lua_glyph_whd(
+    let (w, h, d) = boxes::lua_glyph_whd(
         &e.eqtb.fonts,
         f[sl::C_FONT],
         f[sl::C_CHAR],
         f[sl::C_YOFF],
         e.eqtb.int_params[crate::prim::IntParam::GlyphDimensionsMode.idx() as usize],
-    )
+    );
+    (crate::luaexp::expanded_width(w, f[sl::C_EXPAN]), h, d)
 }
 
 impl Engine {

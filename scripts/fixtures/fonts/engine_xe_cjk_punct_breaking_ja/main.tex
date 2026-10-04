@@ -1,0 +1,27 @@
+\documentclass{article}
+\usepackage{fontspec}
+\usepackage{xeCJK}
+\setmainfont{Latin Modern Roman}
+\setCJKmainfont{IPAexMincho}
+\setCJKsansfont{IPAexGothic}
+\setCJKmonofont{IPAexGothic}
+\begin{document}
+\newbox\tb
+\setbox\tb\vbox{\hsize=10em \noindent 吾輩は猫である。名前はまだ無い。どこで生れたかとんと見当がつかぬ。「ニャー」と鳴いた。\par}
+Lines \the\ht\tb\par
+\unvbox\tb
+\xeCJKsetup{KaiMingPunct=false,CJKglue={\hskip 0.1em plus 0.2em minus 0.05em}}
+\setbox\tb\vbox{\hsize=10em \noindent 吾輩は猫である。名前はまだ無い。どこで生れたかとんと見当がつかぬ。「ニャー」と鳴いた。\par}
+With CJKglue \the\ht\tb\par
+\unvbox\tb
+{\sffamily ゴシック体のサンプルです。}\par
+{\ttfamily Mono ABC あいう123}\par
+\xeCJKDeclareCharClass{Default}{`、}
+\xeCJKDeclareCharClass{FullRight}{`ー}
+\setbox0\hbox{カー、あ}
+Reclassified width \the\wd0\par
+\xeCJKsetup{CJKecglue={\hskip 0.2em}}
+Mix日本語とEnglishの混在、ラテン文字ABCと数字2026年。\par
+\setbox0\hbox{日本語ABC}\setbox2\hbox{\xeCJKsetup{CJKecglue={}}日本語ABC}
+Glue \the\dimexpr\wd0-\wd2\relax\par
+\end{document}

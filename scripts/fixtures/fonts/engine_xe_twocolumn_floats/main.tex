@@ -1,0 +1,25 @@
+\documentclass[twocolumn]{article}
+\usepackage{fontspec}
+\setmainfont{TeX Gyre Pagella}
+\usepackage[paper=a5paper,margin=1.4cm]{geometry}
+\setlength\columnsep{14pt}
+\setlength\columnseprule{0.4pt}
+\begin{document}
+\twocolumn[\begin{center}\bfseries\Large Wide Heading Over Both Columns\end{center}]
+\section{First}
+Column text flows from the left column to the right column and then to the next page when the page is full.\footnote{A footnote inside a two-column page.}
+Another sentence supplies more characters so that the floating figure below has a place to land.
+\begin{figure}[t]
+\centering\fbox{\parbox{3cm}{\centering Figure body\\ with two lines}}
+\caption{A column-wide float that migrates to the top.}\label{f1}
+\end{figure}
+\section{Second}
+Reference to Figure~\ref{f1} on page \pageref{f1}. Many words follow, many words follow, many words follow, many words follow, many words follow, many words follow, many words follow, many words follow, many words follow, many words follow, many words follow, many words follow, many words follow.
+\begin{figure*}[b]
+\centering\fbox{\parbox{8cm}{\centering Wide figure body spanning both columns}}
+\caption{Spanning float at the bottom of the page.}
+\end{figure*}
+\subsection{Detail}
+More text after the spanning float, enough to force another full column\ldots{} words words words words words words words words words words words words words words words words words words words words words words words words words words words words words words words words words words words words words words.
+\vfill\newpage Final column text.
+\end{document}

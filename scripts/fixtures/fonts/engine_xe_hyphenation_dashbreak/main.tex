@@ -1,0 +1,24 @@
+\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{TeX Gyre Pagella}
+\begin{document}
+\newcount\n
+\newcommand\lines[1]{\setbox0\vbox{\hsize=#1 \hbadness=10000 \tolerance=10000 \noindent\ignorespaces}}
+\newcommand\setlines[2]{\setbox0\vbox{\hsize=#1 \tolerance=10000 \hbadness=10000 \hfuzz=100pt \noindent #2\par}\the\prevgraf}
+\hyphenation{rat-ex ty-po-graph-ic}
+\lccode`\-=`\-
+\setbox0\vbox{\hsize=40pt \tolerance=10000 \noindent ratextypographic internationalization\par\global\n=\prevgraf}
+Lines for long words: \the\n\par
+\setbox0\vbox{\hsize=60pt \tolerance=10000 \hyphenpenalty=10000 \noindent ratextypographic internationalization\par\global\n=\prevgraf}
+Without hyphen penalty bypass: \the\n\par
+\vbox{\hsize=50pt \tolerance=10000 \parindent=0pt \hyphenchar\font=`\* typographic internationalization\par}
+\vbox{\hsize=50pt \tolerance=10000 \parindent=0pt \lefthyphenmin=3 \righthyphenmin=4 \hyphenchar\font=`- typographic internationalization\par}
+\XeTeXdashbreakstate=1
+\setbox0\vbox{\hsize=45pt \tolerance=10000 \hbadness=10000 \noindent state-of-the-art well-known mother-in-law---done\par\global\n=\prevgraf}
+Dash break on lines: \the\n\par
+\vbox{\hsize=45pt \tolerance=10000 \parindent=0pt state-of-the-art well-known mother-in-law---done\par}
+\XeTeXdashbreakstate=0
+\setbox0\vbox{\hsize=45pt \tolerance=10000 \hbadness=10000 \noindent state-of-the-art well-known mother-in-law---done\par\global\n=\prevgraf}
+Dash break off lines: \the\n\par
+\vbox{\hsize=45pt \tolerance=10000 \parindent=0pt state-of-the-art well-known mother-in-law---done\par}
+\end{document}

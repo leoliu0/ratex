@@ -203,6 +203,10 @@ async function renderPdf(pdfPath, outDir, scale = 2.0) {
   // Form XObjects, groups, masks, and patterns) use the same backend and prototype.
   const getDocumentParams = {
     data: data,
+    // Embedded CID fonts may refer to a predefined Adobe CMap. These maps
+    // come with pdf.js; they are not system fonts or substitution outlines.
+    cMapUrl: path.join(path.dirname(require.resolve('pdfjs-dist/package.json')), 'cmaps') + path.sep,
+    cMapPacked: true,
     isEvalSupported: false,
     useSystemFonts: false,
     disableFontFace: true,

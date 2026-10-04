@@ -83,6 +83,24 @@ fn file_entry(relative: &str) -> Option<usize> {
     (dir_name(id as usize) == directory).then_some(entry)
 }
 
+/// Exact virtual-file membership for metadata-only callers. Normal paths
+/// borrow their relative spelling; unusual paths use the same normalization
+/// as the virtual filesystem. The caller must check `embedded_allowed`.
+pub(super) fn path_file_entry(path: &str) -> Option<usize> {
+    let rest = path.strip_prefix(ROOT)?.strip_prefix('/')?;
+    let normalized;
+    let relative = if rest.split('/').all(|part| !matches!(part, "" | "." | "..")) {
+        rest
+    } else {
+        normalized = relative(path)?;
+        &normalized
+    };
+    if dir_id(relative).is_some() {
+        return None;
+    }
+    file_entry(relative)
+}
+
 /// `stat` of a virtual path.
 pub fn stat(path: &str) -> Option<EmbeddedKind> {
     if !fs::embedded_allowed() {

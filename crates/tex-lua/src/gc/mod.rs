@@ -374,6 +374,38 @@ impl GC {
         gc
     }
 
+    /// Reclaim burst-sized owner and marking buffers after a complete cycle.
+    pub(crate) fn trim_after_full_gc(&mut self) {
+        for list in [
+            &mut self.allgc,
+            &mut self.survival,
+            &mut self.old1,
+            &mut self.old,
+            &mut self.fixed_list,
+        ] {
+            if list.capacity() > list.len().saturating_mul(2).max(128) {
+                list.shrink_to_fit();
+            }
+        }
+
+        fn trim<T>(values: &mut Vec<T>) {
+            if values.capacity() > values.len().saturating_mul(2).max(128) {
+                values.shrink_to_fit();
+            }
+        }
+        trim(&mut self.gray);
+        trim(&mut self.grayagain);
+        trim(&mut self.weak);
+        trim(&mut self.ephemeron);
+        trim(&mut self.allweak);
+        trim(&mut self.twups);
+        trim(&mut self.unmarked_twups);
+        trim(&mut self.finobj);
+        if self.tobefnz.capacity() > self.tobefnz.len().saturating_mul(2).max(128) {
+            self.tobefnz.shrink_to_fit();
+        }
+    }
+
     /// Helper to remove a dead string from the string intern map
     /// This is needed because object_allocator is in LuaVM, accessed via LuaState
     fn remove_dead_string_from_intern(l: &mut LuaState, str_ptr: StringPtr) {
@@ -1422,10 +1454,8 @@ impl GC {
         // 1. Correct gray lists (handle TOUCHED objects)
         self.correct_gray_lists();
 
-        // 2. checkSizes - shrink string table if load factor < 0.25
-        // Note: StringInterner::check_shrink() is available but the interner
-        // lives in ObjectAllocator (in LuaVM), not accessible from GC directly.
-        // The shrink is automatically handled during remove_dead_intern calls.
+        // 2. String-table and pool capacity are reclaimed by ObjectAllocator
+        // after full collections; it owns the intern table outside GC.
 
         // 3. Set state to Propagate for next cycle
         // In our implementation, young_collection always runs as a complete
@@ -3120,8 +3150,10 @@ impl GC {
                 let container_marked = header.marked();
                 let container_kind = format!("{:?}({})", gc_ptr.kind(), list_name);
 
-                match obj {
-                    GcObjectOwner::Table(t) => {
+                match gc_ptr.kind() {
+                    GcObjectKind::Table => {
+                        let table = gc_ptr.as_table_ptr();
+                        let t = table.as_ref();
                         // Check metatable
                         if let Some(mt) = t.data.get_metatable() {
                             check_value(
@@ -3153,7 +3185,9 @@ impl GC {
                             );
                         });
                     }
-                    GcObjectOwner::Function(f) => {
+                    GcObjectKind::Function => {
+                        let function = gc_ptr.as_function_ptr();
+                        let f = function.as_ref();
                         // Check upvalue pointers (they point to GcUpvalue objects)
                         for (i, upval_ptr) in f.data.upvalues().iter().enumerate() {
                             let uv_gc: GcObjectPtr = (*upval_ptr).into();
@@ -3186,7 +3220,9 @@ impl GC {
                             );
                         }
                     }
-                    GcObjectOwner::CClosure(c) => {
+                    GcObjectKind::CClosure => {
+                        let closure = gc_ptr.as_cclosure_ptr();
+                        let c = closure.as_ref();
                         for (i, upval) in c.data.upvalues().iter().enumerate() {
                             check_value(
                                 upval,
@@ -3198,7 +3234,9 @@ impl GC {
                             );
                         }
                     }
-                    GcObjectOwner::RClosure(r) => {
+                    GcObjectKind::RClosure => {
+                        let closure = gc_ptr.as_rclosure_ptr();
+                        let r = closure.as_ref();
                         for (i, upval) in r.data.upvalues().iter().enumerate() {
                             check_value(
                                 upval,
@@ -3210,18 +3248,21 @@ impl GC {
                             );
                         }
                     }
-                    GcObjectOwner::Upvalue(u) => {
+                    GcObjectKind::Upvalue => {
+                        let upvalue = gc_ptr.as_upvalue_ptr();
+                        let u = upvalue.as_ref();
                         let uv_val = u.data.get_value();
                         let uv_kind = if u.data.is_open() { "open" } else { "closed" };
                         if let Some(ref_ptr) = uv_val.as_gc_ptr()
                             && is_dead_ptr(ref_ptr)
                         {
                             // Find the closure that owns this upvalue
-                            let upval_raw = u.as_ref() as *const _ as u64;
+                            let upval_raw = upvalue.as_u64();
                             let mut owner_info = String::from("owner_closure=UNKNOWN");
                             for (olist_name, olist) in &lists {
                                 for oobj in olist.iter() {
-                                    if let GcObjectOwner::Function(f) = oobj {
+                                    if let Some(function) = oobj.as_function_ptr() {
+                                        let f = function.as_ref();
                                         for (ui, uptr) in f.data.upvalues().iter().enumerate() {
                                             if uptr.as_ref() as *const _ as u64 == upval_raw {
                                                 let fh = f.header();
@@ -3256,7 +3297,9 @@ impl GC {
                             );
                         }
                     }
-                    GcObjectOwner::Thread(t) => {
+                    GcObjectKind::Thread => {
+                        let thread = gc_ptr.as_thread_ptr();
+                        let t = thread.as_ref();
                         let state = &t.data;
                         let stack = state.stack();
                         // Check ALL stack slots (not just up to top)
@@ -3314,7 +3357,9 @@ impl GC {
                             }
                         }
                     }
-                    GcObjectOwner::Userdata(u) => {
+                    GcObjectKind::Userdata => {
+                        let userdata = gc_ptr.as_userdata_ptr();
+                        let u = userdata.as_ref();
                         if let Some(mt) = u.data.get_metatable() {
                             check_value(
                                 &mt,
@@ -3326,7 +3371,9 @@ impl GC {
                             );
                         }
                     }
-                    GcObjectOwner::Proto(p) => {
+                    GcObjectKind::Proto => {
+                        let proto = gc_ptr.as_proto_ptr();
+                        let p = proto.as_ref();
                         for (i, constant) in p.data.constants.iter().enumerate() {
                             check_value(
                                 constant,
@@ -3359,7 +3406,7 @@ impl GC {
                         }
                     }
                     // Strings have no GC references
-                    GcObjectOwner::String(_) => {}
+                    GcObjectKind::String => {}
                 }
             }
         }
@@ -3480,7 +3527,8 @@ impl GC {
         ];
         for (list_name, list) in lists {
             for (idx, obj) in list.iter().enumerate() {
-                if let GcObjectOwner::Thread(t) = obj {
+                if let Some(thread) = obj.as_thread_ptr() {
+                    let t = thread.as_ref();
                     // Skip dead threads: if the thread is white, it's unreachable
                     // and will be freed — objects on its stack are expected to be freed too.
                     if t.header.is_white() {
@@ -3502,17 +3550,7 @@ impl GC {
         stack_ptrs: &HashMap<u64, (String, usize, usize, u8)>,
         old_list: &GcList,
     ) {
-        let raw_ptr = match gc_owner {
-            GcObjectOwner::Table(b) => b.as_ref() as *const _ as u64,
-            GcObjectOwner::Function(b) => b.as_ref() as *const _ as u64,
-            GcObjectOwner::CClosure(b) => b.as_ref() as *const _ as u64,
-            GcObjectOwner::RClosure(b) => b.as_ref() as *const _ as u64,
-            GcObjectOwner::String(b) => b.as_ref() as *const _ as u64,
-            GcObjectOwner::Thread(b) => b.as_ref() as *const _ as u64,
-            GcObjectOwner::Upvalue(b) => b.as_ref() as *const _ as u64,
-            GcObjectOwner::Userdata(b) => b.as_ref() as *const _ as u64,
-            GcObjectOwner::Proto(b) => b.as_ref() as *const _ as u64,
-        };
+        let raw_ptr = gc_owner.header() as *const GcHeader as u64;
         if let Some((thread_name, slot, top, thread_marked)) = stack_ptrs.get(&raw_ptr) {
             let kind = gc_owner.as_gc_ptr().kind();
             let header = gc_owner.header();
@@ -3521,10 +3559,10 @@ impl GC {
             // Find the thread and dump its call stack info
             let mut thread_info = String::new();
             for (idx, obj) in old_list.iter().enumerate() {
-                if let GcObjectOwner::Thread(t) = obj {
+                if let Some(t) = obj.as_thread_ptr() {
                     let name = format!("thread_old_{}", idx);
                     if &name == thread_name {
-                        let state = &t.data;
+                        let state = &t.as_ref().data;
                         thread_info.push_str(&format!(
                             "\n  Thread call_depth={}, stack_len={}",
                             state.call_depth(),

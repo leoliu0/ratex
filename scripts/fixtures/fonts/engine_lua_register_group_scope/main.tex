@@ -1,0 +1,73 @@
+\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+\setmonofont{Latin Modern Mono}
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\begin{document}
+\ttfamily
+\countdef\cA=250 \countdef\cB=251 \dimendef\dA=250 \skipdef\sA=250 \toksdef\tA=250 \attributedef\aA=250
+\chardef\bA=250
+\directlua{
+function say(...)
+  local a = table.pack(...)
+  local t = {}
+  for i = 1, a.n do t[i] = tostring(a[i]) end
+  tex.sprint(-2, table.concat(t, " "))
+  tex.sprint("\\par")
+end
+function snapshot(tag)
+  say(tag, tex.count[250], tex.count[251], tex.dimen[250], tex.skip[250].width, tex.toks[250], tex.attribute[250], tex.sfcode[97], tex.lccode[65], tex.catcode[64])
+end
+}
+\cA=11 \cB=22 \dA=3pt \sA=5pt plus 2pt \tA={base} \aA=4
+\directlua{snapshot("base")}
+\begingroup
+  \directlua{
+    tex.count[250] = 111
+    tex.setcount("global", 251, 222)
+    tex.dimen[250] = 30000
+    tex.skip[250] = tex.skip[250]
+    tex.toks[250] = "inner"
+    tex.setattribute(250, 8)
+    tex.sfcode[97] = 1500
+    tex.lccode[65] = 90
+    tex.catcode[64] = 11
+    snapshot("inside")
+  }
+  \dA=\dimexpr\dA+1pt\relax
+  \directlua{say("tex-sees", tex.dimen[250], tex.toks[250], tex.getcount(250))}
+\endgroup
+\directlua{snapshot("after")}
+\begingroup
+  \directlua{tex.set("global", "parindent", 1234567) tex.set("hsize", 654321) say("params", tex.parindent, tex.hsize)}
+\endgroup
+\directlua{say("param-restore", tex.parindent, tex.hsize > 654321)}
+\begingroup
+  \globaldefs=1
+  \cA=77 \directlua{tex.count[251] = 88}
+\endgroup
+\directlua{say("globaldefs", tex.count[250], tex.count[251], tex.globaldefs)}
+\setbox\bA=\hbox{abc}
+\begingroup
+  \setbox\bA=\hbox{abcdef}
+  \directlua{say("box-inside", tex.box[250].width > 0, node.length(tex.box[250].list))}
+\endgroup
+\directlua{say("box-after", node.length(tex.box[250].list))}
+\begingroup
+  \directlua{tex.setbox("global", 250, node.copy(tex.box[250]))}
+  \directlua{tex.box[250] = node.hpack(node.copy_list(tex.box[250].list))}
+  \setbox\bA=\hbox{abcd}
+\endgroup
+\directlua{say("box-global", node.length(tex.box[250].list))}
+\begingroup
+  \count249=5
+  \directlua{tex.count[249] = tex.count[249] * 2 say("direct-inside", tex.count[249])}
+  \aftergroup\gdef
+  \aftergroup\aftermark
+  \aftergroup{
+  \aftergroup A
+  \aftergroup }
+\endgroup
+\directlua{say("aftergroup", token.get_macro("aftermark"), tex.count[249])}
+\end{document}

@@ -1267,13 +1267,6 @@ impl NativeTable {
             return 0;
         }
 
-        // C Lua's psetint updates an existing hash slot before considering
-        // insertion/rehash work. This avoids repeatedly paying len()/push logic
-        // for steady-state writes to sparse integer keys.
-        if self.set_existing_int(key, value) {
-            return 0;
-        }
-
         self.set_int_slow(key, value)
     }
 
@@ -1283,6 +1276,14 @@ impl NativeTable {
     /// NOT inlined: contains resize_array + migrate + set_node cold paths.
     #[inline(never)]
     pub fn set_int_slow(&mut self, key: i64, value: LuaValue) -> isize {
+        // Like C Lua's psetint, an existing hash slot is updated in place before
+        // any insertion/resize work: overwriting a live key must never move
+        // entries between the array and hash parts (a `next` traversal that
+        // assigns to the keys it visits would otherwise see keys twice).
+        if self.set_existing_int(key, value) {
+            return 0;
+        }
+
         // Key outside array range: push optimization for sequential insertion
         if key >= 1 && !value.is_nil() {
             // Fast check: key == asize + 1 means appending right after array end.
@@ -1687,6 +1688,12 @@ impl NativeTable {
                     self.set_node(key, LuaValue::nil());
                 }
                 return (was_nil && !value.is_nil(), 0);
+            }
+
+            // Overwriting a live hash slot is an in-place update, never a push
+            // (see `set_int_slow`).
+            if self.set_existing_int(i, value) {
+                return (false, 0);
             }
 
             // Integer key outside current array range
@@ -2175,6 +2182,36 @@ mod tests {
         }
 
         assert_eq!(t.len(), 10);
+    }
+
+    /// Rewriting every value of a sparse integer-keyed table while walking it
+    /// with `next` (what font readers do to coverage tables) must visit each
+    /// key exactly once and keep every other key readable.
+    #[test]
+    fn test_overwrite_existing_int_keys_while_traversing() {
+        let keys: &[i64] = &[5,7,9,10,11,12,16,17,18,19,20,21,22,23,24,25,26,29,30,31,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,99,104,106,107,108,109,110,111,120,122,123,124,125,126,127,131,133,136,137,138,140,141,142,143,145,146,147,148,149,150,151,153,154,155,156,157,158,159,160,161,162,163,164,165,166,167,168,169,170,171,172,173,174,175,176,177,178,179,180,181,182,183,184,185,186,187,188,189,190,191,192,193,194,195,196,197,198,199,200,201,202,203,204,205,206,207,208,209,210,211,212,213,214,215,216,217,218,219,225,232,233,242,243,244,245,246,247,262,263,264,265,266,267,268,269,270,271,272,273,274,275,276,277,278,279,282,283,340,341,354,355,362,364,368,369,370,373,376,380,382,384,387,389,391,394,397,399,402,403,405,406,408,409,411,412,414,415,417,418,420,421,424,425,427,428,430,431,433,434,436,437,439,440,443,444,446,447,450,451,453,454,456,457,460,461,465,466,468,469,471,472,474,475,477,478,480,481,484,485,487,488,491,492,494,495,497,498,500,501,503,504,506,507,510,511,768,513,514,517,518,520,521,523,524,526,527,529,530,532,535,536,538,539,541,542,544,545,547,548,550,551,553,555,556,558,559,561,562,564,565,567,568,570,571,574,575,577,578,581,582,585,586,588,590,591,594,595,597,598,600,601,602,603,604,606,607,609,610,613,614,616,618,619,621,622,624,625,627,628,630,631,633,634,636,637,639,640,642,643,646,647,649,650,652,653,655,656,660,661,663,664,667,668,670,671,673,674,676,677,679,680,682,683,686,687,690,691,693,694,696,697,699,700,702,703,705,706,708,709,711,712,714,715,717,718,723,724,726,727,729,730,732,733,735,736,738,739,741,742,746,747,750,751,754,755,758,759,761,762,764,765,767];
+        let mut t = NativeTable::new(0, 0);
+        for (i, &k) in keys.iter().enumerate() {
+            let v = LuaValue::integer(i as i64);
+            if !t.fast_seti(k, v) {
+                t.set_int_slow(k, v);
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut key = LuaValue::nil();
+        while let Some((k, v)) = t.next(&key).expect("valid key") {
+            let ki = k.ivalue();
+            assert!(seen.insert(ki), "key {ki} visited twice");
+            let v = LuaValue::integer(v.ivalue() + 1000);
+            if !t.fast_seti(ki, v) {
+                t.set_int_slow(ki, v);
+            }
+            key = k;
+        }
+        assert_eq!(seen.len(), keys.len());
+        for (i, &k) in keys.iter().enumerate() {
+            assert_eq!(t.get_int(k), Some(LuaValue::integer(i as i64 + 1000)), "key {k}");
+        }
     }
 
     #[test]

@@ -1,0 +1,22 @@
+\documentclass{article}
+\usepackage{amsmath}
+\usepackage{fontspec}
+\usepackage{unicode-math}
+\setmainfont{TeX Gyre Pagella}
+\setsansfont{Latin Modern Sans}
+\setmonofont{Latin Modern Mono}
+\setmathfont{latinmodern-math.otf}
+\newfontfamily\alt{texgyreheros-regular.otf}[BoldFont=texgyreheros-bold.otf,ItalicFont=texgyreheros-italic.otf,BoldItalicFont=texgyreheros-bolditalic.otf]
+\begin{document}
+\newcommand\meas[1]{\setbox0\hbox{#1}\the\wd0}
+Roman \meas{Hamburgefonts}; sans \meas{\sffamily Hamburgefonts}; mono \meas{\ttfamily Hamburgefonts}; bold \meas{\bfseries Hamburgefonts}; italic \meas{\itshape Hamburgefonts}; bold italic \meas{\bfseries\itshape Hamburgefonts}\par
+\fbox{\sffamily Sans \textbf{bold} \textit{italic} \texttt{mono} \textrm{roman}}\par
+\setbox2\hbox{\itshape italic \hbox{\upshape upright \bfseries bold \hbox{\normalfont normal}} italic-again}\box2\par
+\vbox{\hsize=6cm \sffamily Sans paragraph with \textit{italic} and \textbf{bold} spans that wrap across multiple lines inside a vbox.\par\ttfamily Mono tail.}\par
+$f(x)=\mathrm{sin}\,x+\mathbf{B}+\mathsf{S}+\mathtt{T}+\text{text \textit{it} \textbf{bd}}$\par
+\[ \mathrm{d}y = \text{\sffamily rate}\cdot \mathbf{v} + \mathit{abc}\, \mathbfit{abc} + \mathscr{L} + \mathbb{R}^n \]
+{\bfseries Bold: $\mathrm{a}+\mathbf{b}$ \textmd{medium} \textit{italic $x\mathrm{y}$ more}}\par
+{\alt Alt \textbf{bold} \textit{italic} \textbf{\textit{bold italic}}}\par
+\setbox4\hbox{\alt\bfseries Wide}\setbox6\hbox{\alt Wide}
+Bold minus regular \the\dimexpr\wd4-\wd6\relax\par
+\end{document}

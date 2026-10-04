@@ -1,0 +1,11 @@
+\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+\begin{document}
+Before the missing module.
+\typeout{Entering the failing Lua chunk}
+\directlua{
+  local loaded = require("engine_absent_module")
+  tex.sprint(tostring(loaded))
+}
+\end{document}

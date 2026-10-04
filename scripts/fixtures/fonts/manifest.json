@@ -707,5 +707,2513 @@
       "The font \"dynamic-bold.ttf\" cannot be"
     ],
     "check_type": "negative_error"
+  },
+  {
+    "name": "engine_lua_require_cache",
+    "description": "LuaLaTeX require(): local file modules, package.loaded caching and forced reload, nil/false/non-table return values, dotted module names, failing loaders, package.preload and custom searchers in front of and behind the file searcher",
+    "dir": "engine_lua_require_cache",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "LMMono10"
+    ],
+    "expected_text": [
+      "table table loads 1 name engine_mod_counter",
+      "bump 1 2",
+      "cached true 2 1",
+      "reload false 2 0 2",
+      "scalar 42 42 1",
+      "nothing true true 1",
+      "false false false 2",
+      "selfset self-set:engine_mod_selfset",
+      "dotted engine_pkg.inner inner",
+      "broken false true nil",
+      "broken-again false true 2",
+      "missing false true",
+      "preload engine_pre 1 true 1",
+      "shadowed custom:engine_mod_shadow:virtual-data",
+      "restored file-searcher",
+      "late late-module 42 engine_mod_shadow,last:engine_late"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 11200,
+    "coverage_family": "lua_source_loading_require_cache",
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "compare_text": true
+  },
+  {
+    "name": "engine_lua_loadfile_semantics",
+    "description": "Lua loadfile/dofile versus load: shebang line skipped with line numbers preserved, UTF-8 BOM skipped (alone and before a shebang), load() of the same bytes rejected, chunk modes, environments, side effects of compile-only versus executed chunks and binary chunks",
+    "dir": "engine_lua_loadfile_semantics",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "LMMono10"
+    ],
+    "expected_text": [
+      "shebang-file shebang engine_shebang.lua:2: probe",
+      "bom-file bom 2",
+      "bom+shebang-file bom+shebang 7",
+      "raw-bytes 239 187 191",
+      "load-string-shebang true true",
+      "load-string-bom true",
+      "syntax-load nil true",
+      "syntax-file nil true",
+      "syntax-dofile false true",
+      "missing-file nil true false",
+      "compile-only 0 function",
+      "call-args 2 1 a b",
+      "call-again 0 2",
+      "dofile-runs 0 3",
+      "dofile-runs 3",
+      "env sandboxed global-scope nil",
+      "binary 42 true true",
+      "binary-default 51 nil 12",
+      "reader 15 4"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 12600,
+    "coverage_family": "lua_source_loading_loadfile_dofile",
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "compare_text": true
+  },
+  {
+    "name": "engine_lua_print_catcode_regimes",
+    "description": "tex.print/sprint/tprint/cprint/write under the current, -2, -1 and saved catcode-table regimes, argument joining rules, TeX special characters, \\directlua inside \\edef and the doubling of # in \\directlua text",
+    "dir": "engine_lua_print_catcode_regimes",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "LMMono10"
+    ],
+    "expected_text": [
+      "table-catcodes 0 12 0 12",
+      "A1 [x]",
+      "A2 \\xshow{x}",
+      "A3 [x]",
+      "A4 [y]",
+      "A4b \\xshowy",
+      "A5 #~_^&$%{}",
+      "A6 [z]",
+      "A7 line1 line2",
+      "A8 x",
+      "T1 tt-[Z]",
+      "C1 \\xshow{x}",
+      "W1 \\xshow{w}",
+      "edef 9 16 false",
+      "E1 \\xshow",
+      "counter 42 \\@arabic \\c@pcount",
+      "hash a#b",
+      "H2 a##b"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 5500,
+    "coverage_family": "lua_token_catcode_tex_print",
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "compare_text": true
+  },
+  {
+    "name": "engine_lua_token_scanners",
+    "description": "token.scan_* and token.get_next/put_next from Lua functions bound to control sequences with token.set_lua: integers, keywords, dimensions, glue, floats, strings, expanded and unexpanded arguments, token.set_macro group scoping and token properties",
+    "dir": "engine_lua_token_scanners",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "LMMono10"
+    ],
+    "expected_text": [
+      "scan 12 true 30 163840 braced text",
+      "scan 7 true 7 196608 \\xshow",
+      "argument a b abab",
+      "get_next xshow long_call letter 120 11",
+      "[x] get_next nil letter relax 1114112 0",
+      "units 1864679 262144 65536 2 0 0 1.5",
+      "units 196608 196608 0 0 131072 0 7.0",
+      "define n=42 true false",
+      "in-group n=42/inside-42 true",
+      "after-group n=42 false",
+      "kinds long_call false true register letter 11 mac_param",
+      "macro-kinds undefined_cs undefined_cs lua_expandable_call"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 10900,
+    "coverage_family": "lua_token_scanner_macro_bridge",
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "compare_text": true
+  },
+  {
+    "name": "engine_lua_register_group_scope",
+    "description": "Lua tex.count/dimen/skip/toks/attribute/sfcode/lccode/catcode/box and tex.set assignments honour TeX grouping: local values restored at group end, global setters and \\globaldefs persist, \\aftergroup tokens and box copies behave as in TeX",
+    "dir": "engine_lua_register_group_scope",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "LMMono10"
+    ],
+    "expected_text": [
+      "base 11 22 196608 327680 base 4 1000 97 12",
+      "inside 111 222 30000 327680 inner 8 1500 90 11",
+      "tex-sees 95536 inner 111",
+      "after 11 222 196608 327680 base 4 1000 97 12",
+      "params 1234567 654321",
+      "param-restore 1234567 true",
+      "globaldefs 77 88 0",
+      "box-inside true 6",
+      "box-after 3",
+      "box-global 3",
+      "direct-inside 10",
+      "aftergroup A 0"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 7900,
+    "coverage_family": "lua_register_group_restoration",
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "compare_text": true
+  },
+  {
+    "name": "engine_lua_attribute_scoping",
+    "description": "Node attributes set by TeX attribute registers in nested groups reach glyph nodes, drive hpack_filter/pre_linebreak_filter rewriting visible in the output, are copied by node.copy but independent afterwards and are absent on fresh nodes and on boxes",
+    "dir": "engine_lua_attribute_scoping",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "LMMono10"
+    ],
+    "expected_text": [
+      "UPPER bcd",
+      "plain GROUPED after cpy tail",
+      "OUTER joofs RESTORED",
+      "mark",
+      "census 1=25,2=11,3=4,nil=14",
+      "attrs 2 7 nil",
+      "copy 2 7 true nil true",
+      "independent 7 55 2 nil",
+      "fresh nil true",
+      "hbox-attrs nil nil"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 4700,
+    "coverage_family": "lua_node_attributes",
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "compare_text": true
+  },
+  {
+    "name": "engine_lua_node_list_ownership",
+    "description": "Glyph lists built with node.new, copied, edited with insert_before/insert_after/remove, reversed, packed into boxes, written with node.write and flushed: ownership transfer, independence of copies and typeset result",
+    "dir": "engine_lua_node_list_ownership",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "LMMono10"
+    ],
+    "expected_text": [
+      "built ratex 5 5 true true true",
+      "twin ratex true 5",
+      "edited kratexe ratex 7 5",
+      "reversed exetar ratex",
+      "owned true exetar true",
+      "ownership ratex 5 ratex ratexratex ratex",
+      "flushed nil ratex",
+      "free nil true",
+      "partial ra ratex",
+      "boxwidths true ?? 2"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 6200,
+    "coverage_family": "lua_node_list_ownership",
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "compare_text": true
+  },
+  {
+    "name": "engine_lua_callback_chain",
+    "description": "luatexbase callback chains: process_input_buffer rewriting source lines in registration order, removal and descriptions, blocked direct registration, a pre_linebreak_filter chain that mixes keep-flag, copied and replaced lists, pre_output_filter content per page and a stop_run log line",
+    "dir": "engine_lua_callback_chain",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "LMMono10"
+    ],
+    "expected_text": [
+      "input-chain ccc ccc 3:first>second>third",
+      "order-so-far 6:first>second>third",
+      "descriptions engine.chain.first,engine.chain.second,engine.chain.third",
+      "removed engine.chain.first function false true",
+      "after-remove aaa ccc 23:third>second>third",
+      "emptied nil",
+      "direct-register-blocked false",
+      "yyy yyy yyy",
+      "filtered 9 y-count-tracked",
+      "OUT-1",
+      "second page",
+      "OUT-7"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 9000,
+    "coverage_family": "lua_callback_chaining_luatexbase",
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "compare_text": true
+  },
+  {
+    "name": "engine_lua_font_features",
+    "description": "fontspec/luaotfload feature handling measured on the node list: liga on/off (disc replace lists), kerning, oldstyle/lining figures, slashed zero, small caps, fractions, uppercase mapping, plus font.getfont/font.each data of a loaded OpenType font",
+    "dir": "engine_lua_font_features",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "LMMono10",
+      "LMRoman10",
+      "TeXGyreTermes"
+    ],
+    "expected_text": [
+      "liga-on glyphs 3 kerns 0 width 1673790 codes 111 d64259 99 101",
+      "liga-off glyphs 6 kerns 0 width 1711145 codes 111 102 d 102 105 99 101",
+      "kern-on glyphs 5 kerns 4 width 2567045 codes 65 86 65 87 65",
+      "kern-off glyphs 5 kerns 0 width 2858025 codes 65 86 65 87 65",
+      "old glyphs 4 kerns 0 width 1656749 codes 63282 63280 63282 63284",
+      "lining glyphs 4 kerns 0 width 1528955 codes 50 48 50 52",
+      "zero glyphs 4 kerns 0 width 1528955 codes 49 63032 63032 63032",
+      "smallcaps glyphs 9 kerns 1 width 3487168 codes 83 63341 63329 63340 63340 67 63329 63344 63347",
+      "frac glyphs 2 kerns 0 width 1310720 codes 189 190",
+      "upper glyphs 5 kerns 9 width 2503480 codes 76 79 87 69 82",
+      "current opentype 655360 0 true 344064.0",
+      "each true true",
+      "LOWER"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 20700,
+    "coverage_family": "lua_native_font_features",
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "compare_text": true
+  },
+  {
+    "name": "engine_lua_tfm_font_define",
+    "description": "LuaLaTeX with 8-bit T1 Latin Modern/CM TFM fonts (no fontspec): font.getfont data of TFM fonts, \\font at sizes, font.define of a modified clone selected with \\setfontid, resulting box widths, Type 1 embedding and T1 accents/ligatures",
+    "dir": "engine_lua_tfm_font_define",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "LMRoman10-Regular",
+      "LMRoman10-Bold",
+      "LMRoman10-Italic",
+      "LMMono10",
+      "CMR10",
+      "LMRoman12"
+    ],
+    "expected_text": [
+      "rm unknown ec-lmr10 655360 655360 491520 200245 0 218453",
+      "bf unknown ec-lmbx10 655360 655360 569770 230293 0 251221",
+      "it unknown ec-lmri10 655360 655360 487161 200976 16384 234473",
+      "tt unknown ec-lmtt10 655360 655360 344063 344063 0 344063",
+      "cmr10-12pt unknown cmr10 786432 655360 589825 240300 0 262144",
+      "large unknown ec-lmr12 786432 786432 577241 235290 0 256679",
+      "define true 600735",
+      "widths 782795 1183285 400490",
+      "Zürich naïve façade"
+    ],
+    "check_type": "text_t1",
+    "min_ink_pixels": 13800,
+    "coverage_family": "lua_tfm_type1_font_define",
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "compare_text": true
+  },
+  {
+    "name": "engine_lua_math_conversion",
+    "description": "unicode-math/Latin Modern Math conversion of fractions, roots, accents, extensible delimiters, under/overbraces, \\Uradical/\\Udelimiter/\\Umathaccent/\\Umathchar and display versus text style, dumped as the resulting hlist/vlist tree with glyph codes and MathConstants values",
+    "dir": "engine_lua_math_conversion",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "LMMono10"
+    ],
+    "expected_text": [
+      "frac w 441712 h 460522 d 230687",
+      "root w 2090555 h 574423 d 107151",
+      "accent w 1413611 h 489554 d 134349",
+      "fence w 994836 h 522322 d 230687",
+      "tall w 1442446 h 753664 d 425984",
+      "underbrace w 1438143 h 454820 d 710411",
+      "Umathaccent w 374866 h 481034 d 7209",
+      "Uradical w 885391 h 461045 d 220529",
+      "Udelimiter w 629801 h 490209 d 162529",
+      "Umathchar w 955515 h 469238 d 0 math g65 g66 math",
+      "styles true true 733348 460522",
+      "params 163840 26214 26214 26214 443679 96993",
+      "math-font opentype LatinModernMath-Regular 119886 163840.0 26214.4",
+      "96993.28"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 41100,
+    "coverage_family": "lua_math_noad_conversion",
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "compare_text": true
+  },
+  {
+    "name": "engine_lua_mlist_callback",
+    "description": "mlist_to_hlist callback chain with node.mlist_to_hlist: noad lists and styles seen for inline and display math, glyphs rewritten after conversion (visible in rendered math), stale widths after the rewrite",
+    "dir": "engine_lua_mlist_callback",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "LMMono10",
+      "LatinModernMath"
+    ],
+    "expected_text": [
+      "Inline 𝑧 + 𝑦 and 𝑦2 then calls text:noad+noad+noad text:noad",
+      "after-display text:noad+noad+noad text:noad display:noad+noad+noad",
+      "swapped 119911 true",
+      "same-width false 304742"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 4700,
+    "coverage_family": "lua_math_mlist_callback",
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "compare_text": true
+  },
+  {
+    "name": "engine_lua_discretionary_hyphenation",
+    "description": "lang.new/lang.hyphenation exceptions, discretionary and \\- breaks with pre/post/replace lists, empty discretionaries and left/right hyphen minima observed through post_linebreak_filter and the typeset narrow paragraphs",
+    "dir": "engine_lua_discretionary_hyphenation",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "LMMono10"
+    ],
+    "expected_text": [
+      "lang true ab-ra-ca-dab-ra,ex-am-ple",
+      "explicit.disc prevgraf 3 exam<|/1 >ple/0 tail/0",
+      "soft.hyphen prevgraf 2 long|est/1 word/0",
+      "english 3"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 10000,
+    "coverage_family": "lua_hyphenation_discretionaries",
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "compare_text": true
+  },
+  {
+    "name": "engine_lua_linebreak_callbacks",
+    "description": "linebreak_filter replacing TeX line breaking with tex.linebreak parameters, post_linebreak_filter line reports, pre_linebreak_filter rewriting interword glue, \\parshape and \\hangindent paragraphs",
+    "dir": "engine_lua_linebreak_callbacks",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "LMMono10"
+    ],
+    "expected_text": [
+      "narrow info:3:0 ; 3:aaa_bbb_|ccc_ddd_|eee_fff__",
+      "natural 1:aaa_bbb_ccc_ddd_eee_fff__",
+      "glue glues:13,15: ; 1:ppp_qqq__",
+      "parshape glues:13,13,13,13,13,13,13,13,13,15: ; 6:aa_|bb_cc_|dd_ee_|ff_gg_|hh_ii_|jj__",
+      "hang glues:13,13,13,13,13,13,13,13,13,15: ; 4:aa_bb_|cc_dd_|ee_ff_gg_|hh_ii_jj__"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 9500,
+    "coverage_family": "lua_paragraph_linebreak_callbacks",
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "compare_text": true
+  },
+  {
+    "name": "engine_lua_image_scan",
+    "description": "img.scan/img.node/img.write and \\saveimageresource/\\useimageresource on a PNG and a three-page PDF (page and box selection, scaled sizes, includegraphics boxes) with the images rendered into the page",
+    "dir": "engine_lua_image_scan",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "LMMono10"
+    ],
+    "expected_text": [
+      "png 1578762 789381 144 144",
+      "png-size 48 24 0 0",
+      "png-scaled 6315048 3157524 48 24",
+      "pdf-p2 3 2 5262541 3289088 5262541 3289088",
+      "pdf-p3 3 5262541 3289088",
+      "pdf-crop 0 0 5262541 3289088",
+      "boxes 6315048 3158041 5262527 3289079 2631343 1644544",
+      "node hlist 2",
+      "img-node rule 5262541 5262541 5262541",
+      "resources true true true",
+      "pages 1"
+    ],
+    "check_type": "packaged_graphic",
+    "min_ink_pixels": 31300,
+    "coverage_family": "lua_pdf_image_resources",
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "compare_text": true
+  },
+  {
+    "name": "engine_lua_pdf_box_resources",
+    "description": "\\saveboxresource/\\useboxresource with attr/resources, resource nodes inspected and copied from Lua, a Lua-created resource rule rendered, saved content kept after the register changes",
+    "dir": "engine_lua_pdf_box_resources",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "LMMono10"
+    ],
+    "expected_text": [
+      "distinct true true true",
+      "node rule 1 1",
+      "sizes 5931008 400425 131072 2621440 1186857 3932",
+      "keeps-saved-content true true",
+      "Resource Text",
+      "narrow vbox text here",
+      "copied rule true true",
+      "lua-made true true"
+    ],
+    "check_type": "native_boxes",
+    "min_ink_pixels": 5900,
+    "coverage_family": "lua_pdf_box_resources",
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "compare_text": true
+  },
+  {
+    "name": "engine_lua_pdf_objects_literals",
+    "description": "pdf.reserveobj/immediateobj ExtGState objects registered through pdf.setpageresources and used by literal whatsits, latelua pdf.print and a Lua-created pdf_literal node; transparency must show in the rendering",
+    "dir": "engine_lua_pdf_objects_literals",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "LMMono10"
+    ],
+    "expected_text": [
+      "objects true true true true",
+      "page-resources true true true",
+      "solid-red",
+      "alpha-red",
+      "late-blue",
+      "alpha-green-outline",
+      "whatsit whatsit 16 16",
+      "lua-literal true q 0.9 0.6 0 rg 0 0 40 10 re f Q",
+      "lua-orange"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 9100,
+    "coverage_family": "lua_pdf_objects_literals",
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "compare_text": true
+  },
+  {
+    "name": "engine_lua_pcall_error_values",
+    "description": "Lua error propagation: user-provided string payloads and explicit levels, table/metatable error object identity, runtime/API failure types, assert, xpcall handlers and arguments, coroutine yield/error/dead transitions, wrapped errors and syntax-error return values; no runtime-message wording pins",
+    "dir": "engine_lua_pcall_error_values",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "LMMono10"
+    ],
+    "expected_text": [
+      "string false string true",
+      "level0 false true",
+      "level2 false true",
+      "table false table 42 table",
+      "metatable false custom:7 true",
+      "index-nil false string",
+      "arith false string",
+      "badarg false string",
+      "assert false string true",
+      "assert-default false string",
+      "assert-object false table obj",
+      "multi 4 1 2 3",
+      "xpcall false string true true",
+      "xpcall-args true 42",
+      "handler-error false string",
+      "coroutine true 1",
+      "coroutine false string true",
+      "dead-coroutine false string",
+      "wrap false string true",
+      "load true nil string",
+      "register false string",
+      "register-type false string",
+      "node false string"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 13108,
+    "coverage_family": "lua_error_propagation_in_lua",
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "compare_text": true
+  },
+  {
+    "name": "engine_lua_virtual_file_callbacks",
+    "description": "find_read_file/open_read_file callbacks serve virtual TeX files to \\input and \\openin/\\readline (reader/close protocol, kpse fallback), then the callbacks are removed",
+    "dir": "engine_lua_virtual_file_callbacks",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "LMMono10"
+    ],
+    "expected_text": [
+      "Virtual file A says: alpha 42",
+      "line one of B|line two of B|more",
+      "line three of B|eof",
+      "opened 0:engine_virtual_a closed:engine_virtual_a 4:engine_virtual_b closed:engine_virtual_b"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 4400,
+    "coverage_family": "lua_io_callbacks_virtual_files",
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "compare_text": true
+  },
+  {
+    "name": "engine_lua_lpeg_io_roundtrip",
+    "description": "LPeg parsing of a CSV file read with io, Lua arithmetic types, a Lua-written TeX file loaded with \\input, lfs/kpse/io.lines/os.remove observations of that file",
+    "dir": "engine_lua_lpeg_io_roundtrip",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "LMMono10"
+    ],
+    "expected_text": [
+      "parsed 4 3 name sprocket 2.50",
+      "totals widget 10.0 ; gadget 7.5 ; sprocket 36.0 53.5 float integer",
+      "subst a<1>b<22>c<333>",
+      "written true file true",
+      "generated by Lua: 3 rows",
+      "macro 53.5 3",
+      "lines 25,22,51",
+      "removed true nil nil"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 5400,
+    "coverage_family": "lua_lpeg_io_tex_roundtrip",
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "compare_text": true
+  },
+  {
+    "name": "engine_lua_error_directlua_message",
+    "description": "A Lua error raised by \\directlua aborts the run with the Lua message and publishes no PDF",
+    "dir": "engine_lua_error_directlua_message",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "expect_failure": true,
+    "expected_error_substrings": [
+      "engine-lua-failure-42"
+    ],
+    "check_type": "negative_error",
+    "coverage_family": "lua_error_propagation_engine"
+  },
+  {
+    "name": "engine_lua_error_callback_filter",
+    "description": "An error raised inside a pre_linebreak_filter callback aborts the run with the Lua message and publishes no PDF",
+    "dir": "engine_lua_error_callback_filter",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "expect_failure": true,
+    "expected_error_substrings": [
+      "engine-callback-failure-42"
+    ],
+    "check_type": "negative_error",
+    "coverage_family": "lua_error_propagation_engine"
+  },
+  {
+    "name": "engine_lua_error_missing_module",
+    "description": "require of an absent module reports Lua's module-not-found error and publishes no PDF",
+    "dir": "engine_lua_error_missing_module",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "expect_failure": true,
+    "expected_error_substrings": [
+      "module 'engine_absent_module' not found"
+    ],
+    "check_type": "negative_error",
+    "coverage_family": "lua_error_propagation_engine"
+  },
+  {
+    "name": "engine_lua_error_syntax_dofile",
+    "description": "dofile of a script with a syntax error reports the script file and line (3) and publishes no PDF",
+    "dir": "engine_lua_error_syntax_dofile",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "expect_failure": true,
+    "expected_error_substrings": [
+      "engine_broken_syntax.lua:3:"
+    ],
+    "check_type": "negative_error",
+    "coverage_family": "lua_error_propagation_engine"
+  },
+  {
+    "name": "engine_xe_unicode_norm",
+    "description": "Decomposed and precomposed Unicode accents: distinct tokens, equal widths, stacked combining marks and \\Uchar",
+    "dir": "engine_xe_unicode_norm",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "LMRoman"
+    ],
+    "expected_text": [
+      "token-level distinct",
+      "precomposed-width-equals-combining-width",
+      "Precomposed 4.44pt combined 4.44pt triple-combined 13.32pt",
+      "Umlaut 5.0pt macro-accent 5.0pt stacked 5.0pt reverse-stacked 5.0pt"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 900,
+    "coverage_family": "unicode-combining-marks",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25
+  },
+  {
+    "name": "engine_xe_feature_selection",
+    "description": "OpenType numbers, small caps, language-system, stylistic-set and ligature features measured through box widths in TeX Gyre Pagella",
+    "dir": "engine_xe_feature_selection",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "TeXGyrePagella"
+    ],
+    "expected_text": [
+      "Lining 52.5pt; oldstyle 53.90001pt",
+      "SMALL CAPS HEADING",
+      "Dutch 60.06999pt; Turkish 47.36pt; default 59.54001pt",
+      "47.06pt",
+      "10.0pt17.36pt",
+      "Stylistic set one: Qg ay 25.93001pt"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 900,
+    "coverage_family": "opentype-features-scripts-languages",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25
+  },
+  {
+    "name": "engine_xe_ligature_kerning",
+    "description": "Ligature and kerning toggles with LetterSpace and WordSpace; exact measured width gains",
+    "dir": "engine_xe_ligature_kerning",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "LMRoman"
+    ],
+    "expected_text": [
+      "AV: 18.33pt",
+      "Letter pairs gained 5.55pt and TeX 0.83pt",
+      "fi: 9.17pt, 8.89pt; ffl: 12.23pt, 11.66pt",
+      "Word space delta 1.83pt"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 900,
+    "coverage_family": "ligatures-kerning-spacing",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25
+  },
+  {
+    "name": "engine_xe_glyph_metrics",
+    "description": "Native font glyph/index/name/bounds primitives, raw glyph boxes and a rule sized from glyph bounds",
+    "dir": "engine_xe_glyph_metrics",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "LMRoman"
+    ],
+    "expected_text": [
+      "Glyphs 821; type 2; tfm type 0",
+      "Glyph A=27, B=34, space=103, missing=0",
+      "Index of A 27; of acute.dup 1; of nothing 0",
+      "Name of glyph 27: A; and glyph 1: acute.dup",
+      "Glyph box A: left 0.372pt top 8.568pt right 0.384pt bottom 0.0pt",
+      "Boxes: A 8.808pt raw-glyph 8.808pt acute 5.88pt",
+      "Rule measured from cap height of H: 8.196pt"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 500,
+    "coverage_family": "native-font-metric-primitives",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25
+  },
+  {
+    "name": "engine_xe_interchar_classes",
+    "description": "Inter-character classes and token lists with nested group restoration, boundary classes, disabling and non-ASCII class assignment",
+    "dir": "engine_xe_interchar_classes",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "LMRoman"
+    ],
+    "expected_text": [
+      "Classes: [<]a=1, 0=2, z=0, comma=3",
+      "[<]a.[<]b[L2D]01",
+      "Outer: [L2D]; unset: .",
+      "[<]a1 11 [<]a,1",
+      "Nested off: ab01 a1",
+      "Back in inner: [<]a[inner L2D]0",
+      "[<]a[L2D][copy]0",
+      "Widths: with tokens 47.79001ptwithout 10.0pt"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 700,
+    "coverage_family": "interchar-token-classes",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25
+  },
+  {
+    "name": "engine_xe_math_accents_radicals",
+    "description": "Unicode math accents, wide accents, radicals and delimiter sizing measured from boxes (Latin Modern Math)",
+    "dir": "engine_xe_math_accents_radicals",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "LMRoman",
+      "LatinModernMath"
+    ],
+    "expected_text": [
+      "Accent heights: hat 2.92pt, widehat 3.06pt; widths 5.72pt 15.84999pt",
+      "Radical boxes: small 8.00499pt+2.395pt, fraction 12.59052pt+5.80948pt, tall 31.29999pt+0.0pt",
+      "Delimiter extents: 7.48027pt/2.47972pt, 24.0pt/16.8709pt, 60.0pt/52.49945pt; widths 8.18pt 17.9pt 17.9pt",
+      "Big: 8.47626pt 11.46423pt 14.46028pt 17.45027pt"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 1500,
+    "coverage_family": "unicode-math-accents-radicals-delimiters",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25
+  },
+  {
+    "name": "engine_xe_bidi_mixed",
+    "description": "TeXXeT right-to-left segments, nesting, reversed rules and reversed paragraph line breaking",
+    "dir": "engine_xe_bidi_mixed",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "LMRoman"
+    ],
+    "expected_text": [
+      "Left: abc 123 def 123 abc end",
+      "second nested LTR 42 first",
+      "Widths equal yes (23.89pt, 23.89pt)",
+      "fourteen thirteen twelve eleven ten nine eight seven six five four three two one",
+      "Lines in reversed paragraph: 20.87999pt"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 1200,
+    "coverage_family": "text-direction-bidi",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25
+  },
+  {
+    "name": "engine_xe_cjk_punct_breaking_zh",
+    "description": "xeCJK with Fandol Song/Hei: punctuation styles, line breaking, CJK/Latin glue and font switching",
+    "dir": "engine_xe_cjk_punct_breaking_zh",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "LMRoman",
+      "FandolSong",
+      "FandolHei"
+    ],
+    "expected_text": [
+      "Lines banjiao: 31.71pt",
+      "春眠不觉晓，处处闻啼鸟。夜来风雨声，花落知多少？「完」",
+      "Mixed 中文English混排，数字123与标点。",
+      "Glue widths 57.43001pt 55.76001pt",
+      "北京欢迎你，开幕式《春》"
+    ],
+    "check_type": "native_xecjk",
+    "min_ink_pixels": 1500,
+    "coverage_family": "cjk-punctuation-line-breaking",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25
+  },
+  {
+    "name": "engine_xe_cjk_punct_breaking_ja",
+    "description": "xeCJK with IPAex Mincho/Gothic: Japanese line breaking, CJK glue, character-class changes and font families; declaring U+3001 Default deliberately selects Latin Modern's missing glyph, as in TeX Live",
+    "dir": "engine_xe_cjk_punct_breaking_ja",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "LMRoman",
+      "IPAexMincho",
+      "IPAexGothic"
+    ],
+    "expected_text": [
+      "吾輩は猫である。名前はまだ無い。どこで生れたかとんと見当がつかぬ。「ニャー」と鳴いた。",
+      "With CJKglue 56.31055pt",
+      "Reclassified width 36.13pt",
+      "Glue 1.99997pt",
+      "ゴシック体のサンプルです。"
+    ],
+    "expect_missing_glyphs": true,
+    "expected_output_substrings": [
+      "Missing character: There is no 、 (U+3001)"
+    ],
+    "check_type": "native_xecjk",
+    "min_ink_pixels": 1500,
+    "coverage_family": "cjk-punctuation-line-breaking",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25
+  },
+  {
+    "name": "engine_xe_font_switching_boxes",
+    "description": "Family, series and shape switching inside hboxes, vboxes, fbox and unicode-math math with measured widths",
+    "dir": "engine_xe_font_switching_boxes",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "TeXGyrePagella",
+      "LMSans",
+      "LMMono",
+      "LatinModernMath",
+      "TeXGyreHeros"
+    ],
+    "expected_text": [
+      "Roman 69.67pt; sans 63.7pt; mono 68.25pt; bold 72.07pt; italic 62.32pt; bold italic 68.81pt",
+      "Sans bold italic mono roman",
+      "italic upright bold normal italic-again",
+      "Mono tail.",
+      "Bold minus regular 1.11pt"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 1500,
+    "coverage_family": "font-family-shape-switching",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25
+  },
+  {
+    "name": "engine_xe_graphics_specials",
+    "description": "PNG inclusion, XeTeXpicfile, rotation/scaling/reflection with measured boxes, color stacks and pdf literal specials",
+    "dir": "engine_xe_graphics_specials",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "LMRoman"
+    ],
+    "expected_text": [
+      "Picture: 85.35826ptx42.68346pt+0.0pt; scaled 56.90762ptx28.45274pt+0.0pt",
+      "Rotated 90: 7.15999ptx55.97pt+0.0pt; 30 degrees: 52.0506ptx33.99426pt+0.1905pt",
+      "Scale 29.72ptx13.66pt+4.11996ptversus 14.86ptx6.83pt+2.05998pt",
+      "Blue special"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 1200,
+    "coverage_family": "graphics-specials-transformed-boxes",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25
+  },
+  {
+    "name": "engine_xe_output_marks_multipage",
+    "description": "Eight-page article with TOC, running marks, footnote, page break/clearpage and converged page references",
+    "dir": "engine_xe_output_marks_multipage",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "LMRoman"
+    ],
+    "expected_text": [
+      "Last section is on page 8.",
+      "2.1 Beta sub",
+      "Footnote on the gamma page with a number.",
+      "4 DELTA",
+      "5 EPSILON"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 1500,
+    "coverage_family": "output-routine-marks-multipage",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "reference_passes": 3
+  },
+  {
+    "name": "engine_xe_twocolumn_floats",
+    "description": "Two-column geometry with spanning heading, float placement, wide figure float, footnote and page reference",
+    "dir": "engine_xe_twocolumn_floats",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "TeXGyrePagella"
+    ],
+    "expected_text": [
+      "Wide Heading Over Both Columns",
+      "Reference to Figure 1 on page 1.",
+      "A footnote inside a two-column page.",
+      "Spanning float at the bottom of the page."
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 1500,
+    "coverage_family": "page-layout-twocolumn-floats",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "reference_passes": 2
+  },
+  {
+    "name": "engine_xe_local_font_path",
+    "description": "Local font via Path, bracket file syntax with features, scaling and synthetic bold; self-contained font file",
+    "dir": "engine_xe_local_font_path",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "LMRoman",
+      "LMMonoSlant10"
+    ],
+    "expected_text": [
+      "Local path: Slanted mono fi fl ffi width 63.0pt",
+      "Scaled and unligatured: Slanted mono fi fl ffi width 75.59981pt",
+      "Synthetic bold: Fake bold slanted width 89.25pt",
+      "Bracket syntax: Bracketed local file 0123456789 type 2"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 1000,
+    "coverage_family": "local-font-path-selection",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25
+  },
+  {
+    "name": "engine_xe_hyphenation_dashbreak",
+    "description": "Native-font hyphenation: exceptions, hyphenchar, hyphen minima and XeTeXdashbreakstate line counts",
+    "dir": "engine_xe_hyphenation_dashbreak",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "TeXGyrePagella"
+    ],
+    "expected_text": [
+      "Lines for long words: 4",
+      "Without hyphen penalty bypass: 2",
+      "Dash break on lines: 7",
+      "Dash break off lines: 7"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 900,
+    "coverage_family": "hyphenation-dash-breaking",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25
+  },
+  {
+    "name": "engine_xe_icu_linebreak_cjk",
+    "description": "ICU CJK line breaking without xeCJK: locale, XeTeXlinebreakskip and XeTeXlinebreakpenalty",
+    "dir": "engine_xe_icu_linebreak_cjk",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "FandolSong"
+    ],
+    "expected_text": [
+      "Lines at 6em: 4; 9em: 3",
+      "春眠不觉晓处处闻啼鸟，夜来风雨声。花落知多少？",
+      "Penalty restored: 0",
+      "Skip 2pt: 40.0pt3"
+    ],
+    "check_type": "native_xecjk",
+    "min_ink_pixels": 1200,
+    "coverage_family": "icu-line-breaking",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25
+  },
+  {
+    "name": "engine_xe_case_unicode_tokens",
+    "description": "Unicode case codes, scoped code changes, \\Uchar/\\Ucharcat, Unicode control sequence names and code queries",
+    "dir": "engine_xe_case_unicode_tokens",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "TeXGyrePagella"
+    ],
+    "expected_text": [
+      "ÉÀÜÑØÇ Ÿ ß / éàüñøç ÿω",
+      "Edef: é€A",
+      "COFFEE COFFEE \\café",
+      "Codes: 233 233 128512 sf 1000 lc 233 uc 201 math 29161",
+      "Scanned: αβγ",
+      "Same width 4.79pt4.79pt4.79pt"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 700,
+    "coverage_family": "unicode-case-token-primitives",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25
+  },
+  {
+    "name": "engine_xe_text_mapping",
+    "description": "TECkit tex-text/tex-ps mappings for quotes and dashes, with exact width consequences",
+    "dir": "engine_xe_text_mapping",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "LMRoman"
+    ],
+    "expected_text": [
+      "tex-text: “quoted” – dash — em, it’s ‘single’ ¿¡ «guil»",
+      "Widths tex-text 194.61002pt, tex-ps 234.60004pt, none 234.60004pt",
+      "Em dash widths 10.0pt 9.99pt",
+      "open-quote-differs"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 900,
+    "coverage_family": "text-mapping-teckit",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25
+  },
+  {
+    "name": "engine_xe_synthetic_scale",
+    "description": "Scale=MatchLowercase, LetterSpace, WordSpace, FakeSlant, FakeStretch and AutoFakeBold with measured results",
+    "dir": "engine_xe_synthetic_scale",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "LMRoman",
+      "TeXGyreHeros",
+      "TeXGyrePagella",
+      "LMMonoSlant10"
+    ],
+    "expected_text": [
+      "Match lowercase 31.07442pt x5.9961pt, unscaled 37.78pt x7.29pt, 1.25 47.225pt",
+      "Tracking delta 8.5pt",
+      "Slanted fake 40.18001pt x6.92pt Stretched fake 52.234pt x6.92pt",
+      "Bold fake 36.75pt x6.11pt"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 900,
+    "coverage_family": "font-adjustments-synthetic-styles",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25
+  },
+  {
+    "name": "engine_xe_math_alphabets_operators",
+    "description": "STIX Two Math with Latin Modern Math script range: alphabets, large operators, style choices and measured limits",
+    "dir": "engine_xe_math_alphabets_operators",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "STIXTwoText",
+      "STIXTwoMath",
+      "LatinModernMath"
+    ],
+    "expected_text": [
+      "Alphabets: 𝐀𝐁 𝑎𝑏 𝒂𝒃 ℝℕℤ ℒℱ 𝔤𝔩 𝖲 𝚃 u",
+      "Greek: 𝛼 𝛽 Γ 𝛀 𝝎 ℼ",
+      "Sum boxes display 11.389ptx17.3238pt+12.30685pt, text 21.24901ptx9.7391pt+3.75285pt",
+      "Integral boxes 17.36911pt+10.36084ptand 10.40411pt+3.39584pt"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 1500,
+    "coverage_family": "unicode-math-alphabets-operators",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25
+  },
+  {
+    "name": "engine_xe_upwards_rotated_cjk",
+    "description": "Fandol CJK in vertical-feature font, upwards mode, and rotated horizontal CJK boxes with measured extents",
+    "dir": "engine_xe_upwards_rotated_cjk",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "LMRoman",
+      "FandolSong"
+    ],
+    "expected_text": [
+      "Vertical font: width 70.0pt height 10.794pt depth 2.40799pt",
+      "Upwards: 1, width 70.0pt height 10.794pt",
+      "春眠不觉晓",
+      "花落知多少",
+      "Rotated horizontal text box 13.202pt x0.0pt+70.0pt"
+    ],
+    "check_type": "native_xecjk",
+    "min_ink_pixels": 800,
+    "coverage_family": "vertical-rotated-text",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25
+  },
+  {
+    "name": "engine_pkg_babel_languages_lua",
+    "description": "babel with locale-provided Spanish and Portuguese (babelprovide import) beside English: language-specific captions, dates, chapter names, inline foreignlanguage switching and csquotes (lualatex engine)",
+    "dir": "engine_pkg_babel_languages",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "TeXGyrePagella"
+    ],
+    "expected_text": [
+      "The main language is English and today is November 14, 2023.",
+      "Capítulo 2",
+      "Introducción",
+      "¿Cómo estás? Hoy es 14 de noviembre de 2023.",
+      "Índice de cuadros",
+      "Capítulo 3",
+      "Introdução",
+      "Hoje é 14 de novembro de 2023.",
+      "Lista de Tabelas",
+      "una frase en español",
+      "uma frase em português"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 39100,
+    "coverage_family": "language",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "reference_passes": 2
+  },
+  {
+    "name": "engine_pkg_babel_languages_xe",
+    "description": "babel with locale-provided Spanish and Portuguese (babelprovide import) beside English: language-specific captions, dates, chapter names, inline foreignlanguage switching and csquotes (xelatex engine)",
+    "dir": "engine_pkg_babel_languages",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "TeXGyrePagella"
+    ],
+    "expected_text": [
+      "The main language is English and today is November 14, 2023.",
+      "Capítulo 2",
+      "Introducción",
+      "¿Cómo estás? Hoy es 14 de noviembre de 2023.",
+      "Índice de cuadros",
+      "Capítulo 3",
+      "Introdução",
+      "Hoje é 14 de novembro de 2023.",
+      "Lista de Tabelas",
+      "una frase en español",
+      "uma frase em português"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 39100,
+    "coverage_family": "language",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "reference_passes": 2
+  },
+  {
+    "name": "engine_pkg_beamer_overlays_lua",
+    "description": "Beamer Madrid/seahorse theme with professional math fonts and fontspec text: title, outline from two passes, incremental itemize, pause, only/uncover/visible overlays, blocks, columns, TikZ overlay specifications and a fragile verbatim frame (lualatex engine)",
+    "dir": "engine_pkg_beamer_overlays",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "TeXGyreHeros",
+      "TeXGyreCursor"
+    ],
+    "expected_text": [
+      "Overlay behaviour",
+      "Incremental content",
+      "Math and graphics",
+      "First stage arrives alone",
+      "Third stage completes the list",
+      "Alerted summary appears last.",
+      "Only on slide two.",
+      "Visible on slide three.",
+      "Quadratic",
+      "x ∈ {1, 2}",
+      "\\only<1>{a}\\only<2>{b}",
+      "3/6",
+      "6/6"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 552300,
+    "coverage_family": "presentation",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "reference_passes": 2
+  },
+  {
+    "name": "engine_pkg_beamer_overlays_xe",
+    "description": "Beamer Madrid/seahorse theme with professional math fonts and fontspec text: title, outline from two passes, incremental itemize, pause, only/uncover/visible overlays, blocks, columns, TikZ overlay specifications and a fragile verbatim frame (xelatex engine)",
+    "dir": "engine_pkg_beamer_overlays",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "TeXGyreHeros",
+      "TeXGyreCursor"
+    ],
+    "expected_text": [
+      "Overlay behaviour",
+      "Incremental content",
+      "Math and graphics",
+      "First stage arrives alone",
+      "Third stage completes the list",
+      "Alerted summary appears last.",
+      "Only on slide two.",
+      "Visible on slide three.",
+      "Quadratic",
+      "x ∈ {1, 2}",
+      "\\only<1>{a}\\only<2>{b}",
+      "3/6",
+      "6/6"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 552300,
+    "coverage_family": "presentation",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "reference_passes": 2
+  },
+  {
+    "name": "engine_pkg_book_frontmatter_lua",
+    "description": "book class twoside with frontmatter/mainmatter/backmatter, parts, numbered chapters and appendices, fancyhdr marks, table of contents and list of tables settled over three passes (lualatex engine)",
+    "dir": "engine_pkg_book_frontmatter",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "TeXGyreTermes",
+      "TeXGyreHeros"
+    ],
+    "expected_text": [
+      "A Short Book",
+      "Contents",
+      "Foundations",
+      "1.2.1 Penalties",
+      "Boxes and glue",
+      "List of Tables",
+      "1.1 Glue parameters",
+      "Chapter 1",
+      "Appendix A",
+      "Reference tables",
+      "A.1 Constants",
+      "Colophon",
+      "Chapter 2. Pages and floats",
+      "Part II"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 61200,
+    "coverage_family": "document-classes",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "reference_passes": 3
+  },
+  {
+    "name": "engine_pkg_book_frontmatter_xe",
+    "description": "book class twoside with frontmatter/mainmatter/backmatter, parts, numbered chapters and appendices, fancyhdr marks, table of contents and list of tables settled over three passes (xelatex engine)",
+    "dir": "engine_pkg_book_frontmatter",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "TeXGyreTermes",
+      "TeXGyreHeros"
+    ],
+    "expected_text": [
+      "A Short Book",
+      "Contents",
+      "Foundations",
+      "1.2.1 Penalties",
+      "Boxes and glue",
+      "List of Tables",
+      "1.1 Glue parameters",
+      "Chapter 1",
+      "Appendix A",
+      "Reference tables",
+      "A.1 Constants",
+      "Colophon",
+      "Chapter 2. Pages and floats",
+      "Part II"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 61200,
+    "coverage_family": "document-classes",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "reference_passes": 3
+  },
+  {
+    "name": "engine_pkg_enumitem_listings_fancyvrb_lua",
+    "description": "enumitem nested/resumed/description lists, listings with Python and C highlighting, captions, numbered lines and file input, fancyvrb Verbatim with commandchars and Verb, over fontspec text and monospace fonts (lualatex engine)",
+    "dir": "engine_pkg_enumitem_listings_fancyvrb",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "TeXGyreTermes",
+      "TeXGyreCursor"
+    ],
+    "expected_text": [
+      "Lists and code",
+      "(a) First choice",
+      "i. nested one",
+      "ii. nested two",
+      "(b) Second choice",
+      "(c) Resumed numbering continues here",
+      "def fib(n):",
+      "Listing 1: Fibonacci",
+      "#include <stdio.h>",
+      "Listing 2: From a file",
+      "{bold part}",
+      "\\emph{literal}",
+      "int main(void)"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 15500,
+    "coverage_family": "text-structure",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "reference_passes": 2
+  },
+  {
+    "name": "engine_pkg_enumitem_listings_fancyvrb_xe",
+    "description": "enumitem nested/resumed/description lists, listings with Python and C highlighting, captions, numbered lines and file input, fancyvrb Verbatim with commandchars and Verb, over fontspec text and monospace fonts (xelatex engine)",
+    "dir": "engine_pkg_enumitem_listings_fancyvrb",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "TeXGyreTermes",
+      "TeXGyreCursor"
+    ],
+    "expected_text": [
+      "Lists and code",
+      "(a) First choice",
+      "i. nested one",
+      "ii. nested two",
+      "(b) Second choice",
+      "(c) Resumed numbering continues here",
+      "def fib(n):",
+      "Listing 1: Fibonacci",
+      "#include <stdio.h>",
+      "Listing 2: From a file",
+      "{bold part}",
+      "\\emph{literal}",
+      "int main(void)"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 15500,
+    "coverage_family": "text-structure",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "reference_passes": 2
+  },
+  {
+    "name": "engine_pkg_floats_subcaption_lua",
+    "description": "figure floats with subcaption panels, mwe example images through the engine graphics driver (scaled, rotated, framed, sidewaysfigure), caption styling, list of figures and cross-references over two passes (lualatex engine)",
+    "dir": "engine_pkg_floats_subcaption",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "TeXGyrePagella",
+      "LMSans"
+    ],
+    "expected_text": [
+      "List of Figures",
+      "(a) First panel",
+      "(b) Rotated second panel",
+      "Figure 1. Two example images placed side by side;",
+      "Figure 1 contains 1a and 1b.",
+      "Figure 2. A scaled, framed image",
+      "Table 1. Inline table beside nothing",
+      "See Figures 2 and 3 and Table 1.",
+      "Figure 3. Sideways figure with a 16:9 image",
+      "16×9"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 188100,
+    "coverage_family": "floats",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "reference_passes": 2
+  },
+  {
+    "name": "engine_pkg_floats_subcaption_xe",
+    "description": "figure floats with subcaption panels, mwe example images through the engine graphics driver (scaled, rotated, framed, sidewaysfigure), caption styling, list of figures and cross-references over two passes (xelatex engine)",
+    "dir": "engine_pkg_floats_subcaption",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "TeXGyrePagella",
+      "LMSans"
+    ],
+    "expected_text": [
+      "List of Figures",
+      "(a) First panel",
+      "(b) Rotated second panel",
+      "Figure 1. Two example images placed side by side;",
+      "Figure 1 contains 1a and 1b.",
+      "Figure 2. A scaled, framed image",
+      "Table 1. Inline table beside nothing",
+      "See Figures 2 and 3 and Table 1.",
+      "Figure 3. Sideways figure with a 16:9 image",
+      "16×9"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 188100,
+    "coverage_family": "floats",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "reference_passes": 2
+  },
+  {
+    "name": "engine_pkg_fontspec_features_numbers_lua",
+    "description": "fontspec OpenType features: old-style versus lining numerals, small capitals, TeX ligatures, scaled secondary families, addfontfeature, siunitx text mode and microtype (lualatex engine)",
+    "dir": "engine_pkg_fontspec_features_numbers",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "TeXGyrePagella",
+      "LMRoman",
+      "TeXGyreHeros",
+      "TeXGyreCursor"
+    ],
+    "expected_text": [
+      "Font features in running text",
+      "Small Capitals Request",
+      "“quoted”",
+      "10–20",
+      "Lining digits in Latin Modern: 1234567890.",
+      "Lining digits via \\addfontfeature: 1234567890.",
+      "12.5 kg",
+      "3 × 108 m s−1",
+      "Monospace: x = 42;"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 16100,
+    "coverage_family": "fonts",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25
+  },
+  {
+    "name": "engine_pkg_fontspec_features_numbers_xe",
+    "description": "fontspec OpenType features: old-style versus lining numerals, small capitals, TeX ligatures, scaled secondary families, addfontfeature, siunitx text mode and microtype (xelatex engine)",
+    "dir": "engine_pkg_fontspec_features_numbers",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "TeXGyrePagella",
+      "LMRoman",
+      "TeXGyreHeros",
+      "TeXGyreCursor"
+    ],
+    "expected_text": [
+      "Font features in running text",
+      "SMALL CAPITALS REQUEST",
+      "“quoted”",
+      "10–20",
+      "Lining digits in Latin Modern: 1234567890.",
+      "Lining digits via \\addfontfeature: 1234567890.",
+      "12.5 kg",
+      "3 × 108 m s−1",
+      "Monospace: x = 42;"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 16100,
+    "coverage_family": "fonts",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25
+  },
+  {
+    "name": "engine_pkg_hyperref_cleveref_lua",
+    "description": "hyperref and cleveref cross-references over three passes: sections, theorem counters, equation ranges, float references, page references, nameref/autoref, footnote links and table of contents (lualatex engine)",
+    "dir": "engine_pkg_hyperref_cleveref",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "TeXGyreTermes"
+    ],
+    "expected_text": [
+      "Contents",
+      "Theorem 2.1",
+      "Equations (1) and (2)",
+      "Page 3",
+      "Table 1",
+      "Sections 1, 2 and 2.1",
+      "Summary (section 3)",
+      "https://example.org/ratex",
+      "Theorem 2.1 on Page 2",
+      "Figure 1 and Table 1 are floats"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 19800,
+    "coverage_family": "references",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "reference_passes": 3
+  },
+  {
+    "name": "engine_pkg_hyperref_cleveref_xe",
+    "description": "hyperref and cleveref cross-references over three passes: sections, theorem counters, equation ranges, float references, page references, nameref/autoref, footnote links and table of contents (xelatex engine)",
+    "dir": "engine_pkg_hyperref_cleveref",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "TeXGyreTermes"
+    ],
+    "expected_text": [
+      "Contents",
+      "Theorem 2.1",
+      "Equations (1) and (2)",
+      "Page 3",
+      "Table 1",
+      "Sections 1, 2 and 2.1",
+      "Summary (section 3)",
+      "https://example.org/ratex",
+      "Theorem 2.1 on Page 2",
+      "Figure 1 and Table 1 are floats"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 19800,
+    "coverage_family": "references",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "reference_passes": 3
+  },
+  {
+    "name": "engine_pkg_layout_geometry_microtype_lua",
+    "description": "geometry twoside margins, fancyhdr marks, microtype character protrusion, multicols, ragged2e, footnotes and marginpar over lipsum paragraphs with fontspec (lualatex engine)",
+    "dir": "engine_pkg_layout_geometry_microtype",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "TeXGyrePagella"
+    ],
+    "expected_text": [
+      "Justified columns",
+      "Footnotes and margin notes",
+      "Protrusion hangs punctuation",
+      "margin note",
+      "A footnote at the bottom of the text block.",
+      "Second section",
+      "–3–",
+      "Third section",
+      "Small-Caps",
+      "0123456789"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 84200,
+    "coverage_family": "layout",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "reference_passes": 2
+  },
+  {
+    "name": "engine_pkg_layout_geometry_microtype_xe",
+    "description": "geometry twoside margins, fancyhdr marks, microtype character protrusion, multicols, ragged2e, footnotes and marginpar over lipsum paragraphs with fontspec (xelatex engine)",
+    "dir": "engine_pkg_layout_geometry_microtype",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "TeXGyrePagella"
+    ],
+    "expected_text": [
+      "Justified columns",
+      "Footnotes and margin notes",
+      "Protrusion hangs punctuation",
+      "margin note",
+      "A footnote at the bottom of the text block.",
+      "Second section",
+      "–3–",
+      "Third section",
+      "SMALL-CAPS",
+      "0123456789"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 84200,
+    "coverage_family": "layout",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "reference_passes": 2
+  },
+  {
+    "name": "engine_pkg_math_type1_mathtools_lua",
+    "description": "Type 1 TeX math (mathpazo/T1 fontenc) with amsmath, amsthm, mathtools paired delimiters and microtype: numbered theorem environments and Lemma cross-references across two passes (lualatex engine)",
+    "dir": "engine_pkg_math_type1_mathtools",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "URWPalladio",
+      "PazoMath"
+    ],
+    "expected_text": [
+      "Bounds from Cauchy–Schwarz",
+      "The energy of v ∈",
+      "Lemma 1 (Cauchy–Schwarz).",
+      "Theorem 2.",
+      "(1)",
+      "(2)",
+      "(3)",
+      "Apply Lemma 1 with",
+      "Display variety.",
+      "ad − bc"
+    ],
+    "check_type": "text_t1",
+    "min_ink_pixels": 14900,
+    "coverage_family": "math-fonts",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "reference_passes": 2
+  },
+  {
+    "name": "engine_pkg_math_type1_mathtools_xe",
+    "description": "Type 1 TeX math (mathpazo/T1 fontenc) with amsmath, amsthm, mathtools paired delimiters and microtype: numbered theorem environments and Lemma cross-references across two passes (xelatex engine)",
+    "dir": "engine_pkg_math_type1_mathtools",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "URWPalladio",
+      "PazoMath"
+    ],
+    "expected_text": [
+      "Bounds from Cauchy–Schwarz",
+      "The energy of v ∈",
+      "Lemma 1 (Cauchy–Schwarz).",
+      "Theorem 2.",
+      "(1)",
+      "(2)",
+      "(3)",
+      "Apply Lemma 1 with",
+      "Display variety.",
+      "ad − bc"
+    ],
+    "check_type": "text_t1",
+    "min_ink_pixels": 14900,
+    "coverage_family": "math-fonts",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "reference_passes": 2
+  },
+  {
+    "name": "engine_pkg_math_unicode_amsmath_lua",
+    "description": "unicode-math with TeX Gyre Pagella Math and a Latin Modern Math cal range, combined with amsmath/mathtools: aligned equations, dcases, matrices, xrightarrow, multline, cross-referenced equation numbers (lualatex engine)",
+    "dir": "engine_pkg_math_unicode_amsmath",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "TeXGyrePagella",
+      "TeXGyrePagellaMath",
+      "LatinModernMath"
+    ],
+    "expected_text": [
+      "Spectral identities",
+      "(1)",
+      "(4)",
+      "Equation (1) fixes the spectrum, and (2) its second moment, hence",
+      "trace of square",
+      "rotate by",
+      "ℕ ⊂ ℤ ⊂ ℚ ⊂ ℝ ⊂ ℂ",
+      "sgn",
+      "if",
+      "even"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 19200,
+    "coverage_family": "math-fonts",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "reference_passes": 2
+  },
+  {
+    "name": "engine_pkg_math_unicode_amsmath_xe",
+    "description": "unicode-math with TeX Gyre Pagella Math and a Latin Modern Math cal range, combined with amsmath/mathtools: aligned equations, dcases, matrices, xrightarrow, multline, cross-referenced equation numbers (xelatex engine)",
+    "dir": "engine_pkg_math_unicode_amsmath",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "TeXGyrePagella",
+      "TeXGyrePagellaMath",
+      "LatinModernMath"
+    ],
+    "expected_text": [
+      "Spectral identities",
+      "(1)",
+      "(4)",
+      "Equation (1) fixes the spectrum, and (2) its second moment, hence",
+      "trace of square",
+      "rotate by",
+      "ℕ ⊂ ℤ ⊂ ℚ ⊂ ℝ ⊂ ℂ",
+      "sgn",
+      "if",
+      "even"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 19200,
+    "coverage_family": "math-fonts",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "reference_passes": 2
+  },
+  {
+    "name": "engine_pkg_natbib_bibtex_lua",
+    "description": "natbib authoryear citations (citet/citep/citeauthor/citeyear/citealp with pre-notes) resolved from a BibTeX run on an owned refs.bib with plainnat and nocite, with hyperref colored citations (lualatex engine)",
+    "dir": "engine_pkg_natbib_bibtex",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "TeXGyrePagella"
+    ],
+    "expected_text": [
+      "Early work by Knuth (1984) established the machinery",
+      "(Lamport and Dijkstra, 1994; Beeton et al., 2007)",
+      "(see Jackowski and Nowacki, 2012, p. 7)",
+      "(Knuth, 1984; Lamport and Dijkstra, 1994)",
+      "References",
+      "Journal of Document Studies, 12(3):101–118, 1994.",
+      "Bogusław Jackowski"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 30800,
+    "coverage_family": "citations",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "reference_passes": 3,
+    "reference_bibtex": true
+  },
+  {
+    "name": "engine_pkg_natbib_bibtex_xe",
+    "description": "natbib authoryear citations (citet/citep/citeauthor/citeyear/citealp with pre-notes) resolved from a BibTeX run on an owned refs.bib with plainnat and nocite, with hyperref colored citations (xelatex engine)",
+    "dir": "engine_pkg_natbib_bibtex",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "TeXGyrePagella"
+    ],
+    "expected_text": [
+      "Early work by Knuth (1984) established the machinery",
+      "(Lamport and Dijkstra, 1994; Beeton et al., 2007)",
+      "(see Jackowski and Nowacki, 2012, p. 7)",
+      "(Knuth, 1984; Lamport and Dijkstra, 1994)",
+      "References",
+      "Journal of Document Studies, 12(3):101–118, 1994.",
+      "Bogusław Jackowski"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 30800,
+    "coverage_family": "citations",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "reference_passes": 3,
+    "reference_bibtex": true
+  },
+  {
+    "name": "engine_pkg_pgfplots_contourlua_lua",
+    "description": "pgfplots.contourlua library loaded in both engines: LuaTeX computes level sets with contour lua from an analytic surface, other engines draw the same level sets with contour prepared from an owned table (lualatex engine)",
+    "dir": "engine_pkg_pgfplots_contourlua",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "TeXGyreTermes"
+    ],
+    "expected_text": [
+      "Level sets of f (x, y) = x2 + y 2",
+      "Contours at 1, 4 and 9",
+      "−3",
+      "3",
+      "4",
+      "9"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 6700,
+    "coverage_family": "graphics",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25
+  },
+  {
+    "name": "engine_pkg_pgfplots_contourlua_xe",
+    "description": "pgfplots.contourlua library loaded in both engines: LuaTeX computes level sets with contour lua from an analytic surface, other engines draw the same level sets with contour prepared from an owned table (xelatex engine)",
+    "dir": "engine_pkg_pgfplots_contourlua",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "TeXGyreTermes"
+    ],
+    "expected_text": [
+      "Level sets of f (x, y) = x2 + y 2",
+      "Contours at 1, 4 and 9",
+      "−3",
+      "3",
+      "4",
+      "9"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 6700,
+    "coverage_family": "graphics",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25
+  },
+  {
+    "name": "engine_pkg_pgfplots_function_lua",
+    "description": "pgfplots function plots (sin/cos with deg conversion), coordinate markers, legends, custom tick labels, and an inline-table bar chart with nodes near coords; exercises the Lua backend under LuaLaTeX (lualatex engine)",
+    "dir": "engine_pkg_pgfplots_function",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "TeXGyrePagella"
+    ],
+    "expected_text": [
+      "Function plots",
+      "Trigonometric functions",
+      "angle x (rad)",
+      "−π/2",
+      "π/2",
+      "sin x",
+      "cos x",
+      "samples",
+      "Measured series",
+      "latency (ms)",
+      "trial",
+      "22"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 18900,
+    "coverage_family": "graphics",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25
+  },
+  {
+    "name": "engine_pkg_pgfplots_function_xe",
+    "description": "pgfplots function plots (sin/cos with deg conversion), coordinate markers, legends, custom tick labels, and an inline-table bar chart with nodes near coords; exercises the Lua backend under LuaLaTeX (xelatex engine)",
+    "dir": "engine_pkg_pgfplots_function",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "TeXGyrePagella"
+    ],
+    "expected_text": [
+      "Function plots",
+      "Trigonometric functions",
+      "angle x (rad)",
+      "−π/2",
+      "π/2",
+      "sin x",
+      "cos x",
+      "samples",
+      "Measured series",
+      "latency (ms)",
+      "trial",
+      "22"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 18900,
+    "coverage_family": "graphics",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25
+  },
+  {
+    "name": "engine_pkg_polyglossia_languages_lua",
+    "description": "polyglossia main English with Spanish and Portuguese environments and inline commands: localized dates and punctuation inside a table of contents document with fontspec (lualatex engine)",
+    "dir": "engine_pkg_polyglossia_languages",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "TeXGyrePagella"
+    ],
+    "expected_text": [
+      "Contents",
+      "Today is November 14, 2023.",
+      "Sección en español",
+      "Hoy es 14 de noviembre de 2023.",
+      "¿Cómo estás?",
+      "Seção em português",
+      "Hoje é 14 de Novembro de 2023.",
+      "não há dúvida.",
+      "una frase corta",
+      "uma frase curta"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 18700,
+    "coverage_family": "language",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "reference_passes": 2
+  },
+  {
+    "name": "engine_pkg_polyglossia_languages_xe",
+    "description": "polyglossia main English with Spanish and Portuguese environments and inline commands: localized dates and punctuation inside a table of contents document with fontspec (xelatex engine)",
+    "dir": "engine_pkg_polyglossia_languages",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "TeXGyrePagella"
+    ],
+    "expected_text": [
+      "Contents",
+      "Today is November 14, 2023.",
+      "Sección en español",
+      "Hoy es 14 de noviembre de 2023.",
+      "¿Cómo estás?",
+      "Seção em português",
+      "Hoje é 14 de Novembro de 2023.",
+      "não há dúvida.",
+      "una frase corta",
+      "uma frase curta"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 18700,
+    "coverage_family": "language",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "reference_passes": 2
+  },
+  {
+    "name": "engine_pkg_report_appendix_lua",
+    "description": "report class with abstract, patched chapter headings, redefined section numbering, enumitem labels, booktabs table, bookmark/hyperref outlines and appendix cross-references over three passes (lualatex engine)",
+    "dir": "engine_pkg_report_appendix",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "LMRoman"
+    ],
+    "expected_text": [
+      "Annual Report",
+      "14 November 2023",
+      "Abstract",
+      "Contents",
+      "List of Tables",
+      "I Scope",
+      "Chapter 2",
+      "R1. Throughput targets",
+      "R3. Cost ceilings",
+      "Table 2.1: Throughput by service",
+      "Table 2.1 lists the numbers.",
+      "Appendix A",
+      "Chapter 2 uses their median.",
+      "Appendix B",
+      "Throughput"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 42500,
+    "coverage_family": "document-classes",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "reference_passes": 3
+  },
+  {
+    "name": "engine_pkg_report_appendix_xe",
+    "description": "report class with abstract, patched chapter headings, redefined section numbering, enumitem labels, booktabs table, bookmark/hyperref outlines and appendix cross-references over three passes (xelatex engine)",
+    "dir": "engine_pkg_report_appendix",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "LMRoman"
+    ],
+    "expected_text": [
+      "Annual Report",
+      "14 November 2023",
+      "Abstract",
+      "Contents",
+      "List of Tables",
+      "I Scope",
+      "Chapter 2",
+      "R1. Throughput targets",
+      "R3. Cost ceilings",
+      "Table 2.1: Throughput by service",
+      "Table 2.1 lists the numbers.",
+      "Appendix A",
+      "Chapter 2 uses their median.",
+      "Appendix B",
+      "Throughput"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 42500,
+    "coverage_family": "document-classes",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "reference_passes": 3
+  },
+  {
+    "name": "engine_pkg_tables_longtable_lua",
+    "description": "longtable spanning pages with repeated heads, continuation foot, siunitx S columns, fancyhdr running header and a LastPage label for page-count resolution over three passes (lualatex engine)",
+    "dir": "engine_pkg_tables_longtable",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "LMRoman"
+    ],
+    "expected_text": [
+      "Sample ledger",
+      "page 1 of 2",
+      "page 2 of 2",
+      "Table 1: Ledger of generated samples.",
+      "Continued on next page",
+      "Table 1 continued from previous page",
+      "Foxtrot-05",
+      "Alpha-70",
+      "4900",
+      "105.00",
+      "Total rows: 70",
+      "Table 1 spans several pages."
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 47900,
+    "coverage_family": "tables",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "reference_passes": 3
+  },
+  {
+    "name": "engine_pkg_tables_longtable_xe",
+    "description": "longtable spanning pages with repeated heads, continuation foot, siunitx S columns, fancyhdr running header and a LastPage label for page-count resolution over three passes (xelatex engine)",
+    "dir": "engine_pkg_tables_longtable",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "LMRoman"
+    ],
+    "expected_text": [
+      "Sample ledger",
+      "page 1 of 2",
+      "page 2 of 2",
+      "Table 1: Ledger of generated samples.",
+      "Continued on next page",
+      "Table 1 continued from previous page",
+      "Foxtrot-05",
+      "Alpha-70",
+      "4900",
+      "105.00",
+      "Total rows: 70",
+      "Table 1 spans several pages."
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 47900,
+    "coverage_family": "tables",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "reference_passes": 3
+  },
+  {
+    "name": "engine_pkg_tables_siunitx_booktabs_lua",
+    "description": "array, booktabs, tabularx, multirow, colortbl and siunitx S columns with rounding, uncertainty-free scientific notation, units and detect-weight bold cells (lualatex engine)",
+    "dir": "engine_pkg_tables_siunitx_booktabs",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "TeXGyreTermes"
+    ],
+    "expected_text": [
+      "Sensor calibration",
+      "Table 1: Measured values with aligned decimals.",
+      "12.35",
+      "105.25",
+      "3.20 × 10−3",
+      "−1.75 × 10−2",
+      "9.81 m s−2",
+      "299 792 458.00 m s−1",
+      "1.38 × 10−23 J K−1",
+      "3.14",
+      "−8.00",
+      "seasonal range"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 55800,
+    "coverage_family": "tables",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25
+  },
+  {
+    "name": "engine_pkg_tables_siunitx_booktabs_xe",
+    "description": "array, booktabs, tabularx, multirow, colortbl and siunitx S columns with rounding, uncertainty-free scientific notation, units and detect-weight bold cells (xelatex engine)",
+    "dir": "engine_pkg_tables_siunitx_booktabs",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "TeXGyreTermes"
+    ],
+    "expected_text": [
+      "Sensor calibration",
+      "Table 1: Measured values with aligned decimals.",
+      "12.35",
+      "105.25",
+      "3.20 × 10−3",
+      "−1.75 × 10−2",
+      "9.81 m s−2",
+      "299 792 458.00 m s−1",
+      "1.38 × 10−23 J K−1",
+      "3.14",
+      "−8.00",
+      "seasonal range"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 55800,
+    "coverage_family": "tables",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25
+  },
+  {
+    "name": "engine_pkg_tcolorbox_theorems_lua",
+    "description": "tcolorbox most libraries with theorem counters numbered within sections, side-by-side and breakable boxes, TikZ foreach content and cross-references over two passes (lualatex engine)",
+    "dir": "engine_pkg_tcolorbox_theorems",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "TeXGyrePagella",
+      "TeXGyreHeros"
+    ],
+    "expected_text": [
+      "Plain box",
+      "Left side of the box.",
+      "Right side after the lower",
+      "Result 1.1: Pythagoras",
+      "Result 1.2: Binomial",
+      "Results 1.1 and 1.2 are numbered inside section 1.",
+      "Long box",
+      "Line number 22 of the breakable colour box"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 606700,
+    "coverage_family": "boxes",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "reference_passes": 2
+  },
+  {
+    "name": "engine_pkg_tcolorbox_theorems_xe",
+    "description": "tcolorbox most libraries with theorem counters numbered within sections, side-by-side and breakable boxes, TikZ foreach content and cross-references over two passes (xelatex engine)",
+    "dir": "engine_pkg_tcolorbox_theorems",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "TeXGyrePagella",
+      "TeXGyreHeros"
+    ],
+    "expected_text": [
+      "Plain box",
+      "Left side of the box.",
+      "Right side after the lower",
+      "Result 1.1: Pythagoras",
+      "Result 1.2: Binomial",
+      "Results 1.1 and 1.2 are numbered inside section 1.",
+      "Long box",
+      "Line number 22 of the breakable colour box"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 606700,
+    "coverage_family": "boxes",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "reference_passes": 2
+  },
+  {
+    "name": "engine_pkg_tikz_diagram_lua",
+    "description": "TikZ node pipeline with arrows.meta, positioning, fit/backgrounds, snake decoration, calc coordinates, arcs, plotted circle and a matrix of nodes over fontspec fonts (lualatex engine)",
+    "dir": "engine_pkg_tikz_diagram",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "TeXGyreTermes",
+      "TeXGyreHeros"
+    ],
+    "expected_text": [
+      "Pipeline diagram",
+      "Lexer",
+      "Parser",
+      "Emitter",
+      "tokens",
+      "nodes",
+      "syntax tree",
+      "front end plus back end",
+      "midpoint M",
+      "unit circle",
+      "Name",
+      "Weight",
+      "1.25"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 35600,
+    "coverage_family": "graphics",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25
+  },
+  {
+    "name": "engine_pkg_tikz_diagram_xe",
+    "description": "TikZ node pipeline with arrows.meta, positioning, fit/backgrounds, snake decoration, calc coordinates, arcs, plotted circle and a matrix of nodes over fontspec fonts (xelatex engine)",
+    "dir": "engine_pkg_tikz_diagram",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "TeXGyreTermes",
+      "TeXGyreHeros"
+    ],
+    "expected_text": [
+      "Pipeline diagram",
+      "Lexer",
+      "Parser",
+      "Emitter",
+      "tokens",
+      "nodes",
+      "syntax tree",
+      "front end plus back end",
+      "midpoint M",
+      "unit circle",
+      "Name",
+      "Weight",
+      "1.25"
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 35600,
+    "coverage_family": "graphics",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25
+  },
+  {
+    "name": "engine_pkg_tikz_marks_overlay_lua",
+    "description": "TikZ remember-picture overlays and tikzmark positions resolved from the aux file across two passes, on top of wrapped fontspec paragraphs (lualatex engine)",
+    "dir": "engine_pkg_tikz_marks_overlay",
+    "main_tex": "main.tex",
+    "engine": "lualatex",
+    "reference_engine": "lualatex",
+    "required_fonts": [
+      "LMRoman",
+      "LMSans"
+    ],
+    "expected_text": [
+      "Annotating prose with remembered positions",
+      "translates",
+      "executes",
+      "A compiler translates a program into another language",
+      "span end",
+      "this paragraph sits below two overlays that have been resolved."
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 18500,
+    "coverage_family": "graphics",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "reference_passes": 2
+  },
+  {
+    "name": "engine_pkg_tikz_marks_overlay_xe",
+    "description": "TikZ remember-picture overlays and tikzmark positions resolved from the aux file across two passes, on top of wrapped fontspec paragraphs (xelatex engine)",
+    "dir": "engine_pkg_tikz_marks_overlay",
+    "main_tex": "main.tex",
+    "engine": "xelatex",
+    "reference_engine": "xelatex",
+    "required_fonts": [
+      "LMRoman",
+      "LMSans"
+    ],
+    "expected_text": [
+      "Annotating prose with remembered positions",
+      "translates",
+      "executes",
+      "A compiler translates a program into another language",
+      "span end",
+      "this paragraph sits below two overlays that have been resolved."
+    ],
+    "check_type": "native_fontspec",
+    "min_ink_pixels": 18500,
+    "coverage_family": "graphics",
+    "compare_text": true,
+    "min_iou": 0.9,
+    "min_ink_ratio": 0.8,
+    "max_ink_ratio": 1.25,
+    "reference_passes": 2
   }
 ]

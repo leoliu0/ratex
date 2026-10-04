@@ -1,0 +1,21 @@
+\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+\begin{document}
+\font\tfmf=cmr10
+\font\lm="Latin Modern Roman" at 12pt
+\newcount\gi
+{\lm\raggedright
+Glyphs \the\XeTeXcountglyphs\lm; type \the\XeTeXfonttype\lm; tfm type \the\XeTeXfonttype\tfmf\par
+Glyph A=\the\XeTeXcharglyph`A, B=\the\XeTeXcharglyph`B, space=\the\XeTeXcharglyph32, missing=\the\XeTeXcharglyph"10FFFF\par
+Index of A \the\XeTeXglyphindex"A" ; of acute.dup \the\XeTeXglyphindex"acute.dup" ; of nothing \the\XeTeXglyphindex"nosuchglyphname" \par
+\gi=\XeTeXcharglyph`A
+Name of glyph \the\gi: \XeTeXglyphname\lm \gi; and glyph 1: \XeTeXglyphname\lm 1; features \the\XeTeXcountfeatures\lm\par
+Glyph box A: left \the\XeTeXglyphbounds1\gi\ top \the\XeTeXglyphbounds2\gi\ right \the\XeTeXglyphbounds3\gi\ bottom \the\XeTeXglyphbounds4\gi\par
+\setbox0\hbox{A}\setbox2\hbox{\XeTeXglyph\gi}\setbox4\hbox{\XeTeXglyph\XeTeXglyphindex"acute.dup" }
+Boxes: A \the\wd0\ raw-glyph \the\wd2\ acute \the\wd4\par
+Fontdimens: slant \the\fontdimen1\lm, space \the\fontdimen2\lm, xheight \the\fontdimen5\lm, quad \the\fontdimen6\lm\par
+}
+{\lm\global\dimen0=\XeTeXglyphbounds2\XeTeXcharglyph`H\relax}\setbox0\hbox{\vrule width 2pt height \dimen0 depth 0pt}
+Rule measured from cap height of H: \the\ht0\par
+\end{document}

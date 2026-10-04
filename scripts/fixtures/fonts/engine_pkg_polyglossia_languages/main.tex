@@ -1,0 +1,29 @@
+\documentclass[11pt]{article}
+\usepackage[a5paper,margin=16mm]{geometry}
+\usepackage{fontspec}
+\setmainfont{TeX Gyre Pagella}
+\setsansfont{TeX Gyre Heros}
+\usepackage{polyglossia}
+\setmainlanguage{english}
+\setotherlanguages{spanish,portuguese}
+\usepackage{amsmath}
+
+\begin{document}
+\tableofcontents
+\section{English main text}
+Today is \today. This sentence is set in English with polyglossia.
+
+\section{Secci\'on en espa\~nol}
+\begin{spanish}
+Hoy es \today. \'Esta es una secci\'on en espa\~nol: ?`C\'omo est\'as?
+\end{spanish}
+
+\section{Se\c{c}\~ao em portugu\^es}
+\begin{portuguese}
+Hoje \'e \today. Isto \'e uma frase em portugu\^es: n\~ao h\'a d\'uvida.
+\end{portuguese}
+
+\section{Inline switching}
+Text with \textspanish{una frase corta} and \textportuguese{uma frase curta}
+embedded, followed by $\int_0^1 x\,dx=\tfrac12$.
+\end{document}

@@ -33,6 +33,7 @@ struct PagedPoolInner<T> {
     free_slots: Vec<NonNull<PageSlot<T>>>,
     min_page_len: usize,
     next_page_len: usize,
+    max_page_len: usize,
 }
 
 impl<T> PagedPoolInner<T> {
@@ -43,6 +44,9 @@ impl<T> PagedPoolInner<T> {
             free_slots: Vec::new(),
             min_page_len: page_len,
             next_page_len: page_len,
+            // A survivor must not pin an exponentially grown multi-megabyte
+            // slab after a transient allocation burst.
+            max_page_len: (64 * 1024 / std::mem::size_of::<PageSlot<T>>()).max(page_len),
         }
     }
 
@@ -57,7 +61,7 @@ impl<T> PagedPoolInner<T> {
         }
 
         self.pages.push(page);
-        self.next_page_len = page_len.saturating_mul(2);
+        self.next_page_len = page_len.saturating_mul(2).min(self.max_page_len);
     }
 
     fn release_empty_pages(&mut self) -> usize {
@@ -83,9 +87,14 @@ impl<T> PagedPoolInner<T> {
 
         self.next_page_len = kept_pages
             .last()
-            .map(|page| page.len().saturating_mul(2))
+            .map(|page| page.len().saturating_mul(2).min(self.max_page_len))
             .unwrap_or(self.min_page_len);
         self.pages = kept_pages;
+        if released_pages > 0
+            && self.free_slots.capacity() > self.free_slots.len().saturating_mul(2).max(128)
+        {
+            self.free_slots.shrink_to_fit();
+        }
         released_pages
     }
 }
@@ -187,6 +196,56 @@ impl<T> Pooled<T> {
             PooledRepr::Slot { slot, .. } => unsafe { (&mut *slot.as_ptr()).value_mut_ptr() },
             #[cfg(any(miri, tex_lua_boxed_pool, feature = "shared-proto"))]
             PooledRepr::Boxed(value) => value.as_ref() as *const T as *mut T,
+        }
+    }
+
+    /// Transfer the existing allocation and strong pool reference to a GC owner.
+    /// The returned parts must be reconstructed with the same `T` exactly once.
+    pub(super) fn into_gc_parts(self) -> (*mut T, *const ()) {
+        let this = std::mem::ManuallyDrop::new(self);
+        // SAFETY: `this` will not drop its representation. Move that representation
+        // once so its Box or Rc remains owned by the returned parts.
+        let repr = unsafe { std::ptr::read(&this.repr) };
+        match repr {
+            PooledRepr::Slot { slot, pool } => {
+                let value = unsafe { (*slot.as_ptr()).value_mut_ptr() };
+                (value, Rc::into_raw(pool).cast())
+            }
+            #[cfg(any(miri, tex_lua_boxed_pool, feature = "shared-proto"))]
+            PooledRepr::Boxed(value) => (Box::into_raw(value), std::ptr::null()),
+        }
+    }
+
+    /// Reconstruct a transferred allocation without changing its destruction.
+    ///
+    /// # Safety
+    /// Both parts must come from one `into_gc_parts` call for this exact `T`,
+    /// and that ownership transfer must not have been reconstructed before.
+    pub(super) unsafe fn from_gc_parts(value: *mut T, pool: *const ()) -> Self {
+        if pool.is_null() {
+            #[cfg(any(miri, tex_lua_boxed_pool, feature = "shared-proto"))]
+            {
+                return Self {
+                    repr: PooledRepr::Boxed(unsafe { Box::from_raw(value) }),
+                };
+            }
+            #[cfg(not(any(miri, tex_lua_boxed_pool, feature = "shared-proto")))]
+            unreachable!("a pooled GC owner must retain its strong pool reference");
+        }
+        // PageSlot has no layout guarantee: recover its base using the actual
+        // value-field offset rather than assuming declaration order or padding.
+        let slot = unsafe {
+            value
+                .cast::<u8>()
+                .sub(std::mem::offset_of!(PageSlot<T>, value))
+                .cast::<PageSlot<T>>()
+        };
+        let pool = unsafe { Rc::from_raw(pool.cast::<RefCell<PagedPoolInner<T>>>()) };
+        Self {
+            repr: PooledRepr::Slot {
+                slot: unsafe { NonNull::new_unchecked(slot) },
+                pool,
+            },
         }
     }
 }

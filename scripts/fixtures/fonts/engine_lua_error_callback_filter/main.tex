@@ -1,0 +1,13 @@
+\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+\begin{document}
+\typeout{Registering the failing callback}
+\directlua{
+  luatexbase.add_to_callback("pre_linebreak_filter", function(head, groupcode)
+    local code = 6 * 7
+    error("engine-callback-failure-" .. code)
+  end, "engine.error.filter")
+}
+A paragraph whose line breaking runs the failing callback.\par
+\end{document}

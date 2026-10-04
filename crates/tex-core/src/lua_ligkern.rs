@@ -11,8 +11,7 @@
 
 use std::rc::Rc;
 
-use crate::boxes::NodeList;
-use crate::engine::{Engine, EngineKind};
+use crate::engine::Engine;
 use crate::lua_callbacks::{Cb, CbArg};
 use crate::lua_font::{LuaFont, LuaLig};
 use crate::lua_node::*;
@@ -633,7 +632,7 @@ impl Engine {
 
     fn lk_has_kern(&self, f: i32, c: i32) -> bool {
         self.lk_font(f)
-            .and_then(|font| font.char_info_or_boundary(c).map(|ci| !ci.kerns.is_empty()))
+            .and_then(|font| font.char_info_or_boundary(c).and_then(|ci| ci.kerns()).map(|kerns| !kerns.is_empty()))
             .unwrap_or(false)
     }
 
@@ -1452,28 +1451,6 @@ impl Engine {
 
     // ------------------------------------------------- engine integration
 
-    /// Whether the text passes have anything to do for `list`: a Lua font
-    /// glyph is present, or Lua has registered a callback of the passes.
-    fn lk_wanted(&self, list: &[crate::boxes::Node]) -> bool {
-        if self.engine_kind != EngineKind::LuaTeX {
-            return false;
-        }
-        if self.cb_state(Cb::Hyphenate) > 0 || self.cb_state(Cb::Ligaturing) > 0 || self.cb_state(Cb::Kerning) > 0 {
-            return true;
-        }
-        list.iter().any(|n| matches!(n, crate::boxes::Node::LuaGlyph(_)))
-    }
-
-    /// The LuaTeX text passes on a list of the engine (a paragraph or the
-    /// contents of an hbox), as `line_break` and `filtered_hpack` run them.
-    pub(crate) fn lua_text_passes(&mut self, list: NodeList) -> NodeList {
-        if !self.lk_wanted(&list) {
-            return list;
-        }
-        let (head, tail) = self.lua_list_with_head(list);
-        self.lua_text_passes_on(head, tail);
-        self.lua_list_from_head(head)
-    }
 
     /// The passes on a list that lives in Lua behind the `temp` node `head`
     /// whose last node is `tail`.

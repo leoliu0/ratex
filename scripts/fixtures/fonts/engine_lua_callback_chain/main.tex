@@ -1,0 +1,96 @@
+\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Mono}
+\setmonofont{Latin Modern Mono}
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\begin{document}
+\ttfamily
+\directlua{
+function say(...)
+  local a = table.pack(...)
+  local t = {}
+  for i = 1, a.n do t[i] = tostring(a[i]) end
+  tex.sprint(-2, table.concat(t, " "))
+  tex.sprint("\\par")
+end
+local order = {}
+function chain_order() return rawlen(order) .. ":" .. table.concat(order, ">", math.max(1, rawlen(order) - 2)) end
+luatexbase.add_to_callback("process_input_buffer", function(line)
+  order[rawlen(order) + 1] = "first"
+  return (line:gsub("aaa", "bbb"))
+end, "engine.chain.first")
+luatexbase.add_to_callback("process_input_buffer", function(line)
+  order[rawlen(order) + 1] = "second"
+  return (line:gsub("bbb", "ccc"))
+end, "engine.chain.second")
+luatexbase.add_to_callback("process_input_buffer", function(line)
+  order[rawlen(order) + 1] = "third"
+  return line
+end, "engine.chain.third")
+}
+\directlua{say("input-chain", "aaa", "bbb", chain_order())}
+\directlua{say("order-so-far", chain_order())}
+\directlua{say("descriptions", table.concat(luatexbase.callback_descriptions("process_input_buffer"), ","))}
+\directlua{
+local f, desc = luatexbase.remove_from_callback("process_input_buffer", "engine.chain.first")
+say("removed", desc, type(f), luatexbase.in_callback("process_input_buffer", "engine.chain.first"), luatexbase.in_callback("process_input_buffer", "engine.chain.second"))
+}
+\directlua{say("after-remove", "aaa", "bbb", chain_order())}
+\directlua{
+luatexbase.remove_from_callback("process_input_buffer", "engine.chain.second")
+luatexbase.remove_from_callback("process_input_buffer", "engine.chain.third")
+say("emptied", callback.find("process_input_buffer"), table.concat(luatexbase.callback_descriptions("process_input_buffer"), ","))
+local ok = pcall(callback.register, "pre_linebreak_filter", function(h) return h end)
+say("direct-register-blocked", ok)
+}
+\directlua{
+local GLYPH = node.id("glyph")
+local seen_by_second
+luatexbase.add_to_callback("pre_linebreak_filter", function(head, groupcode)
+  for g in node.traverse_id(GLYPH, head) do
+    if g.char == string.byte("q") then g.char = string.byte("x") end
+  end
+  return true
+end, "engine.chain.keep-flag")
+luatexbase.add_to_callback("pre_linebreak_filter", function(head, groupcode)
+  local copy = node.copy_list(head)
+  for g in node.traverse_id(GLYPH, copy) do
+    if g.char == string.byte("x") then g.char = string.byte("y") end
+  end
+  return copy
+end, "engine.chain.copy-replace")
+luatexbase.add_to_callback("pre_linebreak_filter", function(head, groupcode)
+  local n = 0
+  for g in node.traverse_id(GLYPH, head) do
+    if g.char == string.byte("y") then n = n + 1 end
+  end
+  seen_by_second = n
+  return head
+end, "engine.chain.count")
+function seen() return seen_by_second end
+luatexbase.add_to_callback("pre_output_filter", function(head, groupcode, size, packtype, maxdepth, dir)
+  local tail = node.slide(head)
+  local word = node.new(GLYPH)
+  local line, last = nil, nil
+  for _, cp in utf8.codes("OUT-" .. tex.count[0]) do
+    local g = node.new(GLYPH)
+    g.font = font.current()
+    g.char = cp
+    if last then last.next = g g.prev = last else line = g end
+    last = g
+  end
+  local box = node.hpack(line)
+  node.insert_after(head, tail, box)
+  return head
+end, "engine.chain.footer")
+luatexbase.add_to_callback("stop_run", function()
+  texio.write_nl("log", "engine-stop-run-" .. (6 * 7))
+end, "engine.chain.stop")
+}
+qqq xqx qyq\par
+\directlua{say("filtered", seen(), "x-count-tracked")}
+\clearpage
+\count0=7
+\hbox{second page}
+\end{document}

@@ -228,3 +228,26 @@ end
 
 _G.kpse = kpse
 package.loaded.kpse = kpse
+
+-- A file TeX wrote with \openout sits in the job's aux/output directory, not
+-- the working directory: a Lua script reading it by its relative name (as
+-- the name was given to TeX) must see it there once it is closed. Only reads
+-- are redirected; a name present in neither place fails as usual.
+do
+  local job_input = S.job_input_path
+  local function job_name(name)
+    if type(name) == "string" then return job_input(name) or name end
+    return name
+  end
+  local base_open, base_lines, base_loadfile, base_dofile = io.open, io.lines, loadfile, dofile
+
+  function io.open(name, mode)
+    if mode == nil or mode == "" or (type(mode) == "string" and mode:find("^rb?$")) then
+      name = job_name(name)
+    end
+    return base_open(name, mode)
+  end
+  function io.lines(name, ...) return base_lines(job_name(name), ...) end
+  function loadfile(name, ...) return base_loadfile(job_name(name), ...) end
+  function dofile(name) return base_dofile(job_name(name)) end
+end

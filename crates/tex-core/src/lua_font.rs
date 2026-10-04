@@ -121,6 +121,32 @@ pub enum VfCommand {
     Scale(f32),
 }
 
+/// Exact font ToUnicode bytes, avoiding a heap allocation for short mappings.
+#[derive(Clone, Debug)]
+pub(crate) enum LuaCharToUnicode {
+    Inline { bytes: [u8; 16], len: u8 },
+    Heap(Box<[u8]>),
+}
+
+impl LuaCharToUnicode {
+    pub(crate) fn from_bytes(value: &[u8]) -> Self {
+        if value.len() <= 16 {
+            let mut bytes = [0; 16];
+            bytes[..value.len()].copy_from_slice(value);
+            Self::Inline { bytes, len: value.len() as u8 }
+        } else {
+            Self::Heap(value.into())
+        }
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        match self {
+            Self::Inline { bytes, len } => &bytes[..usize::from(*len)],
+            Self::Heap(bytes) => bytes,
+        }
+    }
+}
+
 /// Character data of a Lua font (luatex `charinfo`). Dimensions are in sp.
 #[derive(Clone, Debug)]
 pub struct LuaCharInfo {
@@ -138,22 +164,10 @@ pub struct LuaCharInfo {
     pub right_protruding: i32,
     /// Glyph index in the font program (the `index` field).
     pub index: u32,
-    pub name: Option<Vec<u8>>,
     /// ToUnicode value as UTF-16BE hex digits.
-    pub tounicode: Option<Vec<u8>>,
+    pub(crate) tounicode: Option<LuaCharToUnicode>,
     pub used: bool,
-    /// Next larger variant (math `next`).
-    pub next: Option<u32>,
-    pub extensible: Option<Extensible>,
-    pub hor_variants: Vec<MathVariant>,
-    pub vert_variants: Vec<MathVariant>,
-    pub math_kerns: MathKerns,
-    /// Kern to the following character (key: character, or
-    /// [`RIGHT_BOUNDARY`]).
-    pub kerns: FxHashMap<i32, i32>,
-    /// Ligature with the following character.
-    pub ligatures: FxHashMap<i32, LuaLig>,
-    pub commands: Option<Vec<VfCommand>>,
+    pub(crate) extras: Option<Box<LuaCharExtras>>,
 }
 
 impl Default for LuaCharInfo {
@@ -170,18 +184,104 @@ impl Default for LuaCharInfo {
             left_protruding: 0,
             right_protruding: 0,
             index: 0,
-            name: None,
             tounicode: None,
             used: false,
-            next: None,
-            extensible: None,
-            hor_variants: Vec::new(),
-            vert_variants: Vec::new(),
-            math_kerns: MathKerns::default(),
-            kerns: FxHashMap::default(),
-            ligatures: FxHashMap::default(),
-            commands: None,
+            extras: None,
         }
+    }
+}
+
+/// Out-of-line data absent from ordinary glyphs. Presence-valued fields must
+/// remain distinct from their default payload (`next = 0`, an empty packet).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct LuaCharExtras {
+    pub name: Option<Vec<u8>>,
+    pub next: Option<u32>,
+    pub extensible: Option<Extensible>,
+    pub hor_variants: Vec<MathVariant>,
+    pub vert_variants: Vec<MathVariant>,
+    pub math_kerns: MathKerns,
+    pub kerns: FxHashMap<i32, i32>,
+    pub ligatures: FxHashMap<i32, LuaLig>,
+    pub commands: Option<Vec<VfCommand>>,
+}
+
+impl LuaCharExtras {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.name.is_none()
+            && self.next.is_none()
+            && self.extensible.is_none()
+            && self.hor_variants.is_empty()
+            && self.vert_variants.is_empty()
+            && self.math_kerns.is_empty()
+            && self.kerns.is_empty()
+            && self.ligatures.is_empty()
+            && self.commands.is_none()
+    }
+}
+
+impl MathKerns {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.top_right.is_empty()
+            && self.top_left.is_empty()
+            && self.bottom_right.is_empty()
+            && self.bottom_left.is_empty()
+    }
+}
+
+impl LuaCharInfo {
+    #[inline]
+    pub fn name(&self) -> Option<&[u8]> {
+        self.extras.as_deref().and_then(|extra| extra.name.as_deref())
+    }
+
+    #[inline]
+    pub fn tounicode(&self) -> Option<&[u8]> {
+        self.tounicode.as_ref().map(LuaCharToUnicode::as_bytes)
+    }
+
+    #[inline]
+    pub fn next(&self) -> Option<u32> {
+        self.extras.as_deref().and_then(|extra| extra.next)
+    }
+
+    #[inline]
+    pub fn extensible(&self) -> Option<Extensible> {
+        self.extras.as_deref().and_then(|extra| extra.extensible)
+    }
+
+    #[inline]
+    pub fn hor_variants(&self) -> &[MathVariant] {
+        self.extras.as_deref().map_or(&[], |extra| extra.hor_variants.as_slice())
+    }
+
+    #[inline]
+    pub fn vert_variants(&self) -> &[MathVariant] {
+        self.extras.as_deref().map_or(&[], |extra| extra.vert_variants.as_slice())
+    }
+
+    #[inline]
+    pub fn math_kerns(&self) -> Option<&MathKerns> {
+        self.extras.as_deref().map(|extra| &extra.math_kerns)
+    }
+
+    #[inline]
+    pub fn kerns(&self) -> Option<&FxHashMap<i32, i32>> {
+        self.extras.as_deref().map(|extra| &extra.kerns)
+    }
+
+    #[inline]
+    pub fn ligatures(&self) -> Option<&FxHashMap<i32, LuaLig>> {
+        self.extras.as_deref().map(|extra| &extra.ligatures)
+    }
+
+    #[inline]
+    pub fn commands(&self) -> Option<&[VfCommand]> {
+        self.extras.as_deref().and_then(|extra| extra.commands.as_deref())
+    }
+
+    pub(crate) fn extras_mut(&mut self) -> &mut LuaCharExtras {
+        self.extras.get_or_insert_with(|| Box::new(LuaCharExtras::default()))
     }
 }
 
@@ -271,12 +371,12 @@ impl LuaFont {
     /// luatex `raw_get_kern`: the kern between `left` and `right` (either may
     /// be a boundary character) when the font defines one.
     pub fn kern(&self, left: i32, right: i32) -> Option<i32> {
-        self.char_info_or_boundary(left)?.kerns.get(&right).copied()
+        self.char_info_or_boundary(left)?.kerns()?.get(&right).copied()
     }
 
     /// luatex `get_ligature`.
     pub fn lig(&self, left: i32, right: i32) -> Option<LuaLig> {
-        self.char_info_or_boundary(left)?.ligatures.get(&right).copied()
+        self.char_info_or_boundary(left)?.ligatures()?.get(&right).copied()
     }
 
     /// luatex `quick_char_exists`.
@@ -518,7 +618,9 @@ impl Engine {
             let mut codes: Vec<u32> = lua
                 .chars
                 .iter()
-                .filter(|(&c, ci)| c < 256 && (!ci.kerns.is_empty() || !ci.ligatures.is_empty()))
+                .filter(|(&c, ci)| {
+                    c < 256 && ci.extras.as_deref().is_some_and(|extra| !extra.kerns.is_empty() || !extra.ligatures.is_empty())
+                })
                 .map(|(&c, _)| c)
                 .collect();
             codes.sort_unstable();
@@ -526,11 +628,11 @@ impl Engine {
             let mut programs: Vec<crate::tfm::LigStep> = Vec::new();
             let mut jumps = Vec::new();
             for &c in &codes {
-                let ci = &lua.chars[&c];
-                let mut nexts: Vec<i32> = ci
+                let Some(extra) = lua.chars[&c].extras.as_deref() else { continue };
+                let mut nexts: Vec<i32> = extra
                     .kerns
                     .keys()
-                    .chain(ci.ligatures.keys())
+                    .chain(extra.ligatures.keys())
                     .copied()
                     .filter(|n| (0..256).contains(n))
                     .collect();
@@ -538,9 +640,9 @@ impl Engine {
                 nexts.dedup();
                 let mut steps = Vec::new();
                 for n in nexts {
-                    if let Some(l) = ci.ligatures.get(&n).filter(|l| l.replacement < 256) {
+                    if let Some(l) = extra.ligatures.get(&n).filter(|l| l.replacement < 256) {
                         steps.push(crate::tfm::LigStep { skip: 0, next_char: n as u8, op: l.op, rem: l.replacement as u8, stop: false });
-                    } else if let Some(&k) = ci.kerns.get(&n) {
+                    } else if let Some(&k) = extra.kerns.get(&n) {
                         let idx = font.kerns.iter().position(|&x| x == k).unwrap_or_else(|| {
                             font.kerns.push(k);
                             font.kerns.len() - 1
@@ -592,7 +694,7 @@ impl Engine {
                     font.type1_path = Some(String::from_utf8_lossy(file).into_owned());
                     let mut names = vec![String::new(); 256];
                     for (&code, ci) in lua.chars.iter() {
-                        if let (true, Some(glyph)) = (code < 256, &ci.name) {
+                        if let (true, Some(glyph)) = (code < 256, ci.name()) {
                             names[code as usize] = String::from_utf8_lossy(glyph).into_owned();
                         }
                     }
@@ -827,7 +929,7 @@ impl Engine {
     }
 
     /// `font.settounicode`.
-    pub(crate) fn lua_set_tounicode(&mut self, f: FontId, code: i64, value: Option<Vec<u8>>) {
+    pub(crate) fn lua_set_tounicode(&mut self, f: FontId, code: i64, value: Option<LuaCharToUnicode>) {
         let Ok(code) = u32::try_from(code) else { return };
         if let Some(lf) = self.lua_font_mut(f) {
             if let Some(ci) = lf.chars.get_mut(&code) {

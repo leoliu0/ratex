@@ -42,12 +42,120 @@ pub struct EmbeddedFontFace {
     pub opsize: [i32; 5],
 }
 
+/// Complete Lua font-loader metadata for an immutable embedded SFNT face.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EmbeddedFontInfo {
+    pub face_index: u32,
+    pub fontname: &'static str,
+    pub fullname: &'static str,
+    pub familyname: &'static str,
+    pub copyright: &'static str,
+    pub version: &'static str,
+    pub units_per_em: u16,
+    pub glyph_count: u16,
+    pub ascent: i16,
+    /// Raw signed descender; the Lua metadata reports its negation.
+    pub descender: i16,
+    /// Exact `f32::to_bits()` of the italic angle (zero when absent).
+    pub italic_angle_bits: u32,
+    pub weight: u16,
+    pub width: u16,
+}
+
 /// All native font faces available in the embedded packages archive.
 pub fn embedded_font_faces() -> &'static [EmbeddedFontFace] {
     if fs::embedded_allowed() {
         EMBEDDED_FONT_FACES
     } else {
         &[]
+    }
+}
+
+fn embedded_font_entry(path: &str) -> Option<[u32; 5]> {
+    if !fs::embedded_allowed() {
+        return None;
+    }
+    let entry = embedded_tree::path_file_entry(path)?;
+    let position = PACKAGE_FONT_INFO.binary_search_by(|[member, _, _, _, _]| {
+        (member as usize).cmp(&entry)
+    })?;
+    PACKAGE_FONT_INFO.get(position)
+}
+
+/// Complete metadata in face-index order for one exact embedded virtual font
+/// file. Bare names and local paths never qualify. No font payload is decoded.
+pub fn embedded_font_info(path: &str) -> Option<&'static [EmbeddedFontInfo]> {
+    let [_, start, count, _, _] = embedded_font_entry(path)?;
+    let start = start as usize;
+    EMBEDDED_FONT_INFOS.get(start..start.checked_add(count as usize)?)
+}
+
+/// An immutable font opened while embedded-file access is allowed. Its small
+/// metadata ranges are exact program bytes, not a substitute font or parsed
+/// metadata approximation. Other reads materialize the original program.
+#[derive(Clone, Copy, Debug)]
+pub struct EmbeddedFontFile {
+    member: usize,
+    length: usize,
+    window_start: usize,
+    window_end: usize,
+}
+
+impl EmbeddedFontFile {
+    pub fn open(path: &str) -> Option<Self> {
+        let [member, _, _, start, count] = embedded_font_entry(path)?;
+        let [_, _, _, _, length, _] = PACKAGE_INDEX.get(member as usize)?;
+        Some(Self {
+            member: member as usize,
+            length: length as usize,
+            window_start: start as usize,
+            window_end: start.checked_add(count)? as usize,
+        })
+    }
+
+    pub fn len(&self) -> usize {
+        self.length
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.length == 0
+    }
+
+    /// A zero-based, end-exclusive read served entirely by one stored range.
+    /// `None` means the caller must read the complete original program.
+    pub fn metadata_slice(&self, start: usize, end: usize) -> Option<&'static [u8]> {
+        if start > end || end > self.length {
+            return None;
+        }
+        if start == end {
+            return Some(&[]);
+        }
+        let (mut low, mut high) = (self.window_start, self.window_end);
+        while low < high {
+            let middle = low + (high - low) / 2;
+            let [offset, _, length] = FONT_METADATA_WINDOWS.get(middle)?;
+            if offset as usize + length as usize <= start {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        if low == self.window_end {
+            return None;
+        }
+        let [offset, data, length] = FONT_METADATA_WINDOWS.get(low)?;
+        let offset = offset as usize;
+        if start < offset || end > offset + length as usize {
+            return None;
+        }
+        let data = data as usize;
+        FONT_METADATA_BYTES.get(data + start - offset..data + end - offset)
+    }
+
+    /// Preserve an already-open file's access even if a later host scope
+    /// disables new embedded opens, just as an owned decoded buffer does.
+    pub fn read_all(&self) -> Option<Vec<u8>> {
+        read_package_entry(self.member)
     }
 }
 

@@ -239,7 +239,7 @@ jobs:
             collection-langgreek
             collection-langspanish
 
-      - name: Linux full independent-viewer font verification gate
+      - name: Linux font and engine compatibility gate
         if: matrix.platform == 'linux'
         run: |
           python3 scripts/test_fonts.py \
@@ -247,10 +247,22 @@ jobs:
             --output /tmp/font-evidence-full \
             --require-isolation \
             --require-pdfjs \
+            --timeout 180 \
             --reference-pdflatex "$(command -v pdflatex)" \
             --reference-xelatex "$(command -v xelatex)" \
             --reference-lualatex "$(command -v lualatex)" \
             --reference-texlive 2026
+
+      - name: Preserve engine compatibility evidence
+        if: always() && matrix.platform == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-compatibility-${{ matrix.label }}
+          path: |
+            /tmp/font-evidence-full/report.json
+            /tmp/font-evidence-full/cases/
+          retention-days: 14
+          if-no-files-found: ignore
 
       - name: Package distribution (unix)
         if: matrix.platform != 'windows'

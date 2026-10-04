@@ -1044,6 +1044,10 @@ impl Engine {
                     self.clear_prefixes();
                     return true;
                 }
+                if self.xetex_native_font_code_assign(f, p) {
+                    self.clear_prefixes();
+                    return true;
+                }
                 let command = match p {
                     EfCode => "\\efcode",
                     LpCode => "\\lpcode",

@@ -150,6 +150,8 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
                 "depth" => n(info.depth),
                 "xsize" => n(info.image_width),
                 "ysize" => n(info.image_height),
+                "xres" => n(info.x_res),
+                "yres" => n(info.y_res),
                 "rotation" => n(info.rotate),
                 "bbox" => (
                     None,

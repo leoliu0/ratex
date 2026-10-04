@@ -189,7 +189,7 @@ jobs:
             collection-langgreek
             collection-langspanish
 
-      - name: Linux full independent-viewer font verification gate
+      - name: Linux font and engine compatibility gate
         if: runner.os == 'Linux'
         run: |
           python3 scripts/test_fonts.py \
@@ -197,10 +197,22 @@ jobs:
             --output target/font-evidence-full \
             --require-isolation \
             --require-pdfjs \
+            --timeout 180 \
             --reference-pdflatex "$(command -v pdflatex)" \
             --reference-xelatex "$(command -v xelatex)" \
             --reference-lualatex "$(command -v lualatex)" \
             --reference-texlive 2026
+
+      - name: Preserve engine compatibility evidence
+        if: always() && runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-compatibility-linux
+          path: |
+            target/font-evidence-full/report.json
+            target/font-evidence-full/cases/
+          retention-days: 14
+          if-no-files-found: ignore
 
       - name: Artifact font smoke (macos)
         if: runner.os == 'macOS'

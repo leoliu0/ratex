@@ -527,9 +527,18 @@ fn find_one(name: &str, fmt: &FormatInfo) -> Option<PathBuf> {
     if tex_kpse::embedded_tree::is_embedded_path(name) {
         return is_file(name).then(|| PathBuf::from(name));
     }
-    let found = with_engine(|e| match fmt.search {
-        Search::Format(format) => e.font_loader.kpse.find(name, format),
-        Search::Any => candidates(name, fmt).iter().find_map(|c| e.font_loader.kpse.find_any(c)),
+    let found = with_engine(|e| {
+        let names = match fmt.search {
+            Search::Format(format) => tex_kpse::Kpse::candidates(name, format),
+            Search::Any => candidates(name, fmt),
+        };
+        if let Some(path) = e.find_job_output_file(&names) {
+            return Some(path);
+        }
+        match fmt.search {
+            Search::Format(format) => e.font_loader.kpse.find(name, format),
+            Search::Any => names.iter().find_map(|c| e.font_loader.kpse.find_any(c)),
+        }
     })
     .ok()
     .flatten();
@@ -847,6 +856,13 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
     sys_reg!(lua, s, "kpse_show_path", |program: LuaString, format: i64| -> Option<LuaBytes> {
         let fmt = FORMATS.get(format as usize)?;
         Some(LuaBytes(show_path(&s_of(&program), fmt).into_bytes()))
+    });
+    // a relative file name that TeX wrote into the job's output directories
+    sys_reg!(lua, s, "job_input_path", |name: LuaString| -> Option<LuaBytes> {
+        let bytes = bytes_of(&name);
+        let text = std::str::from_utf8(&bytes).ok()?;
+        let path = with_engine(|e| e.find_job_output_file(&[text])).ok().flatten()?;
+        Some(LuaBytes(path_bytes(&path)))
     });
     sys_reg!(lua, s, "kpse_readable_file", |name: LuaString| -> Option<LuaBytes> {
         let bytes = bytes_of(&name);

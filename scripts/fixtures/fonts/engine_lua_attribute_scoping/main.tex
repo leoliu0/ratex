@@ -1,0 +1,74 @@
+\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Mono}
+\setmonofont{Latin Modern Mono}
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\begin{document}
+\ttfamily
+\attributedef\xform=240
+\attributedef\xtag=241
+\directlua{
+function say(...)
+  local a = table.pack(...)
+  local t = {}
+  for i = 1, a.n do t[i] = tostring(a[i]) end
+  tex.sprint(-2, table.concat(t, " "))
+  tex.sprint("\\par")
+end
+xform = 240
+xtag = 241
+local glyph_id = node.id("glyph")
+census = {}
+local function transform(head)
+  for g in node.traverse_id(glyph_id, head) do
+    local mode = node.has_attribute(g, xform)
+    local key = tostring(mode)
+    census[key] = (census[key] or 0) + 1
+    if mode == 1 then
+      g.char = g.char - 32
+    elseif mode == 2 then
+      g.char = g.char + 1
+    elseif mode == 3 then
+      node.unset_attribute(g, xform)
+      node.set_attribute(g, xtag, 9)
+    end
+  end
+  return true
+end
+local function both(head) return transform(head) end
+luatexbase.add_to_callback("pre_linebreak_filter", both, "engine.attr.paragraph")
+luatexbase.add_to_callback("hpack_filter", function(head, group) return transform(head) end, "engine.attr.hpack")
+}
+\xform=1 upper \xform=2 abc\par
+\xform=-"7FFFFFFF plain {\xform=1 grouped} after \hbox{\xform=2 box} tail\par
+{\xform=1 outer {\xform=2 inner} restored}\par
+\xform=3 mark\par
+\xform=-"7FFFFFFF
+\directlua{
+local keys = {}
+for k in pairs(census) do keys[rawlen(keys) + 1] = k end
+table.sort(keys)
+for _, k in ipairs(keys) do keys[_] = k .. "=" .. census[k] end
+say("census", table.concat(keys, ","))
+}
+\setbox0\hbox{\xform=2 \xtag=7 xy}
+\directlua{
+local list = tex.box[0].list
+local first = list
+say("attrs", node.has_attribute(first, xform), node.has_attribute(first, xtag), node.has_attribute(first, 1000))
+local copy = node.copy(first)
+say("copy", node.has_attribute(copy, xform), node.has_attribute(copy, xtag), copy.char == first.char, copy.next, copy ~= first)
+node.set_attribute(copy, xtag, 55)
+node.unset_attribute(copy, xform)
+say("independent", node.has_attribute(first, xtag), node.has_attribute(copy, xtag), node.has_attribute(first, xform), node.has_attribute(copy, xform))
+local fresh = node.new("glyph")
+say("fresh", node.has_attribute(fresh, xform), fresh.attr == nil or node.has_attribute(fresh, xform) == nil)
+node.free(copy) node.free(fresh)
+}
+\setbox0\hbox{\xform=2 \xtag=7 xy}
+\directlua{
+local h = tex.box[0]
+say("hbox-attrs", node.has_attribute(h, xform), node.has_attribute(h, xtag))
+}
+\end{document}

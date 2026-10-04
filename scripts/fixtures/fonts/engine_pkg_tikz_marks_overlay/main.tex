@@ -1,0 +1,36 @@
+\documentclass[11pt]{article}
+\usepackage[a5paper,margin=16mm]{geometry}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+\setsansfont{Latin Modern Sans}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,tikzmark,calc,fit,shapes.misc}
+\newcommand{\hl}[2]{\tikz[remember picture,baseline=(#1.base)]\node[inner sep=0pt,outer sep=0pt,anchor=base] (#1) {#2};}
+
+\begin{document}
+\section*{Annotating prose with remembered positions}
+A \hl{subj}{compiler} translates a \hl{obj}{program} into another language, while an
+\hl{int}{interpreter} executes it directly. Every \hl{tool}{toolchain} combines them,
+so the arrows below can only be placed once the second pass knows where each word landed.
+
+\begin{tikzpicture}[remember picture,overlay,>={Stealth[length=2mm]},every node/.style={font=\sffamily\scriptsize}]
+  \draw[->,thick,blue] (subj.north) to[bend left=35] node[above] {translates} (obj.north);
+  \draw[->,thick,red!70!black] (int.south) to[bend right=35] node[below] {executes} (obj.south);
+  \node[draw,rounded corners,fill=yellow!20,fit=(tool),inner sep=1.5pt] {};
+\end{tikzpicture}
+
+\bigskip
+Second paragraph with a \tikzmark{start}tikzmark start, filler text that runs for a
+while to force the wrapped line to be longer than one full line of the narrow measure
+here, and the \tikzmark{stop}tikzmark stop.
+
+\begin{tikzpicture}[remember picture,overlay]
+  \fill[green!25,opacity=.5] ($(pic cs:start)+(-1pt,-2pt)$) rectangle ($(pic cs:stop)+(1pt,9pt)$);
+  \node[anchor=west,font=\sffamily\scriptsize,text=green!40!black] at ($(pic cs:stop)+(4mm,0)$) {span end};
+\end{tikzpicture}
+
+\vspace{2.2cm}
+The \texttt{remember picture} option writes node positions to the \texttt{.aux}
+file; this paragraph sits below two overlays that have been resolved.
+\end{document}

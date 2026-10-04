@@ -1,0 +1,46 @@
+\documentclass{article}
+\usepackage{unicode-math}
+\setmainfont{Latin Modern Roman}
+\setmonofont{Latin Modern Mono}
+\setmathfont{Latin Modern Math}
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\begin{document}
+\ttfamily
+\directlua{
+function say(...)
+  local a = table.pack(...)
+  local t = {}
+  for i = 1, a.n do t[i] = tostring(a[i]) end
+  tex.sprint(-2, table.concat(t, " "))
+  tex.sprint("\\par")
+end
+calls = {}
+local GLYPH = node.id("glyph")
+local function noad_names(head)
+  local names = {}
+  for n in node.traverse(head) do names[rawlen(names) + 1] = node.type(n.id) end
+  return table.concat(names, "+")
+end
+local first = true
+luatexbase.add_to_callback("mlist_to_hlist", function(head, style, penalties)
+  calls[rawlen(calls) + 1] = style .. ":" .. noad_names(head)
+  local result = node.mlist_to_hlist(head, style, penalties)
+  for g in node.traverse_id(GLYPH, result) do
+    if g.char == 119886 then g.char = 119911 end
+    if g.char == 119909 then g.char = 119910 end
+  end
+  return result
+end, "engine.mlist.swap")
+function noads() return table.concat(calls, " ") end
+}
+\setlength{\fboxsep}{0pt}
+Inline $a+x$ and $x^{2}$ then \directlua{say("calls", noads())}
+\[ a = \frac{x}{x} \]
+\directlua{say("after-display", noads())}
+\setbox0\hbox{$a$}\directlua{
+local g = node.has_glyph(tex.box[0].list)
+say("swapped", g.char, utf8.char(g.char) == utf8.char(119911))
+}
+\setbox1\hbox{$z$}\directlua{say("same-width", tex.box[0].width == tex.box[1].width, tex.box[0].width)}
+\end{document}

@@ -1,0 +1,72 @@
+\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+\setmonofont{Latin Modern Mono}
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\begin{document}
+\ttfamily
+\directlua{
+function say(...)
+  local a = table.pack(...)
+  local t = {}
+  for i = 1, a.n do t[i] = tostring(a[i]) end
+  tex.sprint(-2, table.concat(t, " "))
+  tex.sprint("\\par")
+end
+function failure(label, ok, value, marker)
+  if marker then
+    say(label, ok, type(value), type(value) == "string" and string.find(value, marker, 1, true) ~= nil)
+  else
+    say(label, ok, type(value))
+  end
+end
+local ok, e = pcall(function() error("boom") end)
+failure("string", ok, e, "boom")
+ok, e = pcall(function() error("level0", 0) end)
+say("level0", ok, e == "level0")
+ok, e = pcall(function() error("level2", 2) end)
+say("level2", ok, e == "level2")
+ok, e = pcall(error, {code = 6 * 7, text = "table"})
+say("table", ok, type(e), e.code, e.text)
+local mt = {__tostring = function(self) return "custom:" .. self.id end}
+ok, e = pcall(error, setmetatable({id = 7}, mt))
+say("metatable", ok, tostring(e), getmetatable(e) == mt)
+ok, e = pcall(function() local t = nil; return t.field end)
+failure("index-nil", ok, e)
+ok, e = pcall(function() return 1 + {} end)
+failure("arith", ok, e)
+ok, e = pcall(string.rep)
+failure("badarg", ok, e)
+ok, e = pcall(function() assert(false, "assert-text") end)
+failure("assert", ok, e, "assert-text")
+ok, e = pcall(function() assert(nil) end)
+failure("assert-default", ok, e)
+ok, e = pcall(function() assert(false, {kind = "obj"}) end)
+say("assert-object", ok, type(e), e.kind)
+say("multi", select("#", pcall(function() return 1, 2, 3 end)), select(2, pcall(function() return 1, 2, 3 end)))
+local ok2, tb = xpcall(function() error("deep") end, function(m) return "handled:" .. m end)
+say("xpcall", ok2, type(tb), tb:sub(1, 8) == "handled:", string.find(tb, "deep", 1, true) ~= nil)
+ok2, tb = xpcall(function(a, b) return a + b end, print, 20, 22)
+say("xpcall-args", ok2, tb)
+ok2, tb = xpcall(function() error("inner") end, function(m) error("handler-fails") end)
+say("handler-error", ok2, type(tb))
+local co = coroutine.create(function() coroutine.yield(1) error("in-coroutine") end)
+say("coroutine", coroutine.resume(co))
+local resumed, value = coroutine.resume(co)
+failure("coroutine", resumed, value, "in-coroutine")
+resumed, value = coroutine.resume(co)
+failure("dead-coroutine", resumed, value)
+local wrapped = coroutine.wrap(function() error("wrapped-error") end)
+ok, e = pcall(wrapped)
+failure("wrap", ok, e, "wrapped-error")
+local loaded, chunk, message = pcall(load, "return +")
+say("load", loaded, chunk, type(message))
+ok, e = pcall(function() return tex.count[70000] end)
+failure("register", ok, e)
+ok, e = pcall(function() tex.count[1] = "x" end)
+failure("register-type", ok, e)
+ok, e = pcall(node.new, "nosuchnode")
+failure("node", ok, e)
+}
+\end{document}

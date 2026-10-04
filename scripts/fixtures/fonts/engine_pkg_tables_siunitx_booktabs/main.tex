@@ -1,0 +1,54 @@
+\documentclass[10pt]{article}
+\usepackage[a5paper,landscape,margin=12mm]{geometry}
+\usepackage{fontspec}
+\setmainfont{TeX Gyre Termes}
+\setsansfont{TeX Gyre Heros}
+\usepackage{array,booktabs,tabularx,multirow,colortbl}
+\usepackage{xcolor}
+\usepackage{siunitx}
+\sisetup{round-mode=places,round-precision=2,table-format=3.2,detect-weight=true,detect-family=true}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\begin{document}
+\section*{Sensor calibration}
+\rowcolors{2}{gray!12}{white}
+\begin{table}[h]
+\centering
+\caption{Measured values with aligned decimals.}
+\begin{tabular}{@{}l S[table-format=2.3] S[table-format=3.1] S[table-format=-1.2e-1] r@{}}
+\toprule
+\textbf{Channel} & {\textbf{Gain}} & {\textbf{Offset}} & {\textbf{Drift}} & \textbf{Status}\\
+\midrule
+Ch.\,A & 1.234 & 12.5 & 3.2e-3 & ok\\
+Ch.\,B & 12.345 & 105.25 & -1.75e-2 & ok\\
+Ch.\,C & 0.5 & 7.0 & 4.8e-1 & \textbf{fail}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{tabularx}{\linewidth}{@{}>{\bfseries}l Y >{\centering\arraybackslash}m{36mm}@{}}
+\toprule
+Quantity & Description & Value\\
+\midrule
+$g$ & standard gravity near sea level & \SI{9.80665}{\meter\per\second\squared}\\
+$c$ & speed of light in vacuum, defined exactly & \SI{299792458}{\meter\per\second}\\
+$k_{\mathrm B}$ & Boltzmann constant & \SI{1.380649e-23}{\joule\per\kelvin}\\
+\midrule
+\multicolumn{2}{@{}l}{Rounded to two places with \texttt{round-mode}} & \num{3.14159265}\\
+\bottomrule
+\end{tabularx}
+
+\bigskip
+\begin{tabular}{@{}l c c c@{}}
+\toprule
+ & \multicolumn{3}{c}{Temperature (\unit{\celsius})}\\
+\cmidrule(lr){2-4}
+City & Min & Mean & Max\\
+\midrule
+Oslo & \num{-8} & \num{4.6} & \num{21}\\
+\multirow{2}{*}{Cairo} & \num{9} & \num{22.5} & \num{41}\\
+ & \multicolumn{3}{c}{\textit{seasonal range}}\\
+\bottomrule
+\end{tabular}
+\end{document}

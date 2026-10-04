@@ -1,0 +1,50 @@
+\documentclass[10pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage{mathpazo}
+\usepackage[a5paper,margin=16mm]{geometry}
+\usepackage{amsmath,amsthm,mathtools}
+\usepackage{microtype}
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}[theorem]{Lemma}
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}
+\DeclarePairedDelimiter{\ceil}{\lceil}{\rceil}
+\DeclarePairedDelimiterX{\inner}[2]{\langle}{\rangle}{#1,\,#2}
+\mathtoolsset{mathic=true}
+
+\begin{document}
+\section{Bounds from Cauchy--Schwarz}
+\begin{definition}
+The \emph{energy} of $v\in\mathbb{R}^{n}$ is $\mathcal{E}(v)\coloneqq\sum_{i=1}^{n}v_i^{2}$.
+\end{definition}
+\begin{lemma}[Cauchy--Schwarz]\label{lem:cs}
+For all $u,v\in\mathbb{R}^{n}$,
+\begin{equation}
+  \inner{u}{v}^{2}\le \mathcal{E}(u)\,\mathcal{E}(v).
+\end{equation}
+\end{lemma}
+\begin{proof}
+Expand $0\le\sum_{i,j}(u_iv_j-u_jv_i)^{2}$ and divide by two.
+\end{proof}
+\begin{theorem}\label{thm:mean}
+For positive reals $a_1,\dots,a_n$ the arithmetic mean dominates the geometric mean:
+\begin{align}
+  \frac{a_1+\dotsb+a_n}{n} &\ge \sqrt[n]{a_1\cdots a_n},\\
+  \ceil*{\frac{n+1}{2}} &\le n \qquad (n\ge1).
+\end{align}
+\end{theorem}
+\begin{proof}
+Apply Lemma~\ref{lem:cs} with $u_i=\sqrt{a_i}$ and $v_i=1/\sqrt{a_i}$ to obtain
+$n^{2}\le\bigl(\sum a_i\bigr)\bigl(\sum a_i^{-1}\bigr)$.
+\end{proof}
+
+\paragraph{Display variety.}
+\begin{alignat*}{2}
+  \int_0^{\pi}\sin x\,dx &= 2, &\qquad \sum_{k=1}^{\infty}\frac{1}{k^{2}} &= \frac{\pi^{2}}{6},\\
+  \mathbb{E}[X] &= \smashoperator{\sum_{x\in\Omega}}x\,p(x), & \operatorname*{arg\,min}_{t} f(t) &\in \mathbb{R}.
+\end{alignat*}
+\[
+  \begin{pmatrix} a & b\\ c & d\end{pmatrix}^{-1}
+  =\frac{1}{ad-bc}\begin{pmatrix}\hphantom{-}d & -b\\ -c & \hphantom{-}a\end{pmatrix}
+\]
+\end{document}

@@ -1,0 +1,63 @@
+\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+\setmonofont{Latin Modern Mono}
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\begin{document}
+\ttfamily
+\newcommand\xshow[1]{[#1]}
+\newcounter{pcount}
+\newcatcodetable\barcat
+\initcatcodetable\barcat
+\directlua{
+function say(...)
+  local a = table.pack(...)
+  local t = {}
+  for i = 1, a.n do t[i] = tostring(a[i]) end
+  tex.sprint(-2, table.concat(t, " "))
+  tex.sprint("\\par")
+end
+local specials = string.char(35, 126, 95, 94, 38, 36, 37, 123, 125)
+local bs = string.char(92)
+for code, cat in pairs{[124] = 0, [123] = 1, [125] = 2, [92] = 12} do
+  tex.setcatcode(\the\barcat, code, cat)
+end
+say("table-catcodes", tex.getcatcode(\the\barcat, 124), tex.getcatcode(\the\barcat, 92), tex.getcatcode(92), tex.getcatcode(124))
+
+--[[ default regime: the current catcodes, so a macro is called ]]
+tex.print("A1 " .. bs .. "xshow{x}" .. bs .. "par")
+--[[ -2: every character other than space is made catcode 12, nothing is executed ]]
+tex.print(-2, "A2 " .. bs .. "xshow{x}")
+tex.sprint("\\par")
+--[[ -1: control sequence names, no catcode 12 characters: the macro runs again ]]
+tex.print(-1, "A3 " .. bs .. "xshow{x}")
+tex.sprint("\\par")
+--[[ a saved catcode table: | is the escape character, the backslash is not special ]]
+tex.print(\the\barcat, "A4 |xshow{y}|par")
+tex.print(\the\barcat, "A4b " .. bs .. "xshow{y}")
+tex.sprint("\\par")
+--[[ sprint(-2): all of TeX's special characters survive as plain characters ]]
+tex.sprint(-2, "A5 ", specials)
+tex.sprint("\\par")
+--[[ sprint pieces are joined without separators, print lines are joined by the line end ]]
+tex.sprint("A6 ", bs .. "xshow", "{", "z", "}", bs .. "par")
+tex.print("A7 line1", "line2", bs .. "par")
+tex.print("A8 ", "x")
+tex.print(bs .. "par")
+--[[ token lists: {catcode, text} and created tokens ]]
+tex.tprint({11, "T1 "}, {12, "tt-"}, {token.create("xshow"), token.new(123, 1), token.new(90, 11), token.new(125, 2)}, {token.create("par")})
+tex.cprint(12, "C1 " .. bs .. "xshow{x}")
+tex.sprint("\\par")
+tex.write("W1 " .. bs .. "xshow{w}")
+tex.sprint("\\par")
+}
+\edef\foo{\directlua{tex.sprint("E1 \\string\\xshow")}}
+\edef\bar{\directlua{tex.sprint(-2, "E2 \\string\\xshow")}}
+\directlua{say("edef", string.len(token.get_macro("foo")), string.len(token.get_macro("bar")), token.get_macro("foo") == token.get_macro("bar"))}
+\texttt{\detokenize\expandafter{\foo}}\par
+\setcounter{pcount}{\directlua{tex.sprint(6 * 7)}}
+\directlua{say("counter", tex.count["c@pcount"], token.get_macro("thepcount"))}
+\directlua{say("hash", "a" .. string.char(35) .. "b")}
+\directlua{tex.sprint(-2, "H2 a#b")}\par
+\end{document}

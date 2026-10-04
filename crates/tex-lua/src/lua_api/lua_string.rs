@@ -71,7 +71,7 @@ pub struct LuaBytes(pub Vec<u8>);
 impl IntoLua for LuaBytes {
     fn into_lua(self, state: &mut LuaState) -> Result<usize, String> {
         let value = state
-            .create_bytes(&self.0)
+            .create_binary(self.0)
             .map_err(|e| format!("{:?}", e))?;
         state.push_value(value).map_err(|e| format!("{:?}", e))?;
         Ok(1)

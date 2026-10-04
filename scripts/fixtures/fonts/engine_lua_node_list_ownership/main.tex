@@ -1,0 +1,95 @@
+\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{Latin Modern Roman}
+\setmonofont{Latin Modern Mono}
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\begin{document}
+\ttfamily
+\directlua{
+function say(...)
+  local a = table.pack(...)
+  local t = {}
+  for i = 1, a.n do t[i] = tostring(a[i]) end
+  tex.sprint(-2, table.concat(t, " "))
+  tex.sprint("\\par")
+end
+local GLYPH, KERN, GLUE, HLIST = node.id("glyph"), node.id("kern"), node.id("glue"), node.id("hlist")
+function make_word(text)
+  local head, tail
+  for _, cp in utf8.codes(text) do
+    local g = node.new(GLYPH)
+    g.font = font.current()
+    g.char = cp
+    g.lang = 0
+    if tail then
+      tail.next = g
+      g.prev = tail
+    else
+      head = g
+    end
+    tail = g
+  end
+  return head, tail
+end
+function spell(head)
+  local s = {}
+  for n in node.traverse(head) do
+    if n.id == GLYPH then s[rawlen(s) + 1] = utf8.char(n.char)
+    elseif n.id == GLUE then s[rawlen(s) + 1] = "_"
+    elseif n.id == KERN then s[rawlen(s) + 1] = "k"
+    else s[rawlen(s) + 1] = "?" end
+  end
+  return table.concat(s)
+end
+function reverse(head)
+  local out
+  while head do
+    local n = head
+    head = node.remove(head, n)
+    n.next = nil
+    out = node.insert_before(out, out, n)
+  end
+  return out
+end
+
+local head, tail = make_word("ratex")
+say("built", spell(head), node.count(GLYPH, head), node.length(head), tail.char == string.byte("x"), node.tail(head) == tail, node.slide(head) == tail)
+local twin = node.copy_list(head)
+say("twin", spell(twin), twin ~= head, node.length(twin))
+local middle = node.copy(node.tail(twin).prev)
+node.insert_after(twin, node.tail(twin), middle)
+twin = node.insert_before(twin, twin, node.new(KERN))
+say("edited", spell(twin), spell(head), node.length(twin), node.length(head))
+twin = node.remove(twin, twin)
+local rev = reverse(twin)
+say("reversed", spell(rev), spell(head))
+local box = node.hpack(rev)
+tex.box[0] = box
+say("owned", box.id == HLIST, spell(box.list), box.width > 0)
+saved_head = head
+}
+\copy0\par
+\leavevmode\directlua{
+local head = saved_head
+local piece = node.copy_list(head)
+node.write(piece)
+local before = spell(piece)
+local second = node.copy_list(head)
+node.write(second)
+tex.sprint("\\par")
+say("ownership", spell(head), node.count(node.id("glyph"), head), before, spell(piece), spell(second))
+local gone = node.flush_list(node.copy_list(head))
+say("flushed", gone, spell(head))
+local sp = node.copy_list(head)
+local n3 = node.copy(sp.next.next)
+local f1, f2 = node.free(n3)
+say("free", f1, f2 == nil)
+local x = node.copy_list(head, head.next.next)
+say("partial", spell(x), spell(head))
+tex.setbox("global", 1, (node.hpack(make_word("tex"))))
+}
+\copy1\par
+\setbox2\hbox{\copy0\copy1}
+\directlua{say("boxwidths", tex.box[2].width == tex.box[0].width + tex.box[1].width, spell(tex.box[2].list), node.count(node.id("hlist"), tex.box[2].list))}
+\end{document}

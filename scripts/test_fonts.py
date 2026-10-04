@@ -1293,7 +1293,9 @@ class FontTestHarness:
         self.reference_roots: list[str] = []
 
     def setup_ref_env(self) -> None:
-        """Prepare shared Lua font maps and reference-only fontconfig/TeX inputs."""
+        """Prepare reference-only fontconfig, TeX inputs, and locked Lua font maps."""
+        if self.args.skip_reference:
+            return
         ref_env_dir = self.output_dir / "ref_env"
         ref_env_dir.mkdir(parents=True, exist_ok=True)
         # Pin physical fonts and their selection, math-layout, and CJK inputs.
@@ -1336,14 +1338,9 @@ class FontTestHarness:
                             continue
                         if (
                             member.name in _LUA_FONT_MAP_FILES
-                            or (
-                                not self.args.skip_reference
-                                and (
-                                    member.name.startswith(reference_prefixes)
-                                    or member.name in reference_files
-                                    or member.name.endswith((".fd", ".fontspec"))
-                                )
-                            )
+                            or member.name.startswith(reference_prefixes)
+                            or member.name in reference_files
+                            or member.name.endswith((".fd", ".fontspec"))
                         ):
                             target = reference_root / relative
                             target.parent.mkdir(parents=True, exist_ok=True)
@@ -1354,8 +1351,6 @@ class FontTestHarness:
                     pass
                 if decoder.wait() != 0:
                     raise RuntimeError("Cannot decompress locked reference font resources")
-        if self.args.skip_reference:
-            return
         self.extra_tds_roots = [str(reference_root)]
         self.inspect_reference_engines()
 
@@ -1580,16 +1575,20 @@ class FontTestHarness:
         except Exception as e:
             return [], {}, [f"pdf.js execution exception: {e}"]
 
-    def _lua_font_profile_input(self, main_tex: str, work_dir: Path) -> str:
+    def _lua_font_profile_input(self, main_tex: str, work_dir: Path, reference: bool = False) -> str:
         """Use the same positive Type 1 Unicode mapping setup on both Lua engines."""
         # LaTeX 2026-06-01 initializes these maps for LuaTeX; older formats do not.
         # Load identical locked bytes positively rather than stripping text selectors.
         mapping_inputs = []
         for relative in _LUA_FONT_MAP_FILES:
-            source = self.output_dir / "ref_env" / "texmf" / relative
-            target = work_dir / f"ratex-{Path(relative).name}"
-            shutil.copyfile(source, target)
-            mapping_inputs.append(f"\\input{{{target.name}}}\n")
+            input_name = Path(relative).name
+            if reference:
+                source = self.output_dir / "ref_env" / "texmf" / relative
+                target = work_dir / f"ratex-{input_name}"
+                shutil.copyfile(source, target)
+                input_name = target.name
+            # Ratex resolves these names from its self-contained locked payload.
+            mapping_inputs.append(f"\\input{{{input_name}}}\n")
         wrapper = work_dir / "ratex-lua-font-profile.tex"
         wrapper.write_text(
             "\\protected\\def\\pdfglyphtounicode{\\pdfextension glyphtounicode}\n"
@@ -1799,7 +1798,7 @@ class FontTestHarness:
         compile_tex = main_tex
         jobname_flags = []
         if ref_engine == "lualatex":
-            compile_tex = self._lua_font_profile_input(main_tex, work_dir)
+            compile_tex = self._lua_font_profile_input(main_tex, work_dir, reference=True)
             jobname_flags = ["-jobname", Path(main_tex).stem]
         tex_cmd = [ref_bin, "-interaction=nonstopmode", "-halt-on-error", *jobname_flags, compile_tex]
         passes = max(1, int(case.get("reference_passes", 1)))

@@ -40,8 +40,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-FIXTURE_EPOCH = "1700000000"
 # Keep \today identical between engines without changing the reported sources.
+FIXTURE_EPOCH = "1700000000"
 _LUA_FONT_MAP_FILES = (
     "tex/generic/pdftex/glyphtounicode.tex",
     "tex/latex/latex-lab/glyphtounicode-cmex.tex",

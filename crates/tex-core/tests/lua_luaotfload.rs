@@ -128,7 +128,7 @@ for _, name in ipairs({
   'lmroman10-regular.otf', 'lmroman10-bold.otf', 'lmroman10-italic.otf',
   'lmroman10-bolditalic.otf', 'lmmono10-regular.otf', 'FandolSong-Regular.otf',
 }) do
-  P(name, assert(found[name], 'undiscovered font: ' .. name))
+  P(name, (assert(found[name], 'undiscovered font: ' .. name)))
 end
 "#);
     assert_eq!(got.lines().collect::<Vec<_>>(), [

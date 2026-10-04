@@ -260,11 +260,14 @@ fn main() {
     }
     let mut dir_names = Vec::new();
     let mut dir_table = Vec::with_capacity(directories.len() * 8);
+    let target_windows = std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "windows");
     let mut dir_folded = BTreeMap::new();
     for (position, name) in directories.keys().enumerate() {
         push_u32s(&mut dir_table, [dir_names.len(), name.len()]);
         dir_names.extend_from_slice(name.as_bytes());
-        dir_folded.entry(name.to_ascii_lowercase()).or_insert(position);
+        if target_windows {
+            dir_folded.entry(name.to_ascii_lowercase()).or_insert(position);
+        }
     }
     let mut dir_folded_table = Vec::with_capacity(dir_folded.len() * 4);
     for position in dir_folded.into_values() {
@@ -316,7 +319,9 @@ fn main() {
     std::fs::write(out.join("package_folded.bin"), &folded_table).unwrap();
     std::fs::write(out.join("package_dir_names.bin"), &dir_names).unwrap();
     std::fs::write(out.join("package_dirs.bin"), &dir_table).unwrap();
-    std::fs::write(out.join("package_dir_folded.bin"), &dir_folded_table).unwrap();
+    if target_windows {
+        std::fs::write(out.join("package_dir_folded.bin"), &dir_folded_table).unwrap();
+    }
     std::fs::write(out.join("package_member_dirs.bin"), &member_dir_table).unwrap();
     std::fs::write(out.join("package_font_info.bin"), &font_info_table).unwrap();
     std::fs::write(out.join("font_metadata_windows.bin"), &metadata_window_table).unwrap();
@@ -339,6 +344,9 @@ fn main() {
         ("FONT_METADATA_BYTES", "font_metadata_bytes.bin", None),
     ] {
         if name == "PACKAGE_DIR_FOLDED" {
+            if !target_windows {
+                continue;
+            }
             writeln!(generated, "#[cfg(windows)]").unwrap();
         }
         let bytes = format!("include_bytes!(concat!(env!(\"OUT_DIR\"), \"/{file}\"))");

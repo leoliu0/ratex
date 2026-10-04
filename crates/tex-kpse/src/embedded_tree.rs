@@ -61,7 +61,8 @@ fn exact_entry(name: &str) -> Option<usize> {
         #[cfg(windows)]
         {
             let position = PACKAGE_FOLDED.binary_search_by(|[index]| {
-                ascii_folded_cmp(package_name(PACKAGE_INDEX.get(index as usize).unwrap_or_default()), name.as_bytes())
+                let entry = PACKAGE_INDEX.get(index as usize).expect("valid folded member index");
+                ascii_folded_cmp(package_name(entry), name.as_bytes())
             })?;
             Some(PACKAGE_FOLDED.get(position)?[0] as usize)
         }

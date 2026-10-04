@@ -153,6 +153,16 @@ character order and multiplicity; expected excerpts alone are not a parity check
 `reference_passes` and `reference_bibtex` cover multipass references and
 bibliographies. Reference compilation, page-count and viewer failures fail the
 gate rather than being treated as unavailable comparison data.
+
+Paired runs pin physical fonts, font-selection profiles, amsmath, unicode-math
+and CJK support to the locked runtime payload, while retaining the genuine
+host TeX Live engines, kernel and other general packages. Both Lua paths
+positively load the same generic/CMEX Unicode mappings and enable Type 1
+ToUnicode generation; variant selectors remain part of the comparison.
+Generated wrappers preserve the original document, jobname and bibliography
+workflow. Reference-free archive/installer smokes resolve those mappings from
+the binary's embedded tree and need no host TeX or archive reconstruction.
+
 The workflows upload `target/font-evidence-full/report.json` and failed-case
 artifacts even when the gate fails. The report includes engine/family counts,
 failure reasons, executable identity, reference versions and bounded subprocess

@@ -42,6 +42,10 @@ from typing import Any
 
 FIXTURE_EPOCH = "1700000000"
 # Keep \today identical between engines without changing the reported sources.
+_LUA_FONT_MAP_FILES = (
+    "tex/generic/pdftex/glyphtounicode.tex",
+    "tex/latex/latex-lab/glyphtounicode-cmex.tex",
+)
 
 def text_contains_expected(expected: str, text: str) -> bool:
     if expected in text:
@@ -1289,9 +1293,7 @@ class FontTestHarness:
         self.reference_roots: list[str] = []
 
     def setup_ref_env(self) -> None:
-        """Prepare reference-only fontconfig and TeX search paths."""
-        if self.args.skip_reference:
-            return
+        """Prepare shared Lua font maps and reference-only fontconfig/TeX inputs."""
         ref_env_dir = self.output_dir / "ref_env"
         ref_env_dir.mkdir(parents=True, exist_ok=True)
         # Pin physical fonts and their selection, math-layout, and CJK inputs.
@@ -1320,8 +1322,6 @@ class FontTestHarness:
         reference_files = {
             "tex/latex/ctex/ctexhook.sty",
             "tex/latex/ctex/ctexpatch.sty",
-            "tex/generic/pdftex/glyphtounicode.tex",
-            "tex/latex/latex-lab/glyphtounicode-cmex.tex",
         }
         with tempfile.TemporaryDirectory(prefix="ratex-ref-fonts-") as scratch:
             archive_path = Path(scratch) / "packages.tar.zst"
@@ -1335,9 +1335,15 @@ class FontTestHarness:
                         if not member.isfile() or relative.is_absolute() or ".." in relative.parts:
                             continue
                         if (
-                            member.name.startswith(reference_prefixes)
-                            or member.name in reference_files
-                            or member.name.endswith((".fd", ".fontspec"))
+                            member.name in _LUA_FONT_MAP_FILES
+                            or (
+                                not self.args.skip_reference
+                                and (
+                                    member.name.startswith(reference_prefixes)
+                                    or member.name in reference_files
+                                    or member.name.endswith((".fd", ".fontspec"))
+                                )
+                            )
                         ):
                             target = reference_root / relative
                             target.parent.mkdir(parents=True, exist_ok=True)
@@ -1348,6 +1354,8 @@ class FontTestHarness:
                     pass
                 if decoder.wait() != 0:
                     raise RuntimeError("Cannot decompress locked reference font resources")
+        if self.args.skip_reference:
+            return
         self.extra_tds_roots = [str(reference_root)]
         self.inspect_reference_engines()
 
@@ -1572,6 +1580,26 @@ class FontTestHarness:
         except Exception as e:
             return [], {}, [f"pdf.js execution exception: {e}"]
 
+    def _lua_font_profile_input(self, main_tex: str, work_dir: Path) -> str:
+        """Use the same positive Type 1 Unicode mapping setup on both Lua engines."""
+        # LaTeX 2026-06-01 initializes these maps for LuaTeX; older formats do not.
+        # Load identical locked bytes positively rather than stripping text selectors.
+        mapping_inputs = []
+        for relative in _LUA_FONT_MAP_FILES:
+            source = self.output_dir / "ref_env" / "texmf" / relative
+            target = work_dir / f"ratex-{Path(relative).name}"
+            shutil.copyfile(source, target)
+            mapping_inputs.append(f"\\input{{{target.name}}}\n")
+        wrapper = work_dir / "ratex-lua-font-profile.tex"
+        wrapper.write_text(
+            "\\protected\\def\\pdfglyphtounicode{\\pdfextension glyphtounicode}\n"
+            + "".join(mapping_inputs)
+            + "\\pdfvariable gentounicode=1\n"
+            + f"\\input{{{main_tex}}}\n",
+            encoding="utf-8",
+        )
+        return wrapper.name
+
     def run_case_rust(
         self,
         case: dict[str, Any],
@@ -1587,6 +1615,11 @@ class FontTestHarness:
 
         main_tex = case["main_tex"]
         target_engine = case.get("engine", "pdflatex")
+        compile_tex = main_tex
+        jobname_flags = []
+        if target_engine == "lualatex":
+            compile_tex = self._lua_font_profile_input(main_tex, work_dir)
+            jobname_flags = ["-jobname", Path(main_tex).stem]
 
         engine_flags = []
         if target_engine == "xelatex":
@@ -1601,7 +1634,7 @@ class FontTestHarness:
         if case.get("expected_output_substrings"):
             # the transcript is where TeX reports them (texmk shows no engine output)
             engine_flags.append("--keep-logs")
-        cmd = [str(self.isolated_bin_path), *engine_flags, main_tex]
+        cmd = [str(self.isolated_bin_path), *engine_flags, *jobname_flags, compile_tex]
 
         use_bwrap = sys.platform == "linux" and self.bwrap_info["available"]
         if use_bwrap:
@@ -1763,7 +1796,12 @@ class FontTestHarness:
             ref_env["OPENTYPEFONTS"] = os.pathsep.join(f"{r}/fonts/opentype//" for r in self.extra_tds_roots) + os.pathsep
             ref_env["TTFONTS"] = os.pathsep.join(f"{r}/fonts/truetype//" for r in self.extra_tds_roots) + os.pathsep
 
-        tex_cmd = [ref_bin, "-interaction=nonstopmode", "-halt-on-error", main_tex]
+        compile_tex = main_tex
+        jobname_flags = []
+        if ref_engine == "lualatex":
+            compile_tex = self._lua_font_profile_input(main_tex, work_dir)
+            jobname_flags = ["-jobname", Path(main_tex).stem]
+        tex_cmd = [ref_bin, "-interaction=nonstopmode", "-halt-on-error", *jobname_flags, compile_tex]
         passes = max(1, int(case.get("reference_passes", 1)))
         commands = [tex_cmd]
         if case.get("reference_bibtex"):

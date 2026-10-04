@@ -1,0 +1,54 @@
+name: Windows virtual font path probe
+on:
+  push:
+    branches: [diagnostics/windows-font-paths]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: 2
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked --bin ratex
+      - name: Inspect real virtual paths through LuaTeX
+        shell: pwsh
+        run: |
+          @'
+          local function P(...) local t = table.pack(...) for i=1,t.n do t[i]=tostring(t[i]) end texio.write_nl('term and log', 'FONT-PROBE=' .. table.concat(t, ' | ')) end
+          P('host', os.type, os.name, lfs.currentdir())
+          local path = assert(kpse.find_file('lmroman10-regular.otf','opentype fonts'))
+          local dir = path:match('^(.*)/')
+          P('raw-file', path, lfs.attributes(path,'mode'), lfs.attributes(path,'modification'))
+          local realpath = require('luaotfload-realpath').realpath
+          P('real-dir', pcall(realpath, dir))
+          P('real-file', pcall(realpath, path))
+          for _, fmt in ipairs({'opentype fonts','truetype fonts','type1 fonts','afm'}) do P('search-' .. fmt, kpse.expand_path(kpse.show_path(fmt))) end
+          if luaotfload.log then luaotfload.log.set_loglevel(5) end
+          local data = fonts.handlers.otf.readers.getinfo(path, {platformnames=true,rawfamilynames=true})
+          P('raw-metadata', data.familyname, data.fullname, data.platformnames and data.platformnames.windows and data.platformnames.windows.preffamily)
+          '@ | Set-Content -Encoding utf8 font-path-probe.lua
+          @'
+          \directlua{dofile('font-path-probe.lua')}
+          \documentclass{article}
+          \usepackage{fontspec}
+          \setmainfont{Latin Modern Roman}
+          \begin{document}Native named font lookup.\end{document}
+          '@ | Set-Content -Encoding utf8 font-path-probe.tex
+          & target/release/ratex.exe -lualatex --verbose --keep-logs font-path-probe.tex
+          $result = $LASTEXITCODE
+          if (Test-Path font-path-probe.log) { Get-Content -Encoding utf8 font-path-probe.log }
+          exit $result
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-font-paths-evidence
+          path: |
+            font-path-probe.log
+            font-path-probe.pdf
+          if-no-files-found: ignore

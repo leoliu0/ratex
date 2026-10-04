@@ -71,10 +71,21 @@ fn exact_entry(name: &str) -> Option<usize> {
     })
 }
 
+/// Windows canonicalization qualifies a root-relative virtual path with the
+/// current drive. The archive is the same tree on every drive.
+fn root_suffix(path: &str) -> Option<&str> {
+    #[cfg(windows)]
+    let path = match path.as_bytes() {
+        [drive, b':', b'/', ..] if drive.is_ascii_alphabetic() => &path[2..],
+        _ => path,
+    };
+    path.strip_prefix(ROOT)
+}
+
 /// `path` below [`ROOT`] as a normalized `/`-separated relative path (no
 /// empty, `.` or `..` components); `None` for paths outside the tree.
 pub fn relative(path: &str) -> Option<String> {
-    let rest = path.strip_prefix(ROOT)?;
+    let rest = root_suffix(path)?;
     if !rest.is_empty() && !rest.starts_with('/') {
         return None;
     }
@@ -117,7 +128,7 @@ fn file_entry(relative: &str) -> Option<usize> {
 /// borrow their relative spelling; unusual paths use the same normalization
 /// as the virtual filesystem. The caller must check `embedded_allowed`.
 pub(super) fn path_file_entry(path: &str) -> Option<usize> {
-    let rest = path.strip_prefix(ROOT)?.strip_prefix('/')?;
+    let rest = root_suffix(path)?.strip_prefix('/')?;
     let normalized;
     let relative = if rest.split('/').all(|part| !matches!(part, "" | "." | "..")) {
         rest

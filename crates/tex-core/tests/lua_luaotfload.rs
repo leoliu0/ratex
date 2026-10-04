@@ -103,6 +103,7 @@ P(kpse.out_name_ok_silent_extended(cache .. '/luatex-cache/generic/x'))
 fn bundled_font_scan_preserves_name_and_style_metadata() {
     let got = run(r#"
 require('lualibs')
+local realpath = require('luaotfload-realpath').realpath
 local wanted = {
   ['lmroman10-regular.otf'] = true, ['lmroman10-bold.otf'] = true,
   ['lmroman10-italic.otf'] = true, ['lmroman10-bolditalic.otf'] = true,
@@ -111,6 +112,7 @@ local wanted = {
 local found = {}
 for _, dir in ipairs(file.splitpath(kpse.expand_path(kpse.show_path('opentype fonts')))) do
   if lfs.isdir(dir) then
+    dir = assert(realpath(dir))
     for name in lfs.dir(dir) do
       if wanted[name] then
         local path = dir .. '/' .. name

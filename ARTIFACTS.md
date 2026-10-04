@@ -126,6 +126,10 @@ The regression suite verifies self-containment through observable behavior:
 - The `tex-kpse` unit test `indexed_packages_match_archive_bytes` compares
   indexed embedded files byte-for-byte with the source archive. This catches
   a complete or well-formed index that points at the wrong payload.
+- `bundled_font_scan_preserves_name_and_style_metadata` canonicalizes the
+  bundled font directories with luaotfload's real path resolver before
+  reading the faces. On Windows, the drive-qualified paths still address
+  the same read-only embedded tree.
 
 Run the focused checks with:
 
@@ -183,7 +187,8 @@ Text mismatch reasons identify the first differing normalized character and
 include bounded surrounding excerpts, so a shared prefix does not hide a later
 ordering, duplication or missing-character failure.
 The image-scan fixture includes its three-page PDF input in source control.
-Diagnostic output uses UTF-8 even under legacy Windows console encodings.
+Diagnostic output and retained transcripts use UTF-8 even under legacy
+Windows console and locale encodings.
 Lua system-library oracles retain platform-specific gzip header bytes and
 native Windows path separators instead of assuming POSIX output.
 

@@ -1695,7 +1695,7 @@ class FontTestHarness:
                 max_bytes=DEFAULT_MAX_CAPTURE_BYTES,
             )
             exit_code = child["returncode"]
-            stdout = (work_dir / "compile.log").read_text(errors="replace")
+            stdout = (work_dir / "compile.log").read_text(encoding="utf-8", errors="replace")
             stderr = child.get("spawn_error") or ""
             duration_s = child["elapsed_seconds"]
             timed_out = child["timed_out"]
@@ -1836,7 +1836,7 @@ class FontTestHarness:
                     max_bytes=DEFAULT_MAX_CAPTURE_BYTES,
                 )
                 exit_code = child["returncode"]
-                stdout_parts.append(log_path.read_text(errors="replace"))
+                stdout_parts.append(log_path.read_text(encoding="utf-8", errors="replace"))
                 stderr_parts.append(child["spawn_error"] or "")
                 timed_out = child["timed_out"]
                 spawn_error = child["spawn_error"]
@@ -2059,7 +2059,7 @@ class FontTestHarness:
         run_output = (rust_res.get("stdout") or "") + (rust_res.get("stderr") or "")
         transcript = rust_work / f"{Path(case['main_tex']).stem}.log"
         if transcript.is_file():
-            run_output += transcript.read_text(errors="replace")
+            run_output += transcript.read_text(encoding="utf-8", errors="replace")
         for expected in case.get("expected_output_substrings", []):
             if expected not in run_output:
                 reasons.append(f"Expected diagnostic '{expected}' not found in Ratex output")

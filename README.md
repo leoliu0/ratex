@@ -62,21 +62,21 @@ diagnosis receives the full report and treats proposed causes as hypotheses.
 ## Installation
 
 ### Linux
-Download the native package for your distribution from [GitHub Releases](https://github.com/leoliu0/ratex/releases/tag/v0.5.1):
+Download the native package for your distribution from [GitHub Releases](https://github.com/leoliu0/ratex/releases/tag/v0.5.2):
 
 ```bash
 # Ubuntu / Debian (.deb)
-sudo apt install ./ratex_0.5.1_amd64.deb
+sudo apt install ./ratex_0.5.2_amd64.deb
 
 # Fedora / RHEL / openSUSE (.rpm)
-sudo dnf install ./ratex-0.5.1-1.x86_64.rpm
+sudo dnf install ./ratex-0.5.2-1.x86_64.rpm
 
 # Arch Linux (AUR): prebuilt binary or source build
 yay -S ratex-bin
 yay -S ratex
 
 # Linux with glibc (archive with installer; installs to ~/.local by default)
-tar -xzf tex-suite-v0.5.1-linux-x86_64.tar.gz && ./tex-suite-linux-x86_64/install.sh
+tar -xzf tex-suite-v0.5.2-linux-x86_64.tar.gz && ./tex-suite-linux-x86_64/install.sh
 ```
 
 Linux releases support **x86_64 and ARM64 (aarch64)**. ARM64 prebuilt binaries
@@ -84,23 +84,23 @@ require Debian 12 or another distribution with **glibc 2.36 or newer**, includin
 Linux Docker containers on Apple Silicon. Alpine Linux and other musl-based
 distributions are not supported by these prebuilt binaries.
 
-For ARM64, download the [Debian package](https://github.com/leoliu0/ratex/releases/download/v0.5.1/ratex_0.5.1_arm64.deb),
-[RPM](https://github.com/leoliu0/ratex/releases/download/v0.5.1/ratex-0.5.1-1.aarch64.rpm),
-[Arch package](https://github.com/leoliu0/ratex/releases/download/v0.5.1/ratex-0.5.1-1-aarch64.pkg.tar.zst),
-or [archive](https://github.com/leoliu0/ratex/releases/download/v0.5.1/tex-suite-v0.5.1-linux-aarch64.tar.gz):
+For ARM64, download the [Debian package](https://github.com/leoliu0/ratex/releases/download/v0.5.2/ratex_0.5.2_arm64.deb),
+[RPM](https://github.com/leoliu0/ratex/releases/download/v0.5.2/ratex-0.5.2-1.aarch64.rpm),
+[Arch package](https://github.com/leoliu0/ratex/releases/download/v0.5.2/ratex-0.5.2-1-aarch64.pkg.tar.zst),
+or [archive](https://github.com/leoliu0/ratex/releases/download/v0.5.2/tex-suite-v0.5.2-linux-aarch64.tar.gz):
 
 ```bash
 # Ubuntu / Debian ARM64
-sudo apt install ./ratex_0.5.1_arm64.deb
+sudo apt install ./ratex_0.5.2_arm64.deb
 
 # Fedora / RHEL / openSUSE ARM64
-sudo dnf install ./ratex-0.5.1-1.aarch64.rpm
+sudo dnf install ./ratex-0.5.2-1.aarch64.rpm
 
 # Arch Linux ARM (downloaded native package)
-sudo pacman -U ./ratex-0.5.1-1-aarch64.pkg.tar.zst
+sudo pacman -U ./ratex-0.5.2-1-aarch64.pkg.tar.zst
 
 # ARM64 archive; installs to ~/.local by default
-tar -xzf tex-suite-v0.5.1-linux-aarch64.tar.gz && ./tex-suite-linux-aarch64/install.sh
+tar -xzf tex-suite-v0.5.2-linux-aarch64.tar.gz && ./tex-suite-linux-aarch64/install.sh
 ```
 
 For a Debian 12 ARM64 container on Apple Silicon, start
@@ -108,8 +108,8 @@ For a Debian 12 ARM64 container on Apple Silicon, start
 
 ```bash
 apt-get update && apt-get install -y ca-certificates curl
-curl -fLO https://github.com/leoliu0/ratex/releases/download/v0.5.1/ratex_0.5.1_arm64.deb
-apt-get install -y ./ratex_0.5.1_arm64.deb
+curl -fLO https://github.com/leoliu0/ratex/releases/download/v0.5.2/ratex_0.5.2_arm64.deb
+apt-get install -y ./ratex_0.5.2_arm64.deb
 ratex --version
 ```
 
@@ -124,8 +124,8 @@ brew install leoliu0/ratex/ratex
 This tap is independent of `homebrew/core`; `brew install ratex` uses core's separately reviewed version.
 
 Or download and run the native installer package:
-- [macOS Apple Silicon (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.5.1/ratex-v0.5.1-macos-aarch64.pkg)
-- [macOS Intel (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.5.1/ratex-v0.5.1-macos-x86_64.pkg)
+- [macOS Apple Silicon (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.5.2/ratex-v0.5.2-macos-aarch64.pkg)
+- [macOS Intel (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.5.2/ratex-v0.5.2-macos-x86_64.pkg)
 
 #### Migrating from the GitHub installer to Homebrew
 
@@ -159,7 +159,7 @@ installing `leoliu0/ratex/ratex`. Neither uninstall your documents nor TeX Live
 just to change which executable your editor uses.
 
 ### Windows
-- [Download Windows Setup (.exe)](https://github.com/leoliu0/ratex/releases/download/v0.5.1/ratex-setup-v0.5.1-windows-x64.exe)
+- [Download Windows Setup (.exe)](https://github.com/leoliu0/ratex/releases/download/v0.5.2/ratex-setup-v0.5.2-windows-x64.exe)
 
 ---
 

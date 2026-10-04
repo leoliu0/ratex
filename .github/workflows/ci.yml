@@ -94,6 +94,9 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
+            arch: x86_64
+          - os: ubuntu-24.04-arm
+            arch: aarch64
           - os: macos-latest
           - os: windows-latest
     steps:
@@ -207,7 +210,7 @@ jobs:
         if: always() && runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
-          name: engine-compatibility-linux
+          name: engine-compatibility-linux-${{ matrix.arch }}
           path: |
             target/font-evidence-full/report.json
             target/font-evidence-full/cases/
@@ -301,7 +304,7 @@ jobs:
             --case duckuments_graphics
       - name: Package distribution (linux)
         if: runner.os == 'Linux'
-        run: python3 scripts/package_dist.py --platform linux --arch x86_64
+        run: python3 scripts/package_dist.py --platform linux --arch '${{ matrix.arch }}'
 
       - name: Test extracted archive distribution (linux)
         if: runner.os == 'Linux'
@@ -329,6 +332,14 @@ jobs:
             --require-pdfjs \
             --skip-reference
           rm -rf /tmp/ci-install-test /tmp/font-smoke-installed
+
+      - name: Upload Linux distribution
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tex-suite-linux-${{ matrix.arch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
 
       - name: Package distribution (macos)
         if: runner.os == 'macOS'

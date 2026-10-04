@@ -102,6 +102,11 @@ jobs:
             platform: linux
             arch: x86_64
             ext: tar.gz
+          - os: ubuntu-24.04-arm
+            label: linux-aarch64
+            platform: linux
+            arch: aarch64
+            ext: tar.gz
           - os: macos-15-intel
             label: macos-x86_64
             platform: macos
@@ -182,6 +187,8 @@ jobs:
 
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
+        # ARM release outputs must originate in Bookworm, never a host cache.
+        if: matrix.label != 'linux-aarch64'
         with:
           key: ${{ matrix.label }}
           # The macOS job deletes target/release/deps before packaging; saving
@@ -204,7 +211,29 @@ jobs:
       # Only ratex ships (scripts/package_dist.py BINARIES); the tests below build
       # the rest of the workspace in the test profile.
       - name: Build release binary
+        if: matrix.label != 'linux-aarch64'
         run: cargo build --release --locked --bin ratex
+
+      - name: Build native ARM64 release binary (Debian 12 / glibc 2.36)
+        if: matrix.label == 'linux-aarch64'
+        shell: bash
+        run: |
+          test "$(uname -m)" = aarch64
+          # Native Docker only: the runner and official image are both ARM64.
+          # Run as the runner user so subsequent host tests/packaging can write
+          # target outputs. Keep this binary at the usual packaging path.
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --env CARGO_HOME=/tmp/cargo \
+            --env CARGO_BUILD_JOBS \
+            --env CARGO_TERM_COLOR \
+            --volume "$PWD:/work" --workdir /work \
+            rust:1-bookworm bash -euc '
+              test "$(uname -m)" = aarch64
+              test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.36"
+              cargo build --release --locked --bin ratex
+              target/release/ratex --version
+            '
 
       - name: Run workspace tests
         run: cargo test --workspace --locked
@@ -272,10 +301,10 @@ jobs:
             --arch "${{ matrix.arch }}"
         shell: bash
 
-      - name: Build Linux packages (.deb, Arch .pkg.tar.zst)
+      - name: Build Linux packages (.deb, .rpm, Arch .pkg.tar.zst)
         if: matrix.platform == 'linux'
         shell: bash
-        run: python3 scripts/build_linux_packages.py --output-dir dist
+        run: python3 scripts/build_linux_packages.py --output-dir dist --arch '${{ matrix.arch }}'
 
       - name: Reclaim Rust intermediates before macOS packaging
         if: matrix.platform == 'macos'
@@ -489,6 +518,7 @@ jobs:
           missing=0
           for asset in \
             "tex-suite-${RELEASE_TAG}-linux-x86_64.tar.gz" \
+            "tex-suite-${RELEASE_TAG}-linux-aarch64.tar.gz" \
             "tex-suite-${RELEASE_TAG}-macos-x86_64.tar.gz" \
             "tex-suite-${RELEASE_TAG}-macos-aarch64.tar.gz" \
             "tex-suite-${RELEASE_TAG}-windows-x86_64.zip" \
@@ -498,8 +528,17 @@ jobs:
             "ratex_${version}_amd64.deb" \
             "ratex-${version}-1-x86_64.pkg.tar.zst" \
             "ratex-${version}-1.x86_64.rpm" \
+            "ratex_${version}_arm64.deb" \
+            "ratex-${version}-1-aarch64.pkg.tar.zst" \
+            "ratex-${version}-1.aarch64.rpm" \
             "libtex-${RELEASE_TAG}-linux-x86_64.tar.gz" \
-            "libtex-${RELEASE_TAG}-wasm.tar.gz"; do
+            "libtex-${RELEASE_TAG}-wasm.tar.gz" \
+            "SHA256SUMS-linux-x86_64.txt" \
+            "SHA256SUMS-linux-aarch64.txt" \
+            "SHA256SUMS-macos-x86_64.txt" \
+            "SHA256SUMS-macos-aarch64.txt" \
+            "SHA256SUMS-windows-x86_64.txt" \
+            "SHA256SUMS-libraries.txt"; do
             if [ ! -f "$asset" ]; then
               echo "::error::Missing release asset: $asset"
               missing=1

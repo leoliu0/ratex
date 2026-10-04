@@ -79,7 +79,13 @@ self-contained refers to the TeX toolchain and its runtime data. A document's
 own `.tex`, image, bibliography, and local style files remain its inputs.
 Platform executables also use the operating system ABI; for example, the Linux
 build dynamically links glibc (`libc`, `libm`) and `libgcc_s` while requiring
-no TeX Live installation or companion data files.
+no TeX Live installation or companion data files. Linux archives are published
+for `x86_64` and `aarch64`, with matching native packages: Debian `amd64`/`arm64`
+`.deb` files and `x86_64`/`aarch64` RPM and Arch packages. The Linux ARM64 release
+executable is built natively in the official `rust:1-bookworm` Docker image on
+an ARM64 runner, giving it a Debian 12 / glibc 2.36 runtime floor. It is suitable
+for ARM64 Linux containers on Apple Silicon; neither the build nor execution
+requires QEMU or cross compilation.
 
 `manifest.json` in each archive records regular-file SHA-256 hashes separately
 from symlink targets, and packaging verifies the completed archive before
@@ -88,11 +94,12 @@ replace only paths created by an earlier tex-suite install.
 
 ### Release publication
 
-On version tags, verified platform artifacts are published even if another
-platform's build fails. The workflow still reports failure when an expected
-Linux, macOS, Windows, or library artifact is missing; failed builds do not
-publish their unverified output. Windows packaging requires working Poppler
-tools before running PDF verification.
+On version tags, publication is all-or-nothing: every Linux (`x86_64` and
+`aarch64`), macOS, Windows, and library build must succeed before publication.
+The workflow requires every archive, native installer/package, and per-platform
+checksum file, then verifies all recorded SHA-256 hashes before uploading
+release assets. A missing ARM archive or native package blocks publication.
+Windows packaging requires working Poppler tools before running PDF verification.
 
 ### Testing the self-contained contract
 
@@ -130,6 +137,11 @@ python3 scripts/test_package_dist.py
 The full workspace suite includes the archive-index checks. The release
 workflow also executes an extracted archive and the native installers on each
 supported operating system.
+Native Linux ARM64 CI and release jobs run the same workspace and packaging
+tests, full 127-case TeX Live 2026 reference/font/text/render gate, extracted
+archive smoke, and shell-installer smoke as x86_64 Linux; the release additionally
+installs and exercises the native Debian package. The independent ARM64 2 GiB
+memory-bounded build gate remains required.
 Linux CI removes completed dev-profile test builds before the release build
 to reclaim disk for the reference TeX Live installation and archive staging.
 XeTeX fixture paths use forward slashes when inserted into TeX input,

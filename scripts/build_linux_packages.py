@@ -23,9 +23,10 @@ def root_owned(info: tarfile.TarInfo) -> tarfile.TarInfo:
     return info
 
 
-def build_deb(stage_root: Path, output_dir: Path, version: str, arch: str = "amd64") -> Path:
+def build_deb(stage_root: Path, output_dir: Path, version: str, arch: str) -> Path:
     """Pack stage_root into a standard Debian .deb package."""
-    deb_name = f"ratex_{version}_{arch}.deb"
+    deb_arch = {"x86_64": "amd64", "aarch64": "arm64"}[arch]
+    deb_name = f"ratex_{version}_{deb_arch}.deb"
     deb_path = output_dir.resolve() / deb_name
 
     installed_size = sum(p.stat().st_size for p in stage_root.rglob("*") if p.is_file())
@@ -33,13 +34,15 @@ def build_deb(stage_root: Path, output_dir: Path, version: str, arch: str = "amd
 Version: {version}
 Section: tex
 Priority: optional
-Architecture: {arch}
+Architecture: {deb_arch}
 Installed-Size: {(installed_size + 1023) // 1024}
 Maintainer: Leo Liu <leoliu0@users.noreply.github.com>
 Description: Ultra-fast, pure-Rust TeX engine and typesetting toolchain
  Ratex is an ultra-fast, pure-Rust TeX engine and typesetting toolchain.
 Provides: ratex
 """
+    if arch == "aarch64":
+        control_content += "Depends: libc6 (>= 2.36)\n"
     if shutil.which("dpkg-deb"):
         with tempfile.TemporaryDirectory(prefix="deb-stage-") as tmpdir:
             tmp = Path(tmpdir)
@@ -84,9 +87,9 @@ Provides: ratex
     return deb_path
 
 
-def build_arch_pkg(stage_root: Path, output_dir: Path, version: str) -> Path:
+def build_arch_pkg(stage_root: Path, output_dir: Path, version: str, arch: str) -> Path:
     """Build Arch Linux package (.pkg.tar.zst) from stage."""
-    pkg_name = f"ratex-{version}-1-x86_64.pkg.tar.zst"
+    pkg_name = f"ratex-{version}-1-{arch}.pkg.tar.zst"
     pkg_path = output_dir.resolve() / pkg_name
 
     with tempfile.TemporaryDirectory(prefix="arch-build-") as tmpdir:
@@ -103,7 +106,7 @@ url = https://github.com/leoliu0/ratex
 builddate = {int(os.environ.get("SOURCE_DATE_EPOCH", time.time()))}
 packager = Leo Liu <leoliu0@users.noreply.github.com>
 size = {installed_size}
-arch = x86_64
+arch = {arch}
 license = MIT
 license = Apache-2.0
 license = LPPL-1.3c
@@ -116,6 +119,8 @@ license = custom:Arphic
 license = custom:Wadalab
 provides = ratex
 """
+        if arch == "aarch64":
+            pkginfo += "depend = glibc>=2.36\n"
         (pkgdir / ".PKGINFO").write_text(pkginfo)
 
         # Pack into .pkg.tar.zst; pacman installs the recorded owners verbatim.
@@ -124,21 +129,22 @@ provides = ratex
         subprocess.run(cmd, cwd=pkgdir, check=True)
 
     return pkg_path
-def build_rpm(stage_root: Path, output_dir: Path, version: str) -> Path:
+def build_rpm(stage_root: Path, output_dir: Path, version: str, arch: str) -> Path:
     """Build RPM package from stage using rpmbuild."""
     rpm_dir = tempfile.mkdtemp(prefix="rpm-build-")
     try:
         top = Path(rpm_dir)
         for sub in ["BUILD", "RPMS", "SOURCES", "SPECS", "SRPMS"]:
             (top / sub).mkdir()
+        runtime_requires = "\nRequires:       glibc >= 2.36" if arch == "aarch64" else ""
         spec_content = f"""Name:           ratex
 Version:        {version}
 Release:        1
 Summary:        Ultra-fast, pure-Rust TeX engine and typesetting toolchain
 License:        (MIT or Apache-2.0) and LPPL-1.3c and GPL-2.0-only and (GPL-2.0-or-later with Font-exception-2.0) and OFL-1.1 and GUST and Arphic and IPA and Wadalab
 URL:            https://github.com/leoliu0/ratex
-BuildArch:      x86_64
-Provides:       ratex
+BuildArch:      {arch}
+Provides:       ratex{runtime_requires}
 
 %description
 Ultra-fast pure-Rust TeX engine and toolchain.
@@ -149,17 +155,17 @@ Ultra-fast pure-Rust TeX engine and toolchain.
 """
         (top / "SPECS/ratex.spec").write_text(spec_content)
         cmd = [
-            "rpmbuild", "-bb", "SPECS/ratex.spec",
+            "rpmbuild", "-bb", "SPECS/ratex.spec", "--target", arch,
             "--define", f"_topdir {top}",
             "--define", f"_rpmdir {output_dir.resolve()}",
             "--buildroot", str(stage_root.resolve()),
         ]
         subprocess.run(cmd, cwd=top, check=True)
-        rpm_file = output_dir.resolve() / "x86_64" / f"ratex-{version}-1.x86_64.rpm"
-        dest_file = output_dir.resolve() / f"ratex-{version}-1.x86_64.rpm"
+        rpm_file = output_dir.resolve() / arch / f"ratex-{version}-1.{arch}.rpm"
+        dest_file = output_dir.resolve() / f"ratex-{version}-1.{arch}.rpm"
         if rpm_file.is_file():
             shutil.move(str(rpm_file), str(dest_file))
-            shutil.rmtree(output_dir.resolve() / "x86_64", ignore_errors=True)
+            shutil.rmtree(output_dir.resolve() / arch, ignore_errors=True)
         return dest_file
     finally:
         shutil.rmtree(rpm_dir, ignore_errors=True)
@@ -169,7 +175,12 @@ Ultra-fast pure-Rust TeX engine and toolchain.
 def main():
     parser = argparse.ArgumentParser(description="Build Linux distribution packages.")
     parser.add_argument("--output-dir", default="dist", help="Output directory")
+    parser.add_argument("--arch", choices=["x86_64", "aarch64"],
+                        default=None, help="target arch (default: auto-detect host)")
     args = parser.parse_args()
+    arch = args.arch or package_dist.detect_arch()
+    if arch not in ("x86_64", "aarch64"):
+        parser.error(f"unsupported host architecture: {arch}; use --arch x86_64 or aarch64")
 
     version = package_dist.workspace_version()
     out_dir = Path(args.output_dir)
@@ -197,17 +208,17 @@ def main():
 
         # Build Debian package (.deb)
         print("==> Building Debian package (.deb)...")
-        deb_file = build_deb(stage, out_dir, version)
+        deb_file = build_deb(stage, out_dir, version, arch)
         print(f"Created: {deb_file} ({deb_file.stat().st_size / 1024 / 1024:.1f} MB)")
 
         # Build Arch package (.pkg.tar.zst)
         print("==> Building Arch package (.pkg.tar.zst)...")
-        arch_file = build_arch_pkg(stage, out_dir, version)
+        arch_file = build_arch_pkg(stage, out_dir, version, arch)
         print(f"Created: {arch_file} ({arch_file.stat().st_size / 1024 / 1024:.1f} MB)")
         # Build RPM package (.rpm)
         if shutil.which("rpmbuild"):
             print("==> Building RPM package (.rpm)...")
-            rpm_file = build_rpm(stage, out_dir, version)
+            rpm_file = build_rpm(stage, out_dir, version, arch)
             print(f"Created: {rpm_file} ({rpm_file.stat().st_size / 1024 / 1024:.1f} MB)")
 
 

@@ -3,20 +3,23 @@
 %global __strip /bin/true
 
 Name:           ratex
-Version:        0.5.0
+Version:        0.5.1
 Release:        1%{?dist}
 Summary:        Ultra-fast, pure-Rust TeX engine and typesetting toolchain
 License:        (MIT or Apache-2.0) and LPPL-1.3c and GPL-2.0-only and (GPL-2.0-or-later with Font-exception-2.0) and OFL-1.1 and GUST and Arphic and IPA and Wadalab
 URL:            https://github.com/leoliu0/ratex
-Source0:        %{url}/releases/download/v%{version}/tex-suite-v%{version}-linux-x86_64.tar.gz
-ExclusiveArch:  x86_64
+Source0:        %{url}/releases/download/v%{version}/tex-suite-v%{version}-linux-%{_target_cpu}.tar.gz
+ExclusiveArch:  x86_64 aarch64
+%ifarch aarch64
+Requires:       glibc >= 2.36
+%endif
 
 %description
 Ratex is an ultra-fast, memory-safe, drop-in replacement for pdflatex and
 latexmk with an embedded precompiled LaTeX format and near-instant startup.
 
 %prep
-%setup -q -n tex-suite-linux-x86_64
+%setup -q -n tex-suite-linux-%{_target_cpu}
 
 %install
 font_doc=share/tex-suite/texmf/doc/fonts

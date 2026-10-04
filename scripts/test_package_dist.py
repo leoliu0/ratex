@@ -69,13 +69,16 @@ class PackageLayoutTests(unittest.TestCase):
             self.assertTrue(set(files).isdisjoint(links))
 
 
-class LinuxPackageOwnershipTests(unittest.TestCase):
+class LinuxPackageTests(unittest.TestCase):
     def make_stage(self, root: Path) -> Path:
         stage = root / "stage"
         engine = stage / "usr" / "bin" / "ratex"
         engine.parent.mkdir(parents=True)
         engine.write_bytes(b"engine")
         engine.chmod(0o755)
+        license_file = stage / "usr" / "share" / "tex-suite" / "LICENSE"
+        license_file.parent.mkdir(parents=True)
+        license_file.write_bytes(b"package license\n")
         return stage
 
     def assert_root_owned(self, members: list) -> None:
@@ -83,29 +86,128 @@ class LinuxPackageOwnershipTests(unittest.TestCase):
         for member in members:
             self.assertEqual((member.uid, member.gid), (0, 0), member.name)
 
-    @unittest.skipUnless(shutil.which("zstd") and shutil.which("tar"), "zstd/tar unavailable")
-    def test_arch_package_payload_is_root_owned(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            package = build_linux_packages.build_arch_pkg(self.make_stage(root), root, "1.0")
-            payload = subprocess.run(
-                ["zstd", "-qdc", str(package)], capture_output=True, check=True
-            ).stdout
-            with tarfile.open(fileobj=io.BytesIO(payload)) as archive:
-                self.assert_root_owned(archive.getmembers())
+    def assert_tar_payload(self, archive: tarfile.TarFile) -> None:
+        self.assert_root_owned(archive.getmembers())
+        engine = archive.getmember("./usr/bin/ratex")
+        self.assertEqual(engine.mode & 0o777, 0o755)
+        self.assertEqual(archive.extractfile(engine).read(), b"engine")
+        self.assertEqual(
+            archive.extractfile("./usr/share/tex-suite/LICENSE").read(),
+            b"package license\n",
+        )
 
-    @unittest.skipUnless(shutil.which("ar"), "ar unavailable")
-    def test_deb_built_without_dpkg_deb_is_root_owned(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            with mock.patch.object(build_linux_packages.shutil, "which", return_value=None):
-                package = build_linux_packages.build_deb(self.make_stage(root), root, "1.0")
-            for member in ("control.tar.gz", "data.tar.xz"):
+    @unittest.skipUnless(shutil.which("zstd") and shutil.which("tar"), "zstd/tar unavailable")
+    def test_arch_package_architecture_and_payload(self) -> None:
+        for arch in ("x86_64", "aarch64"):
+            with self.subTest(arch=arch), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                package = build_linux_packages.build_arch_pkg(self.make_stage(root), root, "1.0", arch)
+                self.assertEqual(package.name, f"ratex-1.0-1-{arch}.pkg.tar.zst")
                 payload = subprocess.run(
-                    ["ar", "p", str(package), member], capture_output=True, check=True
+                    ["zstd", "-qdc", str(package)], capture_output=True, check=True
                 ).stdout
                 with tarfile.open(fileobj=io.BytesIO(payload)) as archive:
-                    self.assert_root_owned(archive.getmembers())
+                    metadata = archive.extractfile("./.PKGINFO").read().decode()
+                    self.assertIn(f"arch = {arch}", metadata.splitlines())
+                    dependencies = [line for line in metadata.splitlines() if line.startswith("depend = ")]
+                    self.assertEqual(dependencies, ["depend = glibc>=2.36"] if arch == "aarch64" else [])
+                    self.assert_tar_payload(archive)
+
+    @unittest.skipUnless(shutil.which("ar"), "ar unavailable")
+    def test_deb_fallback_architecture_and_payload(self) -> None:
+        for arch, deb_arch in (("x86_64", "amd64"), ("aarch64", "arm64")):
+            with self.subTest(arch=arch), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                with mock.patch.object(build_linux_packages.shutil, "which", return_value=None):
+                    package = build_linux_packages.build_deb(self.make_stage(root), root, "1.0", arch)
+                self.assertEqual(package.name, f"ratex_1.0_{deb_arch}.deb")
+                for member in ("control.tar.gz", "data.tar.xz"):
+                    payload = subprocess.run(
+                        ["ar", "p", str(package), member], capture_output=True, check=True
+                    ).stdout
+                    with tarfile.open(fileobj=io.BytesIO(payload)) as archive:
+                        if member == "control.tar.gz":
+                            self.assert_root_owned(archive.getmembers())
+                            control = archive.extractfile("./control").read().decode()
+                            self.assertIn(f"Architecture: {deb_arch}", control.splitlines())
+                            dependencies = [line for line in control.splitlines() if line.startswith("Depends:")]
+                            self.assertEqual(
+                                dependencies, ["Depends: libc6 (>= 2.36)"] if arch == "aarch64" else []
+                            )
+                        else:
+                            self.assert_tar_payload(archive)
+
+    @unittest.skipUnless(shutil.which("dpkg-deb"), "dpkg-deb unavailable")
+    def test_deb_architecture_and_payload(self) -> None:
+        for arch, deb_arch in (("x86_64", "amd64"), ("aarch64", "arm64")):
+            with self.subTest(arch=arch), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                package = build_linux_packages.build_deb(self.make_stage(root), root, "1.0", arch)
+                self.assertEqual(package.name, f"ratex_1.0_{deb_arch}.deb")
+                metadata = subprocess.run(
+                    ["dpkg-deb", "--field", str(package), "Architecture"],
+                    capture_output=True, text=True, check=True,
+                ).stdout.strip()
+                self.assertEqual(metadata, deb_arch)
+                dependencies = subprocess.run(
+                    ["dpkg-deb", "--field", str(package), "Depends"],
+                    capture_output=True, text=True, check=True,
+                ).stdout.strip()
+                self.assertEqual(dependencies, "libc6 (>= 2.36)" if arch == "aarch64" else "")
+                payload = subprocess.run(
+                    ["dpkg-deb", "--fsys-tarfile", str(package)],
+                    capture_output=True, check=True,
+                ).stdout
+                with tarfile.open(fileobj=io.BytesIO(payload)) as archive:
+                    self.assert_tar_payload(archive)
+
+    @unittest.skipUnless(
+        all(shutil.which(tool) for tool in ("rpmbuild", "rpm", "rpm2cpio", "cpio")),
+        "RPM build/query/extraction tools unavailable",
+    )
+    def test_rpm_architecture_and_payload(self) -> None:
+        for arch in ("x86_64", "aarch64"):
+            with self.subTest(arch=arch), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                package = build_linux_packages.build_rpm(self.make_stage(root), root, "1.0", arch)
+                self.assertEqual(package.name, f"ratex-1.0-1.{arch}.rpm")
+                metadata = subprocess.run(
+                    ["rpm", "-qp", "--queryformat", "%{ARCH}", str(package)],
+                    capture_output=True, text=True, check=True,
+                ).stdout
+                self.assertEqual(metadata, arch)
+                dependencies = subprocess.run(
+                    ["rpm", "-qp", "--queryformat",
+                     "[%{REQUIRENAME} %{REQUIREFLAGS:depflags} %{REQUIREVERSION}\\n]", str(package)],
+                    capture_output=True, text=True, check=True,
+                ).stdout.splitlines()
+                glibc = [line for line in dependencies if line.startswith("glibc ")]
+                self.assertEqual(glibc, ["glibc >= 2.36"] if arch == "aarch64" else [])
+                owners = subprocess.run(
+                    ["rpm", "-qp", "--queryformat",
+                     "[%{FILENAMES} %{FILEUSERNAME} %{FILEGROUPNAME}\\n]", str(package)],
+                    capture_output=True, text=True, check=True,
+                ).stdout.splitlines()
+                self.assertIn("/usr/bin/ratex root root", owners)
+                self.assertIn("/usr/share/tex-suite/LICENSE root root", owners)
+                for record in owners:
+                    self.assertEqual(record.split()[1:], ["root", "root"])
+                payload = subprocess.run(
+                    ["rpm2cpio", str(package)], capture_output=True, check=True
+                ).stdout
+                extracted = root / "extracted"
+                extracted.mkdir()
+                subprocess.run(
+                    ["cpio", "--extract", "--make-directories", "--no-preserve-owner"],
+                    input=payload, capture_output=True, check=True, cwd=extracted,
+                )
+                engine = extracted / "usr" / "bin" / "ratex"
+                self.assertEqual(engine.read_bytes(), b"engine")
+                self.assertEqual(engine.stat().st_mode & 0o777, 0o755)
+                self.assertEqual(
+                    (extracted / "usr" / "share" / "tex-suite" / "LICENSE").read_bytes(),
+                    b"package license\n",
+                )
 
 
 class FormatValidationTests(unittest.TestCase):
@@ -185,6 +287,63 @@ class InstallerUpgradeTests(unittest.TestCase):
             command.extend(("--data-dir", str(data)))
         command.extend(extra)
         return self.run_installer("install-linux.sh", bundle.parent, *command)
+
+    def make_architecture_installer(
+        self, root: Path, host_arch: str, bundle_arches: tuple[str, ...]
+    ) -> tuple[Path, dict[str, str]]:
+        script = root / "install-linux.sh"
+        shutil.copy2(package_dist.REPO / "packaging" / "install-linux.sh", script)
+        for arch in bundle_arches:
+            bundle = self.make_unix_bundle(root)
+            (bundle / "bin" / "ratex").write_bytes(f"payload-{arch}\n".encode())
+            bundle.rename(root / f"tex-suite-linux-{arch}")
+        stub = root / "stub"
+        stub.mkdir()
+        uname = stub / "uname"
+        uname.write_text(f"#!/bin/sh\nprintf '%s\\n' '{host_arch}'\n")
+        uname.chmod(0o755)
+        home = root / "home"
+        home.mkdir()
+        environment = {
+            key: value for key, value in os.environ.items() if key not in ("TEX_SUITE_DATA", "SUDO_USER")
+        }
+        environment.update(HOME=str(home), PATH=f"{stub}{os.pathsep}{os.environ.get('PATH', '')}")
+        return script, environment
+
+    def test_linux_bundle_selection_matches_normalized_host_architecture(self) -> None:
+        if os.name == "nt":
+            self.skipTest("POSIX shell installer test")
+        for host_arch, expected in (
+            ("x86_64", "x86_64"), ("amd64", "x86_64"),
+            ("aarch64", "aarch64"), ("arm64", "aarch64"),
+        ):
+            with self.subTest(host_arch=host_arch), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                script, environment = self.make_architecture_installer(
+                    root, host_arch, ("x86_64", "aarch64")
+                )
+                prefix = root / "prefix"
+                result = subprocess.run(
+                    ["sh", str(script), "--prefix", str(prefix), "--no-path", "--skip-verify"],
+                    capture_output=True, text=True, env=environment,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((prefix / "bin" / "ratex").read_bytes(), f"payload-{expected}\n".encode())
+
+    def test_linux_bundle_selection_refuses_other_architecture(self) -> None:
+        if os.name == "nt":
+            self.skipTest("POSIX shell installer test")
+        for host_arch, other in (("x86_64", "aarch64"), ("arm64", "x86_64")):
+            with self.subTest(host_arch=host_arch), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                script, environment = self.make_architecture_installer(root, host_arch, (other,))
+                prefix = root / "prefix"
+                result = subprocess.run(
+                    ["sh", str(script), "--prefix", str(prefix), "--no-path", "--skip-verify"],
+                    capture_output=True, text=True, env=environment,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse((prefix / "bin" / "ratex").exists())
 
     def test_linux_upgrade_removes_only_owned_legacy_format_paths(self) -> None:
         if os.name == "nt":

@@ -207,8 +207,7 @@ resolve_payload() {
     fi
 
     if [ "$FROM_SOURCE" = 0 ]; then
-        for _cand in "$SCRIPT_DIR" "$SCRIPT_DIR/tex-suite-linux-$ARCH" \
-            "$SCRIPT_DIR"/tex-suite-linux-*/; do
+        for _cand in "$SCRIPT_DIR" "$SCRIPT_DIR/tex-suite-linux-$ARCH"; do
             _cand=${_cand%/}
             [ -d "$_cand" ] && try_bundle "$_cand" || continue
             check_font_payload

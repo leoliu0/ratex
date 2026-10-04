@@ -26,7 +26,7 @@ fn environment_matches_luatex() {
     let out = eval(
         "local d = {} for k in pairs(debug) do d[#d + 1] = k end \
          local ok, e = pcall(setmetatable, 1, {}) \
-         return table.concat(d, ',') .. '|' .. tostring(rawget(_G, '_ENV')) .. '|' .. tostring(rawget(_G, '__ratex_callback')) \
+         return table.concat(d, ',') .. '|' .. tostring(rawget(_G, '_ENV')) .. '|' .. tostring(rawget(_G, '__texres_callback')) \
            .. '|' .. math.type(LUATEXCOREVERSION) .. '|' .. e .. '|' .. tostring(lpeg.utfR)",
     );
     assert_eq!(

@@ -1,10 +1,10 @@
 # Maintainer: Leo Liu <leoliu0@users.noreply.github.com>
-pkgname=ratex
+pkgname=texres
 pkgver=0.5.0
 pkgrel=1
 pkgdesc="Ultra-fast, pure-Rust TeX engine and typesetting toolchain (built from source)"
 arch=('x86_64' 'aarch64')
-url="https://github.com/leoliu0/ratex"
+url="https://github.com/leoliu0/texres"
 license=(
     'MIT'
     'Apache-2.0'
@@ -21,20 +21,21 @@ license=(
 )
 depends=('glibc' 'gcc-libs')
 makedepends=('cargo')
-provides=('ratex')
-conflicts=('ratex-bin')
+provides=('texres')
+conflicts=('texres-bin' 'ratex' 'ratex-bin')
+replaces=('ratex')
 options=('!lto')
-source=("${pkgname}-${pkgver}.tar.gz::https://github.com/leoliu0/ratex/archive/refs/tags/v${pkgver}.tar.gz")
+source=("${pkgname}-${pkgver}.tar.gz::https://github.com/leoliu0/texres/archive/refs/tags/v${pkgver}.tar.gz")
 sha256sums=('469fb82b5aeb24cba427eee292315141565aab40178353a2b0802fb40c25504d')
 
 build() {
     cd "${pkgname}-${pkgver}"
-    cargo build --release --locked --bin ratex
+    cargo build --release --locked --bin texres
 }
 
 package() {
     cd "${pkgname}-${pkgver}"
-    install -Dm755 target/release/ratex "$pkgdir/usr/bin/ratex"
+    install -Dm755 target/release/texres "$pkgdir/usr/bin/texres"
     local assets_dir="crates/tex-kpse/assets"
     local font_doc="$pkgdir/usr/share/tex-suite/texmf/doc/fonts"
 

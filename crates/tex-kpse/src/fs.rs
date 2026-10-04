@@ -748,7 +748,7 @@ mod tests {
     use super::*;
     fn temp_root(label: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
-            "ratex-resource-context-{}-{label}",
+            "texres-resource-context-{}-{label}",
             std::process::id()
         ));
         std::fs::remove_dir_all(&root).ok();

@@ -1,6 +1,6 @@
 //! The primitive names TeX Live 2026 `xetex -ini -etex` defines (the way
 //! `fmtutil` builds `xelatex.fmt`), probed with `\ifdefined` over every
-//! string of the binary and every name Ratex knows. Apart from `\ `, `\/`
+//! string of the binary and every name TeXres knows. Apart from `\ `, `\/`
 //! and `\-` (see [`XETEX_SYMBOL_NAMES`]) they are all letters.
 
 /// Letter-only primitive names (sorted).

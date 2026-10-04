@@ -1559,7 +1559,7 @@ impl Engine {
     /// tex.web `privileged` for mmode commands (`\eqno`, `\halign`): the
     /// innermost math list is the display itself. A `{...}` group, a
     /// `\mathchoice` part, a `\left` group and the tag of `\eqno` each push
-    /// a -mmode list in tex.web; Ratex keeps `Mode::DisplayMath` for them.
+    /// a -mmode list in tex.web; TeXres keeps `Mode::DisplayMath` for them.
     pub(crate) fn display_math_is_privileged(&self) -> bool {
         use crate::eqtb::group_code;
         self.mode == Mode::DisplayMath

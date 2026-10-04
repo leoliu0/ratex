@@ -14,7 +14,7 @@ fn run(script: &str) -> String {
     use std::sync::Mutex;
     static LOCK: Mutex<()> = Mutex::new(());
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let base = std::env::temp_dir().join(format!("ratex-luaotfload-{}", std::process::id()));
+    let base = std::env::temp_dir().join(format!("texres-luaotfload-{}", std::process::id()));
     std::fs::create_dir_all(&base).unwrap();
     let cache = base.join("cache");
     let file = base.join("probe.lua");

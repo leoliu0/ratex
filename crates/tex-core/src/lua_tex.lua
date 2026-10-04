@@ -1,6 +1,6 @@
 -- LuaTeX `tex` library, beyond the registers of lua_bridge.lua (ltexlib.c).
-local B, T = __ratex_bridge, __ratex_texlib
-__ratex_bridge, __ratex_texlib = nil, nil
+local B, T = __texres_bridge, __texres_texlib
+__texres_bridge, __texres_texlib = nil, nil
 
 local type, select, error, tostring, tonumber, pairs, rawget, setmetatable, getmetatable =
       type, select, error, tostring, tonumber, pairs, rawget, setmetatable, getmetatable

@@ -1,7 +1,7 @@
 #!/bin/sh
 # install-macos.sh — installer for the Rust TeX engine suite on macOS.
 #
-# Installs ratex plus the runtime texmf overlay, clears Gatekeeper
+# Installs texres plus the runtime texmf overlay, clears Gatekeeper
 # quarantine attributes, and wires up shell profiles.
 #
 # Works from an extracted release bundle (bin/ + share/tex-suite/ beside
@@ -17,7 +17,7 @@ MARK_END='# <<< tex-suite <<<'
 DATA_MANIFEST_NAME='.tex-suite-managed-files-v1'
 DATA_MANIFEST_HEADER='TEX-SUITE-MANAGED-FILES-1'
 
-BIN_NAMES="ratex"
+BIN_NAMES="texres"
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 log() { printf '%s\n' "$*"; }
@@ -27,7 +27,7 @@ usage() {
     cat <<'EOF'
 Usage: install-macos.sh [options]
 
-Install ratex and its runtime texmf overlay on macOS.
+Install texres and its runtime texmf overlay on macOS.
 Detects Apple Silicon (arm64) vs Intel (x86_64), clears com.apple.quarantine
 on installed binaries, and updates ~/.zshrc (default shell) and
 ~/.bash_profile when present.
@@ -50,7 +50,7 @@ Options:
                    --app-support)
   --link           Symlink binaries into PREFIX/bin instead of copying
   --no-path        Do not edit shell profiles
-  --skip-verify    Skip the post-install ratex version check
+  --skip-verify    Skip the post-install texres version check
   --uninstall      Remove installed binaries, data dir, and profile block
   -h, --help       Show this help and exit
 
@@ -185,7 +185,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 try_bundle() {
-    [ -x "$1/bin/ratex" ] || return 1
+    [ -x "$1/bin/texres" ] || return 1
     # Absolute, so --link never creates a symlink relative to the caller's cwd.
     _b=$(CDPATH= cd -- "$1" && pwd) || return 1
     SRC_BIN="$_b/bin"
@@ -224,7 +224,7 @@ resolve_payload() {
     if [ -n "$BUNDLE_ARG" ]; then
         [ -d "$BUNDLE_ARG" ] || die "--bundle: not a directory: $BUNDLE_ARG"
         try_bundle "$BUNDLE_ARG" \
-            || die "--bundle $BUNDLE_ARG has no executable bin/ratex"
+            || die "--bundle $BUNDLE_ARG has no executable bin/texres"
         check_font_payload
         log "Using release bundle at $BUNDLE_ARG"
         return 0
@@ -245,13 +245,13 @@ resolve_payload() {
 
     _repo=$(find_repo_root) || die "no release bundle found and this is not a cargo checkout; pass --bundle DIR or run from the repo"
     _target="${CARGO_TARGET_DIR:-$_repo/target}/release"
-    if [ ! -x "$_target/ratex" ] || { [ "$FROM_SOURCE" = 1 ] && [ "$NO_BUILD" = 0 ]; }; then
-        [ "$NO_BUILD" = 1 ] && die "--no-build given but a build is required ($_target/ratex is missing)"
+    if [ ! -x "$_target/texres" ] || { [ "$FROM_SOURCE" = 1 ] && [ "$NO_BUILD" = 0 ]; }; then
+        [ "$NO_BUILD" = 1 ] && die "--no-build given but a build is required ($_target/texres is missing)"
         command -v cargo >/dev/null 2>&1 || die "cargo not found; install Rust (https://rustup.rs) or pass --bundle DIR"
         log "Building release binaries: cargo build --release --workspace"
         ( CDPATH= cd -- "$_repo" && cargo build --release --workspace ) || die "cargo build failed"
     fi
-    [ -x "$_target/ratex" ] || die "build did not produce $_target/ratex"
+    [ -x "$_target/texres" ] || die "build did not produce $_target/texres"
     SRC_BIN="$_target"
     SRC_FMT=""
     _assets_dir="$_repo/crates/tex-kpse/assets"
@@ -408,9 +408,9 @@ update_profiles() {
 }
 
 # ------------------------------------------------------------------ install
-install_ratex() {
-    _src="$SRC_BIN/ratex"
-    _dst="$BIN_DIR/ratex"
+install_texres() {
+    _src="$SRC_BIN/texres"
+    _dst="$BIN_DIR/texres"
     rm -f -- "$_dst" 2>/dev/null || true   # never write through a stale symlink
     if [ "$DO_LINK" = 1 ]; then
         ln -s -- "$_src" "$_dst" || die "failed to link $_dst -> $_src"
@@ -493,7 +493,7 @@ preflight_install() {
     [ ! -L "$BIN_DIR" ] || die "refusing a binary directory that is a symlink: $BIN_DIR"
     [ ! -L "$DATA_DIR/texmf" ] \
         || die "refusing a texmf directory that is a symlink: $DATA_DIR/texmf"
-    preflight_destination B ratex "$BIN_DIR/ratex"
+    preflight_destination B texres "$BIN_DIR/texres"
     if [ -n "$SRC_FMT" ]; then
         preflight_destination B pdflatex.fmt "$BIN_DIR/pdflatex.fmt"
         preflight_destination F pdflatex.fmt "$DATA_DIR/pdflatex.fmt"
@@ -541,7 +541,7 @@ manifest_records() {
     printf '%s\n' "$DATA_MANIFEST_HEADER" || return 1
     printf 'PREFIX\t%s\n' "$PREFIX" || return 1
     printf 'DATA\t%s\n' "$DATA_DIR" || return 1
-    printf 'B\tratex\n' || return 1
+    printf 'B\ttexres\n' || return 1
     if [ -n "$SRC_FMT" ]; then
         printf 'B\tpdflatex.fmt\nF\tpdflatex.fmt\n' || return 1
     fi
@@ -676,7 +676,7 @@ do_install() {
     fi
 
     log "Installing binaries to $BIN_DIR"
-    install_ratex
+    install_texres
     log "Installing runtime data to $DATA_DIR"
     if [ -n "$SRC_FMT" ]; then
         rm -f -- "$DATA_DIR/pdflatex.fmt" "$BIN_DIR/pdflatex.fmt" 2>/dev/null || true
@@ -721,12 +721,12 @@ do_install() {
 
     if [ "$SKIP_VERIFY" = 0 ]; then
         log "Verifying installation"
-        if [ ! -x "$BIN_DIR/ratex" ]; then
-            die "verification failed: $BIN_DIR/ratex is missing or not executable"
+        if [ ! -x "$BIN_DIR/texres" ]; then
+            die "verification failed: $BIN_DIR/texres is missing or not executable"
         fi
         _ok=0
         for _flag in -version --version -v; do
-            if _out=$("$BIN_DIR/ratex" "$_flag" 2>/dev/null); then
+            if _out=$("$BIN_DIR/texres" "$_flag" 2>/dev/null); then
                 printf '  %s\n' "$_out"
                 _ok=1
                 break
@@ -735,7 +735,7 @@ do_install() {
         if [ "$_ok" = 1 ]; then
             log "Verification passed."
         else
-            warn "ratex is installed but did not answer a version flag; check manually."
+            warn "texres is installed but did not answer a version flag; check manually."
         fi
     fi
 
@@ -743,7 +743,7 @@ do_install() {
 
 Done. Next steps:
   - open a new terminal (or:  source ~/.zshrc )
-  - compile:  ratex paper.tex
+  - compile:  texres paper.tex
   - data dir: $DATA_DIR
   - uninstall later with:  $0 --uninstall --prefix "$PREFIX" --data-dir "$DATA_DIR"
 EOF

@@ -67,7 +67,7 @@ fn run(tfm: bool, body: &str) -> Engine {
 }
 
 /// The box displays, `\showlists` reports and callback output lines of a log
-/// (luatex and Ratex frame their error messages differently): a block
+/// (luatex and TeXres frame their error messages differently): a block
 /// starts at a line beginning with one of the display openers and ends at an
 /// empty line or an error message line.
 fn blocks(log: &str) -> String {

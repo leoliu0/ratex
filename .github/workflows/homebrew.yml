@@ -29,14 +29,14 @@ jobs:
         env:
           HOMEBREW_NO_AUTO_UPDATE: "1"
         run: |
-          brew tap leoliu0/ratex "$PWD"
-          mkdir -p "$(brew --repository leoliu0/ratex)/Formula"
-          cp Formula/ratex.rb "$(brew --repository leoliu0/ratex)/Formula/ratex.rb"
-          brew install leoliu0/ratex/ratex
-          brew test leoliu0/ratex/ratex
+          brew tap leoliu0/texres "$PWD"
+          mkdir -p "$(brew --repository leoliu0/texres)/Formula"
+          cp Formula/texres.rb "$(brew --repository leoliu0/texres)/Formula/texres.rb"
+          brew install leoliu0/texres/texres
+          brew test leoliu0/texres/texres
       - name: Exercise archive installer migration
         run: |
-          bundle="$(brew --prefix leoliu0/ratex/ratex)"
+          bundle="$(brew --prefix leoliu0/texres/texres)"
           work="$(mktemp -d)"
           trap 'rm -rf "$work"' EXIT
           mkdir -p "$work/home"
@@ -44,13 +44,13 @@ jobs:
           sh packaging/install-macos.sh --bundle "$bundle" --prefix "$work/old install" --no-path
           touch "$work/old install/bin/unrelated"
           sh packaging/install-macos.sh --uninstall --prefix "$work/old install"
-          test ! -e "$work/old install/bin/ratex"
+          test ! -e "$work/old install/bin/texres"
           test -f "$work/old install/bin/unrelated"
       - name: Publish verified formula
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add Formula/ratex.rb
+          git add Formula/texres.rb
           if ! git diff --cached --quiet; then
             git commit -m 'Publish Homebrew formula for latest release'
             git push origin HEAD:main

@@ -2,7 +2,7 @@
 //! and inter-character tokens, and the native-font/glyph queries.
 //!
 //! `init_xetex_primitives` turns the common table into exactly the table
-//! TeX Live's `xetex -ini -etex` has: the `pdf*` and Ratex-only names are
+//! TeX Live's `xetex -ini -etex` has: the `pdf*` and TeXres-only names are
 //! removed, XeTeX's own names are added, and the utility primitives that
 //! XeTeX shares with pdfTeX get their XeTeX spelling. Each slice registers
 //! the names it implements in its own `register_xetex_*_primitives`.

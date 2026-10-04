@@ -783,7 +783,7 @@ fn cjk_latin_mixed_script_raw_binding_isolation() {
     std::fs::create_dir_all(&dir_buf).unwrap();
     let dir = dir_buf.to_string_lossy().replace('\\', "/");
 
-    let tex_source = "\\catcode`\\{=1 \\catcode`\\}=2\n\\font\\tenrm=cmr10\n\\tenrm\n\\ratexcjktext{4E}1\\relax\nA\n\\ratexcjktext{}0\\relax\nB\n\\end\n";
+    let tex_source = "\\catcode`\\{=1 \\catcode`\\}=2\n\\font\\tenrm=cmr10\n\\tenrm\n\\texrescjktext{4E}1\\relax\nA\n\\texrescjktext{}0\\relax\nB\n\\end\n";
 
     let mut eng = Engine::new(true);
     eng.init_primitives();
@@ -909,7 +909,7 @@ fn compile_latex_twice(job: &str, source: &'static [u8]) -> Engine {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!("ratex-{job}-{}-{nonce}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("texres-{job}-{}-{nonce}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
 
     let run_pass = || {
@@ -1170,7 +1170,7 @@ fn font_attr_and_nobuiltin_tounicode_shape_font_dictionaries() {
 \font\flagged=cmr10
 \font\shared=cmr10 at 12pt
 \pdfnobuiltintounicode\flagged
-\def\attr{/RatexProbe 7}
+\def\attr{/TeXresProbe 7}
 \pdffontattr\flagged{\attr}
 \shipout\hbox{\plain\char12 \flagged\char12 \shared\char12}
 \end"#
@@ -1196,7 +1196,7 @@ fn font_attr_and_nobuiltin_tounicode_shape_font_dictionaries() {
             base,
             width.round() as i64,
             dict.has(b"ToUnicode"),
-            dict.get(b"RatexProbe").and_then(lopdf::Object::as_i64).ok(),
+            dict.get(b"TeXresProbe").and_then(lopdf::Object::as_i64).ok(),
         )
     };
     let mut fonts: Vec<_> = fonts.iter().map(summary).collect();
@@ -1446,7 +1446,7 @@ fn pdftex_backend_primitives_match_pdftex() {
 \immediate\write15{C:\fontname\d,\ifx\c\d same\else diff\fi,\the\hyphenchar\c,\the\hyphenchar\d,\pdffontname\d}
 \pdfximage{IMAGE}\immediate\write15{D:\the\pdflastximagecolordepth}
 \immediate\write15{V:\the\pdfimageresolution,\the\pdfgamma,\the\pdfimagegamma,\the\pdfimagehicolor,\the\pdfpagebox}
-\pdftrailer{/RatexProbe (yes)}\pdfomitinfodict=1 \pdfomitprocset=1
+\pdftrailer{/TeXresProbe (yes)}\pdfomitinfodict=1 \pdfomitprocset=1
 \pdfincludechars\c{AB}
 \pdfmapline{+cmr10 CMR10 <cmr10.pfb}\pdfsuppresswarningdupmap=1 \pdfmapline{+cmr10 CMR10 <cmr10.pfb}
 \immediate\write15{P:\pdfpageref2}
@@ -1481,7 +1481,7 @@ fn pdftex_backend_primitives_match_pdftex() {
     let pages: Vec<_> = pdf.get_pages().into_values().collect();
     assert_eq!(pages[1], (page_ref, 0));
     assert_eq!(
-        pdf.trailer.get(b"RatexProbe").and_then(lopdf::Object::as_str).ok(),
+        pdf.trailer.get(b"TeXresProbe").and_then(lopdf::Object::as_str).ok(),
         Some(&b"yes"[..])
     );
     assert!(pdf.trailer.get(b"Info").is_err(), "\\pdfomitinfodict keeps /Info");

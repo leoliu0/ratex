@@ -72,7 +72,7 @@ class PackageLayoutTests(unittest.TestCase):
 class LinuxPackageTests(unittest.TestCase):
     def make_stage(self, root: Path) -> Path:
         stage = root / "stage"
-        engine = stage / "usr" / "bin" / "ratex"
+        engine = stage / "usr" / "bin" / "texres"
         engine.parent.mkdir(parents=True)
         engine.write_bytes(b"engine")
         engine.chmod(0o755)
@@ -87,7 +87,7 @@ class LinuxPackageTests(unittest.TestCase):
 
     def assert_tar_payload(self, archive: tarfile.TarFile) -> None:
         self.assert_root_owned(archive.getmembers())
-        engine = archive.getmember("./usr/bin/ratex")
+        engine = archive.getmember("./usr/bin/texres")
         self.assertEqual(engine.mode & 0o777, 0o755)
 
     @unittest.skipUnless(shutil.which("zstd") and shutil.which("tar"), "zstd/tar unavailable")
@@ -96,7 +96,7 @@ class LinuxPackageTests(unittest.TestCase):
             with self.subTest(arch=arch), tempfile.TemporaryDirectory() as temp:
                 root = Path(temp)
                 package = build_linux_packages.build_arch_pkg(self.make_stage(root), root, "1.0", arch)
-                self.assertEqual(package.name, f"ratex-1.0-1-{arch}.pkg.tar.zst")
+                self.assertEqual(package.name, f"texres-1.0-1-{arch}.pkg.tar.zst")
                 payload = subprocess.run(
                     ["zstd", "-qdc", str(package)], capture_output=True, check=True
                 ).stdout
@@ -114,7 +114,7 @@ class LinuxPackageTests(unittest.TestCase):
                 root = Path(temp)
                 with mock.patch.object(build_linux_packages.shutil, "which", return_value=None):
                     package = build_linux_packages.build_deb(self.make_stage(root), root, "1.0", arch)
-                self.assertEqual(package.name, f"ratex_1.0_{deb_arch}.deb")
+                self.assertEqual(package.name, f"texres_1.0_{deb_arch}.deb")
                 for member in ("control.tar.gz", "data.tar.xz"):
                     payload = subprocess.run(
                         ["ar", "p", str(package), member], capture_output=True, check=True
@@ -137,7 +137,7 @@ class LinuxPackageTests(unittest.TestCase):
             with self.subTest(arch=arch), tempfile.TemporaryDirectory() as temp:
                 root = Path(temp)
                 package = build_linux_packages.build_deb(self.make_stage(root), root, "1.0", arch)
-                self.assertEqual(package.name, f"ratex_1.0_{deb_arch}.deb")
+                self.assertEqual(package.name, f"texres_1.0_{deb_arch}.deb")
                 metadata = subprocess.run(
                     ["dpkg-deb", "--field", str(package), "Architecture"],
                     capture_output=True, text=True, check=True,
@@ -165,7 +165,7 @@ class LinuxPackageTests(unittest.TestCase):
             with self.subTest(arch=arch), tempfile.TemporaryDirectory() as temp:
                 root = Path(temp)
                 package = build_linux_packages.build_rpm(self.make_stage(root), root, "1.0", arch)
-                self.assertEqual(package.name, f"ratex-1.0-1.{arch}.rpm")
+                self.assertEqual(package.name, f"texres-1.0-1.{arch}.rpm")
                 metadata = subprocess.run(
                     ["rpm", "-qp", "--queryformat", "%{ARCH}", str(package)],
                     capture_output=True, text=True, check=True,
@@ -183,7 +183,7 @@ class LinuxPackageTests(unittest.TestCase):
                      "[%{FILENAMES} %{FILEUSERNAME} %{FILEGROUPNAME}\\n]", str(package)],
                     capture_output=True, text=True, check=True,
                 ).stdout.splitlines()
-                self.assertIn("/usr/bin/ratex root root", owners)
+                self.assertIn("/usr/bin/texres root root", owners)
                 self.assertIn("/usr/share/tex-suite/LICENSE root root", owners)
                 for record in owners:
                     self.assertEqual(record.split()[1:], ["root", "root"])
@@ -196,7 +196,7 @@ class LinuxPackageTests(unittest.TestCase):
                     ["cpio", "--extract", "--make-directories", "--no-preserve-owner"],
                     input=payload, capture_output=True, check=True, cwd=extracted,
                 )
-                engine = extracted / "usr" / "bin" / "ratex"
+                engine = extracted / "usr" / "bin" / "texres"
                 self.assertEqual(engine.stat().st_mode & 0o777, 0o755)
 
 
@@ -250,8 +250,8 @@ class InstallerUpgradeTests(unittest.TestCase):
         asset = bundle_texmf / "tex" / "generic" / "hyphen" / "hyphen.tex"
         asset.parent.mkdir(parents=True)
         asset.write_text("% managed hyphen data\n")
-        engine = bundle_bin / "ratex"
-        engine.write_text("#!/bin/sh\necho 'ratex 0.0 (test)'\n")
+        engine = bundle_bin / "texres"
+        engine.write_text("#!/bin/sh\necho 'texres 0.0 (test)'\n")
         engine.chmod(0o755)
         return bundle
 
@@ -285,7 +285,7 @@ class InstallerUpgradeTests(unittest.TestCase):
         shutil.copy2(package_dist.REPO / "packaging" / "install-linux.sh", script)
         for arch in bundle_arches:
             bundle = self.make_unix_bundle(root)
-            (bundle / "bin" / "ratex").write_bytes(f"payload-{arch}\n".encode())
+            (bundle / "bin" / "texres").write_bytes(f"payload-{arch}\n".encode())
             bundle.rename(root / f"tex-suite-linux-{arch}")
         stub = root / "stub"
         stub.mkdir()
@@ -318,7 +318,7 @@ class InstallerUpgradeTests(unittest.TestCase):
                     capture_output=True, text=True, env=environment,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual((prefix / "bin" / "ratex").read_bytes(), f"payload-{expected}\n".encode())
+                self.assertEqual((prefix / "bin" / "texres").read_bytes(), f"payload-{expected}\n".encode())
 
     def test_linux_bundle_selection_refuses_other_architecture(self) -> None:
         if os.name == "nt":
@@ -333,7 +333,7 @@ class InstallerUpgradeTests(unittest.TestCase):
                     capture_output=True, text=True, env=environment,
                 )
                 self.assertNotEqual(result.returncode, 0)
-                self.assertFalse((prefix / "bin" / "ratex").exists())
+                self.assertFalse((prefix / "bin" / "texres").exists())
 
     def test_linux_upgrade_removes_only_owned_legacy_format_paths(self) -> None:
         if os.name == "nt":
@@ -388,7 +388,7 @@ class InstallerUpgradeTests(unittest.TestCase):
             self.assertIn("refusing to overwrite unowned path", result.stderr)
             self.assertEqual(collision.read_text(), "user sentinel\n")
             self.assertEqual(unrelated.read_text(), "unrelated\n")
-            self.assertFalse((prefix / "bin" / "ratex").exists())
+            self.assertFalse((prefix / "bin" / "texres").exists())
 
     def test_linux_uninstall_removes_manifest_files_and_preserves_unrelated(self) -> None:
         if os.name == "nt":
@@ -415,7 +415,7 @@ class InstallerUpgradeTests(unittest.TestCase):
 
             self.assertEqual(uninstall.returncode, 0, uninstall.stderr)
             self.assertFalse(managed.exists())
-            self.assertFalse((prefix / "bin" / "ratex").exists())
+            self.assertFalse((prefix / "bin" / "texres").exists())
             self.assertEqual(unrelated.read_text(), "unrelated\n")
             self.assertEqual(nested_unrelated.read_text(), "user data\n")
             self.assertTrue(data.is_dir())
@@ -459,7 +459,7 @@ class InstallerUpgradeTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("unrecognized ownership manifest", result.stderr)
             self.assertEqual(marker.read_text(), "not an ownership manifest\n")
-            self.assertFalse((prefix / "bin" / "ratex").exists())
+            self.assertFalse((prefix / "bin" / "texres").exists())
 
     def test_linux_profile_block_keeps_prefix_literal(self) -> None:
         if os.name == "nt":
@@ -584,7 +584,7 @@ class InstallerUpgradeTests(unittest.TestCase):
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertTrue((prefix / "bin" / "ratex").exists())
+            self.assertTrue((prefix / "bin" / "texres").exists())
 
     def test_linux_unsafe_payload_directory_fails_before_install(self) -> None:
         if os.name == "nt":
@@ -599,7 +599,7 @@ class InstallerUpgradeTests(unittest.TestCase):
 
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("unsafe texmf payload directory", result.stderr)
-            self.assertFalse((prefix / "bin" / "ratex").exists())
+            self.assertFalse((prefix / "bin" / "texres").exists())
 
     def test_macos_uninstall_keeps_other_prefix_app_support_data(self) -> None:
         if os.name == "nt":

@@ -2,13 +2,13 @@
 
 ## What is measured
 
-The distributed executable is `ratex` (`target/release/ratex`). Invoked as
-`ratex`, it is the build driver: it re-executes itself for every TeX and BibTeX
+The distributed executable is `texres` (`target/release/texres`). Invoked as
+`texres`, it is the build driver: it re-executes itself for every TeX and BibTeX
 pass. To time or profile one engine pass, run the same executable through a
 link named `pdflatex` (or `xelatex`/`lualatex`):
 
 ```sh
-ln -s "$PWD/target/release/ratex" /tmp/ratex-bench/pdflatex
+ln -s "$PWD/target/release/texres" /tmp/texres-bench/pdflatex
 ```
 
 Keep profiling variants in a separate Cargo target directory or under `/tmp`;
@@ -51,7 +51,7 @@ Two caches can make a run skip typesetting entirely:
   every loaded file, auxiliary state, relevant environment, executable
   identity) and, when nothing changed, republishes the previous PDF, SyncTeX
   file, and transcript without typesetting.
-- The **driver cache**: `ratex` keeps per-job auxiliary state and a manifest
+- The **driver cache**: `texres` keeps per-job auxiliary state and a manifest
   and can declare an unchanged build converged after one cache hit.
 
 Both live under the cache root: `TEX_RS_CACHE_DIR`, or `--cache-directory DIR`,
@@ -68,7 +68,7 @@ load:
 ```sh
 TEX_RS_CACHE_DIR=$(mktemp -d) SOURCE_DATE_EPOCH=1700000000 \
   perf stat -e instructions:u,task-clock -- \
-  /tmp/ratex-bench/pdflatex -interaction=batchmode main.tex
+  /tmp/texres-bench/pdflatex -interaction=batchmode main.tex
 ```
 
 Compare against TeX Live's `pdflatex` on the same prepared inputs, run
@@ -90,10 +90,10 @@ graphs with `perf`:
 
 ```sh
 RUSTFLAGS="-C force-frame-pointers=yes" CARGO_TARGET_DIR=target/fp \
-  cargo build --release --locked --bin ratex
-ln -s "$PWD/target/fp/release/ratex" /tmp/ratex-prof/pdflatex
+  cargo build --release --locked --bin texres
+ln -s "$PWD/target/fp/release/texres" /tmp/texres-prof/pdflatex
 TEX_RS_CACHE_DIR=$(mktemp -d) perf record --call-graph fp -- \
-  /tmp/ratex-prof/pdflatex -interaction=batchmode main.tex
+  /tmp/texres-prof/pdflatex -interaction=batchmode main.tex
 perf report --no-children
 ```
 
@@ -102,12 +102,12 @@ perf report --no-children
 One prepared single engine pass (fresh cache, auxiliary files restored) of the
 70-page `trust_own` manuscript on a Linux x86_64 machine:
 
-| Measurement | Ratex | TeX Live 2026 `pdflatex` |
+| Measurement | TeXres | TeX Live 2026 `pdflatex` |
 | --- | ---: | ---: |
 | User-space instructions | 25.87 G | 6.42 G |
 | CPU time | ~2.05 s | ~0.66 s |
 
-Within that Ratex pass, loading the format took about 74 ms and PDF
+Within that TeXres pass, loading the format took about 74 ms and PDF
 serialization plus writing about 41 ms; the remainder was TeX execution,
 including decompression of embedded package and font files. The TeX Live
 column was re-measured with the same counter (median of seven passes); the
@@ -118,7 +118,7 @@ column was re-measured with the same counter (median of seven passes); the
 Same prepared-pass method and machine; median of three instruction-counter
 passes and seven timing passes:
 
-| Measurement | Ratex (post-review) | TeX Live 2026 `pdflatex` |
+| Measurement | TeXres (post-review) | TeX Live 2026 `pdflatex` |
 | --- | ---: | ---: |
 | User-space instructions, `trust_own` single pass | 7.29 G | 6.41 G |
 | CPU time, `trust_own` single pass | ~0.88 s | ~0.64 s |

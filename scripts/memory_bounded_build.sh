@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Issue #16 regression gate: build `ratex` from source exactly like
+# Issue #16 regression gate: build `texres` from source exactly like
 # `cargo install` (Homebrew on Linux, the AUR source package) does -- release
 # profile, ThinLTO, embedded package archive -- inside a container with a hard
 # memory ceiling and no swap, then smoke the installed binary. A build that
@@ -12,21 +12,21 @@
 # Usage: scripts/memory_bounded_build.sh [source-dir]
 #   source-dir  checkout to build (default: this repository); mounted read-only
 # Environment:
-#   RATEX_MEMORY_LIMIT  container memory ceiling, swap disabled (default 2g)
-#   RATEX_BUILD_CPUS    container CPUs (default 4)
-#   RATEX_BUILD_JOBS    cargo build jobs (default 1)
+#   TEXRES_MEMORY_LIMIT  container memory ceiling, swap disabled (default 2g)
+#   TEXRES_BUILD_CPUS    container CPUs (default 4)
+#   TEXRES_BUILD_JOBS    cargo build jobs (default 1)
 #   RUST_IMAGE          official Rust image to build in (default rust:1-bookworm)
 #   DOCKER              docker command, e.g. "sudo docker" (default docker)
 set -euo pipefail
 
 SRC=$(cd "${1:-$(dirname "$0")/..}" && pwd)
-LIMIT=${RATEX_MEMORY_LIMIT:-2g}
-CPUS=${RATEX_BUILD_CPUS:-4}
-JOBS=${RATEX_BUILD_JOBS:-1}
+LIMIT=${TEXRES_MEMORY_LIMIT:-2g}
+CPUS=${TEXRES_BUILD_CPUS:-4}
+JOBS=${TEXRES_BUILD_JOBS:-1}
 IMAGE=${RUST_IMAGE:-rust:1-bookworm}
 read -r -a DOCKER_CMD <<< "${DOCKER:-docker}"
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/ratex-memgate.XXXXXX")
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/texres-memgate.XXXXXX")
 trap 'rm -rf -- "$WORK"' EXIT
 mkdir -p "$WORK/out" "$WORK/tools"
 
@@ -109,7 +109,7 @@ set -u
 host=$(rustc -vV | sed -n 's/^host: //p' | tr '[:lower:]-' '[:upper:]_')
 export "CARGO_TARGET_${host}_LINKER=/tools/memwrap-link"
 export RUSTC_WRAPPER=/tools/memwrap.py MEMWRAP_LOG=/tmp/memwrap.jsonl
-cargo install --locked --path /src/crates/tex-cli --bin ratex --root /out
+cargo install --locked --path /src/crates/tex-cli --bin texres --root /out
 rc=$?
 python3 - <<'PY' >&2
 import json
@@ -146,15 +146,15 @@ rc=$?
 set -e
 echo "memory gate: build finished in $(( $(date +%s) - start ))s with exit $rc" >&2
 if [ "$rc" -eq 137 ]; then
-  echo "::error title=Memory-bounded build::building ratex exceeded the $LIMIT memory ceiling and was OOM-killed (issue #16 regression)" >&2
+  echo "::error title=Memory-bounded build::building texres exceeded the $LIMIT memory ceiling and was OOM-killed (issue #16 regression)" >&2
   exit 1
 elif [ "$rc" -ne 0 ]; then
-  echo "::error title=Memory-bounded build::cargo install of ratex failed with exit $rc" >&2
+  echo "::error title=Memory-bounded build::cargo install of texres failed with exit $rc" >&2
   exit 1
 fi
 
-RATEX="$WORK/out/bin/ratex"
-"$RATEX" --version
+TEXRES="$WORK/out/bin/texres"
+"$TEXRES" --version
 cat > "$WORK/smoke.tex" <<'EOF'
 \documentclass{article}
 \usepackage{amsmath}
@@ -164,12 +164,12 @@ cat > "$WORK/smoke.tex" <<'EOF'
 \begin{align}
   e^{i\pi} + 1 &= 0 \label{eq:euler}
 \end{align}
-Section~\ref{sec:gate} holds equation~\eqref{eq:euler}; see \url{https://github.com/leoliu0/ratex}.
+Section~\ref{sec:gate} holds equation~\eqref{eq:euler}; see \url{https://github.com/leoliu0/texres}.
 \end{document}
 EOF
-(cd "$WORK" && "$RATEX" --cache-directory "$WORK/cache" smoke.tex)
+(cd "$WORK" && "$TEXRES" --cache-directory "$WORK/cache" smoke.tex)
 if [ "$(head -c 5 "$WORK/smoke.pdf" 2>/dev/null)" != "%PDF-" ]; then
-  echo "::error title=Memory-bounded build::installed ratex did not produce smoke.pdf" >&2
+  echo "::error title=Memory-bounded build::installed texres did not produce smoke.pdf" >&2
   exit 1
 fi
 echo "memory gate: PASS ($(wc -c < "$WORK/smoke.pdf") byte PDF)" >&2

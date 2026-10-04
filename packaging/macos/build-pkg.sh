@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Build native macOS .pkg installer for ratex.
+# Build native macOS .pkg installer for texres.
 # Usage: build-pkg.sh BUNDLE_DIR ARCH VERSION [OUTPUT_DIR]
 # (stale defaults for the version or architecture would mislabel the package)
 usage="usage: $0 BUNDLE_DIR ARCH VERSION [OUTPUT_DIR]"
@@ -12,7 +12,7 @@ OUTPUT_DIR="${4:-dist}"
 
 mkdir -p "$OUTPUT_DIR"
 
-STAGE="$(mktemp -d -t ratex-pkg-XXXXXX)"
+STAGE="$(mktemp -d -t texres-pkg-XXXXXX)"
 trap 'rm -rf "$STAGE"' EXIT
 
 echo "==> Staging macOS package files for $ARCH (v$VERSION)..."
@@ -27,13 +27,13 @@ if [ -d "$BUNDLE_DIR/share/tex-suite" ]; then
 fi
 
 # Build .pkg
-PKG_NAME="ratex-v${VERSION}-macos-${ARCH}.pkg"
+PKG_NAME="texres-v${VERSION}-macos-${ARCH}.pkg"
 PKG_PATH="$OUTPUT_DIR/$PKG_NAME"
 
 echo "==> Running pkgbuild for $PKG_NAME..."
 pkgbuild \
     --root "$STAGE" \
-    --identifier "io.github.leoliu0.ratex" \
+    --identifier "io.github.leoliu0.texres" \
     --version "$VERSION" \
     --install-location "/usr/local" \
     "$PKG_PATH"

@@ -1,6 +1,6 @@
 -- LuaTeX `pdf` library (lpdflib.c) over the pdfTeX backend of the engine.
-local P = __ratex_pdflib
-__ratex_pdflib = nil
+local P = __texres_pdflib
+__texres_pdflib = nil
 
 local type, select, error, tostring, tonumber = type, select, error, tostring, tonumber
 local tointeger = math.tointeger

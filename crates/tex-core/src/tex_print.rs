@@ -4,7 +4,7 @@
 //! bytes (an 8-bit character counts as the 1, 3 or 4 bytes it prints as).
 //!
 //! Only text that TeX itself prints goes through here (`\message`, `\write`
-//! to the terminal and log, box displays). Ratex's structured diagnostics
+//! to the terminal and log, box displays). TeXres's structured diagnostics
 //! are free-form blocks that go through `append_log`/`append_term`, which
 //! merely keep the column counters in step.
 
@@ -245,7 +245,7 @@ pub(crate) fn advance_offset(offset: usize, text: &str, unicode: bool) -> usize 
 
 impl Engine {
     /// tex.web §537 start_input: `(name`, after a separating space or a
-    /// line break. Ratex keeps the space after the name pending until more
+    /// line break. TeXres keeps the space after the name pending until more
     /// text follows, so that a following `print_nl` does not leave it dangling.
     pub(crate) fn print_file_open(&mut self, name: &[u8]) {
         self.flush_trace_events();

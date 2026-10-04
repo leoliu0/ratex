@@ -134,7 +134,7 @@ pub fn detect_script(text: &str) -> Option<rustybuzz::Script> {
     None
 }
 
-/// Backward compatibility stub: Ratex now natively supports bidirectional text layout.
+/// Backward compatibility stub: TeXres now natively supports bidirectional text layout.
 pub fn is_unsupported_bidi(_ch: char) -> bool {
     false
 }
@@ -544,7 +544,7 @@ fn is_strong_rtl_or_arabic_number(c: char) -> bool {
     matches!(unicode_bidi::bidi_class(c), R | AL | AN | RLE | RLO | RLI)
 }
 
-/// Whether the font is laid out through the OT shaper (Ratex has no AAT or
+/// Whether the font is laid out through the OT shaper (TeXres has no AAT or
 /// Graphite renderer: those requests fall back to OpenType shaping).
 pub fn uses_ot(nf: &NativeFont) -> bool {
     nf.req_engine != ReqEngine::Aat

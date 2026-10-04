@@ -1,5 +1,5 @@
 lfs.mkdir("kpse") lfs.chdir("kpse")
--- Installation roots differ per machine (TeX Live prefix, Ratex's embedded
+-- Installation roots differ per machine (TeX Live prefix, TeXres's embedded
 -- tree); report every path from its TDS directory on.
 local P0 = P
 local function N(s)

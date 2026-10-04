@@ -8,14 +8,14 @@ platform installers, a README and a SHA256 manifest, then produces:
   Windows:     dist/tex-suite-v0.1.0-windows-x86_64.zip
 
 Bundle layout (inside the archive root tex-suite-<platform>-<arch>/):
-  bin/            ratex
+  bin/            texres
   share/tex-suite/texmf/doc/fonts/   licenses, lock and corresponding sources
   <installers>    install-*.sh / install*.ps1 / install*.bat at archive root
   README.txt
   manifest.json
 
 The format, packages, fonts, maps, TeX engine, and BibTeX engine are embedded
-in ratex. Do not stage a second TEXMF tree from the packaging host: it can
+in texres. Do not stage a second TEXMF tree from the packaging host: it can
 silently override the locked embedded resources.
 """
 
@@ -37,7 +37,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 
-BINARIES = ["ratex"]
+BINARIES = ["texres"]
 
 ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 # A normal format expands to roughly 8 MiB. Keep explicit distribution
@@ -95,9 +95,9 @@ def sha256_file(path: Path) -> str:
 
 
 def run_cargo_build() -> None:
-    print("==> cargo build --locked --release -p tex-cli --bin ratex")
+    print("==> cargo build --locked --release -p tex-cli --bin texres")
     subprocess.run(
-        ["cargo", "build", "--locked", "--release", "-p", "tex-cli", "--bin", "ratex"],
+        ["cargo", "build", "--locked", "--release", "-p", "tex-cli", "--bin", "texres"],
         cwd=REPO,
         check=True,
     )
@@ -113,7 +113,7 @@ def collect_binaries(release_dir: Path, stage_bin: Path, is_windows: bool) -> li
     for b in BINARIES:
         src = release_dir / exe(b, is_windows)
         if not src.is_file():
-            die(f"binary {src} not found; run with --build or build ratex first")
+            die(f"binary {src} not found; run with --build or build texres first")
         dst = stage_bin / exe(b, is_windows)
         shutil.copy2(src, dst)
         if not is_windows:
@@ -267,7 +267,7 @@ def readme_text(version: str, platform_name: str, arch: str) -> str:
 =======================================================================
 
 Contents
-  bin/                ratex{suffix}
+  bin/                texres{suffix}
   share/tex-suite/    optional compatibility assets
   manifest.json       file list with SHA256 checksums
   installer script    {installer}
@@ -276,16 +276,16 @@ Quickstart
   1. Extract this archive.
   2. Run the installer (see README output of `--help`): it copies bin/ to
      your PATH directory and share/tex-suite/ to the data directory.
-  3. Verify:  ratex --version   (or run `ratex file.tex`)
+  3. Verify:  texres --version   (or run `texres file.tex`)
 
 Without the installer
-  Run bin/ratex{suffix} directly or add bin/ to PATH. No TeX installation or
+  Run bin/texres{suffix} directly or add bin/ to PATH. No TeX installation or
   data environment variables are required.
 
 Notes
   * The production format, package archive, fonts, maps, TeX engine, and
-    BibTeX engine are embedded in ratex{suffix}.
-  * Resolution is strictly self-contained using ratex's bundled installation
+    BibTeX engine are embedded in texres{suffix}.
+  * Resolution is strictly self-contained using texres's bundled installation
     assets. No external TeX Live installation or network access is required.
 """
 
@@ -321,7 +321,7 @@ def verify_archive(out: Path, root_name: str, is_windows: bool, has_format: bool
             names = tf.getnames()
     s = ".exe" if is_windows else ""
     expect = [
-        f"{root_name}/bin/ratex{s}",
+        f"{root_name}/bin/texres{s}",
         f"{root_name}/README.txt",
         f"{root_name}/manifest.json",
     ]
@@ -360,7 +360,7 @@ def main() -> None:
     ap.add_argument("--arch", choices=["x86_64", "aarch64"],
                     default=None, help="target arch (default: auto-detect host)")
     ap.add_argument("--build", action="store_true",
-                    help="run `cargo build --locked --release -p tex-cli --bin ratex` first")
+                    help="run `cargo build --locked --release -p tex-cli --bin texres` first")
     ap.add_argument("--output-dir", default="dist",
                     help="directory to place distribution archives")
     ap.add_argument("--fmt", default=None,
@@ -405,7 +405,7 @@ def main() -> None:
             format_file = "share/tex-suite/pdflatex.fmt"
             print(f"    external fmt: {fmt}")
         else:
-            print("    fmt: compressed format embedded in ratex")
+            print("    fmt: compressed format embedded in texres")
 
         assets = {
             f"doc/fonts/{name}": provenance

@@ -51,7 +51,7 @@ impl ReadBytes {
 
 impl UserDataTrait for ReadBuffer {
     fn type_name(&self) -> &'static str {
-        "ratex.embedded_file"
+        "texres.embedded_file"
     }
 
     fn as_any(&self) -> &dyn Any {

@@ -1,7 +1,7 @@
 //! XeTeX-only transcript behaviour that TeX Live's `xetex` adds to tex.web:
 //! `\tracingstacklevels` (the `~`/`.` prefixes of `\tracingmacros` lines) and
 //! `\showstream` (the `\show…` family writing to an open `\write` stream).
-//! Both are plain parameters of the XeTeX table; Ratex does not give them to
+//! Both are plain parameters of the XeTeX table; TeXres does not give them to
 //! any other engine (pdfTeX does not define them).
 
 use crate::engine::{Engine, EngineKind};
@@ -20,7 +20,7 @@ impl Engine {
     /// input levels (the file being read is level 1; a finished token list
     /// stays until the next fetch; every pending backed-up token, and the
     /// token itself when it came back from there, is a level of its own).
-    /// Ratex's `<endoutput>` marker is not a level of tex.web's; its
+    /// TeXres's `<endoutput>` marker is not a level of tex.web's; its
     /// `<write>` list (`{` text `}` and a sentinel) is one while the text
     /// has tokens left or the list is the one being read, and the `\write`
     /// private stacks are levels too.
@@ -194,7 +194,7 @@ impl Engine {
             "<write>" => "write",
             _ => return,
         };
-        // Ratex's `<output>` list has lost its braces; its `<write>` list
+        // TeXres's `<output>` list has lost its braces; its `<write>` list
         // carries tex.web's `{` … `}` and the end marker around the text.
         let shown = match name {
             "<write>" if toks.len() >= 3 => &toks[1..toks.len() - 2],
@@ -257,7 +257,7 @@ impl Engine {
         self.write_show_stream(stream, out);
     }
 
-    /// `\showthe` and `\showtokens`: `> <text>` for text Ratex holds as a string.
+    /// `\showthe` and `\showtokens`: `> <text>` for text TeXres holds as a string.
     pub(crate) fn show_stream_text(&mut self, stream: usize, text: &str) {
         let raw = crate::tex_bytes::text_to_bytes(text);
         let mut printed = Vec::with_capacity(raw.len());

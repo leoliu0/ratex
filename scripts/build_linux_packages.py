@@ -26,11 +26,11 @@ def root_owned(info: tarfile.TarInfo) -> tarfile.TarInfo:
 def build_deb(stage_root: Path, output_dir: Path, version: str, arch: str) -> Path:
     """Pack stage_root into a standard Debian .deb package."""
     deb_arch = {"x86_64": "amd64", "aarch64": "arm64"}[arch]
-    deb_name = f"ratex_{version}_{deb_arch}.deb"
+    deb_name = f"texres_{version}_{deb_arch}.deb"
     deb_path = output_dir.resolve() / deb_name
 
     installed_size = sum(p.stat().st_size for p in stage_root.rglob("*") if p.is_file())
-    control_content = f"""Package: ratex
+    control_content = f"""Package: texres
 Version: {version}
 Section: tex
 Priority: optional
@@ -38,8 +38,10 @@ Architecture: {deb_arch}
 Installed-Size: {(installed_size + 1023) // 1024}
 Maintainer: Leo Liu <leoliu0@users.noreply.github.com>
 Description: Ultra-fast, pure-Rust TeX engine and typesetting toolchain
- Ratex is an ultra-fast, pure-Rust TeX engine and typesetting toolchain.
-Provides: ratex
+ TeXres is an ultra-fast, pure-Rust TeX engine and typesetting toolchain.
+Provides: texres
+Replaces: ratex
+Breaks: ratex
 """
     if arch == "aarch64":
         control_content += "Depends: libc6 (>= 2.36)\n"
@@ -89,7 +91,7 @@ Provides: ratex
 
 def build_arch_pkg(stage_root: Path, output_dir: Path, version: str, arch: str) -> Path:
     """Build Arch Linux package (.pkg.tar.zst) from stage."""
-    pkg_name = f"ratex-{version}-1-{arch}.pkg.tar.zst"
+    pkg_name = f"texres-{version}-1-{arch}.pkg.tar.zst"
     pkg_path = output_dir.resolve() / pkg_name
 
     with tempfile.TemporaryDirectory(prefix="arch-build-") as tmpdir:
@@ -99,10 +101,10 @@ def build_arch_pkg(stage_root: Path, output_dir: Path, version: str, arch: str) 
 
         installed_size = sum(p.stat().st_size for p in stage_root.rglob("*") if p.is_file())
         # .PKGINFO
-        pkginfo = f"""pkgname = ratex
+        pkginfo = f"""pkgname = texres
 pkgver = {version}-1
 pkgdesc = Ultra-fast, pure-Rust TeX engine and typesetting toolchain
-url = https://github.com/leoliu0/ratex
+url = https://github.com/leoliu0/texres
 builddate = {int(os.environ.get("SOURCE_DATE_EPOCH", time.time()))}
 packager = Leo Liu <leoliu0@users.noreply.github.com>
 size = {installed_size}
@@ -117,7 +119,9 @@ license = custom:GUST
 license = custom:IPA
 license = custom:Arphic
 license = custom:Wadalab
-provides = ratex
+provides = texres
+conflict = ratex
+replaces = ratex
 """
         if arch == "aarch64":
             pkginfo += "depend = glibc>=2.36\n"
@@ -137,14 +141,15 @@ def build_rpm(stage_root: Path, output_dir: Path, version: str, arch: str) -> Pa
         for sub in ["BUILD", "RPMS", "SOURCES", "SPECS", "SRPMS"]:
             (top / sub).mkdir()
         runtime_requires = "\nRequires:       glibc >= 2.36" if arch == "aarch64" else ""
-        spec_content = f"""Name:           ratex
+        spec_content = f"""Name:           texres
 Version:        {version}
 Release:        1
 Summary:        Ultra-fast, pure-Rust TeX engine and typesetting toolchain
 License:        (MIT or Apache-2.0) and LPPL-1.3c and GPL-2.0-only and (GPL-2.0-or-later with Font-exception-2.0) and OFL-1.1 and GUST and Arphic and IPA and Wadalab
-URL:            https://github.com/leoliu0/ratex
+URL:            https://github.com/leoliu0/texres
 BuildArch:      {arch}
-Provides:       ratex{runtime_requires}
+Provides:       texres
+Obsoletes:      ratex < 0.6.0{runtime_requires}
 
 %description
 Ultra-fast pure-Rust TeX engine and toolchain.
@@ -153,16 +158,16 @@ Ultra-fast pure-Rust TeX engine and toolchain.
 /usr/bin/*
 /usr/share/tex-suite
 """
-        (top / "SPECS/ratex.spec").write_text(spec_content)
+        (top / "SPECS/texres.spec").write_text(spec_content)
         cmd = [
-            "rpmbuild", "-bb", "SPECS/ratex.spec", "--target", arch,
+            "rpmbuild", "-bb", "SPECS/texres.spec", "--target", arch,
             "--define", f"_topdir {top}",
             "--define", f"_rpmdir {output_dir.resolve()}",
             "--buildroot", str(stage_root.resolve()),
         ]
         subprocess.run(cmd, cwd=top, check=True)
-        rpm_file = output_dir.resolve() / arch / f"ratex-{version}-1.{arch}.rpm"
-        dest_file = output_dir.resolve() / f"ratex-{version}-1.{arch}.rpm"
+        rpm_file = output_dir.resolve() / arch / f"texres-{version}-1.{arch}.rpm"
+        dest_file = output_dir.resolve() / f"texres-{version}-1.{arch}.rpm"
         if rpm_file.is_file():
             shutil.move(str(rpm_file), str(dest_file))
             shutil.rmtree(output_dir.resolve() / arch, ignore_errors=True)
@@ -194,15 +199,15 @@ def main():
         usr_share = stage / "usr" / "share" / "tex-suite"
         usr_share.mkdir(parents=True)
 
-        target_bin = REPO / "target" / "release" / "ratex"
+        target_bin = REPO / "target" / "release" / "texres"
         if not target_bin.exists():
-            print("Building release ratex binary...")
+            print("Building release texres binary...")
             subprocess.run(
-                ["cargo", "build", "--locked", "--release", "-p", "tex-cli", "--bin", "ratex"],
+                ["cargo", "build", "--locked", "--release", "-p", "tex-cli", "--bin", "texres"],
                 cwd=REPO,
                 check=True,
             )
-        shutil.copy2(target_bin, usr_bin / "ratex")
+        shutil.copy2(target_bin, usr_bin / "texres")
         package_dist.stage_font_redistribution(usr_share / "texmf" / "doc" / "fonts")
         shutil.copy2(REPO / "LICENSE", usr_share / "LICENSE")
 

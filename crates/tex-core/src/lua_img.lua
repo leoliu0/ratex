@@ -1,8 +1,8 @@
 -- LuaTeX `img` library (limglib.c) over the pdfTeX image machinery.
 -- An image is a userdata whose fields live in `data[image]`: the image-level
 -- values (dimensions, transform) and a dictionary shared between copies.
-local I = __ratex_imglib
-__ratex_imglib = nil
+local I = __texres_imglib
+__texres_imglib = nil
 
 local type, error, tostring, setmetatable, pairs, ipairs, select, tonumber, floor =
       type, error, tostring, setmetatable, pairs, ipairs, select, tonumber, math.floor

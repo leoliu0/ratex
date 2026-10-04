@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Strict pdf.js rendering and text extraction helper for Ratex font verification.
+ * Strict pdf.js rendering and text extraction helper for TeXres font verification.
  *
  * Runs pdfjs-dist with system font substitution disabled (useSystemFonts: false)
  * to verify that all required glyphs are embedded directly in the PDF document.

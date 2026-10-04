@@ -1,5 +1,5 @@
 -- status, texconfig and the lua table.
-local S = __ratex_sys
+local S = __texres_sys
 local type, error, select = type, error, select
 
 local function value(name)

@@ -7,7 +7,7 @@
 //! [`Engine::lua_run`] sets for the dynamic extent of every Lua entry made
 //! from the engine (`\directlua`, `\luafunction`, lua calls, callbacks). Lua
 //! token objects are tables `{packed}` sharing one metatable; `packed` is the
-//! ratex [`Token`] value.
+//! texres [`Token`] value.
 
 use std::cell::Cell;
 
@@ -59,7 +59,7 @@ const CS_TOKEN_FLAG: i64 = 0x1FFF_FFFF;
 /// Name prefix of engine-internal control sequences: the shared undefined
 /// control sequence of `token.create` and anonymous `char_given` /
 /// `math_given` tokens built by `token.new`.
-const ANON_PREFIX: &[u8] = b"\x00ratex-anon:";
+const ANON_PREFIX: &[u8] = b"\x00texres-anon:";
 const CMD_RELAX: u8 = 0;
 const CMD_CHAR_GIVEN: u8 = 82;
 const CMD_MATH_GIVEN: u8 = 83;
@@ -98,7 +98,7 @@ pub(crate) struct ScannerState {
 }
 
 /// Error text `tex.finish` raises to stop the running Lua chunk.
-pub(crate) const FINISH_ABORT: &str = "ratex: tex.finish";
+pub(crate) const FINISH_ABORT: &str = "texres: tex.finish";
 
 impl Engine {
     pub(crate) fn save_scanner(&self) -> ScannerState {
@@ -1455,15 +1455,15 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
     });
 
     crate::lua_ud::install_tokens(lua, &b)?;
-    lua.set_global("__ratex_bridge", b).map_err(|e| format!("{e:?}"))?;
+    lua.set_global("__texres_bridge", b).map_err(|e| format!("{e:?}"))?;
     let names: LuaTable = lua.create_table().map_err(|e| format!("{e:?}"))?;
     for (code, name) in crate::lua_cmds::COMMAND_NAMES.iter().enumerate() {
         names.raw_seti(code as i64, *name).map_err(|e| format!("{e:?}"))?;
     }
-    lua.set_global("__ratex_command_names", names).map_err(|e| format!("{e:?}"))?;
+    lua.set_global("__texres_command_names", names).map_err(|e| format!("{e:?}"))?;
     let (function_slot, callback_lookup): (LuaFunction, LuaFunction) = lua
         .load(LUA_PRELUDE)
-        .set_name("=[ratex bridge]")
+        .set_name("=[texres bridge]")
         .call(())
         .map_err(|e| format!("bridge prelude: {}", lua.get_error_message(e).message()))?;
     lua.registry_set(REG_FUNCTION, function_slot).map_err(|e| format!("{e:?}"))?;
@@ -1532,10 +1532,10 @@ impl Engine {
 
 /// Registry keys of the two Lua-side lookups the prelude hands to Rust, so
 /// they never appear in `_G`.
-const REG_FUNCTION: &str = "ratex.function";
-const REG_CALLBACK: &str = "ratex.callback";
+const REG_FUNCTION: &str = "texres.function";
+const REG_CALLBACK: &str = "texres.callback";
 /// Registry key of the table `font.getfont` consults.
-pub(crate) const REG_FONT_CACHE: &str = "ratex.font_cache";
+pub(crate) const REG_FONT_CACHE: &str = "texres.font_cache";
 
 impl LuaEngine {
     /// The function registered in `lua.get_functions_table()` at `slot`.

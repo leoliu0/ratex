@@ -11,7 +11,7 @@ use tex_core::driver::png_embed_options;
 static EMBEDDED_DEFAULT_FMT: &[u8] = include_bytes!("../../assets/default.fmt.zst");
 static EMBEDDED_LUALATEX_FMT: &[u8] = include_bytes!("../../assets/lualatex.fmt.zst");
 static EMBEDDED_XELATEX_FMT: &[u8] = include_bytes!("../../assets/xelatex.fmt.zst");
-/// `\XeTeXrevision` and the version of the XeTeX engine Ratex implements
+/// `\XeTeXrevision` and the version of the XeTeX engine TeXres implements
 /// (TeX Live 2026), as in `xetex --version`.
 const XETEX_VERSION: &str = "3.141592653-2.6-0.999998";
 
@@ -1605,7 +1605,7 @@ fn usage(program: &str) {
         "usage: {program} [options] file.tex
   -ini                         build a format; \\dump writes JOBNAME.fmt
   -plain                       run without the LaTeX format
-  -fmt=NAME, &NAME             use format NAME.fmt (a Ratex dump) instead of the built-in one
+  -fmt=NAME, &NAME             use format NAME.fmt (a TeXres dump) instead of the built-in one
   -progname=NAME               set the program name (and default format name)
   -[no-]parse-first-line       disable/enable a %&NAME first line selecting the format
   -output-directory DIR        write output files in DIR
@@ -1696,7 +1696,7 @@ fn lua_locate_format(
 enum SelectedFormat {
     /// This program's built-in format (or its `<program>.fmt` override).
     BuiltIn,
-    /// A Ratex format dump selected by name.
+    /// A TeXres format dump selected by name.
     File(std::path::PathBuf),
 }
 
@@ -1804,7 +1804,7 @@ fn load_tcx(name: &str) -> Option<tex_core::tex_bytes::Tcx> {
 /// kpathsea `-cnf-line` (kpathsea_cnf_line_env_progname): a texmf.cnf line
 /// `VAR[.prog] [=] VALUE` is put into the environment as VAR whatever the
 /// qualifier, overriding texmf.cnf and an inherited value; on Unix `;`
-/// separators become `:`. Ratex reads its search paths and policies
+/// separators become `:`. TeXres reads its search paths and policies
 /// (TEXINPUTS, openout_any, ...) from these variables.
 fn apply_cnf_line(line: &str) -> Result<(), &'static str> {
     let line = line.trim_start();
@@ -2188,7 +2188,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     let mut halt_on_error = false;
     let mut interaction_mode = InteractionMode::ErrorStop;
     let mut max_errors = DEFAULT_MAX_ERRORS;
-    // Ratex writes SyncTeX by default (as if `-synctex=1`); `-synctex=0`
+    // TeXres writes SyncTeX by default (as if `-synctex=1`); `-synctex=0`
     // disables it for the whole run, like pdfTeX.
     let mut synctex_option = 1;
     let mut draftmode = false;
@@ -2311,7 +2311,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             if format != "pdf" {
                 usage_error(
                     &program,
-                    &format!("output format '{format}' is not supported; Ratex writes PDF only"),
+                    &format!("output format '{format}' is not supported; TeXres writes PDF only"),
                 );
             }
         } else if required_value(&args, &mut i, opt, "-output-comment").is_some() {
@@ -2363,7 +2363,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
                 "-mltex" => "MLTeX extensions (\\charsubdef)",
                 _ => "DVI output to a socket",
             };
-            usage_error(&program, &format!("{opt} is not supported: Ratex has no {feature}"));
+            usage_error(&program, &format!("{opt} is not supported: TeXres has no {feature}"));
         } else if opt == "-optimize-pdf-size" || opt == "-optimize=size" {
             optimize_pdf_size = true;
         } else if opt == "-optimize=speed" {
@@ -2415,7 +2415,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             opt,
             "-shell-escape" | "-enable-write18" | "-shell-restricted"
         ) {
-            // Editors commonly pass this by default. Ratex never runs shell
+            // Editors commonly pass this by default. TeXres never runs shell
             // commands, so the run proceeds as with \write18 disabled.
             emit_cli_message(
                 interaction_mode,
@@ -2443,11 +2443,11 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
         } else if matches!(opt, "-v" | "-version") {
             let version = env!("CARGO_PKG_VERSION");
             if program == "xelatex" {
-                println!("XeTeX {XETEX_VERSION} (Ratex {version})");
+                println!("XeTeX {XETEX_VERSION} (TeXres {version})");
             } else if program == "lualatex" {
-                println!("LuaTeX 1.24.0 (Ratex {version})");
+                println!("LuaTeX 1.24.0 (TeXres {version})");
             } else {
-                println!("pdfTeX-2h 1.40.29-rs (Ratex {version})");
+                println!("pdfTeX-2h 1.40.29-rs (TeXres {version})");
             }
             return;
         } else if !args[i].starts_with('-') {
@@ -2889,15 +2889,15 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     }
     let engine_banner = match program.as_str() {
         "xelatex" => format!(
-            "This is XeTeX, Version {XETEX_VERSION} (Ratex {})\n",
+            "This is XeTeX, Version {XETEX_VERSION} (TeXres {})\n",
             env!("CARGO_PKG_VERSION")
         ),
         "lualatex" => format!(
-            "This is LuaTeX, Version 1.24.0 (Ratex {})\n",
+            "This is LuaTeX, Version 1.24.0 (TeXres {})\n",
             env!("CARGO_PKG_VERSION")
         ),
         _ => format!(
-            "This is pdfTeX-2h 1.40.29-rs (Ratex {})\n",
+            "This is pdfTeX-2h 1.40.29-rs (TeXres {})\n",
             env!("CARGO_PKG_VERSION")
         ),
     };

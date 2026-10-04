@@ -24,7 +24,7 @@ pub enum Enc {
     Utf16Le,
     /// `bytes`: every byte is the character of that code.
     Raw,
-    /// Any other encoding name (XeTeX asks ICU, Ratex asks `encoding_rs`).
+    /// Any other encoding name (XeTeX asks ICU, TeXres asks `encoding_rs`).
     Icu(&'static Encoding),
 }
 

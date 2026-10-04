@@ -289,7 +289,7 @@ fn compatibility_input(name: &str, kind: crate::engine::EngineKind) -> Option<&'
 \input latex.ltx
 \endinput
 ",
-        "graphics.cfg" => br"\ProvidesFile{graphics.cfg}[2026/01/01 v1.0 Ratex graphics configuration]
+        "graphics.cfg" => br"\ProvidesFile{graphics.cfg}[2026/01/01 v1.0 TeXres graphics configuration]
 \ExecuteOptions{pdftex}
 \AtEndOfPackage{
   \@ifundefined{Gin@extensions}{}{
@@ -300,7 +300,7 @@ fn compatibility_input(name: &str, kind: crate::engine::EngineKind) -> Option<&'
 }
 \endinput
 ",
-        "UTF8.chr" => include_bytes!("../assets/ratex-UTF8.chr"),
+        "UTF8.chr" => include_bytes!("../assets/texres-UTF8.chr"),
         _ => return None,
     })
 }
@@ -2394,7 +2394,7 @@ impl Engine {
         let loc = match self.cur_prim {
             Some(Prim::IntP(p)) => match p {
                 // set_aux, set_prev_graf, set_page_int, set_interaction and
-                // last_item commands that Ratex stores as integer parameters
+                // last_item commands that TeXres stores as integer parameters
                 IntParam::SpaceFactor
                 | IntParam::PrevGraf
                 | IntParam::DeadCycles

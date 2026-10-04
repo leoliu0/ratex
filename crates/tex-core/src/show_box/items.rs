@@ -1,6 +1,6 @@
 //! Display items: the node and noad shapes of tex.web §184 (unset nodes) and
-//! §690-§698 (noads) that Ratex keeps in other representations. The views
-//! below rebuild tex.web's shapes from Ratex's math lists (flat
+//! §690-§698 (noads) that TeXres keeps in other representations. The views
+//! below rebuild tex.web's shapes from TeXres's math lists (flat
 //! `\left...\right` markers, fam-255 group markers, scripts wrapping their
 //! nucleus) so that `\showlists` prints exactly what tex.web prints.
 
@@ -252,7 +252,7 @@ fn lr_close<'a>(node: &'a Node) -> Option<(Delim, Field<'a>, Field<'a>)> {
     }
 }
 
-/// The noad a single Ratex atom stands for, with the given scripts.
+/// The noad a single TeXres atom stands for, with the given scripts.
 fn atom_noad<'a>(
     node: &'a Node,
     sup: Field<'a>,
@@ -419,7 +419,7 @@ fn view_node<'a>(node: &'a Node, out: &mut Vec<Item<'a>>) {
     }
 }
 
-/// tex.web's view of a Ratex math list (or an ordinary list: other nodes pass
+/// tex.web's view of a TeXres math list (or an ordinary list: other nodes pass
 /// through).
 pub(super) fn view_list<'a>(list: &'a [Node]) -> Vec<Item<'a>> {
     let mut frames: Vec<Vec<Item<'a>>> = vec![Vec::new()];

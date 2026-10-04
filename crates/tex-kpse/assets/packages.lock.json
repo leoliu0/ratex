@@ -1,9 +1,9 @@
 {
   "version": 1,
-  "format": "ratex-packages-lock-v1",
+  "format": "texres-packages-lock-v1",
   "generated_at": "2024-01-01T00:00:00Z",
   "baseline_archive": {
-    "url": "https://github.com/leoliu0/ratex/releases/download/v0.3.0/ratex-v0.3.0.bundle",
+    "url": "https://github.com/leoliu0/texres/releases/download/v0.3.0/ratex-v0.3.0.bundle",
     "sha256": "29331539190ce01e054611c00094d44b46b1b91ac9cbfd9c5d47b96e384c639f",
     "size_bytes": 77594956,
     "total_files": 67206,

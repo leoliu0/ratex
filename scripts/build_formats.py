@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Regenerate the embedded LaTeX formats (crates/tex-cli/assets/*.fmt.zst).
 
-Each format is produced the way users do it: the single `ratex` binary,
+Each format is produced the way users do it: the single `texres` binary,
 invoked under the engine's name, runs `<engine> -ini <engine>.ini` in an empty
 directory with hermetic resource lookup (embedded packages only) and a fixed
 `SOURCE_DATE_EPOCH`, so the dump is a pure function of the sources. The raw
@@ -93,8 +93,8 @@ def dump_format(binary: Path, engine: str, epoch: str, work: Path) -> bytes:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--binary", type=Path,
-                        default=REPO / "target" / "release" / "ratex",
-                        help="the ratex binary (default: target/release/ratex)")
+                        default=REPO / "target" / "release" / "texres",
+                        help="the texres binary (default: target/release/texres)")
     parser.add_argument("--engine", action="append", choices=sorted(FORMATS),
                         help="format to build (default: all)")
     parser.add_argument("--epoch", default=DEFAULT_EPOCH,
@@ -108,7 +108,7 @@ def main() -> None:
     binary = args.binary.resolve()
     if not binary.is_file():
         sys.exit(f"build_formats: {binary} does not exist; build it first "
-                 "(cargo build --release --locked --bin ratex)")
+                 "(cargo build --release --locked --bin texres)")
     failures = []
     if args.keep:
         args.keep.mkdir(parents=True, exist_ok=True)

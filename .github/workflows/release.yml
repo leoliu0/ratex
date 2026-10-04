@@ -208,11 +208,11 @@ jobs:
           sudo rm -rf "$HOME/Library/Android/sdk"
           df -h /
 
-      # Only ratex ships (scripts/package_dist.py BINARIES); the tests below build
+      # Only texres ships (scripts/package_dist.py BINARIES); the tests below build
       # the rest of the workspace in the test profile.
       - name: Build release binary
         if: matrix.label != 'linux-aarch64'
-        run: cargo build --release --locked --bin ratex
+        run: cargo build --release --locked --bin texres
 
       - name: Build native ARM64 release binary (Debian 12 / glibc 2.36)
         if: matrix.label == 'linux-aarch64'
@@ -231,8 +231,8 @@ jobs:
             rust:1-bookworm bash -euc '
               test "$(uname -m)" = aarch64
               test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.36"
-              cargo build --release --locked --bin ratex
-              target/release/ratex --version
+              cargo build --release --locked --bin texres
+              target/release/texres --version
             '
 
       - name: Run workspace tests
@@ -254,23 +254,23 @@ jobs:
           trap 'rm -rf "$work"' EXIT
           docker run --rm \
             --user "$(id -u):$(id -g)" --env HOME=/tmp \
-            --volume "$PWD/target/release/ratex:/usr/local/bin/ratex:ro" \
+            --volume "$PWD/target/release/texres:/usr/local/bin/texres:ro" \
             --volume "$work:/out" --workdir /out \
             debian:12-slim sh -euc '
               test "$(uname -m)" = aarch64
               test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.36"
-              ratex --version
+              texres --version
               for engine in pdf xelatex lualatex; do
                 mkdir "$engine"
                 printf "%s\n" "\documentclass{article}" "\begin{document}" \
-                  "Ratex ARM64 minimum runtime." "\end{document}" > "$engine/smoke.tex"
-                ratex "-$engine" --cache-directory "/tmp/cache-$engine" \
+                  "TeXres ARM64 minimum runtime." "\end{document}" > "$engine/smoke.tex"
+                texres "-$engine" --cache-directory "/tmp/cache-$engine" \
                   -output-directory "$engine" "$engine/smoke.tex"
               done
             '
           for engine in pdf xelatex lualatex; do
             text=$(pdftotext "$work/$engine/smoke.pdf" - | tr -d '[:space:]')
-            test "$text" = 'RatexARM64minimumruntime.1'
+            test "$text" = 'TeXresARM64minimumruntime.1'
           done
 
       - name: Install TeX Live 2026 reference
@@ -299,7 +299,7 @@ jobs:
         if: matrix.platform == 'linux'
         run: |
           python3 scripts/test_fonts.py \
-            --ratex target/release/ratex \
+            --texres target/release/texres \
             --output /tmp/font-evidence-full \
             --require-isolation \
             --require-pdfjs \
@@ -362,7 +362,7 @@ jobs:
         run: |
           Expand-Archive -Path (Get-Item dist/tex-suite-*.zip).FullName -DestinationPath dist
           $version = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"').Matches[0].Groups[1].Value
-          iscc "/DMyAppVersion=$version" packaging/windows/ratex.iss
+          iscc "/DMyAppVersion=$version" packaging/windows/texres.iss
           Remove-Item -Recurse -Force dist/tex-suite-windows-* -ErrorAction SilentlyContinue
 
       - name: Test extracted archive distribution (unix)
@@ -371,10 +371,10 @@ jobs:
         run: |
           mkdir -p /tmp/ci-archive-test
           tar -xzf dist/tex-suite-*.tar.gz -C /tmp/ci-archive-test
-          EXTRACTED_RATEX=$(find /tmp/ci-archive-test -path '*/bin/ratex' -type f | head -n1)
-          "$EXTRACTED_RATEX" --version
+          EXTRACTED_TEXRES=$(find /tmp/ci-archive-test -path '*/bin/texres' -type f | head -n1)
+          "$EXTRACTED_TEXRES" --version
           python3 scripts/test_fonts.py \
-            --ratex "$EXTRACTED_RATEX" \
+            --texres "$EXTRACTED_TEXRES" \
             --output /tmp/font-smoke-archive \
             --require-pdfjs \
             --timeout 180 \
@@ -388,10 +388,10 @@ jobs:
           $archiveZip = (Get-Item dist/tex-suite-*.zip).FullName
           $testDir = "$env:RUNNER_TEMP\ci-archive-test"
           Expand-Archive -Path $archiveZip -DestinationPath $testDir
-          $extractedRatex = (Get-Item "$testDir\tex-suite-*\bin\ratex.exe").FullName
-          & $extractedRatex --version
+          $extractedTeXres = (Get-Item "$testDir\tex-suite-*\bin\texres.exe").FullName
+          & $extractedTeXres --version
           python scripts/test_fonts.py `
-            --ratex $extractedRatex `
+            --texres $extractedTeXres `
             --output "$env:RUNNER_TEMP\font-smoke-archive" `
             --require-pdfjs `
             --skip-reference
@@ -405,9 +405,9 @@ jobs:
         run: |
           mkdir -p /tmp/ci-install-test
           ./install.sh --prefix /tmp/ci-install-test --no-path --skip-verify
-          /tmp/ci-install-test/bin/ratex --version
+          /tmp/ci-install-test/bin/texres --version
           python3 scripts/test_fonts.py \
-            --ratex /tmp/ci-install-test/bin/ratex \
+            --texres /tmp/ci-install-test/bin/texres \
             --output /tmp/font-smoke-installed \
             --require-pdfjs \
             --timeout 180 \
@@ -419,39 +419,39 @@ jobs:
         if: matrix.platform == 'macos'
         shell: bash
         run: |
-          PKG_FILE=$(find dist -maxdepth 1 -name 'ratex-*-macos-*.pkg' | head -n1)
+          PKG_FILE=$(find dist -maxdepth 1 -name 'texres-*-macos-*.pkg' | head -n1)
           echo "==> Installing $PKG_FILE..."
           sudo installer -pkg "$PKG_FILE" -target /
-          echo "==> Verifying installed ratex binary..."
-          /usr/local/bin/ratex --version
+          echo "==> Verifying installed texres binary..."
+          /usr/local/bin/texres --version
           python3 scripts/test_fonts.py \
-            --ratex /usr/local/bin/ratex \
+            --texres /usr/local/bin/texres \
             --output /tmp/font-smoke-pkg \
             --require-pdfjs \
             --timeout 180 \
             --skip-reference
           rm -rf /tmp/font-smoke-pkg
           echo "==> Cleaning up installed files..."
-          sudo rm -f /usr/local/bin/ratex /usr/local/bin/texmk /usr/local/bin/pdflatex /usr/local/bin/xelatex /usr/local/bin/lualatex /usr/local/bin/bibtex
+          sudo rm -f /usr/local/bin/texres /usr/local/bin/texmk /usr/local/bin/pdflatex /usr/local/bin/xelatex /usr/local/bin/lualatex /usr/local/bin/bibtex
           sudo rm -rf /usr/local/share/tex-suite
-          sudo pkgutil --forget io.github.leoliu0.ratex || true
+          sudo pkgutil --forget io.github.leoliu0.texres || true
 
       - name: Test Linux native package (.deb)
         if: matrix.platform == 'linux'
         shell: bash
         run: |
-          DEB_FILE=$(find dist -maxdepth 1 -name 'ratex_*.deb' | head -n1)
+          DEB_FILE=$(find dist -maxdepth 1 -name 'texres_*.deb' | head -n1)
           echo "==> Installing $DEB_FILE..."
           sudo dpkg -i "$DEB_FILE"
-          echo "==> Verifying installed ratex binary..."
-          /usr/bin/ratex --version
+          echo "==> Verifying installed texres binary..."
+          /usr/bin/texres --version
           python3 scripts/test_fonts.py \
-            --ratex /usr/bin/ratex \
+            --texres /usr/bin/texres \
             --output /tmp/font-smoke-deb \
             --require-pdfjs \
             --skip-reference
           rm -rf /tmp/font-smoke-deb
-          sudo dpkg --purge ratex
+          sudo dpkg --purge texres
 
       - name: Test PowerShell installer script (windows)
         if: matrix.platform == 'windows'
@@ -460,9 +460,9 @@ jobs:
           $testPrefix = "$env:RUNNER_TEMP\ci-script-test"
           powershell -ExecutionPolicy Bypass -File packaging/install-windows.ps1 -Prefix "$testPrefix" -NoPath -SkipVerify
           if ($LASTEXITCODE -ne 0) { throw "PowerShell installation failed" }
-          & "$testPrefix\bin\ratex.exe" --version
+          & "$testPrefix\bin\texres.exe" --version
           python scripts/test_fonts.py `
-            --ratex "$testPrefix\bin\ratex.exe" `
+            --texres "$testPrefix\bin\texres.exe" `
             --output "$env:RUNNER_TEMP\font-smoke-script" `
             --require-pdfjs `
             --skip-reference
@@ -475,21 +475,21 @@ jobs:
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
-          $installer = (Get-Item dist/ratex-setup-*-windows-x64.exe).FullName
+          $installer = (Get-Item dist/texres-setup-*-windows-x64.exe).FullName
           $testPrefix = "$env:RUNNER_TEMP\ci-exe-test"
           Write-Host "==> Installing via native Inno Setup installer..."
           Start-Process -FilePath $installer -ArgumentList "/VERYSILENT", "/NORESTART", "/SUPPRESSMSGBOXES", "/DIR=$testPrefix" -Wait -NoNewWindow
-          if (-not (Test-Path "$testPrefix\bin\ratex.exe")) {
-            throw "Failed: ratex.exe not found in $testPrefix\bin"
+          if (-not (Test-Path "$testPrefix\bin\texres.exe")) {
+            throw "Failed: texres.exe not found in $testPrefix\bin"
           }
           $installedBin = "$testPrefix\bin"
           if (-not (([Environment]::GetEnvironmentVariable('Path', 'User') -split ';') -contains $installedBin)) {
             throw "Installer did not add $installedBin to the user PATH"
           }
-          Write-Host "==> Verifying installed ratex.exe..."
-          & "$testPrefix\bin\ratex.exe" --version
+          Write-Host "==> Verifying installed texres.exe..."
+          & "$testPrefix\bin\texres.exe" --version
           python scripts/test_fonts.py `
-            --ratex "$testPrefix\bin\ratex.exe" `
+            --texres "$testPrefix\bin\texres.exe" `
             --output "$env:RUNNER_TEMP\font-smoke-exe" `
             --require-pdfjs `
             --skip-reference
@@ -499,7 +499,7 @@ jobs:
           Start-Process -FilePath $uninstaller -ArgumentList "/VERYSILENT", "/NORESTART", "/SUPPRESSMSGBOXES" -Wait -NoNewWindow
           # The uninstaller relaunches itself from %TEMP%; it deletes unins000.exe last.
           for ($i = 0; ($i -lt 60) -and (Test-Path $uninstaller); $i++) { Start-Sleep -Seconds 1 }
-          if (Test-Path "$testPrefix\bin\ratex.exe") { throw "Uninstaller left ratex.exe behind" }
+          if (Test-Path "$testPrefix\bin\texres.exe") { throw "Uninstaller left texres.exe behind" }
           if (([Environment]::GetEnvironmentVariable('Path', 'User') -split ';') -contains $installedBin) {
             throw "Uninstaller left $installedBin in the user PATH"
           }
@@ -549,15 +549,15 @@ jobs:
             "tex-suite-${RELEASE_TAG}-macos-x86_64.tar.gz" \
             "tex-suite-${RELEASE_TAG}-macos-aarch64.tar.gz" \
             "tex-suite-${RELEASE_TAG}-windows-x86_64.zip" \
-            "ratex-${RELEASE_TAG}-macos-x86_64.pkg" \
-            "ratex-${RELEASE_TAG}-macos-aarch64.pkg" \
-            "ratex-setup-${RELEASE_TAG}-windows-x64.exe" \
-            "ratex_${version}_amd64.deb" \
-            "ratex-${version}-1-x86_64.pkg.tar.zst" \
-            "ratex-${version}-1.x86_64.rpm" \
-            "ratex_${version}_arm64.deb" \
-            "ratex-${version}-1-aarch64.pkg.tar.zst" \
-            "ratex-${version}-1.aarch64.rpm" \
+            "texres-${RELEASE_TAG}-macos-x86_64.pkg" \
+            "texres-${RELEASE_TAG}-macos-aarch64.pkg" \
+            "texres-setup-${RELEASE_TAG}-windows-x64.exe" \
+            "texres_${version}_amd64.deb" \
+            "texres-${version}-1-x86_64.pkg.tar.zst" \
+            "texres-${version}-1.x86_64.rpm" \
+            "texres_${version}_arm64.deb" \
+            "texres-${version}-1-aarch64.pkg.tar.zst" \
+            "texres-${version}-1.aarch64.rpm" \
             "libtex-${RELEASE_TAG}-linux-x86_64.tar.gz" \
             "libtex-${RELEASE_TAG}-wasm.tar.gz" \
             "SHA256SUMS-linux-x86_64.txt" \

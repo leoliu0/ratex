@@ -21,8 +21,8 @@ path = "src/bin/latexdiff.rs"
 
 
 [[bin]]
-name = "ratex"
-path = "src/bin/ratex.rs"
+name = "texres"
+path = "src/bin/texres.rs"
 [dependencies]
 dlmalloc = { workspace = true }
 libc = { workspace = true }

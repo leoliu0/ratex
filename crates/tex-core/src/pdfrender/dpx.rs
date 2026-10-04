@@ -1,6 +1,6 @@
 //! The xdvipdfmx special interpreter for XeTeX's direct PDF output.
 //!
-//! XeTeX writes an XDV file that xdvipdfmx turns into a PDF. Ratex has no
+//! XeTeX writes an XDV file that xdvipdfmx turns into a PDF. TeXres has no
 //! XDV stage: the shipped page is rendered straight into a content stream and
 //! the `\special`s that TeX Live's drivers (`xetex.def`, `hxetex.def`,
 //! `l3backend-xetex.def`, `pgfsys-xetex.def`, ...) rely on are interpreted

@@ -17,7 +17,7 @@ impl Project {
         for _ in 0..32 {
             let sequence = NEXT_PROJECT.fetch_add(1, Ordering::Relaxed);
             let path = std::env::temp_dir().join(format!(
-                "ratex-synctex-{}-{nonce}-{sequence}",
+                "texres-synctex-{}-{nonce}-{sequence}",
                 std::process::id()
             ));
             match std::fs::create_dir(&path) {
@@ -267,7 +267,7 @@ fn synctex_lines(text: &str) -> Vec<u32> {
 /// SyncTeX data. SyncTeX readers open `<job>.synctex` before
 /// `<job>.synctex.gz`; pdfTeX deletes a leftover uncompressed file when it
 /// writes the compressed one, so a file from an earlier `-synctex=-1` build
-/// must not survive and shadow every later Ratex build.
+/// must not survive and shadow every later TeXres build.
 #[test]
 fn edit_rebuild_cycles_replace_every_synctex_file_a_viewer_reads() {
     let project = Project::new();

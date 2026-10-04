@@ -2,12 +2,13 @@
 %global debug_package %{nil}
 %global __strip /bin/true
 
-Name:           ratex
-Version:        0.5.2
+Name:           texres
+Version:        0.6.0
+Obsoletes:      ratex < 0.6.0
 Release:        1%{?dist}
 Summary:        Ultra-fast, pure-Rust TeX engine and typesetting toolchain
 License:        (MIT or Apache-2.0) and LPPL-1.3c and GPL-2.0-only and (GPL-2.0-or-later with Font-exception-2.0) and OFL-1.1 and GUST and Arphic and IPA and Wadalab
-URL:            https://github.com/leoliu0/ratex
+URL:            https://github.com/leoliu0/texres
 Source0:        %{url}/releases/download/v%{version}/tex-suite-v%{version}-linux-%{_target_cpu}.tar.gz
 ExclusiveArch:  x86_64 aarch64
 %ifarch aarch64
@@ -15,7 +16,7 @@ Requires:       glibc >= 2.36
 %endif
 
 %description
-Ratex is an ultra-fast, memory-safe, drop-in replacement for pdflatex and
+TeXres is an ultra-fast, memory-safe, drop-in replacement for pdflatex and
 latexmk with an embedded precompiled LaTeX format and near-instant startup.
 
 %prep
@@ -29,13 +30,13 @@ for required in NOTICES-FONTS.txt sources.tar.zst packages.lock.json; do
         exit 1
     }
 done
-install -Dm755 bin/ratex %{buildroot}%{_bindir}/ratex
+install -Dm755 bin/texres %{buildroot}%{_bindir}/texres
 install -d %{buildroot}%{_datadir}/tex-suite
 cp -a share/tex-suite/. %{buildroot}%{_datadir}/tex-suite/
 
 %files
 %license LICENSE-MIT LICENSE-APACHE
-%{_bindir}/ratex
+%{_bindir}/texres
 %{_datadir}/tex-suite
 
 %changelog

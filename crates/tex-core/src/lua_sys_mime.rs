@@ -223,8 +223,8 @@ fn two_part(
 }
 
 pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), String> {
-    lua.set_global("__ratex_ltn12_source", include_str!("../assets/ltn12.lua")).map_err(|e| format!("{e:?}"))?;
-    lua.set_global("__ratex_mime_source", include_str!("../assets/mime.lua")).map_err(|e| format!("{e:?}"))?;
+    lua.set_global("__texres_ltn12_source", include_str!("../assets/ltn12.lua")).map_err(|e| format!("{e:?}"))?;
+    lua.set_global("__texres_mime_source", include_str!("../assets/mime.lua")).map_err(|e| format!("{e:?}"))?;
     sys_reg!(lua, s, "mime_b64", |a: Option<LuaString>, b: Option<LuaString>| -> (Option<LuaBytes>, Option<LuaBytes>) {
         two_part(a, b, b64_encode_all, b64_pad)
     });

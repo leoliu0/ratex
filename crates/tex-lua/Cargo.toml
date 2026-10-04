@@ -2,10 +2,10 @@
 name = "tex-lua"
 version.workspace = true
 edition = "2024"
-authors = ["CppCXY", "Ratex contributors"]
-description = "In-tree Rust Lua runtime for the Ratex LuaTeX profile"
+authors = ["CppCXY", "TeXres contributors"]
+description = "In-tree Rust Lua runtime for the TeXres LuaTeX profile"
 license = "MIT"
-repository = "https://github.com/leoliu0/ratex"
+repository = "https://github.com/leoliu0/texres"
 publish = false
 
 [lib]

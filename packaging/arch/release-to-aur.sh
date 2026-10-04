@@ -1,16 +1,16 @@
 #!/bin/bash
 set -euo pipefail
 
-# Helper to publish or update ratex and/or ratex-bin on Arch Linux AUR.
+# Helper to publish or update texres and/or texres-bin on Arch Linux AUR.
 # Requirements:
 #   1. An active Arch User Repository account (https://aur.archlinux.org).
 #   2. Your SSH public key uploaded to your AUR account settings.
 
-TARGET="${1:-ratex-bin}"
+TARGET="${1:-texres-bin}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # One scratch root removed on every exit path; a RETURN trap would leak the
 # clone whenever `set -e` aborts the script inside publish_one.
-WORK_ROOT="$(mktemp -d -t aur-ratex-XXXXXX)"
+WORK_ROOT="$(mktemp -d -t aur-texres-XXXXXX)"
 trap 'rm -rf "$WORK_ROOT"' EXIT
 
 publish_one() {
@@ -61,22 +61,22 @@ publish_one() {
 cd "$SCRIPT_DIR"
 
 case "$TARGET" in
-    ratex-bin)
+    texres-bin)
         makepkg --printsrcinfo > .SRCINFO
-        publish_one "ratex-bin" "$SCRIPT_DIR/PKGBUILD"
+        publish_one "texres-bin" "$SCRIPT_DIR/PKGBUILD"
         ;;
-    ratex)
+    texres)
         makepkg -p PKGBUILD.source --printsrcinfo > .SRCINFO.source
-        publish_one "ratex" "$SCRIPT_DIR/PKGBUILD.source"
+        publish_one "texres" "$SCRIPT_DIR/PKGBUILD.source"
         ;;
     all)
         makepkg --printsrcinfo > .SRCINFO
-        publish_one "ratex-bin" "$SCRIPT_DIR/PKGBUILD"
+        publish_one "texres-bin" "$SCRIPT_DIR/PKGBUILD"
         makepkg -p PKGBUILD.source --printsrcinfo > .SRCINFO.source
-        publish_one "ratex" "$SCRIPT_DIR/PKGBUILD.source"
+        publish_one "texres" "$SCRIPT_DIR/PKGBUILD.source"
         ;;
     *)
-        echo "Usage: $0 [ratex-bin|ratex|all]" >&2
+        echo "Usage: $0 [texres-bin|texres|all]" >&2
         exit 1
         ;;
 esac

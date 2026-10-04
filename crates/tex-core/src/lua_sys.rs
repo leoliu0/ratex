@@ -3,7 +3,7 @@
 //! `kpse`, the LuaTeX extensions of `os`/`io`, and the `lua` table.
 //!
 //! Each library is a set of native primitives (registered in the private
-//! table `__ratex_sys`) and a Lua prelude that assembles the public library
+//! table `__texres_sys`) and a Lua prelude that assembles the public library
 //! table from them, exactly as the member lists of TeX Live 2026's
 //! `luatex` export them. Native primitives never see `nil`/`false` result
 //! conventions of Lua: they return plain values and the prelude shapes the
@@ -269,7 +269,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
     crate::lua_sys_status::register(lua, &sys)?;
     crate::lua_sys_kpse::register(lua, &sys)?;
     crate::lua_sys_os::register(lua, &sys)?;
-    lua.set_global("__ratex_sys", sys).map_err(|e| format!("{e:?}"))?;
+    lua.set_global("__texres_sys", sys).map_err(|e| format!("{e:?}"))?;
     for (name, code) in [
         ("embedded", crate::lua_sys_embedded::PRELUDE),
         ("lfs", crate::lua_sys_lfs::PRELUDE),
@@ -283,11 +283,11 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
         ("os", crate::lua_sys_os::PRELUDE),
     ] {
         lua.load(code)
-            .set_name(&format!("=[ratex {name}]"))
+            .set_name(&format!("=[texres {name}]"))
             .exec()
             .map_err(|e| format!("lua_sys {name} prelude: {}", lua.get_error_message(e).message()))?;
     }
-    lua.execute("__ratex_sys = nil").map_err(|e| format!("{e:?}"))?;
+    lua.execute("__texres_sys = nil").map_err(|e| format!("{e:?}"))?;
     Ok(())
 }
 

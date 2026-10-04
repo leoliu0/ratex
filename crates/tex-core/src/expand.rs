@@ -2605,7 +2605,7 @@ impl Engine {
     /// tex.web expand §510 for a `\fi`, `\else` or `\or` that meets a
     /// conditional still evaluating its operand: TeX shows it, then inserts
     /// `\relax` and reads the delimiter again when it skips or selects a
-    /// branch (where it is shown a second time). Ratex ends the operand with
+    /// branch (where it is shown a second time). TeXres ends the operand with
     /// the delimiter itself, so the first showing happens here, once.
     pub(crate) fn show_operand_ending_delimiter(&mut self, p: Prim) {
         if matches!(p, Prim::Fi | Prim::Else | Prim::Or)

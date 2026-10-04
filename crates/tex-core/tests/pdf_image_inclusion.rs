@@ -171,7 +171,7 @@ fn samples(doc: &lopdf::Document, stream: &lopdf::Stream) -> (i64, Vec<u16>) {
     };
     let mut data = Vec::new();
     std::io::Read::read_to_end(&mut flate2::read::ZlibDecoder::new(&stream.content[..]), &mut data).unwrap();
-    // every row carries a PNG predictor byte (writepng.c and ratex alike)
+    // every row carries a PNG predictor byte (writepng.c and texres alike)
     let row_bytes = (width * colors * bits as usize).div_ceil(8);
     let bpp = (colors * bits as usize).div_ceil(8);
     let raw = unpredict(&data, row_bytes, bpp);

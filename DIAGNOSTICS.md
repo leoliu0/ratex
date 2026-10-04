@@ -86,7 +86,7 @@ message occurs, so a later mode change cannot retroactively hide or reveal
 earlier output. The command-line controls are:
 
 - `-interaction=errorstopmode` stops at the first error and is the default for
-  a direct engine pass; the `ratex` driver passes `-interaction=nonstopmode`
+  a direct engine pass; the `texres` driver passes `-interaction=nonstopmode`
   unless another mode is given.
 - `-interaction=nonstopmode` and `-interaction=scrollmode` continue after
   recoverable errors, produce a PDF when possible, and still exit with status 1.

@@ -509,7 +509,7 @@ impl IntParam {
         Self::ALL.get(i as usize).copied()
     }
 
-    /// tex.web's `last_item` quantities Ratex stores as integer
+    /// tex.web's `last_item` quantities TeXres stores as integer
     /// parameters: they can be read (`\the`, scanned numbers) but the
     /// command itself is illegal (tex.web 1045 `any_mode(last_item)`).
     pub fn is_last_item(self) -> bool {
@@ -1177,7 +1177,7 @@ pub enum Prim {
     PdfRandomSeed,
     PdfSetRandomSeed,
     NoBoundary,
-    RatexCjkText,
+    TeXresCjkText,
     XeTeXCountGlyphs,
     XeTeXGlyphName,
     XeTeXCharGlyph,
@@ -1720,7 +1720,7 @@ impl Prim {
             Prim::PdfRandomSeed => 346,
             Prim::PdfSetRandomSeed => 347,
             Prim::NoBoundary => 348,
-            Prim::RatexCjkText => 353,
+            Prim::TeXresCjkText => 353,
             Prim::XeTeXCountGlyphs => 354,
             Prim::XeTeXGlyphName => 355,
             Prim::XeTeXCharGlyph => 356,
@@ -2189,7 +2189,7 @@ impl Prim {
             346 => Some(Prim::PdfRandomSeed),
             347 => Some(Prim::PdfSetRandomSeed),
             348 => Some(Prim::NoBoundary),
-            353 => Some(Prim::RatexCjkText),
+            353 => Some(Prim::TeXresCjkText),
             354 => Some(Prim::XeTeXCountGlyphs),
             355 => Some(Prim::XeTeXGlyphName),
             356 => Some(Prim::XeTeXCharGlyph),

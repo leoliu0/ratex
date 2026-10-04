@@ -4,7 +4,7 @@
 //! `\directlua`; every other primitive lives in LuaTeX's primitive table
 //! and becomes a control sequence through `tex.enableprimitives(prefix,
 //! names)` (ltexlib.c), usually with names from `tex.extraprimitives`.
-//! Ratex keeps that table per engine ([`LuaPrimitive`] entries for the
+//! TeXres keeps that table per engine ([`LuaPrimitive`] entries for the
 //! names it implements); LuaTeX names of pdfTeX/e-TeX primitives resolve to
 //! the implementations registered under the pdfTeX names.
 
@@ -19,7 +19,7 @@ pub(crate) const CORE: u8 = 2;
 pub(crate) const ETEX: u8 = 4;
 pub(crate) const LUATEX: u8 = 8;
 
-/// A LuaTeX primitive ratex implements: its `tex.extraprimitives` group,
+/// A LuaTeX primitive texres implements: its `tex.extraprimitives` group,
 /// LuaTeX name and meaning.
 #[derive(Clone, Debug)]
 pub struct LuaPrimitive {
@@ -163,8 +163,8 @@ fn luatex_only(name: &[u8]) -> Option<Prim> {
         .map(|id| Prim::UMath(id as u8))
 }
 
-/// LuaTeX names of primitives ratex registers under their pdfTeX or e-TeX
-/// name (LuaTeX name, ratex name).
+/// LuaTeX names of primitives texres registers under their pdfTeX or e-TeX
+/// name (LuaTeX name, texres name).
 static ALIASES: &[(&[u8], &[u8])] = &[
     (b"adjustspacing", b"pdfadjustspacing"),
     (b"protrudechars", b"pdfprotrudechars"),
@@ -200,7 +200,7 @@ static ALIASES: &[(&[u8], &[u8])] = &[
 ];
 
 /// `\pdfvariable` keys (textoken.c `do_variable_pdf`, in its scan order)
-/// and the ratex primitive holding each backend parameter.
+/// and the texres primitive holding each backend parameter.
 pub(crate) static PDF_VARIABLES: &[(&[u8], &[u8])] = &[
     (b"compresslevel", b"pdfcompresslevel"),
     (b"decimaldigits", b"pdfdecimaldigits"),
@@ -362,7 +362,7 @@ impl Engine {
     }
 
     /// Switch a freshly initialised engine to LuaTeX's primitive model:
-    /// only the `tex` group and `\directlua` stay defined (plus ratex's own
+    /// only the `tex` group and `\directlua` stay defined (plus texres's own
     /// extensions), primitives print by their LuaTeX names and the LuaTeX
     /// INITEX parameter values apply.
     pub fn init_luatex_primitives(&mut self) {
@@ -372,7 +372,7 @@ impl Engine {
         let (table, backend) = self.resolve_lua_primitives();
         for id in self.cs.all_ids() {
             let name = self.cs.name(id);
-            if name.starts_with(b"Ratex") || name.starts_with(b"ratex") {
+            if name.starts_with(b"TeXres") || name.starts_with(b"texres") {
                 continue;
             }
             if matches!(self.eqtb.get(id), Some(Equiv::Prim(_))) {
@@ -483,7 +483,7 @@ impl Engine {
             .collect()
     }
 
-    /// The hidden control sequence whose meaning is the ratex primitive
+    /// The hidden control sequence whose meaning is the texres primitive
     /// registered as `target` (see [`BACKEND_PREFIX`]).
     pub(crate) fn backend_cs(&self, target: &[u8]) -> Option<crate::token::CsId> {
         let mut hidden = BACKEND_PREFIX.to_vec();

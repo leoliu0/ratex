@@ -1,8 +1,8 @@
 -- mime.core, ltn12 and mime as LuaTeX ships them (LuaSocket's own Lua files
 -- are run unchanged).
-local S = __ratex_sys
-local ltn12_source, mime_source = __ratex_ltn12_source, __ratex_mime_source
-__ratex_ltn12_source, __ratex_mime_source = nil, nil
+local S = __texres_sys
+local ltn12_source, mime_source = __texres_ltn12_source, __texres_mime_source
+__texres_ltn12_source, __texres_mime_source = nil, nil
 
 local core = {
   _VERSION = "MIME 1.0.3",

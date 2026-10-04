@@ -1,5 +1,5 @@
 -- kpse: the Kpathsea library as exported by LuaTeX (lkpselib.c).
-local S = __ratex_sys
+local S = __texres_sys
 local type, tostring, error, select, setmetatable, getmetatable, tointeger =
   type, tostring, error, select, setmetatable, getmetatable, math.tointeger
 local format = string.format

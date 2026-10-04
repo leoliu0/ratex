@@ -1,12 +1,12 @@
-# ratex
+# texres
 
-[![CI](https://github.com/leoliu0/ratex/actions/workflows/ci.yml/badge.svg)](https://github.com/leoliu0/ratex/actions/workflows/ci.yml)
-[![Release](https://github.com/leoliu0/ratex/actions/workflows/release.yml/badge.svg)](https://github.com/leoliu0/ratex/actions/workflows/release.yml)
+[![CI](https://github.com/leoliu0/texres/actions/workflows/ci.yml/badge.svg)](https://github.com/leoliu0/texres/actions/workflows/ci.yml)
+[![Release](https://github.com/leoliu0/texres/actions/workflows/release.yml/badge.svg)](https://github.com/leoliu0/texres/actions/workflows/release.yml)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
 
-**ratex** is a self-contained TeX toolchain written in Rust: pdfTeX-, XeTeX-
+**texres** is a self-contained TeX toolchain written in Rust: pdfTeX-, XeTeX-
 and LuaTeX-compatible engines, a latexmk-style build driver, BibTeX, and an
-embedded TeX package archive, shipped as one executable named `ratex`.
+embedded TeX package archive, shipped as one executable named `texres`.
 
 ## Verification
 
@@ -18,8 +18,8 @@ reference. The extracted archive is run on every release platform, and the
 shell installer, `.deb`, macOS `.pkg`, and Windows installers are installed
 and exercised. The workspace test suite,
 the C and WebAssembly libraries, and the browser module are tested as well.
-The exact minimum documents from [#17](https://github.com/leoliu0/ratex/issues/17)
-and [#18](https://github.com/leoliu0/ratex/issues/18) run under LuaLaTeX and
+The exact minimum documents from [#17](https://github.com/leoliu0/texres/issues/17)
+and [#18](https://github.com/leoliu0/texres/issues/18) run under LuaLaTeX and
 XeLaTeX respectively, checking Spanish text, embedded fonts and rendering.
 LuaLaTeX and XeLaTeX also have subsystem probes and paired package-interaction
 documents: source loading, token scanners, register/group scope, Lua callbacks,
@@ -27,7 +27,7 @@ node ownership, fonts, math, Unicode, bidirectional text, CJK line breaking and
 vertical typesetting. Their complete extracted text is compared with the matching
 TeX Live 2026 engine, alongside font-program checks and both renderers.
 Use `scripts/test_fonts.py --engine lualatex` or `--engine xelatex` with
-`--ratex` and `--output` to select a suite; its report groups failures by engine
+`--texres` and `--output` to select a suite; its report groups failures by engine
 and feature family and retains compilation and viewer evidence.
 See [PERFORMANCE.md](PERFORMANCE.md) for how speed is measured.
 
@@ -48,12 +48,12 @@ diagnosis receives the full report and treats proposed causes as hypotheses.
 
 - **Validated incremental builds**: Dependency and auxiliary-state checks reuse unchanged results without re-running the typesetting engine. Per-job locks protect active compilations from cache cleanup. See [ARTIFACTS.md](ARTIFACTS.md).
 - **Self-contained typesetting**: The executable embeds the LaTeX formats, package resources, and the font families described below. Compilation needs neither TeX Live nor runtime font downloads.
-- **One executable**: `ratex` contains the TeX engine, package resolver, BibTeX, and the build driver. It runs each TeX and BibTeX pass in a child process of the same executable, which isolates crashes and memory use between passes. EPS figures are converted by the built-in PostScript interpreter.
-- **Engine personalities**: invoked through a link named `pdflatex`, `xelatex`, or `lualatex`, the executable runs a single engine pass; named `bibtex` it runs BibTeX; named `latexmk` it behaves like `ratex`.
+- **One executable**: `texres` contains the TeX engine, package resolver, BibTeX, and the build driver. It runs each TeX and BibTeX pass in a child process of the same executable, which isolates crashes and memory use between passes. EPS figures are converted by the built-in PostScript interpreter.
+- **Engine personalities**: invoked through a link named `pdflatex`, `xelatex`, or `lualatex`, the executable runs a single engine pass; named `bibtex` it runs BibTeX; named `latexmk` it behaves like `texres`.
 - **SyncTeX by default**: A PDF-adjacent `.synctex.gz` maps rendered text to source lines for forward/inverse search in editors such as VS Code, TeXstudio, VimTeX, and AUCTeX.
 - **Structured diagnostics**: Errors show the physical source location, an excerpt with a caret, macro-expansion and include context, and a hint when one is known. See [DIAGNOSTICS.md](DIAGNOSTICS.md).
 - **SVG images**: `\includegraphics` accepts `.svg` files; they are rasterized in memory to PNG without calling Inkscape.
-- **`latexdiff`**: `ratex latexdiff old.tex new.tex` marks up token-level differences with `\DIFadd`/`\DIFdel`. If a system `latexdiff` is on `PATH` it is tried first; otherwise the built-in diff is used.
+- **`latexdiff`**: `texres latexdiff old.tex new.tex` marks up token-level differences with `\DIFadd`/`\DIFdel`. If a system `latexdiff` is on `PATH` it is tried first; otherwise the built-in diff is used.
 - **Embedded C API (`libtex`) & WebAssembly (`tex.wasm`)**: Compile complete LaTeX documents in memory from C/C++, Node.js, or browsers. These libraries run every TeX and BibTeX pass inside the calling process, without subprocesses or disk access. Rust programs can call the same pipeline through the `tex-runtime` crate. See [docs/libraries.md](docs/libraries.md).
 - **Rust implementation**: `unsafe` code is limited to libc calls (file locks, resource limits, local time), an AVX2 token scan, the C ABI, and the embedded Lua VM.
 
@@ -62,21 +62,21 @@ diagnosis receives the full report and treats proposed causes as hypotheses.
 ## Installation
 
 ### Linux
-Download the native package for your distribution from [GitHub Releases](https://github.com/leoliu0/ratex/releases/tag/v0.5.2):
+Download the native package for your distribution from [GitHub Releases](https://github.com/leoliu0/texres/releases/tag/v0.6.0):
 
 ```bash
 # Ubuntu / Debian (.deb)
-sudo apt install ./ratex_0.5.2_amd64.deb
+sudo apt install ./texres_0.6.0_amd64.deb
 
 # Fedora / RHEL / openSUSE (.rpm)
-sudo dnf install ./ratex-0.5.2-1.x86_64.rpm
+sudo dnf install ./texres-0.6.0-1.x86_64.rpm
 
-# Arch Linux (AUR): prebuilt binary or source build
+# Arch Linux (AUR; still published under the former name, currently 0.4.6)
 yay -S ratex-bin
 yay -S ratex
 
 # Linux with glibc (archive with installer; installs to ~/.local by default)
-tar -xzf tex-suite-v0.5.2-linux-x86_64.tar.gz && ./tex-suite-linux-x86_64/install.sh
+tar -xzf tex-suite-v0.6.0-linux-x86_64.tar.gz && ./tex-suite-linux-x86_64/install.sh
 ```
 
 Linux releases support **x86_64 and ARM64 (aarch64)**. ARM64 prebuilt binaries
@@ -84,23 +84,23 @@ require Debian 12 or another distribution with **glibc 2.36 or newer**, includin
 Linux Docker containers on Apple Silicon. Alpine Linux and other musl-based
 distributions are not supported by these prebuilt binaries.
 
-For ARM64, download the [Debian package](https://github.com/leoliu0/ratex/releases/download/v0.5.2/ratex_0.5.2_arm64.deb),
-[RPM](https://github.com/leoliu0/ratex/releases/download/v0.5.2/ratex-0.5.2-1.aarch64.rpm),
-[Arch package](https://github.com/leoliu0/ratex/releases/download/v0.5.2/ratex-0.5.2-1-aarch64.pkg.tar.zst),
-or [archive](https://github.com/leoliu0/ratex/releases/download/v0.5.2/tex-suite-v0.5.2-linux-aarch64.tar.gz):
+For ARM64, download the [Debian package](https://github.com/leoliu0/texres/releases/download/v0.6.0/texres_0.6.0_arm64.deb),
+[RPM](https://github.com/leoliu0/texres/releases/download/v0.6.0/texres-0.6.0-1.aarch64.rpm),
+[Arch package](https://github.com/leoliu0/texres/releases/download/v0.6.0/texres-0.6.0-1-aarch64.pkg.tar.zst),
+or [archive](https://github.com/leoliu0/texres/releases/download/v0.6.0/tex-suite-v0.6.0-linux-aarch64.tar.gz):
 
 ```bash
 # Ubuntu / Debian ARM64
-sudo apt install ./ratex_0.5.2_arm64.deb
+sudo apt install ./texres_0.6.0_arm64.deb
 
 # Fedora / RHEL / openSUSE ARM64
-sudo dnf install ./ratex-0.5.2-1.aarch64.rpm
+sudo dnf install ./texres-0.6.0-1.aarch64.rpm
 
 # Arch Linux ARM (downloaded native package)
-sudo pacman -U ./ratex-0.5.2-1-aarch64.pkg.tar.zst
+sudo pacman -U ./texres-0.6.0-1-aarch64.pkg.tar.zst
 
 # ARM64 archive; installs to ~/.local by default
-tar -xzf tex-suite-v0.5.2-linux-aarch64.tar.gz && ./tex-suite-linux-aarch64/install.sh
+tar -xzf tex-suite-v0.6.0-linux-aarch64.tar.gz && ./tex-suite-linux-aarch64/install.sh
 ```
 
 For a Debian 12 ARM64 container on Apple Silicon, start
@@ -108,24 +108,24 @@ For a Debian 12 ARM64 container on Apple Silicon, start
 
 ```bash
 apt-get update && apt-get install -y ca-certificates curl
-curl -fLO https://github.com/leoliu0/ratex/releases/download/v0.5.2/ratex_0.5.2_arm64.deb
-apt-get install -y ./ratex_0.5.2_arm64.deb
-ratex --version
+curl -fLO https://github.com/leoliu0/texres/releases/download/v0.6.0/texres_0.6.0_arm64.deb
+apt-get install -y ./texres_0.6.0_arm64.deb
+texres --version
 ```
 
 ### macOS
 Install the maintained Homebrew package (updated automatically after successful releases):
 
 ```bash
-brew tap leoliu0/ratex https://github.com/leoliu0/ratex.git
-brew install leoliu0/ratex/ratex
+brew tap leoliu0/texres https://github.com/leoliu0/texres.git
+brew install leoliu0/texres/texres
 ```
 
-This tap is independent of `homebrew/core`; `brew install ratex` uses core's separately reviewed version.
+This tap is independent of `homebrew/core`; `brew install texres` uses core's separately reviewed version.
 
 Or download and run the native installer package:
-- [macOS Apple Silicon (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.5.2/ratex-v0.5.2-macos-aarch64.pkg)
-- [macOS Intel (.pkg)](https://github.com/leoliu0/ratex/releases/download/v0.5.2/ratex-v0.5.2-macos-x86_64.pkg)
+- [macOS Apple Silicon (.pkg)](https://github.com/leoliu0/texres/releases/download/v0.6.0/texres-v0.6.0-macos-aarch64.pkg)
+- [macOS Intel (.pkg)](https://github.com/leoliu0/texres/releases/download/v0.6.0/texres-v0.6.0-macos-x86_64.pkg)
 
 #### Migrating from the GitHub installer to Homebrew
 
@@ -133,7 +133,7 @@ Homebrew does not overwrite an installation in `~/.local` or a GitHub `.pkg`
 installation in `/usr/local`. Remove or stop selecting the old copy before
 switching editors.
 
-1. In Terminal, run `type -a ratex` to identify existing copies.
+1. In Terminal, run `type -a texres` to identify existing copies.
 2. For an installation made with the archive's `install.sh`, run its uninstaller
    from the extracted archive with the **same prefix and data directory** used
    during installation:
@@ -146,43 +146,43 @@ switching editors.
    The uninstaller preserves unmanaged files; a missing ownership manifest means
    it will not remove that installation. Do not run it against a Homebrew prefix.
 3. For the native GitHub `.pkg` or a manually copied binary, the shell uninstaller
-   cannot establish ownership. Inspect `pkgutil --files io.github.leoliu0.ratex`
-   for a `.pkg` installation. Move only confirmed old Ratex files aside before
+   cannot establish ownership. Inspect `pkgutil --files io.github.leoliu0.texres`
+   for a `.pkg` installation. Move only confirmed old TeXres files aside before
    Homebrew links into `/usr/local`; do not delete other TeX tools or use
    `brew link --overwrite`. `pkgutil --forget` alone does not remove files.
 4. Install the maintained tap using the commands above. Open a new Terminal,
-   run `type -a ratex` and `"$(brew --prefix)/bin/ratex" --version`, then configure
+   run `type -a texres` and `"$(brew --prefix)/bin/texres" --version`, then configure
    TeXstudio with that absolute Homebrew path as described below.
 
-If core's `ratex` is already installed, use `brew uninstall ratex` before
-installing `leoliu0/ratex/ratex`. Neither uninstall your documents nor TeX Live
+If core's `texres` is already installed, use `brew uninstall texres` before
+installing `leoliu0/texres/texres`. Neither uninstall your documents nor TeX Live
 just to change which executable your editor uses.
 
 ### Windows
-- [Download Windows Setup (.exe)](https://github.com/leoliu0/ratex/releases/download/v0.5.2/ratex-setup-v0.5.2-windows-x64.exe)
+- [Download Windows Setup (.exe)](https://github.com/leoliu0/texres/releases/download/v0.6.0/texres-setup-v0.6.0-windows-x64.exe)
 
 ---
 
 ## Usage
 
 ### Single-Command Build
-`ratex` tracks dependencies, resolves packages from its embedded archive, runs BibTeX when the auxiliary state requires it, and repeats TeX passes (at most five) until the auxiliary files stop changing:
+`texres` tracks dependencies, resolves packages from its embedded archive, runs BibTeX when the auxiliary state requires it, and repeats TeX passes (at most five) until the auxiliary files stop changing:
 
 ```bash
 # Compile a document
-ratex paper.tex
+texres paper.tex
 
 # Write the PDF and SyncTeX file to another directory
-ratex -output-directory=build paper.tex
+texres -output-directory=build paper.tex
 
 # Remove the document's cached state (keeps the PDF)
-ratex -c paper.tex
+texres -c paper.tex
 
-# Also remove the PDF and SyncTeX file if ratex created them and they are unchanged
-ratex -C paper.tex
+# Also remove the PDF and SyncTeX file if texres created them and they are unchanged
+texres -C paper.tex
 ```
 
-Other options (`ratex --help` prints the full list): `-aux-directory DIR`,
+Other options (`texres --help` prints the full list): `-aux-directory DIR`,
 `--cache-directory DIR`, `-jobname NAME`, `--keep-intermediates`/`-k`,
 `--keep-logs`, `--optimize-pdf-size`, `-interaction=MODE` (default
 `nonstopmode`), `-halt-on-error`, `--verbose`/`-V`, and the engine selectors
@@ -198,7 +198,7 @@ no convergence, 2 on a usage error.
 The single-pass personalities (`pdflatex`, `lualatex`, `xelatex` links) take
 pdfTeX's web2c options (`pdflatex --help`). `-ini` dumps `JOBNAME.fmt` into
 the output directory and `-fmt=NAME`, `&NAME`, a `%&NAME` first line, or
-`-progname=NAME` load such a Ratex dump (`NAME` equal to the program selects
+`-progname=NAME` load such a TeXres dump (`NAME` equal to the program selects
 the built-in format). `-cnf-line=VAR=VALUE` sets a search or policy variable
 such as `TEXINPUTS` or `openout_any`; `-kpathsea-debug=N` (nonzero) traces
 file lookups in the transcript. `-translate-file=TCXNAME`, `-8bit` and a
@@ -241,17 +241,17 @@ Environment variables:
 - `NO_COLOR`, `CLICOLOR=0`, `CLICOLOR_FORCE=1`: control colored diagnostics.
 
 ### Editor Setup
-Configure your editor or build system to invoke `ratex`:
+Configure your editor or build system to invoke `texres`:
 #### TeXstudio Setup
-1. Find the executable in Terminal: `command -v ratex`. For Homebrew, use
-   `echo "$(brew --prefix)/bin/ratex"` and verify that path with `--version`.
-   Typical paths are `/opt/homebrew/bin/ratex` (Apple Silicon) and
-   `/usr/local/bin/ratex` (Intel). Use your actual prefix.
+1. Find the executable in Terminal: `command -v texres`. For Homebrew, use
+   `echo "$(brew --prefix)/bin/texres"` and verify that path with `--version`.
+   Typical paths are `/opt/homebrew/bin/texres` (Apple Silicon) and
+   `/usr/local/bin/texres` (Intel). Use your actual prefix.
 2. Open **Options → Configure TeXstudio → Commands** (on macOS,
    **TeXstudio → Preferences → Commands**). Set **Latexmk** to the command
    below, replacing the executable path with yours:
    ```text
-   "/opt/homebrew/bin/ratex" -pdf -interaction=nonstopmode "%.tex"
+   "/opt/homebrew/bin/texres" -pdf -interaction=nonstopmode "%.tex"
    ```
 3. Under **Build**, select **Latexmk** as **Default Compiler** and
    **Compile & View** as **Build & View**. The command belongs in **Commands**,
@@ -264,13 +264,13 @@ PATH. Quoting `"%.tex"` handles project paths containing spaces. Do not paste
 Keep the PDF and `.synctex.gz` together for the internal viewer's source navigation.
 See the [TeXstudio command documentation](https://texstudio-org.github.io/configuration.html#configuring-the-latex-related-commands).
 
-**Optional aliases:** the release packages install only `ratex`, so they do
+**Optional aliases:** the release packages install only `texres`, so they do
 not replace TeX Live's `latexmk` or other compiler commands. To opt into a
-Ratex-backed `latexmk` command for your editor, create an isolated alias:
+TeXres-backed `latexmk` command for your editor, create an isolated alias:
 
 ```bash
-mkdir -p "$HOME/.local/ratex-editor/bin"
-ln -s "$(command -v ratex)" "$HOME/.local/ratex-editor/bin/latexmk"
+mkdir -p "$HOME/.local/texres-editor/bin"
+ln -s "$(command -v texres)" "$HOME/.local/texres-editor/bin/latexmk"
 ```
 
 Set TeXstudio's **Commands → Latexmk** executable to that alias's absolute
@@ -288,13 +288,13 @@ Add this recipe to your VS Code `settings.json`:
 ```json
 "latex-workshop.latex.tools": [
   {
-    "name": "ratex",
-    "command": "ratex",
+    "name": "texres",
+    "command": "texres",
     "args": ["-pdf", "-interaction=nonstopmode", "%DOC%"]
   }
 ],
 "latex-workshop.latex.recipes": [
-  { "name": "ratex", "tools": ["ratex"] }
+  { "name": "texres", "tools": ["texres"] }
 ]
 ```
 
@@ -306,10 +306,10 @@ entries resolve to clickable PDF destinations.
 ### Document Revision Diffing (`latexdiff`)
 ```bash
 # Compare two versions and write the marked-up source:
-ratex latexdiff old.tex new.tex diff.tex
+texres latexdiff old.tex new.tex diff.tex
 
 # Then compile the diff to PDF:
-ratex diff.tex
+texres diff.tex
 ```
 
 ### Fonts and Unicode
@@ -347,7 +347,7 @@ shape produces `Font shape ... undefined`, and a character that a font lacks
 is reported as `Missing character: There is no ...`.
 Fonts are hermetic: a font is found among the project's files, the bundled
 font archive (by file name, or by family, PostScript, or full name from the
-bundled font index), and nothing else. Ratex does not search OS font stores,
+bundled font index), and nothing else. TeXres does not search OS font stores,
 so a document that selects a system font by name (`Times New Roman`) fails
 where TeX Live with that font installed succeeds; ship the font file with the
 project and select it with `Path=./`. The bundled OpenType fonts include
@@ -365,7 +365,7 @@ replace those licenses.
 **Engine modes and limits:** `-xelatex` (or a link named `xelatex`) runs the
 XeTeX engine, version 3.141592653-2.6-0.999998 as in TeX Live 2026, with the
 embedded XeLaTeX format built from TeX Live's `xelatex.ini`; the terminal
-banner reads `This is XeTeX, Version 3.141592653-2.6-0.999998 (Ratex x.y.z)`.
+banner reads `This is XeTeX, Version 3.141592653-2.6-0.999998 (TeXres x.y.z)`.
 Output goes to the PDF directly, without an XDV file: `\special`s are
 interpreted as `xdvipdfmx` does, pages default to A4 unless `\pdfpagewidth`
 and `\pdfpageheight` are set, and the PDF carries xdvipdfmx's producer data.
@@ -401,9 +401,9 @@ selected.
 Requirements: a current stable Rust toolchain (CI builds with `stable`; the
 code uses APIs stabilized in Rust 1.88).
 ```bash
-git clone https://github.com/leoliu0/ratex.git
-cd ratex
-cargo build --release --locked --bin ratex
+git clone https://github.com/leoliu0/texres.git
+cd texres
+cargo build --release --locked --bin texres
 
 # Install into ~/.local (builds the workspace first if needed):
 ./install.sh --from-source
@@ -425,12 +425,12 @@ For the native C API and browser/Node.js WebAssembly module, see
 The project is a Cargo workspace:
 
 ```
-ratex/
+texres/
 ├── crates/
 │   ├── tex-core/        # TeX engine: expansion, typesetting, math, alignment, pages, PDF output, SyncTeX
 │   ├── tex-kpse/        # kpathsea-style resolver and the embedded zstd-compressed package archive
 │   ├── tex-bibtex/      # BibTeX implementation
-│   ├── tex-cli/         # `ratex` executable: build driver, engine/BibTeX personalities, latexdiff
+│   ├── tex-cli/         # `texres` executable: build driver, engine/BibTeX personalities, latexdiff
 │   ├── tex-lua/         # Lua VM used by the LuaTeX-compatible mode
 │   ├── tex-mplib/       # MetaPost engine (mplib)
 │   ├── tex-ps/          # PostScript/EPS interpreter and PDF renderer

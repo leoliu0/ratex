@@ -2046,14 +2046,14 @@ pub(crate) fn install_library(lua: &mut Lua) -> Result<(), String> {
     let natives = install(lua)?;
     let data: LuaTable = lua
         .load(include_str!("lua_node_data.lua"))
-        .set_name("=[ratex node data]")
+        .set_name("=[texres node data]")
         .eval()
         .map_err(|e| format!("node data: {}", lua.get_error_message(e).message()))?;
-    lua.set_global("__ratex_nodelib", natives).map_err(|e| format!("{e:?}"))?;
-    lua.set_global("__ratex_nodedata", data).map_err(|e| format!("{e:?}"))?;
+    lua.set_global("__texres_nodelib", natives).map_err(|e| format!("{e:?}"))?;
+    lua.set_global("__texres_nodedata", data).map_err(|e| format!("{e:?}"))?;
     let node: LuaTable = lua
         .load(include_str!("lua_node.lua"))
-        .set_name("=[ratex node]")
+        .set_name("=[texres node]")
         .eval()
         .map_err(|e| format!("node library: {}", lua.get_error_message(e).message()))?;
     lua.set_global("node", node).map_err(|e| format!("{e:?}"))

@@ -12,7 +12,7 @@ impl Fixture {
             .unwrap()
             .as_nanos();
         let path =
-            std::env::temp_dir().join(format!("ratex-babel-{name}-{}-{nonce}", std::process::id()));
+            std::env::temp_dir().join(format!("texres-babel-{name}-{}-{nonce}", std::process::id()));
         std::fs::create_dir_all(&path).unwrap();
         std::fs::write(path.join("main.tex"), source).unwrap();
         Self(path)

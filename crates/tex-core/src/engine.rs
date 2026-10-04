@@ -1743,7 +1743,7 @@ impl Engine {
         d!(eng, b"fontchardp", FontCharDp);
         d!(eng, b"fontcharic", FontCharIc);
         d!(eng, b"noboundary", NoBoundary);
-        d!(eng, b"ratexcjktext", RatexCjkText);
+        d!(eng, b"texrescjktext", TeXresCjkText);
         d!(eng, b"hskip", HSkip);
         d!(eng, b"vskip", VSkip);
         d!(eng, b"mskip", MSkip);

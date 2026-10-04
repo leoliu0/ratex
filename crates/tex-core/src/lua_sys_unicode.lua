@@ -1,5 +1,5 @@
 -- unicode.{ascii,latin1,utf8,grapheme}: slnunicode string libraries.
-local S = __ratex_sys
+local S = __texres_sys
 local type, tostring, error, select, pack, unpack =
   type, tostring, error, select, table.pack, table.unpack
 local format = string.format

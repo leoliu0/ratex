@@ -1,4 +1,4 @@
-% Modified for Ratex: preserve decoded CJK source text through virtual fonts.
+% Modified for TeXres: preserve decoded CJK source text through virtual fonts.
 % Original CJK UTF8.chr copyright and GPL terms are retained below.
 % This is the file UTF8.chr of the CJK package
 %   for using Asian logographs (Chinese/Japanese/Korean) with LaTeX2e
@@ -45,9 +45,9 @@
          \advance\@tempcnta ##2\relax
          \edef\CJK@plane{##1}
          \usefont{\CJK@enc}{\CJK@family}{\CJK@series}{\CJK@shape}
-         \ratexcjktext{\CJK@plane}\@tempcnta\relax
+         \texrescjktext{\CJK@plane}\@tempcnta\relax
          \CJKsymbol{\@tempcnta}
-         \ratexcjktext{}0\relax
+         \texrescjktext{}0\relax
        \fi
      \fi}}
 
@@ -93,7 +93,7 @@
              \advance\@tempcnta ##3\relax
              \advance\@tempcnta -128\relax
              \usefont{\CJK@enc}{\CJK@family}{\CJK@series}{\CJK@shape}
-             \ratexcjktext{\CJK@plane}\@tempcnta\relax
+             \texrescjktext{\CJK@plane}\@tempcnta\relax
              \edef\reserved@a{
                \curr@fontshape/\CJK@plane/\the\@tempcnta/\CJK@direction}
              \expandafter\ifx\csname\reserved@a\endcsname \relax
@@ -101,7 +101,7 @@
              \else
                \csname\reserved@a\endcsname
              \fi
-             \ratexcjktext{}0\relax
+             \texrescjktext{}0\relax
 
              \ifCJK@hangul@
                \discretionary{}{}{}
@@ -165,7 +165,7 @@
                  \advance\@tempcnta ##4\relax
                  \advance\@tempcnta -128\relax
                  \usefont{\CJK@enc}{\CJK@family}{\CJK@series}{\CJK@shape}
-                 \ratexcjktext{\CJK@plane}\@tempcnta\relax
+                 \texrescjktext{\CJK@plane}\@tempcnta\relax
                  \edef\reserved@a{
                    \curr@fontshape/\CJK@plane/\the\@tempcnta/\CJK@direction}
                  \expandafter\ifx\csname\reserved@a\endcsname \relax
@@ -173,7 +173,7 @@
                  \else
                    \csname\reserved@a\endcsname
                  \fi
-                 \ratexcjktext{}0\relax
+                 \texrescjktext{}0\relax
 
                  \ifCJK@hangul@
                    \discretionary{}{}{}
@@ -241,7 +241,7 @@
                       \CJK@nobreakglue
                     \fi
 
-                    \ratexcjktext{\CJK@plane}\@tempcnta\relax
+                    \texrescjktext{\CJK@plane}\@tempcnta\relax
                     \edef\reserved@a{
                       \curr@fontshape/\CJK@plane/\the\@tempcnta/\CJK@direction}
                     \expandafter\ifx\csname\reserved@a\endcsname \relax
@@ -249,7 +249,7 @@
                     \else
                       \csname\reserved@a\endcsname
                     \fi
-                    \ratexcjktext{}0\relax
+                    \texrescjktext{}0\relax
 
                     \CJK@testPrePunct{\CJK@@@enc}{\CJK@plane}{\CJK@gtemp}
                     \ifCJK@
@@ -267,16 +267,16 @@
                       \CJK@nobreakglue
                     \fi
 
-                    \ratexcjktext{\CJK@plane}\@tempcnta\relax
+                    \texrescjktext{\CJK@plane}\@tempcnta\relax
                     \CJKpunctsymbol{\@tempcnta}
-                    \ratexcjktext{}0\relax
+                    \texrescjktext{}0\relax
 
                     \CJK@CJK
                   \fi
                 \else
-                  \ratexcjktext{\CJK@plane}\@tempcnta\relax
+                  \texrescjktext{\CJK@plane}\@tempcnta\relax
                   \CJKpunctsymbol{\@tempcnta}
-                  \ratexcjktext{}0\relax
+                  \texrescjktext{}0\relax
                 \fi
                 \ifCJK@hangul@
                   \discretionary{}{}{}

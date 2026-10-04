@@ -486,14 +486,14 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
         cx.push(t)
     });
 
-    lua.set_global("__ratex_hb", n).map_err(|e| format!("{e:?}"))?;
+    lua.set_global("__texres_hb", n).map_err(|e| format!("{e:?}"))?;
     lua.execute(HB_LUA).map_err(|e| format!("luaharfbuzz: {e:?}"))?;
     Ok(())
 }
 
 const HB_LUA: &str = r##"
-local N = __ratex_hb
-__ratex_hb = nil
+local N = __texres_hb
+__texres_hb = nil
 
 local hb = {}
 local function class(name)

@@ -111,7 +111,7 @@ pub fn merge_native_fragments(list: &mut NodeList, eqtb: &Eqtb) {
         if let Some((font, _, at)) = list[i].native_word() {
             // the chain of same-font words and empty discretionaries
             let mut j = i + 1;
-            // Ratex's SyncTeX marks are not nodes of the TeX Live list:
+            // TeXres's SyncTeX marks are not nodes of the TeX Live list:
             // they never end a chain and stay behind the merged word
             let mut syncs: Vec<Node> = Vec::new();
             loop {

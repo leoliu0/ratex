@@ -7,7 +7,7 @@ body:
     id: feature-description
     attributes:
       label: Feature Description
-      description: What capability or primitive would you like Ratex to support?
+      description: What capability or primitive would you like TeXres to support?
     validations:
       required: true
   - type: textarea

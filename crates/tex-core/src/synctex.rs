@@ -1,4 +1,4 @@
-//! SyncTeX file generator for Ratex (PDF to source synchronization).
+//! SyncTeX file generator for TeXres (PDF to source synchronization).
 //!
 //! Generates `.synctex.gz` files compatible with TeX Live SyncTeX parser version 1.
 //! Maps PDF coordinates (in big points, scaled to SyncTeX units: 1 bp = 65536 / 72.27 pt units)

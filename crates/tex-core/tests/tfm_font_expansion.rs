@@ -81,7 +81,7 @@ end
 /// Run `body` after the summary setup; returns what `check` collected, one
 /// entry per call.
 fn collect(name: &str, body: &str) -> Vec<String> {
-    let out = std::env::temp_dir().join(format!("ratex-tfm-expansion-{}-{name}.sum", std::process::id()));
+    let out = std::env::temp_dir().join(format!("texres-tfm-expansion-{}-{name}.sum", std::process::id()));
     let _ = std::fs::remove_file(&out);
     let e = run_luatex(&format!("{}{body}", check_lua(&out)));
     assert_clean(&e);

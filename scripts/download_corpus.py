@@ -21,7 +21,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 ARCHIVES = ["cs", "math", "physics", "stat", "econ", "q-fin", "q-bio"]
-USER_AGENT = "ratex-corpus/0.3 (+https://github.com/leoliu0/ratex)"
+USER_AGENT = "texres-corpus/0.3 (+https://github.com/leoliu0/texres)"
 OAI_URL = "https://oaipmh.arxiv.org/oai"
 OAI_NS = "http://www.openarchives.org/OAI/2.0/"
 ARXIV_RAW_NS = "http://arxiv.org/OAI/arXivRaw/"

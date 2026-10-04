@@ -3,7 +3,7 @@
     Installer for the tex-suite Rust TeX engine collection on Windows.
 
 .DESCRIPTION
-    Self-contained installer for ratex (latexmk-like driver with embedded
+    Self-contained installer for texres (latexmk-like driver with embedded
     TeX engines). Copies the release binary into <root>\bin and the texmf
     TDS tree into <root>\share\tex-suite,
     then persistently registers <root>\bin in PATH and sets TEXMFLOCAL.
@@ -64,7 +64,7 @@ if (-not $PSScriptRoot) {
 
 # --------------------------------------------------------------- constants
 
-$Script:CoreExes = @('ratex.exe')
+$Script:CoreExes = @('texres.exe')
 $Script:InstallManifestName = '.tex-suite-install.json'
 $Script:InstallManifestSchema = 'tex-suite-install-v2'
 
@@ -404,11 +404,11 @@ function Find-Source {
     }
     $candidates += (Get-Location).Path
 
-    # Prefer a staged bundle: <root>\bin\ratex.exe + <root>\share\tex-suite.
+    # Prefer a staged bundle: <root>\bin\texres.exe + <root>\share\tex-suite.
     foreach ($c in $candidates) {
         if (-not $c) { continue }
         $bin = Join-Path $c 'bin'
-        if (Test-Path -LiteralPath (Join-Path $bin 'ratex.exe')) {
+        if (Test-Path -LiteralPath (Join-Path $bin 'texres.exe')) {
             $data = Join-Path $c (Join-Path 'share' 'tex-suite')
             return [pscustomobject]@{
                 Mode   = 'bundle'
@@ -424,7 +424,7 @@ function Find-Source {
     foreach ($c in $candidates) {
         if (-not $c) { continue }
         $rel = Join-Path $c 'target\release'
-        if (Test-Path -LiteralPath (Join-Path $rel 'ratex.exe')) {
+        if (Test-Path -LiteralPath (Join-Path $rel 'texres.exe')) {
             $texmf = $null
             foreach ($t in @((Join-Path $c (Join-Path 'share\tex-suite' 'texmf')), (Join-Path $c 'texmf'))) {
                 if (Test-Path -LiteralPath $t) { $texmf = $t; break }
@@ -476,7 +476,7 @@ function Copy-Tree {
 
 function Invoke-Verify {
     param([string]$Exe)
-    # TeX-style single-dash flag first: `ratex -version` prints the version
+    # TeX-style single-dash flag first: `texres -version` prints the version
     # banner; `--version` is accepted as a fallback.
     $tmp = [IO.Path]::GetTempPath()
     $outFile = Join-Path $tmp ('tex-suite-verify-' + [guid]::NewGuid().ToString('N') + '.out')
@@ -491,7 +491,7 @@ function Invoke-Verify {
                 $text = [IO.File]::ReadAllText($outFile).Trim()
             }
             if ($proc.ExitCode -eq 0 -and $text -ne '') {
-                Write-Info "Verification OK: ratex $flag ->"
+                Write-Info "Verification OK: texres $flag ->"
                 foreach ($line in ($text -split "`r?`n" | Select-Object -First 3)) {
                     Write-Host "    $line"
                 }
@@ -510,7 +510,7 @@ function Show-Usage {
     $script = if ($PSScriptRoot) { Join-Path $PSScriptRoot 'install-windows.ps1' } else { 'install-windows.ps1' }
     $text = @"
 
-tex-suite installer (Windows)  --  ratex
+tex-suite installer (Windows)  --  texres
 
 USAGE
   powershell -NoProfile -ExecutionPolicy Bypass -File "$script" [options]
@@ -530,16 +530,16 @@ OPTIONS
   -InstallDir <p> Install root override (files go to <p>\bin and
                   <p>\share\tex-suite). Alias: -Prefix.
   -NoPath         Do not change PATH, TEXMFLOCAL or TEX_SUITE_DATA.
-  -SkipVerify     Skip the post-install ratex -version check.
+  -SkipVerify     Skip the post-install texres -version check.
   -Help           Show this message.
 
 WHAT IT DOES
-  1. Copies ratex.exe to <root>\bin.
+  1. Copies texres.exe to <root>\bin.
   2. Copies the texmf tree to <root>\share\tex-suite. The compressed LaTeX
-     format is embedded in ratex.exe; an external format is optional.
+     format is embedded in texres.exe; an external format is optional.
      TEXMFLOCAL points at <root>\share\tex-suite\texmf.
   3. Adds <root>\bin to the persistent User (or Machine) PATH idempotently.
-  4. Verifies the install by running: ratex.exe -version
+  4. Verifies the install by running: texres.exe -version
 
 After installing, open a NEW terminal so the updated PATH is picked up.
 
@@ -566,8 +566,8 @@ function Install-Suite {
     $src = Find-Source -Explicit $SourceDir
     if (-not $src) {
         throw ("Could not find tex-suite build output. Expected a staged bundle " +
-               "(bin\ratex.exe + share\tex-suite\) next to this script, or a " +
-               'Cargo checkout with target\release\ratex.exe. Run ' +
+               "(bin\texres.exe + share\tex-suite\) next to this script, or a " +
+               'Cargo checkout with target\release\texres.exe. Run ' +
                '"cargo build --release --workspace" first, or pass -SourceDir.')
     }
     Write-Info ("Installing from " + $src.Mode + " source: " + $src.BinDir)
@@ -712,7 +712,7 @@ function Install-Suite {
                 Write-Warning "Legacy format path is not a file; leaving it unchanged: $legacyFmt"
             }
         }
-        Write-Info 'Using the compressed LaTeX format embedded in ratex.exe'
+        Write-Info 'Using the compressed LaTeX format embedded in texres.exe'
     }
     if ($src.Texmf -and (Test-Path -LiteralPath $src.Texmf)) {
         $texmfDst = Join-Path $data 'texmf'
@@ -769,17 +769,17 @@ function Install-Suite {
         }
     }
     # 6. Verify.
-    $ratexExe = Join-Path $bin 'ratex.exe'
-    if ((-not $SkipVerify) -and (Test-Path -LiteralPath $ratexExe)) {
-        if (Invoke-Verify -Exe $ratexExe) {
+    $texresExe = Join-Path $bin 'texres.exe'
+    if ((-not $SkipVerify) -and (Test-Path -LiteralPath $texresExe)) {
+        if (Invoke-Verify -Exe $texresExe) {
             Write-Info 'Installation verified.'
         } else {
-            Write-Warning ('ratex.exe -version did not return a version ' +
+            Write-Warning ('texres.exe -version did not return a version ' +
                            'banner. Files were installed; run the executable ' +
                            'from a terminal to inspect its diagnostic.')
         }
     }
-    Write-Info 'Done. Open a NEW terminal, then try: ratex -version'
+    Write-Info 'Done. Open a NEW terminal, then try: texres -version'
     } finally {
         if ($tempTexmf -and (Test-Path -LiteralPath $tempTexmf)) {
             Remove-Item -LiteralPath $tempTexmf -Recurse -Force -ErrorAction SilentlyContinue

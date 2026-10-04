@@ -1,4 +1,4 @@
-# Ratex internals
+# TeXres internals
 
 Developer notes for working on the workspace. User-facing behavior is in
 [README.md](../README.md), caches and packaging in [ARTIFACTS.md](../ARTIFACTS.md),
@@ -106,11 +106,11 @@ between generations does not copy an allocation or change collection pacing.
 
 ## Executables and dispatch
 
-`crates/tex-cli` defines these Cargo binaries: `ratex`, `texmk`, `pdflatex`,
+`crates/tex-cli` defines these Cargo binaries: `texres`, `texmk`, `pdflatex`,
 `tex-bibtex`, and `latexdiff`; the `xelatex` and `lualatex` personalities exist
-only as links to `ratex` (or `texmk`). Releases ship only `ratex`.
+only as links to `texres` (or `texmk`). Releases ship only `texres`.
 
-- `ratex` (`src/bin/ratex.rs`) is `texmk::main`. It decides what to run in this
+- `texres` (`src/bin/texres.rs`) is `texmk::main`. It decides what to run in this
   order:
   1. `TEXMK_INTERNAL_MODE=engine|bibtex|latexdiff` (set by the driver for its
      child processes; the engine program name comes from
@@ -118,13 +118,13 @@ only as links to `ratex` (or `texmk`). Releases ship only `ratex`.
   2. a first argument `latexdiff`;
   3. the invoked file name: `pdflatex`, `xelatex`, `lualatex` run one engine
      pass, `bibtex`/`tex-bibtex` run BibTeX, `latexdiff` runs the diff, and
-     anything else (`ratex`, `texmk`, `latexmk`) runs the build driver.
+     anything else (`texres`, `texmk`, `latexmk`) runs the build driver.
 
   Engine and BibTeX personalities started this way set `TEX_RS_HERMETIC=1`,
   so they resolve TeX files only from the embedded archive (see below).
 - The `pdflatex` Cargo binary calls the engine entry point directly and does
   **not** set `TEX_RS_HERMETIC`, so it also searches `TEXINPUTS`, `TEXMFHOME`,
-  executable-relative `texmf` trees, and system TeX trees. Use `ratex` through
+  executable-relative `texmf` trees, and system TeX trees. Use `texres` through
   a link named `pdflatex` to reproduce shipped behavior.
 - The engine kind follows the program name: `pdflatex` runs pdfTeX, `xelatex`
   runs XeTeX, `lualatex` runs LuaTeX. Each program loads its own format
@@ -184,7 +184,7 @@ to inject tools.
 In hermetic mode (`TEX_RS_HERMETIC` set to anything but empty, `0`, or
 `false`) `tex_kpse::Kpse` searches the project directory, the embedded
 zstd-chunked package archive, and `$TEX_SUITE_DATA/texmf` (or
-`$RATEX_DATA_DIR/texmf`) when set. Otherwise it additionally searches
+`$TEXRES_DATA_DIR/texmf`) when set. Otherwise it additionally searches
 `TEXMFHOME`, `TEXMFVAR`, `TEXMFCONFIG`, `TEXMFLOCAL`, `TEXMFDIST`, `~/texmf`,
 `~/.texlive/texmf-var`, executable-relative `texmf`/`share/tex-suite/texmf`
 trees, and the standard system roots, and honors `TEXINPUTS`, `TFMFONTS`,
@@ -268,7 +268,7 @@ user's `HOME`:
 
 One engine, a module-by-module port of `bibtex.web` 0.99e plus TeX Live's
 `bibtex.ch`. `tex_bibtex::run(args, version)` is the only entry point; the
-`bibtex` binary, `ratex`/`texmk` (`crates/tex-cli/src/bibtex/mod.rs`) and
+`bibtex` binary, `texres`/`texmk` (`crates/tex-cli/src/bibtex/mod.rs`) and
 tex-runtime call it.
 
 - `input.rs`: character classes (bytes 128-255 are letters) and the line
@@ -279,7 +279,7 @@ tex-runtime call it.
   (`purify$`, `change.case$`, `width$`, `text.prefix$`, `substring$`,
   `add.period$`). `log.rs`: terminal and `.blg` output.
 - Ground truth is TeX Live 2026 `bibtex`: the `.bbl`, the `.blg` messages and
-  the exit status match byte for byte. The `.blg` banner names Ratex, TeX
+  the exit status match byte for byte. The `.blg` banner names TeXres, TeX
   Live's usage statistics are not written, and files from the embedded
   archive are announced as `<embedded:NAME>`.
 - Exit status: 0 spotless or warnings, 2 error messages (the `.bbl` is

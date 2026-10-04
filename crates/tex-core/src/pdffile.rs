@@ -1178,7 +1178,7 @@ fn to_encoding_cmap_1byte(entries: &[(u8, u16)]) -> String {
          12 dict begin\n\
          begincmap\n\
          /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> def\n\
-         /CMapName /Ratex-Legacy-Encoding def\n\
+         /CMapName /TeXres-Legacy-Encoding def\n\
          /CMapType 1 def\n\
          1 begincodespacerange\n\
          <00> <FF>\n\
@@ -1206,7 +1206,7 @@ fn to_encoding_cmap_2byte(entries: &[(u16, u16)]) -> String {
          12 dict begin\n\
          begincmap\n\
          /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> def\n\
-         /CMapName /Ratex-Native-Encoding def\n\
+         /CMapName /TeXres-Native-Encoding def\n\
          /CMapType 1 def\n\
          1 begincodespacerange\n\
          <0000> <FFFF>\n\
@@ -1484,7 +1484,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             let written = crate::writet1::write_type1(job.data, key.0, key.1, key.4, Some(&request))?;
             Some((written, format!("{tag}+{}", job.font_name)))
         });
-        // pdfTeX gives up on a program it cannot subset; ratex embeds it whole
+        // pdfTeX gives up on a program it cannot subset; texres embeds it whole
         let (written, pdf_name, subsetted) = match subset {
             Some((written, pdf_name)) => (written, pdf_name, true),
             None => (
@@ -2534,7 +2534,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             if !doc.info.is_empty() {
                 ctx.consume(&doc.info);
             } else {
-                ctx.consume(b"ratex-default-doc-id");
+                ctx.consume(b"texres-default-doc-id");
             }
             ctx.finalize().0
         });

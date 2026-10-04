@@ -1,6 +1,6 @@
 //! texmk — latexmk-style driver for the Rust TeX engine.
 //!
-//! The only physical executable in a distribution (`ratex`). It runs its
+//! The only physical executable in a distribution (`texres`). It runs its
 //! embedded TeX engine and BibTeX implementation in isolated child processes
 //! until cross-references and bibliography output stabilize. Invoked as
 //! `pdflatex`, `xelatex`, `lualatex`, `bibtex`, or `latexdiff` (symlinks), it
@@ -160,7 +160,7 @@ fn preamble_requires_unicode_engine(source: &str) -> bool {
 
 /// SyncTeX file extension selected by the engine options, as in pdfTeX:
 /// `-synctex=0` disables it and a negative value writes an uncompressed file.
-/// Ratex writes compressed SyncTeX by default.
+/// TeXres writes compressed SyncTeX by default.
 fn synctex_extension(passthrough: &[String]) -> Option<&'static str> {
     let value = passthrough
         .iter()
@@ -281,10 +281,10 @@ fn parse_args(argv: &[String]) -> Result<Options, String> {
                 let version = env!("CARGO_PKG_VERSION");
                 let invoked = invoked_name();
                 match invoked.as_str() {
-                    "ratex" => println!("ratex {version} (Rust TeX engine)"),
-                    "texmk" => println!("texmk {version} (Ratex; Rust TeX engine)"),
-                    "latexmk" => println!("latexmk (Ratex {version}; Rust TeX engine)"),
-                    _ => println!("ratex {version} (Rust TeX engine)"),
+                    "texres" => println!("texres {version} (Rust TeX engine)"),
+                    "texmk" => println!("texmk {version} (TeXres; Rust TeX engine)"),
+                    "latexmk" => println!("latexmk (TeXres {version}; Rust TeX engine)"),
+                    _ => println!("texres {version} (Rust TeX engine)"),
                 }
                 std::process::exit(0);
             }
@@ -2961,7 +2961,7 @@ fn real_main() -> i32 {
     let engine_override = tool_override(&[target_engine, "pdflatex"]);
     let using_embedded_engine = engine_override.is_none();
     let executed_engine = if using_embedded_engine {
-        "Ratex"
+        "TeXres"
     } else {
         target_engine
     };
@@ -3796,7 +3796,7 @@ fn run_embedded_bibtex() -> ! {
         .iter()
         .any(|a| matches!(a.as_str(), "-v" | "-version" | "--version"))
     {
-        println!("BibTeX 0.99d (Ratex {}; Rust)", env!("CARGO_PKG_VERSION"));
+        println!("BibTeX 0.99d (TeXres {}; Rust)", env!("CARGO_PKG_VERSION"));
         std::process::exit(0);
     }
     std::process::exit(embedded_bibtex::run(&args, "1.0"));

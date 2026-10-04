@@ -2561,7 +2561,7 @@ impl Engine {
     /// flushes the rest), store the part in the disc node at the tail and
     /// open the next part; a nonempty no-break part is illegal in math.
     fn build_discretionary(&mut self, part: i32, mut list: NodeList, outer_mode: Mode) {
-        // ratex's SyncTeX points are invisible bookkeeping, not list items
+        // texres's SyncTeX points are invisible bookkeeping, not list items
         list.retain(|n| !matches!(n, Node::Whatsit(crate::boxes::WhatIt::SyncPoint { .. }, _)));
         if let Some(bad) = list.iter().position(|n| {
             !matches!(

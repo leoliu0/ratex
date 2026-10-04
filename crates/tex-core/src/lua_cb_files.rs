@@ -160,7 +160,7 @@ impl Engine {
     /// returned nothing (the file cannot be read).
     pub(crate) fn lua_reader_open(&mut self, name: &[u8]) -> Option<ReaderId> {
         let name = name.to_vec();
-        match self.lua_run(|lua| lua.call_helper("__ratex_reader_open", vec![UdValue::Bytes(name)])) {
+        match self.lua_run(|lua| lua.call_helper("__texres_reader_open", vec![UdValue::Bytes(name)])) {
             Ok(rets) => match rets.first() {
                 Some(CbRet::Int(id)) => u32::try_from(*id).ok(),
                 _ => None,
@@ -176,7 +176,7 @@ impl Engine {
     /// "->l")`): `None` at the end of the file. Trailing spaces are removed.
     pub(crate) fn lua_reader_line(&mut self, id: ReaderId) -> Option<Vec<u8>> {
         let args = vec![UdValue::Integer(i64::from(id)), UdValue::Bytes(b"reader".to_vec())];
-        match self.lua_run(|lua| lua.call_helper("__ratex_reader_call", args)) {
+        match self.lua_run(|lua| lua.call_helper("__texres_reader_call", args)) {
             Ok(rets) => match rets.into_iter().next() {
                 Some(CbRet::Str(mut s)) => {
                     while s.last() == Some(&b' ') {
@@ -200,10 +200,10 @@ impl Engine {
     /// `lua_a_close_in`: run the object's `close` function and drop it.
     pub(crate) fn lua_reader_close(&mut self, id: ReaderId) {
         let args = vec![UdValue::Integer(i64::from(id)), UdValue::Bytes(b"close".to_vec())];
-        if let Err(err) = self.lua_run(|lua| lua.call_helper("__ratex_reader_call", args)) {
+        if let Err(err) = self.lua_run(|lua| lua.call_helper("__texres_reader_call", args)) {
             self.lua_callback_failed("close", &err);
         }
-        let _ = self.lua_run(|lua| lua.call_helper("__ratex_reader_free", vec![UdValue::Integer(i64::from(id))]));
+        let _ = self.lua_run(|lua| lua.call_helper("__texres_reader_free", vec![UdValue::Integer(i64::from(id))]));
     }
 
     /// luatex `final_cleanup`: every file still open when `\end` is

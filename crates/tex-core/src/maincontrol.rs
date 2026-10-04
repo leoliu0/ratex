@@ -823,7 +823,7 @@ impl Engine {
                 self.unicode_char_token(character, false);
                 self.diagnostic_source_override = previous;
             }
-            RatexCjkText => {
+            TeXresCjkText => {
                 let plane = self.scan_pdf_string();
                 let slot = self.scan_int();
                 let text = if plane.is_empty() {
@@ -2370,7 +2370,7 @@ impl Engine {
                 info.group_ref = self.pdf_page_group_val;
             }
         } else if let Some(svg) = crate::pdf_svg::parse_svg_dims(&bytes) {
-            // SVG (a ratex extension) is rasterized at its own resolution.
+            // SVG (a texres extension) is rasterized at its own resolution.
             info.kind = ImageKind::Svg;
             info.image_width = svg.width as i32;
             info.image_height = svg.height as i32;

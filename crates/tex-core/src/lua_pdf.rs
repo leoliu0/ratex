@@ -368,9 +368,9 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
         })
     });
 
-    lua.set_global("__ratex_pdflib", p).map_err(|e| format!("{e:?}"))?;
+    lua.set_global("__texres_pdflib", p).map_err(|e| format!("{e:?}"))?;
     lua.load(include_str!("lua_pdf.lua"))
-        .set_name("=[ratex pdf]")
+        .set_name("=[texres pdf]")
         .exec()
         .map_err(|e| format!("pdf library: {}", lua.get_error_message(e).message()))?;
     crate::lua_img::install(lua)

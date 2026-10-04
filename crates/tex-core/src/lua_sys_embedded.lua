@@ -3,7 +3,7 @@
 -- reports for bundled files) denote a read-only virtual TDS tree; the
 -- handles returned for them behave like read-only `io.open` handles of
 -- an ordinary file (so `fio`, `lfs.lock`, ... accept them).
-local S = __ratex_sys
+local S = __texres_sys
 local type, tostring, error, setmetatable, getmetatable, select, load =
   type, tostring, error, setmetatable, getmetatable, select, load
 local sub, find, match, byte = string.sub, string.find, string.match, string.byte

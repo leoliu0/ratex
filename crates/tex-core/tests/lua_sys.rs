@@ -25,7 +25,7 @@ fn run_fixture(name: &str) -> String {
     static LOCK: Mutex<()> = Mutex::new(());
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/lua_sys");
-    let base = std::env::temp_dir().join(format!("ratex-lua-sys-{}", std::process::id()));
+    let base = std::env::temp_dir().join(format!("texres-lua-sys-{}", std::process::id()));
     std::fs::create_dir_all(&base).unwrap();
     std::env::set_var("TEX_RS_HERMETIC", "1");
     let work = base.join(name);

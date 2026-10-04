@@ -1,5 +1,5 @@
 -- md5 and sha2 as exported by LuaTeX.
-local S = __ratex_sys
+local S = __texres_sys
 local type, tostring, error, select = type, tostring, error, select
 local format, pack = string.format, string.pack
 

@@ -1,4 +1,4 @@
-//! The semantic nest as `show_activities` (tex.web §218) prints it. Ratex
+//! The semantic nest as `show_activities` (tex.web §218) prints it. TeXres
 //! keeps some of tex.web's nest levels elsewhere: the rows and the row level
 //! of an alignment live in the alignment's tables, and the levels of math
 //! (`{...}` groups, script arguments, denominators) are entries of

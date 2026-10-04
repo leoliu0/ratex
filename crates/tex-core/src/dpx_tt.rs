@@ -886,7 +886,7 @@ mod tests {
     }
 
     // ---- TeX Live reference: embedded FontFile2 / W / DW / CIDSet taken from
-    // the xelatex (xdvipdfmx 20260113) PDFs of the Ratex corpus. The used GID
+    // the xelatex (xdvipdfmx 20260113) PDFs of the TeXres corpus. The used GID
     // lists were recovered from the Identity-H strings of each PDF's content.
     struct Ref {
         font: &'static str,

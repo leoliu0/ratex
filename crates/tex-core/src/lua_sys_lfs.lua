@@ -1,5 +1,5 @@
 -- lfs: LuaFileSystem 1.7.0 as exported by LuaTeX 1.24.
-local S = __ratex_sys
+local S = __texres_sys
 local type, tostring, error, setmetatable, getmetatable, select =
   type, tostring, error, setmetatable, getmetatable, select
 local format = string.format

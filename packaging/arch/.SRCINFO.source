@@ -1,8 +1,8 @@
-pkgbase = ratex
+pkgbase = texres
 	pkgdesc = Ultra-fast, pure-Rust TeX engine and typesetting toolchain (built from source)
 	pkgver = 0.5.0
 	pkgrel = 1
-	url = https://github.com/leoliu0/ratex
+	url = https://github.com/leoliu0/texres
 	arch = x86_64
 	arch = aarch64
 	license = MIT
@@ -20,10 +20,10 @@ pkgbase = ratex
 	makedepends = cargo
 	depends = glibc
 	depends = gcc-libs
-	provides = ratex
-	conflicts = ratex-bin
+	provides = texres
+	conflicts = texres-bin
 	options = !lto
-	source = ratex-0.5.0.tar.gz::https://github.com/leoliu0/ratex/archive/refs/tags/v0.5.0.tar.gz
+	source = texres-0.5.0.tar.gz::https://github.com/leoliu0/texres/archive/refs/tags/v0.5.0.tar.gz
 	sha256sums = 469fb82b5aeb24cba427eee292315141565aab40178353a2b0802fb40c25504d
 
-pkgname = ratex
+pkgname = texres

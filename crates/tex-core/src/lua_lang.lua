@@ -1,6 +1,6 @@
 -- LuaTeX `lang` library (llanglib.c) over the engine's hyphenation tables.
-local L = __ratex_langlib
-__ratex_langlib = nil
+local L = __texres_langlib
+__texres_langlib = nil
 
 local type, error, tostring, setmetatable, getmetatable, tonumber =
       type, error, tostring, setmetatable, getmetatable, tonumber

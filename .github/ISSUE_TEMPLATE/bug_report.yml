@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for helping improve Ratex! An automated bot will test your snippet immediately upon submission.
+        Thanks for helping improve TeXres! An automated bot will test your snippet immediately upon submission.
   - type: textarea
     id: reproduction
     attributes:
@@ -25,7 +25,7 @@ body:
     id: error-log
     attributes:
       label: Error or Expected Behavior
-      description: What went wrong, or what does TeX Live produce that Ratex does not?
+      description: What went wrong, or what does TeX Live produce that TeXres does not?
       placeholder: Error message or unexpected output
     validations:
       required: false

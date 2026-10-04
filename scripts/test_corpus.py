@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare unchanged projects using the public Ratex and system latexmk drivers.
+"""Compare unchanged projects using the public TeXres and system latexmk drivers.
 
 Campaign mode (default) gives each driver a fresh source copy, home and cache.
 The drivers own pass convergence and bibliography processing; their actual
@@ -13,7 +13,7 @@ The explicit legacy single-pass mode invokes engines once, without bibliography
 processing, and is diagnostic only.
 
 Examples:
-  scripts/test_corpus.py --rust target/release/ratex --corpus-only
+  scripts/test_corpus.py --rust target/release/texres --corpus-only
   scripts/test_corpus.py --engine ref --sys-latexmk /usr/bin/latexmk --only id1,id2
   scripts/test_corpus.py --retain all --keep-work --output output/corpus
 """
@@ -88,12 +88,12 @@ REFERENCE_SYSTEM_PATH = os.pathsep.join(
 
 
 
-def is_ratex_cli(bin_path: str | Path | None) -> bool:
-    """Return True if bin_path is the Ratex driver executable (ratex or texmk)."""
+def is_texres_cli(bin_path: str | Path | None) -> bool:
+    """Return True if bin_path is the TeXres driver executable (texres or texmk)."""
     if not bin_path:
         return False
     stem = Path(bin_path).stem.lower()
-    return stem in ("ratex", "texmk", "latexmk") or stem.startswith("ratex")
+    return stem in ("texres", "texmk", "latexmk") or stem.startswith("texres")
 
 def validate_artifact_id(aid: object) -> str:
     """Return a path-safe project identifier or raise ``ValueError``."""
@@ -469,7 +469,7 @@ def compile_engine(engine: str, bin_path: str, ws: Path, tex_rel: Path,
     work_dir = ws / tex_rel.parent
     cap_path = idir / f"{engine}.stdout.log"
 
-    if engine == "rust" and is_ratex_cli(bin_path):
+    if engine == "rust" and is_texres_cli(bin_path):
         flags = ("-1", "-interaction=nonstopmode", "-halt-on-error", "-no-shell-escape")
     elif engine == "rust":
         flags = ("-interaction=nonstopmode", "-halt-on-error", "-no-shell-escape")
@@ -957,7 +957,7 @@ FONTSPEC_RE = re.compile(
     r"\\(?:usepackage|RequirePackage)(?:\[[^\]]*\])?\{[^}]*\b(?:fontspec|xeCJK|xunicode|unicode-math|bxjsarticle|bxjsbook|zxjatype|xecyr|xltxtra|polyglossia|bidi)\b[^}]*\}",
     re.DOTALL,
 )
-# ctex (package or class) needs a Unicode engine; `ratex` and texmk route it to
+# ctex (package or class) needs a Unicode engine; `texres` and texmk route it to
 # XeTeX, so the reference runs xelatex as well.
 CTEX_RE = re.compile(
     r"\\(?:usepackage|RequirePackage|documentclass)(?:\[[^\]]*\])?\{(?:[^},]*,)*\s*(?:ctex|ctexart|ctexbook|ctexrep|ctexbeamer)\s*(?:,[^}]*)?\}",
@@ -1499,7 +1499,7 @@ def compile_campaign_rust(
     mem_limit_mib: int = DEFAULT_MEM_LIMIT_MIB,
     max_capture_bytes: int = DEFAULT_MAX_CAPTURE_BYTES,
 ) -> dict:
-    """Run public Ratex driver (not Ratex -1) with full convergence and EPS preprocessing."""
+    """Run public TeXres driver (not TeXres -1) with full convergence and EPS preprocessing."""
     work_dir = ws_rust / tex_rel.parent
     job = tex_rel.stem
     bbl_is_source = (work_dir / f"{job}.bbl").is_file()
@@ -1604,7 +1604,7 @@ def compile_campaign_rust(
 
     rec = {
         "engine": "rust",
-        "driver": "ratex",
+        "driver": "texres",
         "bin": str(rust_bin),
         "ref_engine": ref_engine,
         "status": status,
@@ -1889,7 +1889,7 @@ def process_campaign_project(entry: dict, out_root: Path, cfg: dict) -> dict:
             )
         else:
             rust = {
-                "engine": "rust", "driver": "ratex", "status": "skipped",
+                "engine": "rust", "driver": "texres", "status": "skipped",
                 "failure_kind": "skipped", "converged": True, "pdf_valid": False,
                 "pages": None, "pdf": None, "exit": 0, "errors": [],
                 "time_ms": 0.0, "passes": 0, "font_embedding_errors": [],
@@ -2467,8 +2467,8 @@ def run_campaign(args) -> int:
     if not Path(rust_bin).is_file() and args.engine != "ref":
         print(f"Error: rust binary not found: {rust_bin}", file=sys.stderr)
         return 1
-    if args.engine != "ref" and not is_ratex_cli(rust_bin):
-        print("Error: campaign mode requires the ratex or texmk driver; "
+    if args.engine != "ref" and not is_texres_cli(rust_bin):
+        print("Error: campaign mode requires the texres or texmk driver; "
               "use --mode single-pass for raw engines", file=sys.stderr)
         return 1
     sys_latexmk = os.path.abspath(str(args.sys_latexmk)) if args.sys_latexmk else (shutil.which("latexmk") or "/usr/bin/latexmk")
@@ -2486,7 +2486,7 @@ def run_campaign(args) -> int:
             # missing reference engine: retained blocker for affected docs
             print(f"CAMPAIGN: reference engine missing: {engine} -> {ap_}",
                   file=sys.stderr)
-    rust_bibtex = rust_bin if is_ratex_cli(rust_bin) else None
+    rust_bibtex = rust_bin if is_texres_cli(rust_bin) else None
     rust_env, ref_env, removed_diag, overlay_vars = campaign_environments(args.overlay)
     if args.overlay and not Path(args.overlay).is_dir():
         print(f"CAMPAIGN: WARNING: overlay dir missing: {args.overlay}; "
@@ -2595,7 +2595,7 @@ def run_campaign(args) -> int:
         apply_artifact_retention(resumed, args.output, cfg)
         atomic_write_json(ckpt_dir / f"{resumed['id']}.json", resumed)
     meta = {
-        "notice": f"CONVERGED CAMPAIGN: real latexmk reference vs public Ratex driver; "
+        "notice": f"CONVERGED CAMPAIGN: real latexmk reference vs public TeXres driver; "
                   f"gate = exact RGB parity @{args.dpi:g}dpi, every page >= {args.page_min}%, doc "
                   f">= {args.doc_min}%, identical geometry/page counts.",
         "sys_latexmk": sys_latexmk,
@@ -2774,7 +2774,7 @@ def run_campaign(args) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Corpus/parity harness: Rust ratex/pdflatex vs system engines. "
+        description="Corpus/parity harness: Rust texres/pdflatex vs system engines. "
                     "Default --mode campaign = converged exact 150dpi RGB parity gate; "
                     "--mode single-pass = legacy one-invocation 72dpi diagnostic.")
     ap.add_argument("--mode", choices=("campaign", "single-pass"),
@@ -2785,8 +2785,8 @@ def main() -> int:
                     default=Path("corpus/standalone-1000") if Path("corpus/standalone-1000/manifest.json").is_file() else Path("corpus"),
                     help="Corpus directory root (default: corpus/standalone-1000 or corpus)")
     ap.add_argument("--rust", type=Path,
-                    default=Path("target/release/ratex"),
-                    help="Rust ratex driver (default: target/release/ratex); raw engines require --mode single-pass")
+                    default=Path("target/release/texres"),
+                    help="Rust texres driver (default: target/release/texres); raw engines require --mode single-pass")
     ap.add_argument("--sys", type=Path, default=Path("/usr/bin/pdflatex"),
                     help="Reference system pdflatex")
     ap.add_argument("--sys-xelatex", type=Path, default=Path("/usr/bin/xelatex"),
@@ -2798,7 +2798,7 @@ def main() -> int:
                     default=Path("/usr/bin/latexmk") if Path("/usr/bin/latexmk").is_file() else Path(shutil.which("latexmk") or "latexmk"),
                     help="Reference system latexmk driver (default: /usr/bin/latexmk)")
     ap.add_argument("--engine", choices=("both", "ref", "rust"), default="both",
-                    help="Which engine(s) to compile: both (default, full parity comparison), ref (reference latexmk only), rust (Ratex driver only)")
+                    help="Which engine(s) to compile: both (default, full parity comparison), ref (reference latexmk only), rust (TeXres driver only)")
     ap.add_argument("--no-sandbox", action="store_true",
                     help="Disable bwrap sandbox isolation for reference latexmk")
     ap.add_argument("--overlay", type=Path,

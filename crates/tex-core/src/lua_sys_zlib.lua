@@ -1,5 +1,5 @@
 -- zlib (lzlib 0.4), gzip (lgzip) and zip (LuaZip 1.2.2) as exported by LuaTeX.
-local S = __ratex_sys
+local S = __texres_sys
 local type, tostring, error, select, setmetatable, getmetatable, pcall =
   type, tostring, error, select, setmetatable, getmetatable, pcall
 local format = string.format

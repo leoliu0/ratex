@@ -1,10 +1,10 @@
-; Inno Setup script for ratex (TeX engine & toolchain) on Windows
-#define MyAppName "ratex"
+; Inno Setup script for texres (TeX engine & toolchain) on Windows
+#define MyAppName "texres"
 #ifndef MyAppVersion
-#define MyAppVersion "0.5.2"
+#define MyAppVersion "0.6.0"
 #endif
 #define MyAppPublisher "Leo Liu"
-#define MyAppURL "https://github.com/leoliu0/ratex"
+#define MyAppURL "https://github.com/leoliu0/texres"
 
 [Setup]
 AppId={{D82496E3-4E86-4F58-A81E-2B60773E92B1}
@@ -14,11 +14,11 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
-DefaultDirName={autopf}\ratex
+DefaultDirName={autopf}\texres
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 LicenseFile=..\..\LICENSE-MIT
-OutputBaseFilename=ratex-setup-v{#MyAppVersion}-windows-x64
+OutputBaseFilename=texres-setup-v{#MyAppVersion}-windows-x64
 OutputDir=..\..\dist
 Compression=lzma2/ultra64
 SolidCompression=yes
@@ -31,11 +31,11 @@ ChangesEnvironment=yes
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-Name: "envPath"; Description: "Add ratex to environment PATH (recommended)"; GroupDescription: "System Integration:"
+Name: "envPath"; Description: "Add texres to environment PATH (recommended)"; GroupDescription: "System Integration:"
 [Files]
 
 ; Core binary
-Source: "..\..\dist\tex-suite-windows-x86_64\bin\ratex.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
+Source: "..\..\dist\tex-suite-windows-x86_64\bin\texres.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
 
 ; Runtime assets
 Source: "..\..\dist\tex-suite-windows-x86_64\share\tex-suite\*"; DestDir: "{app}\share\tex-suite"; Flags: ignoreversion recursesubdirs createallsubdirs

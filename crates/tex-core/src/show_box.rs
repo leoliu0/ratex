@@ -79,7 +79,7 @@ pub(crate) struct BoxDisplay<'a> {
     always_nl: bool,
 }
 
-/// Ratex-internal bookkeeping nodes that tex.web lists do not contain.
+/// TeXres-internal bookkeeping nodes that tex.web lists do not contain.
 fn invisible(n: &Node) -> bool {
     matches!(
         n,
@@ -302,7 +302,7 @@ impl<'a> BoxDisplay<'a> {
         self.out.push(b'}');
     }
 
-    /// print_mark for data Ratex keeps as text rather than tokens.
+    /// print_mark for data TeXres keeps as text rather than tokens.
     fn print_text_mark(&mut self, text: &str) {
         self.out.push(b'{');
         let bytes = &*crate::tex_bytes::text_to_bytes(text);
@@ -1331,7 +1331,7 @@ impl Engine {
         }
         let display = d.take_text();
         // print_ln; the header goes to the transcript; the terminal follows
-        // Ratex's structured-warning policy for box reports
+        // TeXres's structured-warning policy for box reports
         self.tex_print_ln(false, true);
         self.print_display(false, true, head);
         self.emit_box_diagnostic_inline(display);

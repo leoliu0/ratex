@@ -1,10 +1,10 @@
 # Maintainer: Leo Liu <leoliu0@users.noreply.github.com>
-pkgname=ratex-bin
+pkgname=texres-bin
 pkgver=0.5.0
 pkgrel=1
 pkgdesc="Ultra-fast, pure-Rust TeX engine and complete self-contained typesetting suite"
 arch=('x86_64')
-url="https://github.com/leoliu0/ratex"
+url="https://github.com/leoliu0/texres"
 license=(
     'MIT'
     'Apache-2.0'
@@ -20,15 +20,16 @@ license=(
     'custom:bundled-fonts'
 )
 depends=('glibc' 'gcc-libs')
-provides=('ratex')
-conflicts=('ratex')
+provides=('texres')
+conflicts=('texres' 'ratex' 'ratex-bin')
+replaces=('ratex-bin')
 options=('!strip' '!debug')
-source_x86_64=("${pkgname}-${pkgver}.tar.gz::https://github.com/leoliu0/ratex/releases/download/v${pkgver}/tex-suite-v${pkgver}-linux-x86_64.tar.gz")
+source_x86_64=("${pkgname}-${pkgver}.tar.gz::https://github.com/leoliu0/texres/releases/download/v${pkgver}/tex-suite-v${pkgver}-linux-x86_64.tar.gz")
 sha256sums_x86_64=('198ab905afc4eae8153993761526b70487909077e8b9c1e9f59f682376fbc0a3')
 
 package() {
     cd "$srcdir/tex-suite-linux-x86_64"
-    install -Dm755 bin/ratex "$pkgdir/usr/bin/ratex"
+    install -Dm755 bin/texres "$pkgdir/usr/bin/texres"
     local font_doc="share/tex-suite/texmf/doc/fonts"
     if [ ! -f "$font_doc/NOTICES-FONTS.txt" ] || \
        [ ! -f "$font_doc/sources.tar.zst" ] || \

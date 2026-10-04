@@ -411,7 +411,7 @@ fn code_char(c: i64, what: &str) -> Result<u32, String> {
         .ok_or_else(|| format!("incorrect character value {c} for tex.{what}()"))
 }
 
-/// Install the natives into the table `__ratex_texlib`.
+/// Install the natives into the table `__texres_texlib`.
 pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
     let t: LuaTable = lua.create_table().map_err(|e| format!("{e:?}"))?;
 
@@ -662,9 +662,9 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
     });
 
     crate::lua_texnodes::install(lua, &t)?;
-    lua.set_global("__ratex_texlib", t).map_err(|e| format!("{e:?}"))?;
+    lua.set_global("__texres_texlib", t).map_err(|e| format!("{e:?}"))?;
     lua.load(include_str!("lua_tex.lua"))
-        .set_name("=[ratex tex]")
+        .set_name("=[texres tex]")
         .exec()
         .map_err(|e| format!("tex library: {}", lua.get_error_message(e).message()))?;
     crate::lua_pdf::install(lua)?;

@@ -1467,8 +1467,8 @@ impl Engine {
 
 /// The Lua source of the library; `B` holds the native helpers.
 const FONT_PRELUDE: &str = r##"
-local B = __ratex_font_bridge
-__ratex_font_bridge = nil
+local B = __texres_font_bridge
+__texres_font_bridge = nil
 local cache = {}
 local type, rawget, error, select, setmetatable = type, rawget, error, select, setmetatable
 
@@ -1826,7 +1826,7 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
     });
 
     install_vf(lua)?;
-    lua.set_global("__ratex_font_bridge", b).map_err(|e| format!("{e:?}"))?;
+    lua.set_global("__texres_font_bridge", b).map_err(|e| format!("{e:?}"))?;
     let cache: LuaTable = lua
         .load(FONT_PRELUDE)
         .call(())

@@ -411,7 +411,7 @@ fn utility_primitives_use_their_xetex_names() {
 \show{\the\randomseed:\uniformdeviate 100,\uniformdeviate 100,\uniformdeviate 1000,\normaldeviate}
 \setrandomseed 42
 \show{\uniformdeviate 100,\uniformdeviate 100}
-\show{\ifdefined\pdfstrcmp Y\else N\fi\ifdefined\pdfoutput Y\else N\fi\ifdefined\RatexUnicodeVersion Y\else N\fi\ifdefined\efcode Y\else N\fi}
+\show{\ifdefined\pdfstrcmp Y\else N\fi\ifdefined\pdfoutput Y\else N\fi\ifdefined\TeXresUnicodeVersion Y\else N\fi\ifdefined\efcode Y\else N\fi}
 \resettimer \show{\ifnum\elapsedtime<2000 Y\else N\fi}
 \let\myrelax\relax \def\xx{}
 \show{\ifprimitive\relax Y\else N\fi,\ifprimitive\myrelax Y\else N\fi,\ifprimitive\xx Y\else N\fi,\ifprimitive\strcmp Y\else N\fi,\ifprimitive\undefinedcs Y\else N\fi}

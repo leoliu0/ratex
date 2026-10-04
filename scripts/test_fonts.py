@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Ratex Font Verification & Isolation Test Harness.
+TeXres Font Verification & Isolation Test Harness.
 
 Executes and verifies font embedding, text extraction, glyph rendering,
 and engine isolation across reported font issues (#3, #4, #5, #6, #8),
@@ -17,7 +17,7 @@ Enforces:
   6. Bounded capture artifact retention.
 
 Usage:
-  scripts/test_fonts.py --ratex PATH --output DIR [OPTIONS]
+  scripts/test_fonts.py --texres PATH --output DIR [OPTIONS]
 """
 
 from __future__ import annotations
@@ -82,7 +82,7 @@ def text_difference_context(actual: str, reference: str) -> str:
     end = index + 160
     return (
         f"normalized character {index}: "
-        f"Ratex={actual[start:end]!r}; reference={reference[start:end]!r}"
+        f"TeXres={actual[start:end]!r}; reference={reference[start:end]!r}"
     )
 
 try:
@@ -1277,7 +1277,7 @@ def validate_pdf_font_embedding(pdf_path: Path, case: dict[str, Any]) -> list[st
 class FontTestHarness:
     def __init__(self, args: argparse.Namespace):
         self.args = args
-        self.ratex_path = Path(args.ratex).resolve()
+        self.texres_path = Path(args.texres).resolve()
         self.output_dir = Path(args.output).resolve()
         self.manifest_path = Path(
             args.manifest or (Path(__file__).resolve().parent / "fixtures" / "fonts" / "manifest.json")
@@ -1285,8 +1285,8 @@ class FontTestHarness:
         self.bwrap_info = probe_bwrap()
         self.pdfjs_info = probe_pdfjs()
         self.isolated_bin_path: Path | None = None
-        self.ratex_sha256: str = ""
-        self.ratex_version: str = ""
+        self.texres_sha256: str = ""
+        self.texres_version: str = ""
         self.ref_fonts_conf: Path | None = None
         self.extra_tds_roots: list[str] = []
         self.reference_info: dict[str, Any] = {}
@@ -1325,7 +1325,7 @@ class FontTestHarness:
             "tex/latex/ctex/ctexhook.sty",
             "tex/latex/ctex/ctexpatch.sty",
         }
-        with tempfile.TemporaryDirectory(prefix="ratex-ref-fonts-") as scratch:
+        with tempfile.TemporaryDirectory(prefix="texres-ref-fonts-") as scratch:
             archive_path = Path(scratch) / "packages.tar.zst"
             reconstruct_archive(assets_dir, archive_path, lock_path)
             if sha256_file(archive_path) != lock["output_archive"]["sha256"]:
@@ -1405,33 +1405,33 @@ class FontTestHarness:
 
 
     def setup(self) -> None:
-        if not self.ratex_path.is_file():
-            raise FileNotFoundError(f"Ratex binary not found at {self.ratex_path}")
+        if not self.texres_path.is_file():
+            raise FileNotFoundError(f"TeXres binary not found at {self.texres_path}")
         if not self.manifest_path.is_file():
             raise FileNotFoundError(f"Manifest not found at {self.manifest_path}")
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.ratex_sha256 = sha256_file(self.ratex_path)
+        self.texres_sha256 = sha256_file(self.texres_path)
 
         # Query version
         try:
             v_proc = subprocess.run(
-                [str(self.ratex_path), "--version"],
+                [str(self.texres_path), "--version"],
                 capture_output=True,
                 encoding="utf-8",
                 errors="replace",
                 timeout=5,
                 check=False,
             )
-            self.ratex_version = (v_proc.stdout.strip() or v_proc.stderr.strip()).splitlines()[0]
+            self.texres_version = (v_proc.stdout.strip() or v_proc.stderr.strip()).splitlines()[0]
         except Exception as e:
-            self.ratex_version = f"unknown: {e}"
+            self.texres_version = f"unknown: {e}"
 
         # Setup isolated binary copy
         iso_bin_dir = self.output_dir / "isolated_bin"
         iso_bin_dir.mkdir(parents=True, exist_ok=True)
-        self.isolated_bin_path = iso_bin_dir / "ratex"
-        shutil.copy2(self.ratex_path, self.isolated_bin_path)
+        self.isolated_bin_path = iso_bin_dir / "texres"
+        shutil.copy2(self.texres_path, self.isolated_bin_path)
         os.chmod(self.isolated_bin_path, 0o755)
 
         # Setup reference environment
@@ -1468,7 +1468,7 @@ class FontTestHarness:
         if sys.platform != "linux" or not self.bwrap_info["available"]:
             return {"verified": False, "reason": "bwrap not available"}
 
-        sentinel_dir = Path(tempfile.mkdtemp(prefix="ratex-external-resources-"))
+        sentinel_dir = Path(tempfile.mkdtemp(prefix="texres-external-resources-"))
         sentinel_file = sentinel_dir / "forbidden_external_font.ttf"
         sentinel_package = sentinel_dir / "forbidden_external_package.sty"
 
@@ -1491,7 +1491,7 @@ class FontTestHarness:
             "--",
             "/bin/sh", "-c",
             'test ! -e "$1" && test ! -e "$2"',
-            "ratex-sentinel-check", str(sentinel_file), str(sentinel_package),
+            "texres-sentinel-check", str(sentinel_file), str(sentinel_package),
         ]
         try:
             fixture = Path(__file__).resolve().parent / "fixtures/fonts/cache_invalidation/dynamic.ttf"
@@ -1584,12 +1584,12 @@ class FontTestHarness:
             input_name = Path(relative).name
             if reference:
                 source = self.output_dir / "ref_env" / "texmf" / relative
-                target = work_dir / f"ratex-{input_name}"
+                target = work_dir / f"texres-{input_name}"
                 shutil.copyfile(source, target)
                 input_name = target.name
-            # Ratex resolves these names from its self-contained locked payload.
+            # TeXres resolves these names from its self-contained locked payload.
             mapping_inputs.append(f"\\input{{{input_name}}}\n")
-        wrapper = work_dir / "ratex-lua-font-profile.tex"
+        wrapper = work_dir / "texres-lua-font-profile.tex"
         wrapper.write_text(
             "\\protected\\def\\pdfglyphtounicode{\\pdfextension glyphtounicode}\n"
             + "".join(mapping_inputs)
@@ -1606,7 +1606,7 @@ class FontTestHarness:
         work_dir: Path,
         copy_case: bool = True,
     ) -> dict[str, Any]:
-        """Compile a fixture with the isolated Ratex binary."""
+        """Compile a fixture with the isolated TeXres binary."""
         if copy_case:
             shutil.copytree(case_dir, work_dir, dirs_exist_ok=True)
         home_dir = work_dir / ".home"
@@ -2047,12 +2047,12 @@ class FontTestHarness:
                 "comparison": {"compared": False},
             }
 
-        # Standard compilation with Rust Ratex
+        # Standard compilation with Rust TeXres
         rust_res = self.run_case_rust(case, case_dir, rust_work, copy_case=True)
         if rust_res["exit_code"] != 0:
-            reasons.append(f"Ratex compilation failed (exit code {rust_res['exit_code']})")
+            reasons.append(f"TeXres compilation failed (exit code {rust_res['exit_code']})")
         if not rust_res["pdf_valid"]:
-            reasons.append("Ratex did not produce a valid PDF")
+            reasons.append("TeXres did not produce a valid PDF")
 
         # TeX Live's own diagnostics that a successful run must also print
         # (e.g. XeTeX's "Missing character" warning).
@@ -2062,7 +2062,7 @@ class FontTestHarness:
             run_output += transcript.read_text(encoding="utf-8", errors="replace")
         for expected in case.get("expected_output_substrings", []):
             if expected not in run_output:
-                reasons.append(f"Expected diagnostic '{expected}' not found in Ratex output")
+                reasons.append(f"Expected diagnostic '{expected}' not found in TeXres output")
 
         rust_fonts: list[dict[str, Any]] = []
         missing_embeddings: list[str] = []
@@ -2274,9 +2274,9 @@ class FontTestHarness:
             report = {
                 "ok": False,
                 "executable": {
-                    "path": str(self.ratex_path),
-                    "sha256": self.ratex_sha256,
-                    "version": self.ratex_version,
+                    "path": str(self.texres_path),
+                    "sha256": self.texres_sha256,
+                    "version": self.texres_version,
                 },
                 "isolation": isolation_info,
                 "error": "Required isolation unavailable or sentinel verification failed",
@@ -2294,9 +2294,9 @@ class FontTestHarness:
             report = {
                 "ok": False,
                 "executable": {
-                    "path": str(self.ratex_path),
-                    "sha256": self.ratex_sha256,
-                    "version": self.ratex_version,
+                    "path": str(self.texres_path),
+                    "sha256": self.texres_sha256,
+                    "version": self.texres_version,
                 },
                 "isolation": isolation_info,
                 "pdfjs": self.pdfjs_info,
@@ -2312,9 +2312,9 @@ class FontTestHarness:
         t0 = time.perf_counter()
         results: dict[str, Any] = {}
 
-        print(f"=== Ratex Font Verification Suite ===")
-        print(f"Ratex:      {self.ratex_path} (sha256: {self.ratex_sha256[:12]}...)")
-        print(f"Version:    {self.ratex_version}")
+        print(f"=== TeXres Font Verification Suite ===")
+        print(f"TeXres:      {self.texres_path} (sha256: {self.texres_sha256[:12]}...)")
+        print(f"Version:    {self.texres_version}")
         print(f"Isolation:  {isolation_info['type']} (sandboxed: {isolation_info['sandboxed']})")
         if isolation_info.get("sandboxed"):
             print(f"Sentinel:   {'BLOCKED (verified)' if isolation_info.get('sentinel_verified') else 'FAILED'}")
@@ -2380,9 +2380,9 @@ class FontTestHarness:
         report = {
             "ok": overall_ok,
             "executable": {
-                "path": str(self.ratex_path),
-                "sha256": self.ratex_sha256,
-                "version": self.ratex_version,
+                "path": str(self.texres_path),
+                "sha256": self.texres_sha256,
+                "version": self.texres_version,
             },
             "isolation": isolation_info,
             "pdfjs": self.pdfjs_info,
@@ -2419,8 +2419,8 @@ class FontTestHarness:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Ratex font verification harness")
-    parser.add_argument("--ratex", type=Path, required=True, help="Path to ratex binary")
+    parser = argparse.ArgumentParser(description="TeXres font verification harness")
+    parser.add_argument("--texres", type=Path, required=True, help="Path to texres binary")
     parser.add_argument("--output", type=Path, required=True, help="Output directory")
     parser.add_argument("--case", type=str, action="append", help="Specific case(s) to run")
     parser.add_argument("--engine", action="append", choices=("pdflatex", "xelatex", "lualatex"),

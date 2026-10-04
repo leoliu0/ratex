@@ -6,7 +6,7 @@ Builds a reproducible bundled TEXMF package archive (`packages.tar.zst`),
 the corresponding source distribution archive (`sources.tar.zst`),
 and the authoritative machine-readable asset lock (`packages.lock.json`).
 
-Integrates complete offline font families and TeX resources into Ratex:
+Integrates complete offline font families and TeX resources into TeXres:
 - Latin Modern (Type 1 text & math, OpenType, metrics, maps)
 - CM-Super (Type 1 EC/LH/T2A/B/C/X2 outlines, encodings, maps)
 - LH Cyrillic (T2A, T2B metrics including larm1000, lbrm1000, and styles)
@@ -2428,12 +2428,12 @@ def sha256_file(filepath):
 def resolve_baseline_path(user_path):
     if user_path and os.path.exists(user_path):
         return user_path
-    for cand in ["/tmp/ratex-baseline/packages.tar.zst", "/tmp/ratex_baseline/packages.tar.zst"]:
+    for cand in ["/tmp/texres-baseline/packages.tar.zst", "/tmp/texres_baseline/packages.tar.zst"]:
         if os.path.exists(cand):
             return cand
     if user_path:
         return user_path
-    return "/tmp/ratex-baseline/packages.tar.zst"
+    return "/tmp/texres-baseline/packages.tar.zst"
 
 
 def build_source_archive(output_path, cache_dir):
@@ -2900,7 +2900,7 @@ def generate_language_dat(combined_dir):
                 )
 
     lines = [
-        "% Deterministically generated language.dat for Ratex",
+        "% Deterministically generated language.dat for TeXres",
         "% English default (language 0), authentic 8-bit pattern loaders, zero silent fallbacks",
         "",
     ]
@@ -3028,7 +3028,7 @@ def build_bundle(baseline_path, output_dir, lock_file_path, cache_dir, legal_dir
 
     print(f"  All {len(UPSTREAM_PACKAGES)-1} upstream package archives verified against cryptographic pins.")
 
-    scratch = tempfile.mkdtemp(prefix="ratex_bundle_")
+    scratch = tempfile.mkdtemp(prefix="texres_bundle_")
     baseline_dir = os.path.join(scratch, "baseline")
     combined_dir = os.path.join(scratch, "combined")
     os.makedirs(baseline_dir, exist_ok=True)
@@ -3374,7 +3374,7 @@ def build_bundle(baseline_path, output_dir, lock_file_path, cache_dir, legal_dir
                             upstream_added += 1
                         map_lines[tfm] = norm + "\n"
     with open(pdftex_map_path, "w") as f:
-        f.write("% Consolidated pdftex.map for ratex distribution\n")
+        f.write("% Consolidated pdftex.map for texres distribution\n")
         f.write("% Generated deterministically from declared family map roots\n")
         for tfm in sorted(map_lines.keys()):
             f.write(map_lines[tfm])
@@ -3503,10 +3503,10 @@ def build_bundle(baseline_path, output_dir, lock_file_path, cache_dir, legal_dir
 
     lock_data = {
         "version": 1,
-        "format": "ratex-packages-lock-v1",
+        "format": "texres-packages-lock-v1",
         "generated_at": "2024-01-01T00:00:00Z",
         "baseline_archive": {
-            "url": "https://github.com/leoliu0/ratex/releases/download/v0.3.0/ratex-v0.3.0.bundle",
+            "url": "https://github.com/leoliu0/texres/releases/download/v0.3.0/ratex-v0.3.0.bundle",
             "sha256": PINNED_BASELINE_SHA256,
             "size_bytes": baseline_size,
             "total_files": baseline_file_count,
@@ -3793,10 +3793,10 @@ def reconstruct_archive(assets_dir, output_path, lock_file_path=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Deterministic generator for Ratex packages archive, sources, and lock")
+    parser = argparse.ArgumentParser(description="Deterministic generator for TeXres packages archive, sources, and lock")
     parser.add_argument(
         "--baseline",
-        default="/tmp/ratex-baseline/packages.tar.zst",
+        default="/tmp/texres-baseline/packages.tar.zst",
         help="Path to baseline packages.tar.zst",
     )
     parser.add_argument(
@@ -3816,7 +3816,7 @@ def main():
     )
     parser.add_argument(
         "--cache-dir",
-        default="/tmp/ratex-upstream-cache",
+        default="/tmp/texres-upstream-cache",
         help="Cache directory for upstream archives",
     )
     parser.add_argument(

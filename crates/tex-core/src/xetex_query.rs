@@ -8,7 +8,7 @@
 //! `XeTeX_*_code` cases), XeTeX_ext.c (`otfontget*`, `getnativechar*`,
 //! `getglyphbounds`, `mapchartoglyph`, `getfontcharrange`) and
 //! XeTeXLayoutInterface.cpp (`countScripts`, `getIndLanguage`, ...).
-//! Ratex has no AAT renderer and no Graphite engine: `is_aat_font` is
+//! TeXres has no AAT renderer and no Graphite engine: `is_aat_font` is
 //! never true, and a Graphite font reports no Graphite features.
 
 use crate::engine::Engine;
@@ -294,7 +294,7 @@ impl Engine {
                     .map_or(0, |face| face.number_of_glyphs() as i32)
             }
             Prim::XeTeXCountFeatures => {
-                // Graphite features only; Ratex has no Graphite engine.
+                // Graphite features only; TeXres has no Graphite engine.
                 let _ = self.scan_font_id();
                 0
             }

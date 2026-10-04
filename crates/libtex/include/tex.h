@@ -1,5 +1,5 @@
-#ifndef RATEX_TEX_H
-#define RATEX_TEX_H
+#ifndef TEXRES_TEX_H
+#define TEXRES_TEX_H
 #include <stddef.h>
 #include <stdint.h>
 #ifdef __cplusplus

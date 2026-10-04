@@ -1,5 +1,5 @@
 -- LuaTeX library surface built on the engine bridge (crates/tex-core/src/lua_bridge.rs).
-local B = __ratex_bridge
+local B = __texres_bridge
 
 local type, select, rawget, setmetatable, getmetatable, tostring, load =
       type, select, rawget, setmetatable, getmetatable, tostring, load
@@ -30,8 +30,8 @@ function token.is_defined(name, exists)
   return B.is_defined(name, exists and true or false)
 end
 
-local command_names = __ratex_command_names
-__ratex_command_names = nil
+local command_names = __texres_command_names
+__texres_command_names = nil
 local command_ids = {}
 for i = 0, #command_names do command_ids[command_names[i]] = i end
 function token.commands()
@@ -361,7 +361,7 @@ setmetatable(tex, {
 
 local functions = {}
 function lua.get_functions_table() return functions end
-local function ratex_function(n)
+local function texres_function(n)
   local f = functions[n]
   if type(f) == "function" then return f end
   return nil
@@ -495,7 +495,7 @@ function callback.list()
   end
   return t
 end
-local function ratex_callback(name)
+local function texres_callback(name)
   local f = callbacks[callback_ids[name]]
   if type(f) == "function" then return f end
   return nil
@@ -505,7 +505,7 @@ end
 -- whatever the callback returned is kept by number and its `reader` and
 -- `close` functions are called with it as their argument.
 local readers, next_reader = {}, 1
-function __ratex_reader_open(name)
+function __texres_reader_open(name)
   local f = callbacks[callback_ids.open_read_file]
   if type(f) ~= "function" then return nil end
   local t = f(name)
@@ -515,14 +515,14 @@ function __ratex_reader_open(name)
   readers[id] = { t }
   return id
 end
-function __ratex_reader_call(id, key)
+function __texres_reader_call(id, key)
   local r = readers[id]
   local t = r and r[1]
   local f = type(t) == "table" and rawget(t, key)
   if type(f) ~= "function" then return nil end
   return f(t)
 end
-function __ratex_reader_free(id) readers[id] = nil end
+function __texres_reader_free(id) readers[id] = nil end
 
 -- luainit.c: package.searchers = { preload, kpse lua searcher }.
 local function preload_searcher(name)
@@ -554,4 +554,4 @@ local function kpse_lua_searcher(name)
   return f
 end
 package.searchers = { preload_searcher, kpse_lua_searcher }
-return ratex_function, ratex_callback
+return texres_function, texres_callback

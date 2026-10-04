@@ -485,7 +485,7 @@ pub fn run(args: &[String], version: &str) -> i32 {
         .unwrap_or_default();
 
     let mut e = Engine::new(min_crossrefs, verbose, top_dir);
-    let banner = format!("This is BibTeX, Version 0.99e (Ratex {version})\n");
+    let banner = format!("This is BibTeX, Version 0.99e (TeXres {version})\n");
     if verbose {
         e.log.print(banner);
         e.log.print(format!("The top-level auxiliary file: {aux_name}\n"));

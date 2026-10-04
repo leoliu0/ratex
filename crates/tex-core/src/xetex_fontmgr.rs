@@ -1,7 +1,7 @@
 //! `XeTeXFontMgr` (XeTeXFontMgr.cpp, XeTeXFontMgr_FC.cpp) over the embedded
 //! font index: installed-font name lookup with `/B`, `/I`, optical sizes.
 //!
-//! Ratex is hermetic: the "installed" fonts are the faces of the embedded
+//! TeXres is hermetic: the "installed" fonts are the faces of the embedded
 //! package archive (`tex_kpse::embedded_font_faces`), where TeX Live's
 //! fontconfig would see the system's fonts.
 

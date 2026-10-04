@@ -105,7 +105,7 @@ impl LuaEngine {
         // 14. the visible environment of a LuaTeX run
         self.lua
             .load(FINALIZE_ENVIRONMENT)
-            .set_name("=[ratex environment]")
+            .set_name("=[texres environment]")
             .exec()
             .map_err(|e| format!("environment: {}", self.lua.get_error_message(e).message()))?;
         Ok(())

@@ -1,4 +1,4 @@
-//! SVG image parser and rasterizer for Ratex.
+//! SVG image parser and rasterizer for TeXres.
 //!
 //! Parses SVG vector graphics (including viewBox, width/height, styling, paths)
 //! and rasterizes them to RGBA PNG streams in memory so \includegraphics can

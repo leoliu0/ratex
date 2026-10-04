@@ -369,7 +369,7 @@ fn copied_texmk_symlink_personalities_need_no_sibling_executables() {
         &standalone,
     );
     for alias in [
-        "ratex",
+        "texres",
         "pdflatex",
         "xelatex",
         "lualatex",
@@ -388,9 +388,9 @@ fn copied_texmk_symlink_personalities_need_no_sibling_executables() {
 
     // First line of `--version`, shaped like TeX Live 2026's `xetex --version`
     // ("XeTeX 3.141592653-2.6-0.999998 (TeX Live 2026)"): the engine
-    // personalities name their engine, the build driver names Ratex.
+    // personalities name their engine, the build driver names TeXres.
     for (alias, engine) in [
-        ("ratex", "Rust TeX engine"),
+        ("texres", "Rust TeX engine"),
         ("texmk", "Rust TeX engine"),
         ("pdflatex", "pdfTeX"),
         ("xelatex", "XeTeX 3.141592653-2.6-0.999998"),
@@ -406,8 +406,8 @@ fn copied_texmk_symlink_personalities_need_no_sibling_executables() {
         assert!(output.status.success(), "{alias} --version failed");
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
-            stdout.to_lowercase().contains("ratex"),
-            "alias {alias} did not identify Ratex engine: {stdout}"
+            stdout.to_lowercase().contains("texres"),
+            "alias {alias} did not identify TeXres engine: {stdout}"
         );
         assert!(
             stdout.contains(env!("CARGO_PKG_VERSION")),
@@ -490,20 +490,20 @@ fn texstudio_absolute_command_builds_beside_a_spaced_unicode_source() {
         std::env::temp_dir().join(format!("texmk-texstudio-{}-{nonce}", std::process::id())),
     );
     let prefix_bin = fixture.0.join("Homebrew Prefix/bin");
-    let alias_bin = fixture.0.join("ratex editor é/bin");
+    let alias_bin = fixture.0.join("texres editor é/bin");
     let project = fixture.0.join("My Thesis é");
     let gui_cwd = fixture.0.join("gui-cwd");
     let gui_path = fixture.0.join("gui-path");
     for directory in [&prefix_bin, &alias_bin, &project, &gui_cwd, &gui_path] {
         std::fs::create_dir_all(directory).unwrap();
     }
-    let ratex = prefix_bin.join("ratex");
+    let texres = prefix_bin.join("texres");
     support::copy_executable(
-        std::path::Path::new(env!("CARGO_BIN_EXE_ratex")),
-        &ratex,
+        std::path::Path::new(env!("CARGO_BIN_EXE_texres")),
+        &texres,
     );
     let latexmk = alias_bin.join("latexmk");
-    std::os::unix::fs::symlink(&ratex, &latexmk).unwrap();
+    std::os::unix::fs::symlink(&texres, &latexmk).unwrap();
 
     // A space in the file name itself exercises the quoted \jobname that
     // TeX Live produces, on top of the spaced directory.
@@ -516,13 +516,13 @@ fn texstudio_absolute_command_builds_beside_a_spaced_unicode_source() {
     let pdf = project.join("thèse main.pdf");
     let synctex = project.join("thèse main.synctex.gz");
 
-    for (personality, executable) in [("ratex", &ratex), ("latexmk", &latexmk)] {
+    for (personality, executable) in [("texres", &texres), ("latexmk", &latexmk)] {
         let _ = std::fs::remove_file(&pdf);
         let _ = std::fs::remove_file(&synctex);
         // TeXstudio passes these exact arguments, launches from its own cwd,
         // and a macOS GUI app does not inherit the Terminal PATH. An empty
         // PATH directory (rather than an unset PATH, which execvp replaces
-        // with /bin:/usr/bin) keeps an installed Ratex out of reach.
+        // with /bin:/usr/bin) keeps an installed TeXres out of reach.
         let output = Command::new(executable)
             .args(["-pdf", "-interaction=nonstopmode"])
             .arg(&source)
@@ -653,7 +653,7 @@ fn eps_figures_and_bibliographies_build_without_any_external_program() {
     )
     .unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_ratex"))
+    let output = Command::new(env!("CARGO_BIN_EXE_texres"))
         .arg("main.tex")
         .current_dir(&project)
         .env_clear()
@@ -771,7 +771,7 @@ fn edited_eps_figures_are_reconverted_and_symlink_cycles_terminate() {
     )
     .unwrap();
     let build = || {
-        let output = Command::new(env!("CARGO_BIN_EXE_ratex"))
+        let output = Command::new(env!("CARGO_BIN_EXE_texres"))
             .arg("main.tex")
             .current_dir(&project)
             .env("TEX_RS_CACHE_DIR", fixture.0.join("cache"))
@@ -801,7 +801,7 @@ fn edited_eps_figures_are_reconverted_and_symlink_cycles_terminate() {
     std::fs::write(project.join("figure.pdf"), b"user file").unwrap();
     std::thread::sleep(std::time::Duration::from_millis(20));
     std::fs::write(project.join("figure.eps"), eps(48)).unwrap();
-    let _ = Command::new(env!("CARGO_BIN_EXE_ratex"))
+    let _ = Command::new(env!("CARGO_BIN_EXE_texres"))
         .arg("main.tex")
         .current_dir(&project)
         .env("TEX_RS_CACHE_DIR", fixture.0.join("cache"))
@@ -897,7 +897,7 @@ fn recovered_tex_errors_publish_the_pdf_but_fail_the_build() {
         "\\documentclass{article}\n\\begin{document}\nText \\undefinedRecoveredCommand{} continues.\n\\end{document}\n",
     )
     .unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_ratex"))
+    let output = Command::new(env!("CARGO_BIN_EXE_texres"))
         .args(["-interaction=nonstopmode", "main.tex"])
         .current_dir(&project)
         .env("TEX_RS_CACHE_DIR", fixture.0.join("cache"))
@@ -936,7 +936,7 @@ fn bibtex_error_messages_with_a_complete_bbl_do_not_fail_the_build() {
         "\\documentclass{article}\n\\begin{document}\nSee~\\cite{knuth}.\n\\bibliographystyle{plain}\n\\bibliography{refs}\n\\end{document}\n",
     )
     .unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_ratex"))
+    let output = Command::new(env!("CARGO_BIN_EXE_texres"))
         .arg("main.tex")
         .current_dir(&project)
         .env("TEX_RS_CACHE_DIR", fixture.0.join("cache"))
@@ -2558,7 +2558,7 @@ A citation~\cite{sample}.
 }
 
 #[test]
-fn latexdiff_can_be_invoked_via_ratex_and_standalone() {
+fn latexdiff_can_be_invoked_via_texres_and_standalone() {
     let old_tex = "\\begin{document}\nFirst version.\n\\end{document}";
     let new_tex = "\\begin{document}\nSecond version.\n\\end{document}";
 
@@ -2581,8 +2581,8 @@ fn latexdiff_can_be_invoked_via_ratex_and_standalone() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("\\DIFdel") && stdout.contains("\\DIFadd"));
 
-    // ratex latexdiff ...
-    let output2 = Command::new(env!("CARGO_BIN_EXE_ratex"))
+    // texres latexdiff ...
+    let output2 = Command::new(env!("CARGO_BIN_EXE_texres"))
         .arg("latexdiff")
         .arg(&old_file)
         .arg(&new_file)
@@ -2607,7 +2607,7 @@ printf '%%PDF-1.4 /Type /Pages /Count 1 /Type /Page ' > "$out/$job.pdf"
     assert!(out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("2 Ratex pass(es)") || stderr.contains("2 pdflatex pass(es)"),
+        stderr.contains("2 TeXres pass(es)") || stderr.contains("2 pdflatex pass(es)"),
         "Expected 2 passes for cross-reference document, got: {stderr}"
     );
 }

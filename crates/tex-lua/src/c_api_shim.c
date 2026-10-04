@@ -32,7 +32,7 @@ typedef void *(*lua_Alloc)(
     size_t new_size
 );
 
-const char lua_ident[] = "$LuaVersion: Lua 5.3-compatible Ratex $";
+const char lua_ident[] = "$LuaVersion: Lua 5.3-compatible TeXres $";
 
 extern const char *lua_pushlstring(lua_State *, const char *, size_t);
 extern void lua_concat(lua_State *, int);

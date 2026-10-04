@@ -2,7 +2,7 @@
 
 Both interfaces compile a project entirely in memory using the bundled LaTeX
 format, packages and fonts. They run up to five TeX passes, with the same BibTeX
-engine used by `ratex`. PDF serialization includes fonts and images. No TeX Live
+engine used by `texres`. PDF serialization includes fonts and images. No TeX Live
 installation, subprocess, temporary document directory, or asset download is
 needed at runtime.
 

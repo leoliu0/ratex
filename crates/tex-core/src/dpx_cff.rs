@@ -1947,11 +1947,11 @@ mod tests {
 
     // ------------------------------------------------------------------------------------
     // Expectations below come from real xdvipdfmx 20260113 output: the `/CIDFontType0C` streams
-    // of the TeX Live reference PDFs in /tmp/ratex-issues/tl-cache/*-fc2/work/main.pdf. Tests
+    // of the TeX Live reference PDFs in /tmp/texres-issues/tl-cache/*-fc2/work/main.pdf. Tests
     // that need those assets (or the original font files) skip silently when they are absent.
     // ------------------------------------------------------------------------------------
 
-    const TL_CACHE: &str = "/tmp/ratex-issues/tl-cache";
+    const TL_CACHE: &str = "/tmp/texres-issues/tl-cache";
     const FONT_ROOT: &str = "/usr/share/texmf-dist/fonts/opentype/public";
 
     /// All Flate-decoded `/Subtype/CIDFontType0C` streams of a pdf written by xdvipdfmx.

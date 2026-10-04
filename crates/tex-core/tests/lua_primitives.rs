@@ -52,13 +52,13 @@ fn directlua_works_inside_edef() {
     run_tex(
         &mut e,
         r#"
-\edef\result{\directlua{tex.print(string.upper("ratex_lua"))}}
+\edef\result{\directlua{tex.print(string.upper("texres_lua"))}}
 \message{RESULT=\result}
 \end
 "#,
     );
     assert_eq!(e.error_count, 0, "errors: {:?}, term: {}", e.diagnostics, e.term);
-    assert!(e.term.contains("RESULT=RATEX_LUA"), "term: {}", e.term);
+    assert!(e.term.contains("RESULT=TEXRES_LUA"), "term: {}", e.term);
 }
 
 #[test]

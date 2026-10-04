@@ -1,4 +1,4 @@
-//! Built-in latexdiff algorithm and CLI wrapper for Ratex.
+//! Built-in latexdiff algorithm and CLI wrapper for TeXres.
 //!
 //! Computes token/word-level diffs between two LaTeX documents and marks additions
 //! and deletions with standard LaTeX diff markup (`\DIFadd{...}`, `\DIFdel{...}`).
@@ -205,10 +205,10 @@ pub fn diff_latex_tokens(old_tokens: &[DiffToken], new_tokens: &[DiffToken]) -> 
 /// Run latexdiff on two files, writing output or returning stdout string.
 pub fn run_latexdiff(old_path: &Path, new_path: &Path) -> Result<String, String> {
     // If system latexdiff is present, try it first for maximum LaTeX package macro coverage.
-    // Guard against re-invoking ourselves if ratex/latexdiff binary is on PATH.
-    if std::env::var("RATEX_LATEXDIFF_NESTED").is_err() {
+    // Guard against re-invoking ourselves if texres/latexdiff binary is on PATH.
+    if std::env::var("TEXRES_LATEXDIFF_NESTED").is_err() {
         if let Ok(output) = Command::new("latexdiff")
-            .env("RATEX_LATEXDIFF_NESTED", "1")
+            .env("TEXRES_LATEXDIFF_NESTED", "1")
             .arg(old_path)
             .arg(new_path)
             .output()
@@ -218,7 +218,7 @@ pub fn run_latexdiff(old_path: &Path, new_path: &Path) -> Result<String, String>
             }
         }
     }
-    // Fall back to native Ratex latexdiff algorithm
+    // Fall back to native TeXres latexdiff algorithm
     let old_src = fs::read_to_string(old_path)
         .map_err(|e| format!("Cannot read old file {}: {e}", old_path.display()))?;
     let new_src = fs::read_to_string(new_path)
@@ -229,17 +229,17 @@ pub fn run_latexdiff(old_path: &Path, new_path: &Path) -> Result<String, String>
     Ok(diff_latex_tokens(&old_tokens, &new_tokens))
 }
 
-/// CLI entry point for `ratex latexdiff old.tex new.tex [output.tex]`
+/// CLI entry point for `texres latexdiff old.tex new.tex [output.tex]`
 pub fn latexdiff_main(args: &[String]) -> i32 {
     if args
         .iter()
         .any(|a| matches!(a.as_str(), "-v" | "-version" | "--version"))
     {
-        println!("latexdiff (Ratex {})", env!("CARGO_PKG_VERSION"));
+        println!("latexdiff (TeXres {})", env!("CARGO_PKG_VERSION"));
         return 0;
     }
     if args.len() < 2 || args.iter().any(|a| a == "-h" || a == "--help") {
-        eprintln!("Usage: ratex latexdiff [OPTIONS] <old.tex> <new.tex> [output.tex]");
+        eprintln!("Usage: texres latexdiff [OPTIONS] <old.tex> <new.tex> [output.tex]");
         eprintln!("       latexdiff <old.tex> <new.tex> [output.tex]");
         eprintln!("\nComputes token-level visual diff with \\DIFadd and \\DIFdel markup.");
         return if args.iter().any(|a| a == "-h" || a == "--help") {

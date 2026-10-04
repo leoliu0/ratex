@@ -55,9 +55,9 @@ jobs:
         if: steps.extract.outputs.has_snippet == 'true'
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Build ratex
+      - name: Build texres
         if: steps.extract.outputs.has_snippet == 'true'
-        run: cargo build --release --locked --bin ratex
+        run: cargo build --release --locked --bin texres
 
       - name: Compile snippet as an unprivileged user
         if: steps.extract.outputs.has_snippet == 'true'
@@ -65,11 +65,11 @@ jobs:
           out="$RUNNER_TEMP/reproduction"
           sudo useradd --create-home --shell /usr/sbin/nologin texbot
           sudo install -d -o texbot -g texbot /home/texbot/work
-          sudo install -m 0755 target/release/ratex /home/texbot/ratex
+          sudo install -m 0755 target/release/texres /home/texbot/texres
           sudo install -m 0644 -o texbot -g texbot "$out/test.tex" /home/texbot/work/test.tex
           python3 scripts/issue_bot.py reproduce \
             --directory "$out" \
-            --binary /home/texbot/ratex \
+            --binary /home/texbot/texres \
             --work /home/texbot/work \
             --user texbot
 
@@ -136,8 +136,8 @@ jobs:
             const comments = await github.paginate(github.rest.issues.listComments, {...issue, per_page: 100});
             const previous = comments.reverse().find(comment =>
               comment.user.type === 'Bot' &&
-              (comment.body.includes('Ratex Bot Reproduction Report') ||
-               comment.body.includes('Ratex Bot Issue Review') ||
+              (comment.body.includes('TeXres Bot Reproduction Report') ||
+               comment.body.includes('TeXres Bot Issue Review') ||
                comment.body.includes('minimal self-contained `.tex` reproduction snippet')));
             const body = reply.body.slice(0, 65000);
             if (previous) {

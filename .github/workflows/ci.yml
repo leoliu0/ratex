@@ -72,7 +72,7 @@ jobs:
   memory-bounded-build:
     # Issue #16: `cargo install` (Homebrew on Linux, AUR) must fit a 2 GiB
     # machine at one build job. No cache on purpose: tex-kpse (embedded
-    # archive) and the ThinLTO link of ratex are the compiles under test.
+    # archive) and the ThinLTO link of texres are the compiles under test.
     name: Memory-bounded arm64 release build
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 120
@@ -80,11 +80,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: cargo install ratex under a 2 GiB no-swap ceiling at -j1, then smoke it
+      - name: cargo install texres under a 2 GiB no-swap ceiling at -j1, then smoke it
         run: scripts/memory_bounded_build.sh
         env:
-          RATEX_MEMORY_LIMIT: 2g
-          RATEX_BUILD_JOBS: 1
+          TEXRES_MEMORY_LIMIT: 2g
+          TEXRES_BUILD_JOBS: 1
 
   test:
     name: Test (${{ matrix.os }})
@@ -127,8 +127,8 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo clean --profile dev
 
-      - name: Build release ratex binary
-        run: cargo build --release --locked --bin ratex
+      - name: Build release texres binary
+        run: cargo build --release --locked --bin texres
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -196,7 +196,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           python3 scripts/test_fonts.py \
-            --ratex target/release/ratex \
+            --texres target/release/texres \
             --output target/font-evidence-full \
             --require-isolation \
             --require-pdfjs \
@@ -221,7 +221,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           python3 scripts/test_fonts.py \
-            --ratex target/release/ratex \
+            --texres target/release/texres \
             --output target/font-evidence-smoke \
             --require-pdfjs \
             --skip-reference \
@@ -264,7 +264,7 @@ jobs:
         shell: pwsh
         run: |
           python scripts/test_fonts.py `
-            --ratex target/release/ratex.exe `
+            --texres target/release/texres.exe `
             --output target/font-evidence-smoke `
             --require-pdfjs `
             --skip-reference `
@@ -311,10 +311,10 @@ jobs:
         run: |
           mkdir -p /tmp/ci-archive-test
           tar -xzf dist/tex-suite-*.tar.gz -C /tmp/ci-archive-test
-          EXTRACTED_RATEX=$(find /tmp/ci-archive-test -path '*/bin/ratex' -type f | head -n1)
-          "$EXTRACTED_RATEX" --version
+          EXTRACTED_TEXRES=$(find /tmp/ci-archive-test -path '*/bin/texres' -type f | head -n1)
+          "$EXTRACTED_TEXRES" --version
           python3 scripts/test_fonts.py \
-            --ratex "$EXTRACTED_RATEX" \
+            --texres "$EXTRACTED_TEXRES" \
             --output /tmp/font-smoke-archive \
             --require-pdfjs \
             --skip-reference
@@ -325,9 +325,9 @@ jobs:
         run: |
           mkdir -p /tmp/ci-install-test
           ./install.sh --prefix /tmp/ci-install-test --no-path --skip-verify
-          /tmp/ci-install-test/bin/ratex --version
+          /tmp/ci-install-test/bin/texres --version
           python3 scripts/test_fonts.py \
-            --ratex /tmp/ci-install-test/bin/ratex \
+            --texres /tmp/ci-install-test/bin/texres \
             --output /tmp/font-smoke-installed \
             --require-pdfjs \
             --skip-reference
@@ -350,10 +350,10 @@ jobs:
         run: |
           mkdir -p /tmp/ci-archive-test
           tar -xzf dist/tex-suite-*.tar.gz -C /tmp/ci-archive-test
-          EXTRACTED_RATEX=$(find /tmp/ci-archive-test -path '*/bin/ratex' -type f | head -n1)
-          "$EXTRACTED_RATEX" --version
+          EXTRACTED_TEXRES=$(find /tmp/ci-archive-test -path '*/bin/texres' -type f | head -n1)
+          "$EXTRACTED_TEXRES" --version
           python3 scripts/test_fonts.py \
-            --ratex "$EXTRACTED_RATEX" \
+            --texres "$EXTRACTED_TEXRES" \
             --output /tmp/font-smoke-archive \
             --require-pdfjs \
             --skip-reference
@@ -370,10 +370,10 @@ jobs:
           $archiveZip = (Get-Item dist/tex-suite-*.zip).FullName
           $testDir = "$env:RUNNER_TEMP\ci-archive-test"
           Expand-Archive -Path $archiveZip -DestinationPath $testDir
-          $extractedRatex = (Get-Item "$testDir\tex-suite-*\bin\ratex.exe").FullName
-          & $extractedRatex --version
+          $extractedTeXres = (Get-Item "$testDir\tex-suite-*\bin\texres.exe").FullName
+          & $extractedTeXres --version
           python scripts/test_fonts.py `
-            --ratex $extractedRatex `
+            --texres $extractedTeXres `
             --output "$env:RUNNER_TEMP\font-smoke-archive" `
             --require-pdfjs `
             --skip-reference
@@ -386,4 +386,4 @@ jobs:
         if: runner.os == 'Linux'
         env:
           TEX_RS_HERMETIC: "1"
-        run: python3 scripts/test_arxiv_ci.py --ratex target/release/ratex
+        run: python3 scripts/test_arxiv_ci.py --texres target/release/texres

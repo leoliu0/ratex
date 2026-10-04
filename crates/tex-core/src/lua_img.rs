@@ -182,9 +182,9 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
         })?
     });
 
-    lua.set_global("__ratex_imglib", t).map_err(|e| format!("{e:?}"))?;
+    lua.set_global("__texres_imglib", t).map_err(|e| format!("{e:?}"))?;
     lua.load(include_str!("lua_img.lua"))
-        .set_name("=[ratex img]")
+        .set_name("=[texres img]")
         .exec()
         .map_err(|e| format!("img library: {}", lua.get_error_message(e).message()))?;
     Ok(())

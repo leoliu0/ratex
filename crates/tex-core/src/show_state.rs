@@ -1,4 +1,4 @@
-//! Bookkeeping that only `\showlists` reads. Ratex builds math lists and
+//! Bookkeeping that only `\showlists` reads. TeXres builds math lists and
 //! alignments with Rust recursion and side tables where tex.web pushes
 //! semantic nest levels; these records say which levels tex.web would have
 //! had, so `show_activities` can print them (tex.web §218-§219).

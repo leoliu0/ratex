@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CI regression test: download and compile 10 diverse arXiv papers with ratex."""
+"""CI regression test: download and compile 10 diverse arXiv papers with texres."""
 
 import argparse
 import gzip
@@ -72,16 +72,16 @@ def download_and_extract(paper_id: str, dest_dir: Path) -> Path:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Test 10 arXiv papers with ratex in CI.")
-    parser.add_argument("--ratex", default="ratex", help="Path to ratex executable")
+    parser = argparse.ArgumentParser(description="Test 10 arXiv papers with texres in CI.")
+    parser.add_argument("--texres", default="texres", help="Path to texres executable")
     args = parser.parse_args()
 
-    bin_path = shutil.which(args.ratex) or args.ratex
-    ratex_bin = str(Path(bin_path).resolve())
-    print(f"==> Testing 10 real-world arXiv papers using: {ratex_bin}")
+    bin_path = shutil.which(args.texres) or args.texres
+    texres_bin = str(Path(bin_path).resolve())
+    print(f"==> Testing 10 real-world arXiv papers using: {texres_bin}")
     print("=" * 70)
 
-    work_dir = Path(tempfile.mkdtemp(prefix="ratex-arxiv-ci-"))
+    work_dir = Path(tempfile.mkdtemp(prefix="texres-arxiv-ci-"))
     passed = 0
     failed = []
 
@@ -92,7 +92,7 @@ def main():
             try:
                 main_tex = download_and_extract(paper_id, paper_dir)
                 compile_res = subprocess.run(
-                    [ratex_bin, "-silent", main_tex.name],
+                    [texres_bin, "-silent", main_tex.name],
                     cwd=paper_dir,
                     capture_output=True,
                     text=True,

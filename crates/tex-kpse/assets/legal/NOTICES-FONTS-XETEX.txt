@@ -1,4 +1,4 @@
-Ratex XeTeX supplement: font and package notices
+TeXres XeTeX supplement: font and package notices
 ================================================
 
 These OpenType fonts and XeTeX support files ship in packages-supplement.tar.zst

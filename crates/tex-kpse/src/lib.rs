@@ -833,9 +833,9 @@ impl Kpse {
 
     /// Build a resolver with an explicit local directory. `extra_roots` are
     /// TDS trees searched before the default roots (TEXMFLOCAL-style
-    /// precedence). `ratex` operates in strict hermetic mode: it resolves from
+    /// precedence). `texres` operates in strict hermetic mode: it resolves from
     /// project files and its own bundled installation assets (`share/tex-suite/texmf`
-    /// or `share/ratex/texmf`), with zero fallback to external TeX Live.
+    /// or `share/texres/texmf`), with zero fallback to external TeX Live.
     pub fn with_roots(cwd: &Path, extra_roots: &[&Path]) -> Self {
         if crate::fs::is_memory() {
             return Self::explicit(cwd, Vec::new());
@@ -843,9 +843,9 @@ impl Kpse {
         let mut roots: Vec<PathBuf> = extra_roots.iter().map(|p| p.to_path_buf()).collect();
 
         // Bundled installation roots: always discovered relative to the executable
-        // or through TEX_SUITE_DATA / RATEX_DATA_DIR.
+        // or through TEX_SUITE_DATA / TEXRES_DATA_DIR.
         if let Ok(data_dir) =
-            std::env::var("TEX_SUITE_DATA").or_else(|_| std::env::var("RATEX_DATA_DIR"))
+            std::env::var("TEX_SUITE_DATA").or_else(|_| std::env::var("TEXRES_DATA_DIR"))
         {
             let p = PathBuf::from(data_dir).join("texmf");
             if p.tex_is_dir() && !roots.iter().any(|r| r == &p) {
@@ -884,7 +884,7 @@ impl Kpse {
                     for cand in [
                         bin_dir.join("texmf"),
                         bin_dir.join("../share/tex-suite/texmf"),
-                        bin_dir.join("../share/ratex/texmf"),
+                        bin_dir.join("../share/texres/texmf"),
                         bin_dir.join("../share/texmf"),
                         bin_dir.join("../../texmf"),
                     ] {

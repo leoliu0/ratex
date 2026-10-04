@@ -2753,7 +2753,7 @@ fn web2c_command_line_options_are_accepted_or_clearly_rejected() {
     assert!(output.status.success(), "{}", failure_output(&output));
     assert!(text(&output.stdout).contains("RAN"));
     for (option, message) in [
-        ("-output-format=dvi", "Ratex writes PDF only"),
+        ("-output-format=dvi", "TeXres writes PDF only"),
         ("-enc", "-enc is not supported"),
         ("-mltex", "-mltex is not supported"),
     ] {

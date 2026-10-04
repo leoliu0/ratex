@@ -910,7 +910,7 @@ fn find_output_file_result_names_the_pdf() {
 /// luatex `zopen_w_input`: `find_format_file("fm1.fmt")` is asked for the
 /// format name; a string names the file, nil or false leave no format.
 /// The callback runs before any format exists, so it is tested through the
-/// engine entry point the format loader uses; the ratex command line has no
+/// engine entry point the format loader uses; the texres command line has no
 /// Lua initialization script (`--lua`) that could register it earlier.
 #[test]
 fn find_format_file_maps_results_like_luatex() {

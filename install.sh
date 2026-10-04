@@ -15,7 +15,7 @@ usage() {
     cat <<'EOF'
 Usage: ./install.sh [options]
 
-Cross-platform installer for ratex: ultra-fast, pure-Rust TeX engine
+Cross-platform installer for texres: ultra-fast, pure-Rust TeX engine
 and typesetting toolchain. Auto-dispatches to the native installer
 for Linux, macOS, and (via guidance) Windows.
 
@@ -36,7 +36,7 @@ Options (forwarded to the platform installer):
   --data-dir DIR   Override the runtime data directory
   --link           Symlink binaries into PREFIX/bin instead of copying
   --no-path        Do not edit shell profiles
-  --skip-verify    Skip the post-install ratex version check
+  --skip-verify    Skip the post-install texres version check
   --uninstall      Remove installed binaries, data dir, and profile block
   -h, --help       Show this help and exit
 

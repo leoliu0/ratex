@@ -1,6 +1,6 @@
-//! LuaTeX `mlist_to_hlist` (luatex `mlist.c`) over ratex's flat math lists.
+//! LuaTeX `mlist_to_hlist` (luatex `mlist.c`) over texres's flat math lists.
 //!
-//! The raw list ratex builds is decoded into noad slots (nucleus kind,
+//! The raw list texres builds is decoded into noad slots (nucleus kind,
 //! class, scripts), nested `\left...\right` groups become one inner noad
 //! whose sub-list starts and ends with fence noads, and the two passes of
 //! mlist.c then run on the slots. Only the LuaTeX engine comes through

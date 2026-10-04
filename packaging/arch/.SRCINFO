@@ -1,8 +1,8 @@
-pkgbase = ratex-bin
+pkgbase = texres-bin
 	pkgdesc = Ultra-fast, pure-Rust TeX engine and complete self-contained typesetting suite
 	pkgver = 0.5.0
 	pkgrel = 1
-	url = https://github.com/leoliu0/ratex
+	url = https://github.com/leoliu0/texres
 	arch = x86_64
 	license = MIT
 	license = Apache-2.0
@@ -18,11 +18,11 @@ pkgbase = ratex-bin
 	license = custom:bundled-fonts
 	depends = glibc
 	depends = gcc-libs
-	provides = ratex
-	conflicts = ratex
+	provides = texres
+	conflicts = texres
 	options = !strip
 	options = !debug
-	source_x86_64 = ratex-bin-0.5.0.tar.gz::https://github.com/leoliu0/ratex/releases/download/v0.5.0/tex-suite-v0.5.0-linux-x86_64.tar.gz
+	source_x86_64 = texres-bin-0.5.0.tar.gz::https://github.com/leoliu0/texres/releases/download/v0.5.0/tex-suite-v0.5.0-linux-x86_64.tar.gz
 	sha256sums_x86_64 = 198ab905afc4eae8153993761526b70487909077e8b9c1e9f59f682376fbc0a3
 
-pkgname = ratex-bin
+pkgname = texres-bin

@@ -135,7 +135,7 @@ fn numeric_conditional_keeps_operand_conditionals_nested() {
 
 #[test]
 fn pdffilesize_missing_is_empty() {
-    let tmp = std::env::temp_dir().join(format!("ratex-filesize-test-{}", std::process::id()));
+    let tmp = std::env::temp_dir().join(format!("texres-filesize-test-{}", std::process::id()));
     std::fs::write(&tmp, "hello world").unwrap();
     let tmp_path = tmp.to_string_lossy().replace('\\', "/");
     let mut e = boot();

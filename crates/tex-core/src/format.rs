@@ -32,7 +32,7 @@ use crate::tfm::{CharInfo, ExtRecipe, Font, LigStep};
 use crate::token::{CsTable, Token};
 
 const MAGIC: &[u8; 8] = b"RUSTEXFM";
-const VERSION: u16 = 24;
+const VERSION: u16 = 25;
 /// A production format is currently about 8 MiB decoded. Keep corrupt or
 /// unrelated external files from turning format probing into an unbounded
 /// allocation while leaving ample room for future format growth.
@@ -2150,7 +2150,7 @@ mod tests {
         eng.trie_for_language_mut(1)
             .add_pattern_bytes(&[0xe0, b'1', 0xe1, 0xe2, 0xe3]);
         let path = std::env::temp_dir().join(format!(
-            "ratex-language-roundtrip-{}.fmt",
+            "texres-language-roundtrip-{}.fmt",
             std::process::id()
         ));
         save_format(&eng, &path).unwrap();

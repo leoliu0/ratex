@@ -1,6 +1,6 @@
 -- LuaTeX's additions to os and io, and the security overlay that
 -- luatex-core.lua applies after initialization.
-local S = __ratex_sys
+local S = __texres_sys
 local type, tostring, error, select, pairs, next, pcall, rawget, getmetatable =
   type, tostring, error, select, pairs, next, pcall, rawget, getmetatable
 local format, gmatch, gsub, find = string.format, string.gmatch, string.gsub, string.find

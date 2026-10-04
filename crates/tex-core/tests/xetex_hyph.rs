@@ -140,7 +140,7 @@ fn format_keeps_patterns_exceptions_and_saved_codes() {
     let mut eng = boot();
     run(&mut eng, FORMAT_BUILD_SRC);
     assert_eq!(eng.error_count, 0, "{:?}", eng.diagnostics);
-    let path = std::env::temp_dir().join(format!("ratex-xetex-hyph-{}.fmt", std::process::id()));
+    let path = std::env::temp_dir().join(format!("texres-xetex-hyph-{}.fmt", std::process::id()));
     tex_core::format::save_format(&eng, &path).unwrap();
     let mut loaded = tex_core::format::load_format(&path).unwrap();
     std::fs::remove_file(&path).ok();

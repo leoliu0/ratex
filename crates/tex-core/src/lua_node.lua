@@ -1,10 +1,10 @@
 -- The public `node` and `node.direct` tables (lnodelib.c) over the natives of
 -- lua_node_lib.rs. The natives work on integer handles (the node.direct
 -- semantics); `node` is the same functions with userdata nodes.
-local N = __ratex_nodelib
-__ratex_nodelib = nil
-local D = __ratex_nodedata
-__ratex_nodedata = nil
+local N = __texres_nodelib
+__texres_nodelib = nil
+local D = __texres_nodedata
+__texres_nodedata = nil
 
 local type, rawget, rawset, setmetatable, next, select, error, pairs, tostring =
   type, rawget, rawset, setmetatable, next, select, error, pairs, tostring

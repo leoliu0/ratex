@@ -26,7 +26,7 @@ static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 fn run_fixture(name: &str) -> String {
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/lua_libfinal");
-    let base = std::env::temp_dir().join(format!("ratex-lua-libfinal-{}", std::process::id()));
+    let base = std::env::temp_dir().join(format!("texres-lua-libfinal-{}", std::process::id()));
     std::fs::create_dir_all(&base).unwrap();
     std::fs::copy(root.join("a.png"), base.join("a.png")).unwrap();
     let fixture = std::fs::read_to_string(root.join(format!("{name}.lua"))).unwrap();

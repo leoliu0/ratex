@@ -596,7 +596,7 @@ impl MpFigure {
             "%%HiResBoundingBox: {:.4} {:.4} {:.4} {:.4}",
             llx, lly, urx, ury
         );
-        let _ = writeln!(ps, "%%Creator: Ratex MetaPost 3.00");
+        let _ = writeln!(ps, "%%Creator: TeXres MetaPost 3.00");
         let _ = writeln!(ps, "%%EndComments");
         let _ = writeln!(ps, "gsave");
 

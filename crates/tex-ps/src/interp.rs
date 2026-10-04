@@ -185,7 +185,7 @@ known_names! {
     build_glyph = b"BuildGlyph",
     build_char = b"BuildChar",
     fid = b"FID",
-    base14 = b"RatexBase14",
+    base14 = b"TeXresBase14",
     paint_type = b"PaintType",
     errorname = b"errorname",
     command = b"command",
@@ -346,7 +346,7 @@ impl Interp {
         let errordict = PsDict::new();
         let statusdict = PsDict::new();
         let product = self.key_bytes(b"product");
-        statusdict.put(product, Value::String(PsString::new(b"Ratex".to_vec())));
+        statusdict.put(product, Value::String(PsString::new(b"TeXres".to_vec())));
         let handle_key = self.key_bytes(b"handleerror");
         let handle = self.systemdict.get(&handle_key).unwrap();
         errordict.put(handle_key, handle);
@@ -1556,7 +1556,7 @@ pub(crate) static OPERATORS: &[(&str, OpFn)] = ops! {
     },
     "null" => |i: &mut Interp| i.push(Value::Null),
     "version" => |i: &mut Interp| { let s = i.new_string(b"3010".to_vec())?; i.push(Value::String(s)) },
-    "product" => |i: &mut Interp| { let s = i.new_string(b"Ratex".to_vec())?; i.push(Value::String(s)) },
+    "product" => |i: &mut Interp| { let s = i.new_string(b"TeXres".to_vec())?; i.push(Value::String(s)) },
     "revision" => |i: &mut Interp| i.push(Value::Int(1)),
     "serialnumber" => |i: &mut Interp| i.push(Value::Int(0)),
     "realtime" => |i: &mut Interp| i.push(Value::Int(0)),

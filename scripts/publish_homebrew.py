@@ -8,7 +8,7 @@ import subprocess
 
 def main():
     release = json.loads(subprocess.check_output([
-        "gh", "release", "view", "--repo", "leoliu0/ratex",
+        "gh", "release", "view", "--repo", "leoliu0/texres",
         "--json", "tagName,isDraft,isPrerelease,assets",
     ], text=True))
     tag = release["tagName"]
@@ -23,12 +23,12 @@ def main():
         if asset["state"] != "uploaded" or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
             raise ValueError(f"Missing verified digest for {name}")
         blocks.append(f'''    if {condition}
-      url "https://github.com/leoliu0/ratex/releases/download/{tag}/{name}"
+      url "https://github.com/leoliu0/texres/releases/download/{tag}/{name}"
       sha256 "{digest[7:]}"
     end''')
-    formula = f'''class Ratex < Formula
+    formula = f'''class TeXres < Formula
   desc "Fast self-contained TeX engine written in Rust"
-  homepage "https://github.com/leoliu0/ratex"
+  homepage "https://github.com/leoliu0/texres"
   version "{tag[1:]}"
   license any_of: ["MIT", "Apache-2.0"]
 
@@ -39,12 +39,12 @@ def main():
   depends_on :macos
 
   def install
-    bin.install "bin/ratex"
+    bin.install "bin/texres"
     (share/"tex-suite").install Dir["share/tex-suite/*"]
   end
 
   test do
-    assert_match version.to_s, shell_output("#{{bin}}/ratex --version")
+    assert_match version.to_s, shell_output("#{{bin}}/texres --version")
     (testpath/"sample.tex").write <<~'LATEX'
       \\documentclass{{article}}
       \\usepackage{{hyperref}}
@@ -53,13 +53,13 @@ def main():
       See \\ref{{home}}.
       \\end{{document}}
     LATEX
-    system bin/"ratex", testpath/"sample.tex"
+    system bin/"texres", testpath/"sample.tex"
     assert_path_exists testpath/"sample.pdf"
     assert_path_exists testpath/"sample.synctex.gz"
   end
 end
 '''
-    path = Path("Formula/ratex.rb")
+    path = Path("Formula/texres.rb")
     path.parent.mkdir(exist_ok=True)
     path.write_text(formula)
     print(f"Generated {path} for {tag}")

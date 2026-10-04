@@ -172,6 +172,8 @@ include bounded surrounding excerpts, so a shared prefix does not hide a later
 ordering, duplication or missing-character failure.
 The image-scan fixture includes its three-page PDF input in source control.
 Diagnostic output uses UTF-8 even under legacy Windows console encodings.
+Lua system-library oracles retain platform-specific gzip header bytes and
+native Windows path separators instead of assuming POSIX output.
 
 The font suite's deliberate missing-glyph fixture sets `expect_missing_glyphs`:
 TeX Live itself emits `.notdef` for these characters. This exempts only that

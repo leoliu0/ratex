@@ -67,6 +67,12 @@ const GZIP_OS_CODE: u8 = if cfg!(windows) {
 fn check(name: &str) {
     let expected = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/lua_sys/{name}.expected"))).unwrap();
     let expected = expected.replace("1f8b0800000000000003", &format!("1f8b08000000000000{GZIP_OS_CODE:02x}"));
+    // The recorded Linux oracle uses ':'; Kpathsea joins Windows paths with ';'.
+    let expected = if cfg!(windows) && name == "kpse" {
+        expected.replace("abd:acd | a1:b1:a2:b2", "abd;acd | a1;b1;a2;b2")
+    } else {
+        expected
+    };
     let got = run_fixture(name);
     for (n, (a, b)) in expected.lines().zip(got.lines()).enumerate() {
         assert_eq!(a, b, "{name}: line {}", n + 1);

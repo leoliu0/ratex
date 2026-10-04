@@ -1294,8 +1294,9 @@ class FontTestHarness:
             return
         ref_env_dir = self.output_dir / "ref_env"
         ref_env_dir.mkdir(parents=True, exist_ok=True)
-        # Pin font programs, metrics, selection profiles, and packaged graphics.
-        # Leave the kernel and general macro packages to the host TeX Live.
+        # Pin physical fonts and their selection, math-layout, and CJK inputs.
+        # amsmath and xeCJK updates can change layout with identical font programs.
+        # Keep the genuine host TeX Live engines, kernel, and other macro packages.
         try:
             from bundle_packages import reconstruct_archive
         except ModuleNotFoundError:
@@ -1304,13 +1305,24 @@ class FontTestHarness:
         lock_path = assets_dir / "packages.lock.json"
         lock = json.loads(lock_path.read_text())
         reference_root = ref_env_dir / "texmf"
+        shutil.rmtree(reference_root, ignore_errors=True)
         reference_root.mkdir(exist_ok=True)
         reference_prefixes = (
             "fonts/",
+            "tex/latex/amsmath/",
+            "tex/latex/fontspec/",
+            "tex/latex/unicode-math/",
+            "tex/xelatex/xecjk/",
             "tex/latex/doclicense/",
             "tex/latex/duckuments/",
             "tex/latex/twemojis/",
         )
+        reference_files = {
+            "tex/latex/ctex/ctexhook.sty",
+            "tex/latex/ctex/ctexpatch.sty",
+            "tex/generic/pdftex/glyphtounicode.tex",
+            "tex/latex/latex-lab/glyphtounicode-cmex.tex",
+        }
         with tempfile.TemporaryDirectory(prefix="ratex-ref-fonts-") as scratch:
             archive_path = Path(scratch) / "packages.tar.zst"
             reconstruct_archive(assets_dir, archive_path, lock_path)
@@ -1322,8 +1334,10 @@ class FontTestHarness:
                         relative = Path(member.name)
                         if not member.isfile() or relative.is_absolute() or ".." in relative.parts:
                             continue
-                        if member.name.startswith(reference_prefixes) or member.name.endswith(
-                            (".fd", ".fontspec")
+                        if (
+                            member.name.startswith(reference_prefixes)
+                            or member.name in reference_files
+                            or member.name.endswith((".fd", ".fontspec"))
                         ):
                             target = reference_root / relative
                             target.parent.mkdir(parents=True, exist_ok=True)
@@ -1334,8 +1348,6 @@ class FontTestHarness:
                     pass
                 if decoder.wait() != 0:
                     raise RuntimeError("Cannot decompress locked reference font resources")
-        # Acquire missing XeLaTeX CJK macro dependencies into reference_root/tex if needed
-        self.acquire_reference_cjk_dependencies(reference_root)
         self.extra_tds_roots = [str(reference_root)]
         self.inspect_reference_engines()
 
@@ -1388,110 +1400,6 @@ class FontTestHarness:
                 return f"reference {engine} must be TeX Live {year}, found: {version or 'missing'}"
         return None
 
-
-    def acquire_reference_cjk_dependencies(self, reference_root: Path) -> None:
-        """Acquire genuine missing XeLaTeX CJK macros (e.g. ctexhook.sty) into reference tree.
-
-        Downloads and unpacks pinned authoritative packages into reference_root/tex.
-        Never extracts font programs (preserving locked font assets) and never exposes
-        files to the Rust engine or its hermetic sandbox.
-        """
-        ctexhook_target = reference_root / "tex" / "latex" / "ctex" / "ctexhook.sty"
-        if ctexhook_target.is_file():
-            return
-
-        # Check if host kpathsea already resolves ctexhook.sty
-        try:
-            chk = subprocess.run(
-                ["kpsewhich", "-engine=xelatex", "ctexhook.sty"],
-                capture_output=True,
-                encoding="utf-8",
-                errors="replace",
-                check=False,
-            )
-            if chk.returncode == 0 and chk.stdout.strip():
-                return
-        except Exception:
-            pass
-
-        # Pinned authoritative package for CJK/XeLaTeX support (Arch Linux matching TeX Live 2026)
-        pinned_pkg = {
-            "name": "texlive-langchinese",
-            "version": "2026.1-1",
-            "filename": "texlive-langchinese-2026.1-1-any.pkg.tar.zst",
-            "sha256": "141609b837537bb6a914b1a54907dd266d4e2794c5b964707d4e6b7eccae9e39",
-            "urls": [
-                "https://archive.archlinux.org/packages/t/texlive-langchinese/texlive-langchinese-2026.1-1-any.pkg.tar.zst",
-                "https://geo.mirror.pkgbuild.com/extra/os/x86_64/texlive-langchinese-2026.1-1-any.pkg.tar.zst",
-                "https://gsl-syd.mm.fcix.net/archlinux/extra/os/x86_64/texlive-langchinese-2026.1-1-any.pkg.tar.zst",
-            ],
-        }
-
-        candidate_dirs = [
-            Path("/tmp/ratex-upstream-cache"),
-            Path.home() / ".cache" / "ratex-reference",
-            self.output_dir / "ref_env" / "cache",
-        ]
-
-        arc_path: Path | None = None
-        for d in candidate_dirs:
-            p = d / pinned_pkg["filename"]
-            if p.is_file():
-                try:
-                    if sha256_file(p) == pinned_pkg["sha256"]:
-                        arc_path = p
-                        break
-                except Exception:
-                    pass
-
-        if arc_path is None:
-            # Download to the first writable cache directory
-            target_dir = candidate_dirs[0]
-            try:
-                target_dir.mkdir(parents=True, exist_ok=True)
-            except Exception:
-                target_dir = candidate_dirs[-1]
-                target_dir.mkdir(parents=True, exist_ok=True)
-            target_file = target_dir / pinned_pkg["filename"]
-
-            downloaded = False
-            import urllib.request
-            for url in pinned_pkg["urls"]:
-                try:
-                    urllib.request.urlretrieve(url, target_file)
-                    if sha256_file(target_file) == pinned_pkg["sha256"]:
-                        arc_path = target_file
-                        downloaded = True
-                        break
-                except Exception:
-                    if target_file.is_file():
-                        target_file.unlink(missing_ok=True)
-
-            if not downloaded or arc_path is None:
-                raise RuntimeError(
-                    f"Failed to obtain authoritative reference package {pinned_pkg['name']} ({pinned_pkg['sha256']})"
-                )
-
-        # Extract strictly TeX macro files (under usr/share/texmf-dist/tex/)
-        # Exclude font files to preserve locked font programs
-        with subprocess.Popen(["zstd", "-qdc", str(arc_path)], stdout=subprocess.PIPE) as proc:
-            with tarfile.open(fileobj=proc.stdout, mode="r|") as tar:
-                for member in tar:
-                    if not member.isfile():
-                        continue
-                    if member.name.startswith("usr/share/texmf-dist/tex/"):
-                        rel_parts = Path(member.name).parts[3:]  # starts at tex/...
-                        rel_path = Path(*rel_parts)
-                        if rel_path.is_absolute() or ".." in rel_path.parts:
-                            raise ValueError(f"Unsafe reference package path: {member.name}")
-                        target = reference_root / rel_path
-                        target.parent.mkdir(parents=True, exist_ok=True)
-                        with tar.extractfile(member) as src, target.open("wb") as dst:
-                            shutil.copyfileobj(src, dst)
-            while proc.stdout.read(1 << 20):
-                pass
-            if proc.wait() != 0:
-                raise RuntimeError(f"Cannot decompress reference package {arc_path}")
 
     def setup(self) -> None:
         if not self.ratex_path.is_file():

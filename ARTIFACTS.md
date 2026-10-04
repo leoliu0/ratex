@@ -160,6 +160,8 @@ output; retained case directories contain the PDFs, renders and logs.
 Text mismatch reasons identify the first differing normalized character and
 include bounded surrounding excerpts, so a shared prefix does not hide a later
 ordering, duplication or missing-character failure.
+The image-scan fixture includes its three-page PDF input in source control.
+Diagnostic output uses UTF-8 even under legacy Windows console encodings.
 
 The font suite's deliberate missing-glyph fixture sets `expect_missing_glyphs`:
 TeX Live itself emits `.notdef` for these characters. This exempts only that

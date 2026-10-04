@@ -1,5 +1,6 @@
 target/
 *.pdf
+!/scripts/fixtures/fonts/engine_lua_image_scan/engine_asset.pdf
 *.log
 *.aux
 *.bbl

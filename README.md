@@ -79,10 +79,10 @@ yay -S ratex
 tar -xzf tex-suite-v0.5.1-linux-x86_64.tar.gz && ./tex-suite-linux-x86_64/install.sh
 ```
 
-Linux releases support **x86_64 and ARM64 (aarch64)** on Debian 12 or other
-distributions with **glibc 2.36 or newer**, including Linux Docker containers
-on Apple Silicon. Alpine Linux and other musl-based distributions are not
-supported by these prebuilt binaries.
+Linux releases support **x86_64 and ARM64 (aarch64)**. ARM64 prebuilt binaries
+require Debian 12 or another distribution with **glibc 2.36 or newer**, including
+Linux Docker containers on Apple Silicon. Alpine Linux and other musl-based
+distributions are not supported by these prebuilt binaries.
 
 For ARM64, download the [Debian package](https://github.com/leoliu0/ratex/releases/download/v0.5.1/ratex_0.5.1_arm64.deb),
 [RPM](https://github.com/leoliu0/ratex/releases/download/v0.5.1/ratex-0.5.1-1.aarch64.rpm),

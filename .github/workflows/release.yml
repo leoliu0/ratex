@@ -246,6 +246,33 @@ jobs:
         if: matrix.platform == 'linux'
         run: cargo clean --profile dev
 
+      - name: Verify ARM64 minimum-runtime execution
+        if: matrix.label == 'linux-aarch64'
+        shell: bash
+        run: |
+          work=$(mktemp -d)
+          trap 'rm -rf "$work"' EXIT
+          docker run --rm \
+            --user "$(id -u):$(id -g)" --env HOME=/tmp \
+            --volume "$PWD/target/release/ratex:/usr/local/bin/ratex:ro" \
+            --volume "$work:/out" --workdir /out \
+            debian:12-slim sh -euc '
+              test "$(uname -m)" = aarch64
+              test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.36"
+              ratex --version
+              for engine in pdf xelatex lualatex; do
+                mkdir "$engine"
+                printf "%s\n" "\documentclass{article}" "\begin{document}" \
+                  "Ratex ARM64 minimum runtime." "\end{document}" > "$engine/smoke.tex"
+                ratex "-$engine" --cache-directory "/tmp/cache-$engine" \
+                  -output-directory "$engine" "$engine/smoke.tex"
+              done
+            '
+          for engine in pdf xelatex lualatex; do
+            text=$(pdftotext "$work/$engine/smoke.pdf" - | tr -d '[:space:]')
+            test "$text" = 'RatexARM64minimumruntime.1'
+          done
+
       - name: Install TeX Live 2026 reference
         if: matrix.platform == 'linux'
         uses: TeX-Live/setup-texlive-action@v3

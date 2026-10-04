@@ -1,8 +1,8 @@
 //! `kpse`: LuaTeX's Kpathsea library (`lkpselib.c`) over the in-tree
 //! resolver (`tex-kpse`): the TDS roots with their `ls-R` databases and the
-//! bundled package archive. Files that live only inside the archive are
-//! written once to a cache directory so that `kpse.find_file` hands out real,
-//! readable paths like the real library does.
+//! bundled package archive. Files that live only inside the archive have
+//! readable paths in its read-only virtual TDS tree. Native paths use `/`
+//! on Windows; path lists use `;` there and `:` on Unix, as Kpathsea does.
 //!
 //! There is no `texmf.cnf`: configuration variables come from the
 //! environment first (as in Kpathsea) and then from the table of
@@ -18,6 +18,9 @@ use crate::lua_bridge::with_engine;
 use crate::lua_sys::{bytes_of, kpse_path, path_bytes, path_of, shell_escape, sys_reg, ShellEscape};
 
 pub(crate) const PRELUDE: &str = include_str!("lua_sys_kpse.lua");
+
+// Kpathsea's ENV_SEP; Windows consumers must not split drive letters at `:`.
+const PATH_SEPARATOR: &str = if cfg!(windows) { ";" } else { ":" };
 
 /// How a file format is searched.
 #[derive(Clone, Copy)]
@@ -114,7 +117,7 @@ const CNF_DEFAULTS: &[(&str, &str)] = &[
     ("TEXMFHOME", "~/texmf"),
     ("TEXMFCONFIG", "~/.texlive/texmf-config"),
     ("TEXMFSYSCONFIG", "/etc/texmf"),
-    ("TEXMFLOCAL", "/usr/local/share/texmf:/usr/share/texmf"),
+    ("TEXMFLOCAL", if cfg!(windows) { "/usr/local/share/texmf;/usr/share/texmf" } else { "/usr/local/share/texmf:/usr/share/texmf" }),
     ("TEXMFDIST", "/usr/share/texmf-dist"),
     ("OSFONTDIR", "/usr/share/fonts"),
     ("shell_escape", "p"),
@@ -235,8 +238,10 @@ fn default_path_template(fmt: &FormatInfo) -> String {
     }
     let specs: Vec<String> = fmt.path.split(':').map(|spec| format!("$TEXMF/{spec}")).collect();
     // Font searches also cover the operating system's fonts (`$OSFONTDIR//`).
-    let system = if matches!(fmt.var, "OPENTYPEFONTS" | "TTFONTS" | "T1FONTS" | "AFMFONTS") { ":$OSFONTDIR//" } else { "" };
-    format!(".:{}{system}", specs.join(":"))
+    let system = if matches!(fmt.var, "OPENTYPEFONTS" | "TTFONTS" | "T1FONTS" | "AFMFONTS") {
+        if cfg!(windows) { ";$OSFONTDIR//" } else { ":$OSFONTDIR//" }
+    } else { "" };
+    format!(".{PATH_SEPARATOR}{}{system}", specs.join(PATH_SEPARATOR))
 }
 
 /// `$VAR` / `${VAR}` expansion as `kpathsea_var_expand`.
@@ -358,7 +363,8 @@ fn brace_elt(elt: &str) -> Vec<String> {
     out
 }
 
-/// Split at top-level `:` (and `;`), not inside braces.
+/// Split at the platform path separator, not inside braces. On Unix also
+/// accept `;`, as before; on Windows `:` belongs to the drive letter.
 fn split_path(path: &str) -> Vec<&str> {
     let mut parts = Vec::new();
     let mut depth = 0;
@@ -367,7 +373,7 @@ fn split_path(path: &str) -> Vec<&str> {
         match c {
             b'{' => depth += 1,
             b'}' => depth -= 1,
-            b':' | b';' if depth <= 0 => {
+            b';' | b':' if depth <= 0 && (c == b';' || !cfg!(windows)) => {
                 parts.push(&path[from..at]);
                 from = at + 1;
             }
@@ -383,7 +389,7 @@ fn expand_braces(text: &str) -> String {
     for elt in split_path(text) {
         out.extend(brace_elt(elt));
     }
-    out.join(":")
+    out.join(PATH_SEPARATOR)
 }
 
 fn tilde(elt: &str) -> String {
@@ -484,7 +490,7 @@ fn expand_path(program: &str, path: &str) -> String {
             }
         }
     }
-    dirs.join(":")
+    dirs.join(PATH_SEPARATOR)
 }
 
 /// `kpse.show_path`: the search path of a format, with variables and
@@ -498,7 +504,7 @@ fn show_path(program: &str, fmt: &FormatInfo) -> String {
             out.push(item);
         }
     }
-    out.join(":")
+    out.join(PATH_SEPARATOR)
 }
 
 // ------------------------------------------------------------- lookup ---
@@ -589,9 +595,9 @@ fn guess_format(name: &str) -> Option<usize> {
 /// All files called `name` in the directories of the expanded `path`.
 fn path_search(program: &str, path: &str, name: &str, all: bool, must_exist: bool) -> Vec<String> {
     let _ = must_exist;
-    let expanded = expand_path(program, &path.replace(';', ":"));
+    let expanded = expand_path(program, path);
     let mut out = Vec::new();
-    for dir in expanded.split(':').filter(|d| !d.is_empty()) {
+    for dir in expanded.split(PATH_SEPARATOR).filter(|d| !d.is_empty()) {
         let candidate = format!("{}/{name}", dir.trim_end_matches('/'));
         if is_file(&candidate) {
             out.push(candidate);
@@ -807,7 +813,7 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
     });
     sys_reg!(lua, s, "kpse_find", |name: LuaString, format: i64| -> Option<LuaBytes> {
         let fmt = FORMATS.get(format as usize)?;
-        find_one(&s_of(&name), fmt).map(|p| LuaBytes(path_bytes(&p)))
+        find_one(&s_of(&name), fmt).map(|p| LuaBytes(if cfg!(windows) { kpse_path(&p).into_bytes() } else { path_bytes(&p) }))
     });
     // names matching a lookup: `all` lists every hit
     sys_reg!(

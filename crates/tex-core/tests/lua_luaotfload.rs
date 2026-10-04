@@ -95,3 +95,70 @@ P(kpse.out_name_ok_silent_extended(cache .. '/luatex-cache/generic/x'))
 "#);
     assert_eq!(got.lines().collect::<Vec<_>>(), ["true", "true | true", "true | true", "true"]);
 }
+
+/// Scanning Kpathsea's native path list must discover each face, including
+/// mixed-case filenames that luaotfload lowercases on Windows. Names below
+/// are from TeX Live 2026 `fontloader.info` on these same bundled OTF files.
+#[test]
+fn bundled_font_scan_preserves_name_and_style_metadata() {
+    let got = run(r#"
+require('lualibs')
+local wanted = {
+  ['lmroman10-regular.otf'] = true, ['lmroman10-bold.otf'] = true,
+  ['lmroman10-italic.otf'] = true, ['lmroman10-bolditalic.otf'] = true,
+  ['lmmono10-regular.otf'] = true, ['FandolSong-Regular.otf'] = true,
+}
+local found = {}
+for _, dir in ipairs(file.splitpath(kpse.expand_path(kpse.show_path('opentype fonts')))) do
+  if lfs.isdir(dir) then
+    for name in lfs.dir(dir) do
+      if wanted[name] then
+        local path = dir .. '/' .. name
+        if os.type == 'windows' then path = path:lower() end
+        local meta = fontloader.info(path)
+        local f = assert(io.open(path, 'rb'))
+        assert(f:read(4) == 'OTTO')
+        f:close()
+        found[name] = meta.familyname .. ' | ' .. meta.fontname .. ' | ' .. meta.fullname
+      end
+    end
+  end
+end
+for _, name in ipairs({
+  'lmroman10-regular.otf', 'lmroman10-bold.otf', 'lmroman10-italic.otf',
+  'lmroman10-bolditalic.otf', 'lmmono10-regular.otf', 'FandolSong-Regular.otf',
+}) do
+  P(name, assert(found[name], 'undiscovered font: ' .. name))
+end
+"#);
+    assert_eq!(got.lines().collect::<Vec<_>>(), [
+        "lmroman10-regular.otf | LM Roman 10 | LMRoman10-Regular | LMRoman10-Regular",
+        "lmroman10-bold.otf | LM Roman 10 | LMRoman10-Bold | LMRoman10-Bold",
+        "lmroman10-italic.otf | LM Roman 10 | LMRoman10-Italic | LMRoman10-Italic",
+        "lmroman10-bolditalic.otf | LM Roman 10 | LMRoman10-BoldItalic | LMRoman10-BoldItalic",
+        "lmmono10-regular.otf | LM Mono 10 | LMMono10-Regular | LMMono10-Regular",
+        "FandolSong-Regular.otf | FandolSong | FandolSong-Regular | FandolSong",
+    ]);
+}
+
+/// Native drive paths must survive expansion and directory-restricted
+/// lookups rather than being split into `C` and `/...` search elements.
+#[cfg(windows)]
+#[test]
+fn windows_drive_paths_survive_kpse_expansion_and_lookup() {
+    let got = run(r#"
+local root = kpse.expand_var('$TEXMFOUTPUT')
+local first, second = root .. '/first', root .. '/second'
+assert(lfs.mkdir(first) or lfs.isdir(first))
+assert(lfs.mkdir(second) or lfs.isdir(second))
+local f = assert(io.open(second .. '/font-path-probe.otf', 'wb'))
+f:write('search result')
+f:close()
+local paths = kpse.expand_path(kpse.expand_braces(root .. '/{first,second}'))
+local path = assert(kpse.lookup('font-path-probe.otf', { path = paths }))
+local input = assert(io.open(path, 'rb'))
+P(input:read('a'))
+input:close()
+"#);
+    assert_eq!(got, "search result");
+}

@@ -21,6 +21,7 @@ fn main() {
                          static PACKAGE_FOLDED: PackedTable<1> = PackedTable(&[]);\n\
                          static PACKAGE_DIR_NAMES: &[u8] = &[];\n\
                          static PACKAGE_DIRS: PackedTable<2> = PackedTable(&[]);\n\
+                         #[cfg(windows)] static PACKAGE_DIR_FOLDED: PackedTable<1> = PackedTable(&[]);\n\
                          static PACKAGE_MEMBER_DIRS: PackedTable<1> = PackedTable(&[]);\n\
                          static EMBEDDED_FONT_FACES: &[EmbeddedFontFace] = &[];\n\
                          static EMBEDDED_FONT_INFOS: &[EmbeddedFontInfo] = &[];\n\
@@ -259,9 +260,15 @@ fn main() {
     }
     let mut dir_names = Vec::new();
     let mut dir_table = Vec::with_capacity(directories.len() * 8);
-    for name in directories.keys() {
+    let mut dir_folded = BTreeMap::new();
+    for (position, name) in directories.keys().enumerate() {
         push_u32s(&mut dir_table, [dir_names.len(), name.len()]);
         dir_names.extend_from_slice(name.as_bytes());
+        dir_folded.entry(name.to_ascii_lowercase()).or_insert(position);
+    }
+    let mut dir_folded_table = Vec::with_capacity(dir_folded.len() * 4);
+    for position in dir_folded.into_values() {
+        push_u32s(&mut dir_folded_table, [position]);
     }
     let mut member_dir_table = Vec::with_capacity(index.len() * 4);
 
@@ -309,6 +316,7 @@ fn main() {
     std::fs::write(out.join("package_folded.bin"), &folded_table).unwrap();
     std::fs::write(out.join("package_dir_names.bin"), &dir_names).unwrap();
     std::fs::write(out.join("package_dirs.bin"), &dir_table).unwrap();
+    std::fs::write(out.join("package_dir_folded.bin"), &dir_folded_table).unwrap();
     std::fs::write(out.join("package_member_dirs.bin"), &member_dir_table).unwrap();
     std::fs::write(out.join("package_font_info.bin"), &font_info_table).unwrap();
     std::fs::write(out.join("font_metadata_windows.bin"), &metadata_window_table).unwrap();
@@ -324,11 +332,15 @@ fn main() {
         ("PACKAGE_FOLDED", "package_folded.bin", Some(1)),
         ("PACKAGE_DIR_NAMES", "package_dir_names.bin", None),
         ("PACKAGE_DIRS", "package_dirs.bin", Some(2)),
+        ("PACKAGE_DIR_FOLDED", "package_dir_folded.bin", Some(1)),
         ("PACKAGE_MEMBER_DIRS", "package_member_dirs.bin", Some(1)),
         ("PACKAGE_FONT_INFO", "package_font_info.bin", Some(5)),
         ("FONT_METADATA_WINDOWS", "font_metadata_windows.bin", Some(3)),
         ("FONT_METADATA_BYTES", "font_metadata_bytes.bin", None),
     ] {
+        if name == "PACKAGE_DIR_FOLDED" {
+            writeln!(generated, "#[cfg(windows)]").unwrap();
+        }
         let bytes = format!("include_bytes!(concat!(env!(\"OUT_DIR\"), \"/{file}\"))");
         match fields {
             Some(fields) => writeln!(

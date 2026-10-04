@@ -9,6 +9,9 @@
 //! root is an absolute path (no directory of that name exists on any real
 //! system) so that code resolving relative names against the working
 //! directory never mistakes it for one.
+//! Windows lookups fold ASCII case, like the native filesystem and
+//! luaotfload's path normalization, but listings and font metadata retain
+//! their exact embedded spelling. Unix lookups remain case-sensitive.
 
 use super::*;
 use std::sync::LazyLock;
@@ -38,12 +41,33 @@ fn dir_id(path: &str) -> Option<usize> {
     PACKAGE_DIRS.binary_search_by(|[offset, length]| {
         let (offset, length) = (offset as usize, length as usize);
         PACKAGE_DIR_NAMES[offset..offset + length].cmp(path.as_bytes())
+    }).or_else(|| {
+        #[cfg(windows)]
+        {
+            let position = PACKAGE_DIR_FOLDED.binary_search_by(|[id]| {
+                ascii_folded_cmp(dir_name(id as usize).as_bytes(), path.as_bytes())
+            })?;
+            Some(PACKAGE_DIR_FOLDED.get(position)?[0] as usize)
+        }
+        #[cfg(not(windows))]
+        None
     })
 }
 
-/// Index of the member called exactly `name`.
+/// Index of the member called `name`, case-insensitive on Windows like its
+/// filesystem. Reuse the packed folded index; never rewrite font metadata.
 fn exact_entry(name: &str) -> Option<usize> {
-    PACKAGE_INDEX.binary_search_by(|entry| package_name(entry).cmp(name.as_bytes()))
+    PACKAGE_INDEX.binary_search_by(|entry| package_name(entry).cmp(name.as_bytes())).or_else(|| {
+        #[cfg(windows)]
+        {
+            let position = PACKAGE_FOLDED.binary_search_by(|[index]| {
+                ascii_folded_cmp(package_name(PACKAGE_INDEX.get(index as usize).unwrap_or_default()), name.as_bytes())
+            })?;
+            Some(PACKAGE_FOLDED.get(position)?[0] as usize)
+        }
+        #[cfg(not(windows))]
+        None
+    })
 }
 
 /// `path` below [`ROOT`] as a normalized `/`-separated relative path (no
@@ -80,7 +104,12 @@ fn file_entry(relative: &str) -> Option<usize> {
     let (directory, name) = split(relative);
     let entry = exact_entry(name)?;
     let [id] = PACKAGE_MEMBER_DIRS.get(entry)?;
-    (dir_name(id as usize) == directory).then_some(entry)
+    let directory_matches = if cfg!(windows) {
+        dir_name(id as usize).eq_ignore_ascii_case(directory)
+    } else {
+        dir_name(id as usize) == directory
+    };
+    directory_matches.then_some(entry)
 }
 
 /// Exact virtual-file membership for metadata-only callers. Normal paths
@@ -121,8 +150,7 @@ pub fn read(path: &str) -> Option<Vec<u8>> {
         return None;
     }
     let relative = relative(path)?;
-    file_entry(&relative)?;
-    get_embedded_package(split(&relative).1)
+    read_package_entry(file_entry(&relative)?)
 }
 
 /// Members grouped by directory id (compressed rows).
@@ -155,6 +183,7 @@ pub fn read_dir(path: &str) -> Option<Vec<(String, bool)>> {
     }
     let relative = relative(path)?;
     let id = dir_id(&relative)?;
+    let relative = dir_name(id);
     let mut entries: Vec<(String, bool)> = Vec::new();
     let (starts, members) = &*MEMBERS_BY_DIR;
     for &entry in &members[starts[id] as usize..starts[id + 1] as usize] {

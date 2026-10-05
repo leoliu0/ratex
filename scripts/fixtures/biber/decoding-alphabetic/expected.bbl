@@ -1,0 +1,438 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{nyt/global//global/global/global}
+    \entry{math}{article}{}{}
+      \name{author}{1}{}{%
+        {{hash=0bbc22acfabf37ccf38ba989c8ac44e9}{%
+           family={{$\alpha$ Research Group}},
+           familyi={$\bibinitperiod}}}%
+      }
+      \strng{namehash}{0bbc22acfabf37ccf38ba989c8ac44e9}
+      \strng{fullhash}{0bbc22acfabf37ccf38ba989c8ac44e9}
+      \strng{fullhashraw}{0bbc22acfabf37ccf38ba989c8ac44e9}
+      \strng{bibnamehash}{0bbc22acfabf37ccf38ba989c8ac44e9}
+      \strng{authorbibnamehash}{0bbc22acfabf37ccf38ba989c8ac44e9}
+      \strng{authornamehash}{0bbc22acfabf37ccf38ba989c8ac44e9}
+      \strng{authorfullhash}{0bbc22acfabf37ccf38ba989c8ac44e9}
+      \strng{authorfullhashraw}{0bbc22acfabf37ccf38ba989c8ac44e9}
+      \field{labelalpha}{Res21}
+      \field{sortinit}{R}
+      \field{sortinithash}{5e1c39a9d46ffb6bebd8f801023a9486}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{$\alpha$ Review}
+      \field{title}{Returns and $\alpha$}
+      \field{year}{2021}
+      \true{nocite}
+    \endentry
+    \entry{ligature}{article}{}{}
+      \name{author}{1}{}{%
+        {{hash=943298a66e86144778d1673bf0b685fa}{%
+           family={{Æ}gir},
+           familyi={Æ\bibinitperiod},
+           given={{Æ}sa},
+           giveni={Æ\bibinitperiod}}}%
+      }
+      \strng{namehash}{943298a66e86144778d1673bf0b685fa}
+      \strng{fullhash}{943298a66e86144778d1673bf0b685fa}
+      \strng{fullhashraw}{943298a66e86144778d1673bf0b685fa}
+      \strng{bibnamehash}{943298a66e86144778d1673bf0b685fa}
+      \strng{authorbibnamehash}{943298a66e86144778d1673bf0b685fa}
+      \strng{authornamehash}{943298a66e86144778d1673bf0b685fa}
+      \strng{authorfullhash}{943298a66e86144778d1673bf0b685fa}
+      \strng{authorfullhashraw}{943298a66e86144778d1673bf0b685fa}
+      \field{labelalpha}{Ægi25}
+      \field{sortinit}{Æ}
+      \field{sortinithash}{4c0dec5523ce7e548267a10153e6df39}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{{Æ}gir Review}
+      \field{title}{{Æ}gir and {Æ}sa}
+      \field{year}{2025}
+      \true{nocite}
+    \endentry
+    \entry{typographic-punctuation}{article}{}{}
+      \name{author}{1}{}{%
+        {{hash=c00c4e62e2a1297cfa389c7fda52429c}{%
+           family={{Alpha--Beta ``Quotes'' Institute}},
+           familyi={A\bibinitperiod}}}%
+      }
+      \strng{namehash}{c00c4e62e2a1297cfa389c7fda52429c}
+      \strng{fullhash}{c00c4e62e2a1297cfa389c7fda52429c}
+      \strng{fullhashraw}{c00c4e62e2a1297cfa389c7fda52429c}
+      \strng{bibnamehash}{c00c4e62e2a1297cfa389c7fda52429c}
+      \strng{authorbibnamehash}{c00c4e62e2a1297cfa389c7fda52429c}
+      \strng{authornamehash}{c00c4e62e2a1297cfa389c7fda52429c}
+      \strng{authorfullhash}{c00c4e62e2a1297cfa389c7fda52429c}
+      \strng{authorfullhashraw}{c00c4e62e2a1297cfa389c7fda52429c}
+      \field{labelalpha}{Alp23}
+      \field{sortinit}{A}
+      \field{sortinithash}{2f401846e2029bad6b3ecc16d50031e2}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{Alpha--Beta ``quotes'' Review}
+      \field{title}{Alpha--Beta ``quotes''}
+      \field{year}{2023}
+      \true{nocite}
+    \endentry
+    \entry{unicode-sort-a}{article}{}{}
+      \name{author}{1}{}{%
+        {{hash=c412de1ebca88c4e9435e9b9f21eaca4}{%
+           family={Ångström},
+           familyi={Å\bibinitperiod},
+           given={Émile},
+           giveni={É\bibinitperiod}}}%
+      }
+      \strng{namehash}{c412de1ebca88c4e9435e9b9f21eaca4}
+      \strng{fullhash}{c412de1ebca88c4e9435e9b9f21eaca4}
+      \strng{fullhashraw}{c412de1ebca88c4e9435e9b9f21eaca4}
+      \strng{bibnamehash}{c412de1ebca88c4e9435e9b9f21eaca4}
+      \strng{authorbibnamehash}{c412de1ebca88c4e9435e9b9f21eaca4}
+      \strng{authornamehash}{c412de1ebca88c4e9435e9b9f21eaca4}
+      \strng{authorfullhash}{c412de1ebca88c4e9435e9b9f21eaca4}
+      \strng{authorfullhashraw}{c412de1ebca88c4e9435e9b9f21eaca4}
+      \field{labelalpha}{Ång24}
+      \field{sortinit}{Å}
+      \field{sortinithash}{2f401846e2029bad6b3ecc16d50031e2}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{Études financières}
+      \field{title}{Ångström and Émile}
+      \field{year}{2024}
+      \true{nocite}
+    \endentry
+    \entry{cedilla-caron}{article}{}{}
+      \name{author}{1}{}{%
+        {{hash=e43183aa7f7ff5e3d35c7b01c423a734}{%
+           family={François},
+           familyi={F\bibinitperiod},
+           given={Aleš},
+           giveni={A\bibinitperiod}}}%
+      }
+      \strng{namehash}{e43183aa7f7ff5e3d35c7b01c423a734}
+      \strng{fullhash}{e43183aa7f7ff5e3d35c7b01c423a734}
+      \strng{fullhashraw}{e43183aa7f7ff5e3d35c7b01c423a734}
+      \strng{bibnamehash}{e43183aa7f7ff5e3d35c7b01c423a734}
+      \strng{authorbibnamehash}{e43183aa7f7ff5e3d35c7b01c423a734}
+      \strng{authornamehash}{e43183aa7f7ff5e3d35c7b01c423a734}
+      \strng{authorfullhash}{e43183aa7f7ff5e3d35c7b01c423a734}
+      \strng{authorfullhashraw}{e43183aa7f7ff5e3d35c7b01c423a734}
+      \field{labelalpha}{Fra24}
+      \field{sortinit}{F}
+      \field{sortinithash}{2638baaa20439f1b5a8f80c6c08a13b4}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{François Aleš Review}
+      \field{title}{François and Aleš}
+      \field{year}{2024}
+      \true{nocite}
+    \endentry
+    \entry{acute-dotless}{article}{}{}
+      \name{author}{1}{}{%
+        {{hash=65853954447f283afdff96681a93f444}{%
+           family={Garcé},
+           familyi={G\bibinitperiod},
+           given={Benoı̂t},
+           giveni={B\bibinitperiod}}}%
+      }
+      \strng{namehash}{65853954447f283afdff96681a93f444}
+      \strng{fullhash}{65853954447f283afdff96681a93f444}
+      \strng{fullhashraw}{65853954447f283afdff96681a93f444}
+      \strng{bibnamehash}{65853954447f283afdff96681a93f444}
+      \strng{authorbibnamehash}{65853954447f283afdff96681a93f444}
+      \strng{authornamehash}{65853954447f283afdff96681a93f444}
+      \strng{authorfullhash}{65853954447f283afdff96681a93f444}
+      \strng{authorfullhashraw}{65853954447f283afdff96681a93f444}
+      \field{labelalpha}{Gar23}
+      \field{sortinit}{G}
+      \field{sortinithash}{32d67eca0634bf53703493fb1090a2e8}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{Garcé Benoı̂t Review}
+      \field{title}{Garcé and Benoı̂t}
+      \field{year}{2023}
+      \true{nocite}
+    \endentry
+    \entry{sharp-s-protected}{article}{}{}
+      \name{author}{1}{}{%
+        {{hash=dc7d7f5841137deb45db39bdc25905c3}{%
+           family={Gro{ß}},
+           familyi={G\bibinitperiod},
+           given={Wei{ß}},
+           giveni={W\bibinitperiod}}}%
+      }
+      \strng{namehash}{dc7d7f5841137deb45db39bdc25905c3}
+      \strng{fullhash}{dc7d7f5841137deb45db39bdc25905c3}
+      \strng{fullhashraw}{dc7d7f5841137deb45db39bdc25905c3}
+      \strng{bibnamehash}{dc7d7f5841137deb45db39bdc25905c3}
+      \strng{authorbibnamehash}{dc7d7f5841137deb45db39bdc25905c3}
+      \strng{authornamehash}{dc7d7f5841137deb45db39bdc25905c3}
+      \strng{authorfullhash}{dc7d7f5841137deb45db39bdc25905c3}
+      \strng{authorfullhashraw}{dc7d7f5841137deb45db39bdc25905c3}
+      \field{extraname}{1}
+      \field{labelalpha}{Gro20}
+      \field{sortinit}{G}
+      \field{sortinithash}{32d67eca0634bf53703493fb1090a2e8}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{Gro{ß} Review}
+      \field{title}{Gro{ß} and Wei{ß}}
+      \field{year}{2020}
+      \true{nocite}
+    \endentry
+    \entry{sharp-s-empty}{article}{}{}
+      \name{author}{1}{}{%
+        {{hash=dc7d7f5841137deb45db39bdc25905c3}{%
+           family={Groß},
+           familyi={G\bibinitperiod},
+           given={Weiß},
+           giveni={W\bibinitperiod}}}%
+      }
+      \strng{namehash}{dc7d7f5841137deb45db39bdc25905c3}
+      \strng{fullhash}{dc7d7f5841137deb45db39bdc25905c3}
+      \strng{fullhashraw}{dc7d7f5841137deb45db39bdc25905c3}
+      \strng{bibnamehash}{dc7d7f5841137deb45db39bdc25905c3}
+      \strng{authorbibnamehash}{dc7d7f5841137deb45db39bdc25905c3}
+      \strng{authornamehash}{dc7d7f5841137deb45db39bdc25905c3}
+      \strng{authorfullhash}{dc7d7f5841137deb45db39bdc25905c3}
+      \strng{authorfullhashraw}{dc7d7f5841137deb45db39bdc25905c3}
+      \field{extraname}{2}
+      \field{labelalpha}{Gro21}
+      \field{sortinit}{G}
+      \field{sortinithash}{32d67eca0634bf53703493fb1090a2e8}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{Groß Review}
+      \field{title}{Groß and Weiß}
+      \field{year}{2021}
+      \true{nocite}
+    \endentry
+    \entry{stroke-ring}{article}{}{}
+      \name{author}{1}{}{%
+        {{hash=ff7986f2d4e057243ec31e8235b79032}{%
+           family={{ł}ukasz},
+           familyi={ł\bibinitperiod},
+           given={P{å}l},
+           giveni={P\bibinitperiod}}}%
+      }
+      \strng{namehash}{ff7986f2d4e057243ec31e8235b79032}
+      \strng{fullhash}{ff7986f2d4e057243ec31e8235b79032}
+      \strng{fullhashraw}{ff7986f2d4e057243ec31e8235b79032}
+      \strng{bibnamehash}{ff7986f2d4e057243ec31e8235b79032}
+      \strng{authorbibnamehash}{ff7986f2d4e057243ec31e8235b79032}
+      \strng{authornamehash}{ff7986f2d4e057243ec31e8235b79032}
+      \strng{authorfullhash}{ff7986f2d4e057243ec31e8235b79032}
+      \strng{authorfullhashraw}{ff7986f2d4e057243ec31e8235b79032}
+      \field{labelalpha}{łuk22}
+      \field{sortinit}{ł}
+      \field{sortinithash}{7c47d417cecb1f4bd38d1825c427a61a}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{{ł}ukasz P{å}l Review}
+      \field{title}{{ł}ukasz and P{å}l}
+      \field{year}{2022}
+      \true{nocite}
+    \endentry
+    \entry{umlaut-protected}{article}{}{}
+      \name{author}{1}{}{%
+        {{hash=00162bed44b55cdf8ac11fb4b8242f4c}{%
+           family={Müller},
+           familyi={M\bibinitperiod},
+           given={Jürgen},
+           giveni={J\bibinitperiod}}}%
+      }
+      \strng{namehash}{00162bed44b55cdf8ac11fb4b8242f4c}
+      \strng{fullhash}{00162bed44b55cdf8ac11fb4b8242f4c}
+      \strng{fullhashraw}{00162bed44b55cdf8ac11fb4b8242f4c}
+      \strng{bibnamehash}{00162bed44b55cdf8ac11fb4b8242f4c}
+      \strng{authorbibnamehash}{00162bed44b55cdf8ac11fb4b8242f4c}
+      \strng{authornamehash}{00162bed44b55cdf8ac11fb4b8242f4c}
+      \strng{authorfullhash}{00162bed44b55cdf8ac11fb4b8242f4c}
+      \strng{authorfullhashraw}{00162bed44b55cdf8ac11fb4b8242f4c}
+      \field{extraname}{1}
+      \field{labelalpha}{Mül21}
+      \field{sortinit}{M}
+      \field{sortinithash}{4625c616857f13d17ce56f7d4f97d451}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{Müller Review}
+      \field{title}{Müller and Jürgen}
+      \field{year}{2021}
+      \true{nocite}
+    \endentry
+    \entry{umlaut-argument}{article}{}{}
+      \name{author}{1}{}{%
+        {{hash=00162bed44b55cdf8ac11fb4b8242f4c}{%
+           family={Müller},
+           familyi={M\bibinitperiod},
+           given={Jürgen},
+           giveni={J\bibinitperiod}}}%
+      }
+      \strng{namehash}{00162bed44b55cdf8ac11fb4b8242f4c}
+      \strng{fullhash}{00162bed44b55cdf8ac11fb4b8242f4c}
+      \strng{fullhashraw}{00162bed44b55cdf8ac11fb4b8242f4c}
+      \strng{bibnamehash}{00162bed44b55cdf8ac11fb4b8242f4c}
+      \strng{authorbibnamehash}{00162bed44b55cdf8ac11fb4b8242f4c}
+      \strng{authornamehash}{00162bed44b55cdf8ac11fb4b8242f4c}
+      \strng{authorfullhash}{00162bed44b55cdf8ac11fb4b8242f4c}
+      \strng{authorfullhashraw}{00162bed44b55cdf8ac11fb4b8242f4c}
+      \field{extraname}{2}
+      \field{labelalpha}{Mül22}
+      \field{sortinit}{M}
+      \field{sortinithash}{4625c616857f13d17ce56f7d4f97d451}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{Müller Review}
+      \field{title}{Müller and Jürgen}
+      \field{year}{2022}
+      \true{nocite}
+    \endentry
+    \entry{umlaut-bare}{article}{}{}
+      \name{author}{1}{}{%
+        {{hash=00162bed44b55cdf8ac11fb4b8242f4c}{%
+           family={Müller},
+           familyi={M\bibinitperiod},
+           given={Jürgen},
+           giveni={J\bibinitperiod}}}%
+      }
+      \strng{namehash}{00162bed44b55cdf8ac11fb4b8242f4c}
+      \strng{fullhash}{00162bed44b55cdf8ac11fb4b8242f4c}
+      \strng{fullhashraw}{00162bed44b55cdf8ac11fb4b8242f4c}
+      \strng{bibnamehash}{00162bed44b55cdf8ac11fb4b8242f4c}
+      \strng{authorbibnamehash}{00162bed44b55cdf8ac11fb4b8242f4c}
+      \strng{authornamehash}{00162bed44b55cdf8ac11fb4b8242f4c}
+      \strng{authorfullhash}{00162bed44b55cdf8ac11fb4b8242f4c}
+      \strng{authorfullhashraw}{00162bed44b55cdf8ac11fb4b8242f4c}
+      \field{extraname}{3}
+      \field{labelalpha}{Mül23}
+      \field{sortinit}{M}
+      \field{sortinithash}{4625c616857f13d17ce56f7d4f97d451}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{Müller Review}
+      \field{title}{Müller and Jürgen}
+      \field{year}{2023}
+      \true{nocite}
+    \endentry
+    \entry{nested-braces}{article}{}{}
+      \name{author}{1}{}{%
+        {{hash=1f99771bc3e23e6097509a331544ab65}{%
+           family={{NASA}},
+           familyi={N\bibinitperiod}}}%
+      }
+      \strng{namehash}{1f99771bc3e23e6097509a331544ab65}
+      \strng{fullhash}{1f99771bc3e23e6097509a331544ab65}
+      \strng{fullhashraw}{1f99771bc3e23e6097509a331544ab65}
+      \strng{bibnamehash}{1f99771bc3e23e6097509a331544ab65}
+      \strng{authorbibnamehash}{1f99771bc3e23e6097509a331544ab65}
+      \strng{authornamehash}{1f99771bc3e23e6097509a331544ab65}
+      \strng{authorfullhash}{1f99771bc3e23e6097509a331544ab65}
+      \strng{authorfullhashraw}{1f99771bc3e23e6097509a331544ab65}
+      \field{labelalpha}{NAS20}
+      \field{sortinit}{N}
+      \field{sortinithash}{22369a73d5f88983a108b63f07f37084}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{{{NASA}} Review}
+      \field{title}{Observations from {{NASA}}}
+      \field{year}{2020}
+      \true{nocite}
+    \endentry
+    \entry{slash-o}{article}{}{}
+      \name{author}{1}{}{%
+        {{hash=aec8ce29e54a3ee96261359c3f0f8b7e}{%
+           family={{Ø}stergaard},
+           familyi={Ø\bibinitperiod},
+           given={S{ø}ren},
+           giveni={S\bibinitperiod}}}%
+      }
+      \strng{namehash}{aec8ce29e54a3ee96261359c3f0f8b7e}
+      \strng{fullhash}{aec8ce29e54a3ee96261359c3f0f8b7e}
+      \strng{fullhashraw}{aec8ce29e54a3ee96261359c3f0f8b7e}
+      \strng{bibnamehash}{aec8ce29e54a3ee96261359c3f0f8b7e}
+      \strng{authorbibnamehash}{aec8ce29e54a3ee96261359c3f0f8b7e}
+      \strng{authornamehash}{aec8ce29e54a3ee96261359c3f0f8b7e}
+      \strng{authorfullhash}{aec8ce29e54a3ee96261359c3f0f8b7e}
+      \strng{authorfullhashraw}{aec8ce29e54a3ee96261359c3f0f8b7e}
+      \field{labelalpha}{Øst20}
+      \field{sortinit}{Ø}
+      \field{sortinithash}{2cd7140a07aea5341f9e2771efe90aae}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{{Ø}resund S{ø}ren Review}
+      \field{title}{{Ø}resund and S{ø}ren}
+      \field{year}{2020}
+      \true{nocite}
+    \endentry
+    \entry{unicode-sort-o}{article}{}{}
+      \name{author}{1}{}{%
+        {{hash=cda0616641e6bc06084ef84071d8a7ef}{%
+           family={Öztürk},
+           familyi={Ö\bibinitperiod},
+           given={Łukasz},
+           giveni={Ł\bibinitperiod}}}%
+      }
+      \strng{namehash}{cda0616641e6bc06084ef84071d8a7ef}
+      \strng{fullhash}{cda0616641e6bc06084ef84071d8a7ef}
+      \strng{fullhashraw}{cda0616641e6bc06084ef84071d8a7ef}
+      \strng{bibnamehash}{cda0616641e6bc06084ef84071d8a7ef}
+      \strng{authorbibnamehash}{cda0616641e6bc06084ef84071d8a7ef}
+      \strng{authornamehash}{cda0616641e6bc06084ef84071d8a7ef}
+      \strng{authorfullhash}{cda0616641e6bc06084ef84071d8a7ef}
+      \strng{authorfullhashraw}{cda0616641e6bc06084ef84071d8a7ef}
+      \field{labelalpha}{Özt25}
+      \field{sortinit}{Ö}
+      \field{sortinithash}{2cd7140a07aea5341f9e2771efe90aae}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{Économie européenne}
+      \field{title}{Öztürk and Łukasz}
+      \field{year}{2025}
+      \true{nocite}
+    \endentry
+    \entry{escaped-punctuation}{article}{}{}
+      \name{author}{1}{}{%
+        {{hash=cd07cc61affe3c8f532bcbd4a762f796}{%
+           family={{Risk \& Return \% Institute}},
+           familyi={R\bibinitperiod}}}%
+      }
+      \strng{namehash}{cd07cc61affe3c8f532bcbd4a762f796}
+      \strng{fullhash}{cd07cc61affe3c8f532bcbd4a762f796}
+      \strng{fullhashraw}{cd07cc61affe3c8f532bcbd4a762f796}
+      \strng{bibnamehash}{cd07cc61affe3c8f532bcbd4a762f796}
+      \strng{authorbibnamehash}{cd07cc61affe3c8f532bcbd4a762f796}
+      \strng{authornamehash}{cd07cc61affe3c8f532bcbd4a762f796}
+      \strng{authorfullhash}{cd07cc61affe3c8f532bcbd4a762f796}
+      \strng{authorfullhashraw}{cd07cc61affe3c8f532bcbd4a762f796}
+      \field{labelalpha}{Ris22}
+      \field{sortinit}{R}
+      \field{sortinithash}{5e1c39a9d46ffb6bebd8f801023a9486}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{Risk \& Return \% Review}
+      \field{title}{Risk \& Return at 10\%}
+      \field{year}{2022}
+      \true{nocite}
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

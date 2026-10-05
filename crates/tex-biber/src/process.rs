@@ -25,6 +25,16 @@ fn norm(value: &str) -> String {
     let s=MACRO.replace_all(value, "");
     s.replace(['{','}'],"").replace('~'," ").split_whitespace().collect::<Vec<_>>().join(" ")
 }
+fn norm_label(value: &str) -> String {
+    static MACRO: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\[A-Za-z]+").unwrap());
+    static TIES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"([^\\])~").unwrap());
+    // Biber's default nolabel excludes punctuation, symbols and controls,
+    // but preserves dash punctuation for compound-name label generation.
+    static NOLABEL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\p{Pc}\p{Ps}\p{Pe}\p{Pi}\p{Pf}\p{Po}\p{S}\p{C}]+").unwrap());
+    let without_macros = MACRO.replace_all(value, "");
+    let without_ties = TIES.replace_all(&without_macros, "$1 ");
+    NOLABEL.replace_all(&without_ties, "").split_whitespace().collect::<Vec<_>>().join(" ")
+}
 fn part<'a>(n: &'a Name, p: &str) -> &'a str { match p {"family"=>&n.family,"given"=>&n.given,"prefix"=>&n.prefix,"suffix"=>&n.suffix,_=>""} }
 fn raw_name(c: &Control,n: &Name) -> String {
     let mut s=String::new();
@@ -213,10 +223,10 @@ fn substring(s: &str,width: usize,right: bool) -> String {let g:Vec<&str>=s.grap
 fn alpha_field(c: &Control,e: &Entry,f: &LabelField) -> String {
     if f.literal {return f.name.clone();}
     let key=if f.name=="labelname" {e.computed.get("labelnamesource").map(String::as_str).unwrap_or("")}else{&f.name};
-    if let Some(n)=e.names.get(key) {let max=number(c,e,"maxalphanames",3);let count=if n.names.len()>max{number(c,e,"minalphanames",1)}else{n.names.len()};if f.ifnames.is_some_and(|i|i!=count){return String::new();}let count=f.names.unwrap_or(count).min(n.names.len());let width=f.strwidth.unwrap_or(if count==1{3}else{1});let mut s=String::new();for name in n.names.iter().take(count) {if enabled(c,e,"useprefix")&&!name.prefix.is_empty(){s.push_str(&substring(&norm(&name.prefix),1,false));}s.push_str(&substring(&norm(&name.family),width,f.strside=="right"));}if n.others || count<n.names.len(){s.push_str(if option(c,e,"alphaothers").is_empty(){"+"}else{option(c,e,"alphaothers")});}return s;}
-    let v=match f.name.as_str(){"citekey"|"entrykey"=>e.key.as_str(),_=>e.computed.get(&f.name).or_else(||e.fields.get(&f.name)).map(String::as_str).unwrap_or("")};let s=norm(v);f.strwidth.map(|w|substring(&s,w,f.strside=="right")).unwrap_or(s)
+    if let Some(n)=e.names.get(key) {let max=number(c,e,"maxalphanames",3);let count=if n.names.len()>max{number(c,e,"minalphanames",1)}else{n.names.len()};if f.ifnames.is_some_and(|i|i!=count){return String::new();}let count=f.names.unwrap_or(count).min(n.names.len());let width=f.strwidth.unwrap_or(if count==1{3}else{1});let mut s=String::new();for name in n.names.iter().take(count) {if enabled(c,e,"useprefix")&&!name.prefix.is_empty(){s.push_str(&substring(&norm_label(&name.prefix),1,false));}s.push_str(&substring(&norm_label(&name.family),width,f.strside=="right"));}if n.others || count<n.names.len(){s.push_str(if option(c,e,"alphaothers").is_empty(){"+"}else{option(c,e,"alphaothers")});}return s;}
+    let v=match f.name.as_str(){"citekey"|"entrykey"=>e.key.as_str(),_=>e.computed.get(&f.name).or_else(||e.fields.get(&f.name)).map(String::as_str).unwrap_or("")};let s=norm_label(v);f.strwidth.map(|w|substring(&s,w,f.strside=="right")).unwrap_or(s)
 }
-fn labelalpha(c: &Control,e: &Entry)->String {if c.labelalpha.is_empty(){let source=e.computed.get("labelnamesource").and_then(|f|e.names.get(f));let mut a=source.map(|n|n.names.iter().take(3).map(|x|substring(&norm(&x.family),if n.names.len()==1{3}else{1},false)).collect::<String>()).unwrap_or_default();a.push_str(&substring(e.fields.get("year").map(String::as_str).unwrap_or(""),2,true));return a;}let mut s=String::new();for p in &c.labelalpha {for f in &p.fields {let v=alpha_field(c,e,f);if !v.is_empty(){s.push_str(&v);if f.final_ {return s;}break;}}}s}
+fn labelalpha(c: &Control,e: &Entry)->String {if c.labelalpha.is_empty(){let source=e.computed.get("labelnamesource").and_then(|f|e.names.get(f));let mut a=source.map(|n|n.names.iter().take(3).map(|x|substring(&norm_label(&x.family),if n.names.len()==1{3}else{1},false)).collect::<String>()).unwrap_or_default();a.push_str(&substring(e.fields.get("year").map(String::as_str).unwrap_or(""),2,true));return a;}let mut s=String::new();for p in &c.labelalpha {for f in &p.fields {let v=alpha_field(c,e,f);if !v.is_empty(){s.push_str(&v);if f.final_ {return s;}break;}}}s}
 
 fn sort_name(c: &Control,e: &Entry,n: &NameList,namekey: &str)->String {
     let mut s=String::new();

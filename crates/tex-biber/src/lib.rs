@@ -9,11 +9,14 @@
 //! Unsupported sourcemap expressions are reported instead of silently ignored.
 mod bcf;
 mod bib;
+mod cli;
 mod dates;
 mod model;
 mod names;
 mod output;
 mod process;
+
+pub use cli::cli_main;
 
 use std::collections::{BTreeMap,BTreeSet};
 use std::path::PathBuf;

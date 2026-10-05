@@ -140,7 +140,7 @@ fn parse_one(raw: &str) -> Name {
         if !n.initial_tokens.contains_key(part) {
             let cleaned=strip_noinit(value);let value=cleaned.as_ref();
             let protected=n.strip.contains(part) || n.options.contains_key(&format!("protected-{part}"));
-            let tokens=if protected && !extended {vec![initial(value)]}
+            let tokens=if protected && !extended {vec![initial_grapheme(value)]}
                 else if protected { value.split('~').map(initial).collect() }
                 else {split_top(value,false).into_iter().map(initial).collect()};
             n.initial_tokens.insert(part.to_owned(),tokens);
@@ -167,6 +167,9 @@ fn initial(s:&str)->String {
             return result;
         }
     }
+    initial_grapheme(s)
+}
+fn initial_grapheme(s:&str)->String {
     let unbraced=s.trim_start_matches('{');let mut graphemes=unbraced.graphemes(true);
     let first=graphemes.next().unwrap_or("");
     if DIACRITIC.is_match(first){format!("{}{}",first,graphemes.next().unwrap_or(""))}else{first.to_owned()}
@@ -202,51 +205,134 @@ pub fn hash_string(s:&str)->String {
     crate::md5_hex(normalized.nfc().collect::<String>().as_bytes())
 }
 
-/// Convert the default Biber `base` macro set; unknown TeX commands survive.
-/// NFC here is the output form (Biber internally uses NFD).
-pub fn decode_latex(input:&str)->String {decode_segment(input).0.replace("ı\u{301}","í").nfc().collect()}
-fn decode_segment(s:&str)->(String,bool) {
-    let mut out=String::with_capacity(s.len());let mut changed=false;let mut i=0;let mut macro_args=false;
-    while i<s.len(){
-        let c=s[i..].chars().next().unwrap();
-        if c=='{' {
-            if let Some(end)=group_end(s,i){let inner=&s[i+1..end];let (decoded,did)=decode_segment(inner);
-                if did && !macro_args && decoded.graphemes(true).count()==1 {out.push_str(&decoded);}else{out.push('{');out.push_str(&decoded);out.push('}');}
-                changed|=did;i=end+1;continue;
+/// Biber 2.22's default `base` decode set, in Recode.pm substitution order.
+/// The temporary brace markers distinguish literal protection from accent
+/// grouping. Decoding a plain letter macro never removes its enclosing braces.
+/// NFC is the output form (Biber internally uses NFD).
+pub fn decode_latex(input:&str)->String {
+    let text=BOX_SPACE.replace_all(input, |c:&regex::Captures| {
+        if c[2].graphemes(true).count()==1 {format!("\\{}{{{}}}",&c[1],&c[2])}else{c[0].to_owned()}
+    });
+    let text=CHAR_MACRO.replace_all(&text, |c:&regex::Captures| {
+        let (digits,radix)=if let Some(v)=c.get(1){(v.as_str(),16)}else if let Some(v)=c.get(2){(v.as_str(),8)}else{(c.get(3).unwrap().as_str(),10)};
+        u32::from_str_radix(digits,radix).ok().and_then(char::from_u32).map(|v|v.to_string()).unwrap_or_else(||c[0].to_owned())
+    });
+    let text=CONTROL_SPACE.replace_all(&text, r"$1{}$2");
+    let text=CONTROL_PUNCT.replace_all(&text, r"$1{}$2");
+    let text=decode_plain_macros(&text,false);
+    let text=decode_plain_macros(&text,true);
+    // Explicit single-grapheme braces are protected before accents are decoded.
+    // Only a brace immediately following an accent command is an argument.
+    let text=SIMPLE_GROUP.replace_all(&text, |c:&regex::Captures| {
+        let start=c.get(0).unwrap().start();
+        if c[1].graphemes(true).count()==1 && !accent_before(&text[..start]) {
+            format!("\u{f}{}\u{e}",&c[1])
+        }else{c[0].to_owned()}
+    });
+    let text=BRACED_ACCENT.replace_all(&text, |c:&regex::Captures| {
+        if let Some(mark)=accent_macro(&c[2]) {
+            format!("{}{}{}{}",if c[1].is_empty(){""}else{"\u{1f}"},&c[3],mark,if c[4].is_empty(){""}else{"\u{1e}"})
+        }else{c[0].to_owned()}
+    });
+    let text=LETTER_GROUP.replace_all(&text, "\u{1f}$1\u{1e}");
+    let text=decode_unbraced_accents(&text);
+    let mut out=String::with_capacity(text.len());
+    let mut i=0;
+    while i<text.len() {
+        let ch=text[i..].chars().next().unwrap();
+        if matches!(ch,'{'|'\u{1f}') && !MACRO_ARGUMENT.is_match(&text[..i]) {
+            let start=i+ch.len_utf8();
+            if let Some(g)=text[start..].graphemes(true).next() {
+                let end=start+g.len();
+                if text[end..].starts_with(['}','\u{1e}']) {
+                    out.push_str(g);i=end+1;continue;
+                }
             }
         }
-        if c!='\\' {out.push(c);macro_args=false;i+=c.len_utf8();continue;}
-        let start=i;i+=1;if i==s.len(){out.push('\\');break;}
-        let next=s[i..].chars().next().unwrap();let command;
-        if next.is_ascii_alphabetic(){let begin=i;while i<s.len() && s.as_bytes()[i].is_ascii_alphabetic(){i+=1;}command=&s[begin..i];}
-        else{command=&s[i..i+next.len_utf8()];i+=next.len_utf8();}
-        macro_args=false;
-        if command=="char" {
-            let mut radix=10;if s[i..].starts_with('"'){radix=16;i+=1;}else if s[i..].starts_with('\''){radix=8;i+=1;}
-            let begin=i;while i<s.len()&&s.as_bytes()[i].is_ascii_hexdigit()&&(radix==16||s.as_bytes()[i].is_ascii_digit()){i+=1;}
-            if let Ok(v)=u32::from_str_radix(&s[begin..i],radix){if let Some(c)=char::from_u32(v){out.push(c);changed=true;continue;}}
-            out.push_str(&s[start..i]);continue;
-        }
-        if let Some(mark)=accent_macro(command) {
-            let after=i;while i<s.len()&&s[i..].chars().next().unwrap().is_whitespace(){i+=s[i..].chars().next().unwrap().len_utf8();}
-            let arg;
-            if i<s.len()&&s[i..].starts_with('{') {
-                if let Some(end)=group_end(s,i){arg=decode_segment(&s[i+1..end]).0;i=end+1;}else{i=after;out.push_str(&s[start..i]);continue;}
-            }else if i<s.len(){let c=s[i..].chars().next().unwrap();if !c.is_alphabetic(){i=after;out.push_str(&s[start..i]);continue;}arg=c.to_string();i+=c.len_utf8();}
-            else{i=after;out.push_str(&s[start..i]);continue;}
-            if arg.graphemes(true).count()!=1 || !arg.chars().next().is_some_and(char::is_alphabetic) {out.push_str(&s[start..i]);continue;}
-            out.push_str(&arg);out.push_str(mark);changed=true;continue;
-        }
-        if let Some(value)=letter_macro(command) {
-            out.push_str(value);changed=true;
-            if s[i..].starts_with("{}"){i+=2;}else{while i<s.len()&&s[i..].chars().next().unwrap().is_whitespace(){i+=s[i..].chars().next().unwrap().len_utf8();}}
-            continue;
-        }
-        out.push_str(&s[start..i]);macro_args=command.chars().all(|c|c.is_alphabetic());
+        out.push(ch);i+=ch.len_utf8();
     }
-    (out,changed)
+    out.replace(['\u{1f}','\u{f}'],"{").replace(['\u{1e}','\u{e}'],"}").replace("ı\u{301}","í").nfc().collect()
 }
-fn group_end(s:&str,start:usize)->Option<usize>{let mut depth=0usize;let mut escaped=false;for (j,c) in s[start..].char_indices(){if escaped{escaped=false;continue;}if c=='\\'{escaped=true;continue;}if c=='{'{depth+=1;}else if c=='}'{depth-=1;if depth==0{return Some(start+j);}}}None}
+
+static BOX_SPACE:LazyLock<Regex>=LazyLock::new(||Regex::new(r"\\(h?box)\s+\{([^{}]+)\}").unwrap());
+static CHAR_MACRO:LazyLock<Regex>=LazyLock::new(||Regex::new(r#"\\char(?:"([0-9A-Fa-f]+)|'([0-9]+)|([0-9]+))"#).unwrap());
+static CONTROL_SPACE:LazyLock<Regex>=LazyLock::new(||Regex::new(r"(\\[a-zA-Z]+)\\(\s+)").unwrap());
+static CONTROL_PUNCT:LazyLock<Regex>=LazyLock::new(||Regex::new(r"([^{]\\\w)([;,.:%])").unwrap());
+static PLAIN_MACRO:LazyLock<Regex>=LazyLock::new(||Regex::new(r"\\([A-Za-z]+|---|--)").unwrap());
+static WORD_START:LazyLock<Regex>=LazyLock::new(||Regex::new(r"^\w").unwrap());
+static SIMPLE_GROUP:LazyLock<Regex>=LazyLock::new(||Regex::new(r"\{([^{}]*)\}").unwrap());
+static ACCENT_COMMAND:LazyLock<Regex>=LazyLock::new(||Regex::new(r#"\\([A-Za-z]+|[`'^~=."])$"#).unwrap());
+static BRACED_ACCENT:LazyLock<Regex>=LazyLock::new(||Regex::new(r#"(\{?)\\([A-Za-z]+|[`'^~=."])\s*\{(\pL\pM*)\}(\}?)"#).unwrap());
+static LETTER_GROUP:LazyLock<Regex>=LazyLock::new(||Regex::new(r"\{(\pL\pM*)\}").unwrap());
+static LETTER_START:LazyLock<Regex>=LazyLock::new(||Regex::new(r"^\pL").unwrap());
+static MARK_START:LazyLock<Regex>=LazyLock::new(||Regex::new(r"^\pM*").unwrap());
+static MACRO_ARGUMENT:LazyLock<Regex>=LazyLock::new(||Regex::new(r"\\\pL+(?:\{[^{]+\})*$").unwrap());
+
+fn accent_before(prefix:&str)->bool {
+    ACCENT_COMMAND.captures(prefix).is_some_and(|c|accent_macro(&c[1]).is_some())
+}
+
+fn plain_letter(name:&str)->bool {
+    // Punctuation and symbols have a subtly different terminator from letters:
+    // their empty argument is consumed only when preceded by a literal space.
+    !matches!(name,"--"|"---"|"textendash"|"textemdash"|"textquoteleft"|"textquoteright"|"quotesinglbase"|"textquotedblleft"|"textquotedblright"|"quotedblbase"|"dag"|"ddag"|"textbullet"|"textperthousand"|"textpertenthousand"|"guilsinglleft"|"guilsinglright"|"textreferencemark"|"textinterrobang"|"textoverline"|"langle"|"rangle"|"textquotedbl"|"textdollar"|"textpercent"|"textampersand"|"textquotesingle"|"textasteriskcentered"|"textless"|"textequals"|"textgreater"|"textbar"|"nobreakspace"|"textexclamdown"|"textcent"|"textsterling"|"pounds"|"textcurrency"|"textyen"|"textbrokenbar"|"textsection"|"S"|"textasciidieresis"|"textcopyright"|"copyright"|"textordfeminine"|"guillemotleft"|"textminus"|"textregistered"|"textasciimacron"|"textdegree"|"texttwosuperior"|"textthreesuperior"|"textasciiacute"|"textparagraph"|"P"|"textcentereddot"|"textperiodcentered"|"textasciicedilla"|"textonesuperior"|"textordmasculine"|"guillemotright"|"textonequarter"|"textonehalf"|"textthreequarters"|"textquestiondown")
+}
+
+fn decode_plain_macros(text:&str,letters:bool)->String {
+    let mut out=String::with_capacity(text.len());
+    let mut last=0;
+    for c in PLAIN_MACRO.captures_iter(text) {
+        let m=c.get(0).unwrap();
+        if m.start()<last || plain_letter(&c[1])!=letters {continue;}
+        let Some(value)=letter_macro(&c[1]) else{continue;};
+        let rest=&text[m.end()..];
+        let mut consumed=0;
+        if letters && rest.starts_with("{}"){consumed=2;}
+        else if !letters && rest.starts_with(" {}"){consumed=3;}
+        else {
+            for ch in rest.chars(){if !ch.is_whitespace(){break;}consumed+=ch.len_utf8();}
+            if consumed==0 {
+                let left=WORD_START.is_match(&c[1][c[1].len()-1..]);
+                if left==WORD_START.is_match(rest){continue;}
+            }
+        }
+        out.push_str(&text[last..m.start()]);out.push_str(value);last=m.end()+consumed;
+    }
+    out.push_str(&text[last..]);out
+}
+
+fn decode_unbraced_accents(text:&str)->String {
+    let mut out=String::with_capacity(text.len());
+    let mut i=0;
+    while i<text.len() {
+        let ch=text[i..].chars().next().unwrap();
+        if ch!='\\'{out.push(ch);i+=ch.len_utf8();continue;}
+        let start=i;i+=1;
+        if i==text.len(){out.push('\\');break;}
+        let next=text[i..].chars().next().unwrap();
+        let begin=i;
+        if next.is_ascii_alphabetic(){while i<text.len() && text.as_bytes()[i].is_ascii_alphabetic(){i+=1;}}
+        else{i+=next.len_utf8();}
+        let name=&text[begin..i];
+        let Some(mark)=accent_macro(name) else{out.push_str(&text[start..i]);continue;};
+        let after=i;
+        while i<text.len() && text[i..].chars().next().unwrap().is_whitespace(){i+=text[i..].chars().next().unwrap().len_utf8();}
+        let letter_command=name.as_bytes().last().unwrap().is_ascii_alphabetic();
+        let valid=if !letter_command || i>after {LETTER_START.is_match(&text[i..])}
+            else{text[i..].chars().next().is_some_and(|c|!c.is_ascii_alphabetic())};
+        if !valid {
+            // Perl's \s* can backtrack to its empty match. For a letter
+            // accent this makes the first whitespace a non-ASCII-letter argument.
+            if letter_command && i>after {i=after;}
+            else{i=after;out.push_str(&text[start..i]);continue;}
+        }
+        let Some(arg)=text[i..].chars().next() else{i=after;out.push_str(&text[start..i]);continue;};
+        let end=i+arg.len_utf8();
+        let marks=MARK_START.find(&text[end..]).unwrap().end();
+        out.push_str(&text[i..end+marks]);out.push_str(mark);i=end+marks;
+    }
+    out
+}
 
 // Mapping data ported from Biber 2.22 recode_data.xml (base decode set).
 fn letter_macro(name: &str) -> Option<&'static str> {

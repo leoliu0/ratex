@@ -1,4 +1,4 @@
-class TeXres < Formula
+class Texres < Formula
   desc "Fast self-contained TeX engine written in Rust"
   homepage "https://github.com/leoliu0/texres"
   version "0.5.2"

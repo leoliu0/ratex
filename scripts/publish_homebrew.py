@@ -26,7 +26,7 @@ def main():
       url "https://github.com/leoliu0/texres/releases/download/{tag}/{name}"
       sha256 "{digest[7:]}"
     end''')
-    formula = f'''class TeXres < Formula
+    formula = f'''class Texres < Formula
   desc "Fast self-contained TeX engine written in Rust"
   homepage "https://github.com/leoliu0/texres"
   version "{tag[1:]}"

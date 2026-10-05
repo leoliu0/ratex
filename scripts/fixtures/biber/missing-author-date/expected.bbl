@@ -1,0 +1,107 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{nyt/global//global/global/global}
+    \entry{titleonly}{book}{}{}
+      \field{sortinit}{A}
+      \field{sortinithash}{2f401846e2029bad6b3ecc16d50031e2}
+      \field{labeldatesource}{nodate}
+      \field{labeltitlesource}{title}
+      \field{title}{Anonymous Work}
+      \true{nocite}
+    \endentry
+    \entry{editor}{book}{}{}
+      \name{editor}{1}{}{%
+        {{un=0,uniquepart=base,hash=d6cfb2b8c4b3f9440ec4642438129367}{%
+           family={Doe},
+           familyi={D\bibinitperiod},
+           given={Jane},
+           giveni={J\bibinitperiod},
+           givenun=0}}%
+      }
+      \strng{namehash}{d6cfb2b8c4b3f9440ec4642438129367}
+      \strng{fullhash}{d6cfb2b8c4b3f9440ec4642438129367}
+      \strng{fullhashraw}{d6cfb2b8c4b3f9440ec4642438129367}
+      \strng{bibnamehash}{d6cfb2b8c4b3f9440ec4642438129367}
+      \strng{editorbibnamehash}{d6cfb2b8c4b3f9440ec4642438129367}
+      \strng{editornamehash}{d6cfb2b8c4b3f9440ec4642438129367}
+      \strng{editorfullhash}{d6cfb2b8c4b3f9440ec4642438129367}
+      \strng{editorfullhashraw}{d6cfb2b8c4b3f9440ec4642438129367}
+      \field{sortinit}{D}
+      \field{sortinithash}{6f385f66841fb5e82009dc833c761848}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{editor}
+      \field{labeltitlesource}{title}
+      \field{title}{Edited Work}
+      \field{year}{2020}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{shorthand}{book}{}{}
+      \name{author}{1}{}{%
+        {{un=0,uniquepart=base,hash=3d1fbeb2193f0d66ca2855022fdcb20e}{%
+           family={Lovelace},
+           familyi={L\bibinitperiod},
+           given={Ada},
+           giveni={A\bibinitperiod},
+           givenun=0}}%
+      }
+      \strng{namehash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{fullhash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{fullhashraw}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{bibnamehash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{authorbibnamehash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{authornamehash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{authorfullhash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{authorfullhashraw}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \field{sortinit}{L}
+      \field{sortinithash}{7c47d417cecb1f4bd38d1825c427a61a}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{shorthand}{AL}
+      \field{title}{Named Work}
+      \field{year}{1843}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{organization}{online}{}{}
+      \list{organization}{1}{%
+        {Research Institute}%
+      }
+      \field{sortinit}{U}
+      \field{sortinithash}{6901a00e45705986ee5e7ca9fd39adca}
+      \field{labeldatesource}{nodate}
+      \field{labeltitlesource}{title}
+      \field{title}{Undated Report}
+      \true{nocite}
+      \verb{urlraw}
+      \verb https://example.org
+      \endverb
+      \verb{url}
+      \verb https://example.org
+      \endverb
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

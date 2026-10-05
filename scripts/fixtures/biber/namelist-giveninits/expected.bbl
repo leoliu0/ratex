@@ -1,0 +1,123 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{nyt/global//global/global/global}
+    \entry{editor}{book}{}{}
+      \name{editor}{1}{giveninits=true}{%
+        {{un=0,uniquepart=base,hash=e4dd0800ad37120b0197dccac1d8f42a}{%
+           family={Editor},
+           familyi={E\bibinitperiod},
+           given={Alice\bibnamedelima Beatrice},
+           giveni={A\bibinitperiod\bibinitdelim B\bibinitperiod},
+           givenun=0}}%
+      }
+      \strng{namehash}{e4dd0800ad37120b0197dccac1d8f42a}
+      \strng{fullhash}{e4dd0800ad37120b0197dccac1d8f42a}
+      \strng{fullhashraw}{e4dd0800ad37120b0197dccac1d8f42a}
+      \strng{bibnamehash}{e4dd0800ad37120b0197dccac1d8f42a}
+      \strng{editorbibnamehash}{e4dd0800ad37120b0197dccac1d8f42a}
+      \strng{editornamehash}{e4dd0800ad37120b0197dccac1d8f42a}
+      \strng{editorfullhash}{e4dd0800ad37120b0197dccac1d8f42a}
+      \strng{editorfullhashraw}{e4dd0800ad37120b0197dccac1d8f42a}
+      \field{sortinit}{E}
+      \field{sortinithash}{8da8a182d344d5b9047633dfc0cc9131}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{editor}
+      \field{labeltitlesource}{title}
+      \field{title}{Editor Initials}
+      \field{year}{2022}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{initials}{book}{}{}
+      \name{author}{2}{giveninits=true}{%
+        {{un=0,uniquepart=base,hash=3611658264b7736572d6d00454d8e1a2}{%
+           family={Smith},
+           familyi={S\bibinitperiod},
+           given={John\bibnamedelima Paul},
+           giveni={J\bibinitperiod\bibinitdelim P\bibinitperiod},
+           givenun=0}}%
+        {{un=0,uniquepart=base,hash=54357a471af489d4204434ab2302e9e0}{%
+           family={Jones},
+           familyi={J\bibinitperiod},
+           given={Mary\bibnamedelima Ann},
+           giveni={M\bibinitperiod\bibinitdelim A\bibinitperiod},
+           givenun=0}}%
+      }
+      \strng{namehash}{9b77b54d677db7edb061bb4a39098e7d}
+      \strng{fullhash}{9b77b54d677db7edb061bb4a39098e7d}
+      \strng{fullhashraw}{9b77b54d677db7edb061bb4a39098e7d}
+      \strng{bibnamehash}{9b77b54d677db7edb061bb4a39098e7d}
+      \strng{authorbibnamehash}{9b77b54d677db7edb061bb4a39098e7d}
+      \strng{authornamehash}{9b77b54d677db7edb061bb4a39098e7d}
+      \strng{authorfullhash}{9b77b54d677db7edb061bb4a39098e7d}
+      \strng{authorfullhashraw}{9b77b54d677db7edb061bb4a39098e7d}
+      \field{extraname}{1}
+      \field{sortinit}{S}
+      \field{sortinithash}{b164b07b29984b41daf1e85279fbc5ab}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Initials List}
+      \field{year}{2020}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{full}{book}{}{}
+      \name{author}{2}{giveninits=false}{%
+        {{un=0,uniquepart=base,hash=3611658264b7736572d6d00454d8e1a2}{%
+           family={Smith},
+           familyi={S\bibinitperiod},
+           given={John\bibnamedelima Paul},
+           giveni={J\bibinitperiod\bibinitdelim P\bibinitperiod},
+           givenun=0}}%
+        {{un=0,uniquepart=base,hash=54357a471af489d4204434ab2302e9e0}{%
+           family={Jones},
+           familyi={J\bibinitperiod},
+           given={Mary\bibnamedelima Ann},
+           giveni={M\bibinitperiod\bibinitdelim A\bibinitperiod},
+           givenun=0}}%
+      }
+      \strng{namehash}{9b77b54d677db7edb061bb4a39098e7d}
+      \strng{fullhash}{9b77b54d677db7edb061bb4a39098e7d}
+      \strng{fullhashraw}{9b77b54d677db7edb061bb4a39098e7d}
+      \strng{bibnamehash}{9b77b54d677db7edb061bb4a39098e7d}
+      \strng{authorbibnamehash}{9b77b54d677db7edb061bb4a39098e7d}
+      \strng{authornamehash}{9b77b54d677db7edb061bb4a39098e7d}
+      \strng{authorfullhash}{9b77b54d677db7edb061bb4a39098e7d}
+      \strng{authorfullhashraw}{9b77b54d677db7edb061bb4a39098e7d}
+      \field{extraname}{2}
+      \field{sortinit}{S}
+      \field{sortinithash}{b164b07b29984b41daf1e85279fbc5ab}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Full Names List}
+      \field{year}{2021}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

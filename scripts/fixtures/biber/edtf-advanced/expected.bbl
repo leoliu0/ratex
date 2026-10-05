@@ -1,0 +1,274 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{nyt/global//global/global/global}
+    \entry{bce}{book}{}{}
+      \name{author}{1}{}{%
+        {{un=0,uniquepart=base,hash=cc59dc86affa85ea72fe4324c910b9a4}{%
+           family={Brown},
+           familyi={B\bibinitperiod},
+           given={Bert},
+           giveni={B\bibinitperiod},
+           givenun=0}}%
+      }
+      \strng{namehash}{cc59dc86affa85ea72fe4324c910b9a4}
+      \strng{fullhash}{cc59dc86affa85ea72fe4324c910b9a4}
+      \strng{fullhashraw}{cc59dc86affa85ea72fe4324c910b9a4}
+      \strng{bibnamehash}{cc59dc86affa85ea72fe4324c910b9a4}
+      \strng{authorbibnamehash}{cc59dc86affa85ea72fe4324c910b9a4}
+      \strng{authornamehash}{cc59dc86affa85ea72fe4324c910b9a4}
+      \strng{authorfullhash}{cc59dc86affa85ea72fe4324c910b9a4}
+      \strng{authorfullhashraw}{cc59dc86affa85ea72fe4324c910b9a4}
+      \field{sortinit}{B}
+      \field{sortinithash}{d7095fff47cda75ca2589920aae98399}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{month}{2}
+      \field{origendyear}{219}
+      \field{origyear}{221}
+      \field{title}{Before Common Era}
+      \field{year}{379}
+      \field{dateera}{bce}
+      \field{origenddateera}{bce}
+      \field{origdateera}{bce}
+      \true{nocite}
+    \endentry
+    \entry{season}{book}{}{}
+      \name{author}{1}{}{%
+        {{un=0,uniquepart=base,hash=eb8fba5b5e50ff0f327f47041fe3f891}{%
+           family={Church},
+           familyi={C\bibinitperiod},
+           given={Alonzo},
+           giveni={A\bibinitperiod},
+           givenun=0}}%
+      }
+      \strng{namehash}{eb8fba5b5e50ff0f327f47041fe3f891}
+      \strng{fullhash}{eb8fba5b5e50ff0f327f47041fe3f891}
+      \strng{fullhashraw}{eb8fba5b5e50ff0f327f47041fe3f891}
+      \strng{bibnamehash}{eb8fba5b5e50ff0f327f47041fe3f891}
+      \strng{authorbibnamehash}{eb8fba5b5e50ff0f327f47041fe3f891}
+      \strng{authornamehash}{eb8fba5b5e50ff0f327f47041fe3f891}
+      \strng{authorfullhash}{eb8fba5b5e50ff0f327f47041fe3f891}
+      \strng{authorfullhashraw}{eb8fba5b5e50ff0f327f47041fe3f891}
+      \field{sortinit}{C}
+      \field{sortinithash}{4d103a86280481745c9c897c925753c0}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{eventyear}{2002}
+      \field{eventyeardivision}{autumn}
+      \field{title}{Seasons}
+      \field{year}{2003}
+      \field{yeardivision}{spring}
+      \field{dateera}{ce}
+      \field{eventdateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{unspecifiedday}{book}{}{}
+      \name{author}{1}{}{%
+        {{un=0,uniquepart=base,hash=1fa7f29bbe446f462f2b28d960a08cc5}{%
+           family={Hopper},
+           familyi={H\bibinitperiod},
+           given={Grace},
+           giveni={G\bibinitperiod},
+           givenun=0}}%
+      }
+      \strng{namehash}{1fa7f29bbe446f462f2b28d960a08cc5}
+      \strng{fullhash}{1fa7f29bbe446f462f2b28d960a08cc5}
+      \strng{fullhashraw}{1fa7f29bbe446f462f2b28d960a08cc5}
+      \strng{bibnamehash}{1fa7f29bbe446f462f2b28d960a08cc5}
+      \strng{authorbibnamehash}{1fa7f29bbe446f462f2b28d960a08cc5}
+      \strng{authornamehash}{1fa7f29bbe446f462f2b28d960a08cc5}
+      \strng{authorfullhash}{1fa7f29bbe446f462f2b28d960a08cc5}
+      \strng{authorfullhashraw}{1fa7f29bbe446f462f2b28d960a08cc5}
+      \field{sortinit}{H}
+      \field{sortinithash}{23a3aa7c24e56cfa16945d55545109b5}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{day}{1}
+      \field{endday}{31}
+      \field{endmonth}{12}
+      \field{endyear}{1999}
+      \field{month}{1}
+      \field{title}{Unspecified Month and Day}
+      \field{year}{1999}
+      \field{dateunspecified}{dayinyear}
+      \field{enddateera}{ce}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{uncertain}{book}{}{}
+      \name{author}{1}{}{%
+        {{un=0,uniquepart=base,hash=3d1fbeb2193f0d66ca2855022fdcb20e}{%
+           family={Lovelace},
+           familyi={L\bibinitperiod},
+           given={Ada},
+           giveni={A\bibinitperiod},
+           givenun=0}}%
+      }
+      \strng{namehash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{fullhash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{fullhashraw}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{bibnamehash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{authorbibnamehash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{authornamehash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{authorfullhash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{authorfullhashraw}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \field{sortinit}{L}
+      \field{sortinithash}{7c47d417cecb1f4bd38d1825c427a61a}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{eventyear}{1565}
+      \field{origendyear}{1488}
+      \field{origyear}{1487}
+      \field{title}{Uncertain Approximate}
+      \field{urlendyear}{1490}
+      \field{urlyear}{1487}
+      \field{year}{1034}
+      \true{datecirca}
+      \field{dateera}{ce}
+      \true{eventdateuncertain}
+      \field{eventdateera}{ce}
+      \true{origenddatecirca}
+      \field{origenddateera}{ce}
+      \field{origdateera}{ce}
+      \true{urldatecirca}
+      \field{urlenddateera}{ce}
+      \field{urldateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{time}{online}{}{}
+      \name{author}{1}{}{%
+        {{un=0,uniquepart=base,hash=055f6811649a97bc3a36ff4b2581f441}{%
+           family={Smith},
+           familyi={S\bibinitperiod},
+           given={Jane},
+           giveni={J\bibinitperiod},
+           givenun=0}}%
+      }
+      \strng{namehash}{055f6811649a97bc3a36ff4b2581f441}
+      \strng{fullhash}{055f6811649a97bc3a36ff4b2581f441}
+      \strng{fullhashraw}{055f6811649a97bc3a36ff4b2581f441}
+      \strng{bibnamehash}{055f6811649a97bc3a36ff4b2581f441}
+      \strng{authorbibnamehash}{055f6811649a97bc3a36ff4b2581f441}
+      \strng{authornamehash}{055f6811649a97bc3a36ff4b2581f441}
+      \strng{authorfullhash}{055f6811649a97bc3a36ff4b2581f441}
+      \strng{authorfullhashraw}{055f6811649a97bc3a36ff4b2581f441}
+      \field{sortinit}{S}
+      \field{sortinithash}{b164b07b29984b41daf1e85279fbc5ab}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{day}{3}
+      \field{hour}{15}
+      \field{minute}{0}
+      \field{month}{1}
+      \field{origday}{3}
+      \field{orighour}{17}
+      \field{origminute}{7}
+      \field{origmonth}{1}
+      \field{origsecond}{34}
+      \field{origtimezone}{Z}
+      \field{origyear}{2001}
+      \field{second}{0}
+      \field{title}{Time Components}
+      \field{urlday}{3}
+      \field{urlhour}{17}
+      \field{urlminute}{7}
+      \field{urlmonth}{1}
+      \field{urlsecond}{34}
+      \field{urltimezone}{+05\bibtzminsep 00}
+      \field{urlyear}{2001}
+      \field{year}{2001}
+      \field{dateera}{ce}
+      \field{origdateera}{ce}
+      \field{urldateera}{ce}
+      \true{nocite}
+      \verb{urlraw}
+      \verb https://example.org/time
+      \endverb
+      \verb{url}
+      \verb https://example.org/time
+      \endverb
+    \endentry
+    \entry{unspecified}{book}{}{}
+      \name{author}{1}{}{%
+        {{un=0,uniquepart=base,hash=d6d9f41ce7ab57b0d45edbe153331923}{%
+           family={Turing},
+           familyi={T\bibinitperiod},
+           given={Alan},
+           giveni={A\bibinitperiod},
+           givenun=0}}%
+      }
+      \strng{namehash}{d6d9f41ce7ab57b0d45edbe153331923}
+      \strng{fullhash}{d6d9f41ce7ab57b0d45edbe153331923}
+      \strng{fullhashraw}{d6d9f41ce7ab57b0d45edbe153331923}
+      \strng{bibnamehash}{d6d9f41ce7ab57b0d45edbe153331923}
+      \strng{authorbibnamehash}{d6d9f41ce7ab57b0d45edbe153331923}
+      \strng{authornamehash}{d6d9f41ce7ab57b0d45edbe153331923}
+      \strng{authorfullhash}{d6d9f41ce7ab57b0d45edbe153331923}
+      \strng{authorfullhashraw}{d6d9f41ce7ab57b0d45edbe153331923}
+      \field{sortinit}{T}
+      \field{sortinithash}{9af77f0292593c26bde9a56e688eaee9}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{endyear}{1999}
+      \field{eventendyear}{1999}
+      \field{eventyear}{1900}
+      \field{origendmonth}{12}
+      \field{origendyear}{1999}
+      \field{origmonth}{1}
+      \field{origyear}{1999}
+      \field{title}{Unspecified Components}
+      \field{urlday}{1}
+      \field{urlendday}{31}
+      \field{urlendmonth}{1}
+      \field{urlendyear}{1999}
+      \field{urlmonth}{1}
+      \field{urlyear}{1999}
+      \field{year}{1990}
+      \field{dateunspecified}{yearindecade}
+      \field{enddateera}{ce}
+      \field{dateera}{ce}
+      \field{eventdateunspecified}{yearincentury}
+      \field{eventenddateera}{ce}
+      \field{eventdateera}{ce}
+      \field{origdateunspecified}{monthinyear}
+      \field{origenddateera}{ce}
+      \field{origdateera}{ce}
+      \field{urldateunspecified}{dayinmonth}
+      \field{urlenddateera}{ce}
+      \field{urldateera}{ce}
+      \true{nocite}
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

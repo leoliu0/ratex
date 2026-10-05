@@ -1,0 +1,110 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{nyt/global//global/global/global}
+    \entry{parent}{collection}{}{}
+      \name{editor}{1}{}{%
+        {{un=0,uniquepart=base,hash=7abda9755b59aca7322278d9fb2bec64}{%
+           family={Editor},
+           familyi={E\bibinitperiod},
+           given={Jane},
+           giveni={J\bibinitperiod},
+           givenun=0}}%
+      }
+      \list{location}{1}{%
+        {Paris}%
+      }
+      \list{publisher}{1}{%
+        {Inherited Press}%
+      }
+      \strng{namehash}{7abda9755b59aca7322278d9fb2bec64}
+      \strng{fullhash}{7abda9755b59aca7322278d9fb2bec64}
+      \strng{fullhashraw}{7abda9755b59aca7322278d9fb2bec64}
+      \strng{bibnamehash}{7abda9755b59aca7322278d9fb2bec64}
+      \strng{editorbibnamehash}{7abda9755b59aca7322278d9fb2bec64}
+      \strng{editornamehash}{7abda9755b59aca7322278d9fb2bec64}
+      \strng{editorfullhash}{7abda9755b59aca7322278d9fb2bec64}
+      \strng{editorfullhashraw}{7abda9755b59aca7322278d9fb2bec64}
+      \field{sortinit}{E}
+      \field{sortinithash}{8da8a182d344d5b9047633dfc0cc9131}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{editor}
+      \field{labeltitlesource}{title}
+      \field{title}{Collected Papers}
+      \field{year}{2020}
+      \field{dateera}{ce}
+    \endentry
+    \entry{child}{incollection}{}{}
+      \name{author}{1}{}{%
+        {{un=0,uniquepart=base,hash=3d1fbeb2193f0d66ca2855022fdcb20e}{%
+           family={Lovelace},
+           familyi={L\bibinitperiod},
+           given={Ada},
+           giveni={A\bibinitperiod},
+           givenun=0}}%
+      }
+      \name{editor}{1}{}{%
+        {{un=0,uniquepart=base,hash=7abda9755b59aca7322278d9fb2bec64}{%
+           family={Editor},
+           familyi={E\bibinitperiod},
+           given={Jane},
+           giveni={J\bibinitperiod},
+           givenun=0}}%
+      }
+      \list{location}{1}{%
+        {Paris}%
+      }
+      \list{publisher}{1}{%
+        {Inherited Press}%
+      }
+      \strng{namehash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{fullhash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{fullhashraw}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{bibnamehash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{authorbibnamehash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{authornamehash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{authorfullhash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{authorfullhashraw}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{editorbibnamehash}{7abda9755b59aca7322278d9fb2bec64}
+      \strng{editornamehash}{7abda9755b59aca7322278d9fb2bec64}
+      \strng{editorfullhash}{7abda9755b59aca7322278d9fb2bec64}
+      \strng{editorfullhashraw}{7abda9755b59aca7322278d9fb2bec64}
+      \field{sortinit}{L}
+      \field{sortinithash}{7c47d417cecb1f4bd38d1825c427a61a}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{booktitle}{Collected Papers}
+      \strng{crossref}{parent}
+      \field{title}{Inherited Chapter}
+      \field{year}{2020}
+      \field{dateera}{ce}
+      \field{pages}{10\bibrangedash 20}
+      \range{pages}{11}
+    \endentry
+  \enddatalist
+  \keyalias{child-alias}{child}
+  \keyalias{parent-alias}{parent}
+  \keyalias{parent-inheritance}{parent}
+\endrefsection
+\endinput
+

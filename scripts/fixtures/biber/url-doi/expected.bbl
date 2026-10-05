@@ -1,0 +1,72 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{nyt/global//global/global/global}
+    \entry{web}{article}{}{}
+      \name{author}{1}{}{%
+        {{un=0,uniquepart=base,hash=3d1fbeb2193f0d66ca2855022fdcb20e}{%
+           family={Lovelace},
+           familyi={L\bibinitperiod},
+           given={Ada},
+           giveni={A\bibinitperiod},
+           givenun=0}}%
+      }
+      \strng{namehash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{fullhash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{fullhashraw}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{bibnamehash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{authorbibnamehash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{authornamehash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{authorfullhash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{authorfullhashraw}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \field{sortinit}{L}
+      \field{sortinithash}{7c47d417cecb1f4bd38d1825c427a61a}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{eprintclass}{cs.CL}
+      \field{eprinttype}{arxiv}
+      \field{journaltitle}{Journal}
+      \field{title}{Web Identifiers}
+      \field{urlday}{2}
+      \field{urlmonth}{1}
+      \field{urlyear}{2025}
+      \field{year}{2024}
+      \field{dateera}{ce}
+      \field{urldateera}{ce}
+      \true{nocite}
+      \verb{doi}
+      \verb 10.1000/example_42
+      \endverb
+      \verb{eprint}
+      \verb 2401.12345
+      \endverb
+      \verb{urlraw}
+      \verb https://example.org/path?q=one&other=two#anchor
+      \endverb
+      \verb{url}
+      \verb https://example.org/path?q=one&other=two#anchor
+      \endverb
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

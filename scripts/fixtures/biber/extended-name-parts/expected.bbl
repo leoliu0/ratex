@@ -1,0 +1,124 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{nyt/global//global/global/global}
+    \entry{parts}{book}{}{}
+      \name{author}{2}{}{%
+        {{un=0,uniquepart=base,hash=250658a5ebdf84fa4c28885a9ef9272b}{%
+           family={Beethoven},
+           familyi={B\bibinitperiod},
+           given={Ludwig},
+           giveni={L\bibinitperiod},
+           givenun=0,
+           prefix={van},
+           prefixi={v\bibinitperiod},
+           suffix={Jr.},
+           suffixi={J\bibinitperiod},
+           suffixun=0}}%
+        {{un=0,uniquepart=base,hash=ee45259206e83a97417171680c373e59}{%
+           family={Vallée\bibnamedelima Poussin},
+           familyi={V\bibinitperiod\bibinitdelim P\bibinitperiod},
+           given={Charles\bibnamedelima Louis},
+           giveni={C\bibinitperiod\bibinitdelim L\bibinitperiod},
+           givenun=0,
+           prefix={de\bibnamedelima la},
+           prefixi={d\bibinitperiod\bibinitdelim l\bibinitperiod}}}%
+      }
+      \strng{namehash}{60104598b410696a621b3b94abf49bb6}
+      \strng{fullhash}{60104598b410696a621b3b94abf49bb6}
+      \strng{fullhashraw}{60104598b410696a621b3b94abf49bb6}
+      \strng{bibnamehash}{60104598b410696a621b3b94abf49bb6}
+      \strng{authorbibnamehash}{60104598b410696a621b3b94abf49bb6}
+      \strng{authornamehash}{60104598b410696a621b3b94abf49bb6}
+      \strng{authorfullhash}{60104598b410696a621b3b94abf49bb6}
+      \strng{authorfullhashraw}{60104598b410696a621b3b94abf49bb6}
+      \field{sortinit}{v}
+      \field{sortinithash}{afb52128e5b4dc4b843768c0113d673b}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Explicit Name Parts}
+      \field{year}{2020}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{initials}{book}{}{}
+      \name{author}{1}{}{%
+        {{un=0,uniquepart=base,hash=a311dbcb0b2e932c3b394170c6f58312}{%
+           family={Smith},
+           familyi={Sm\bibinitperiod},
+           given={John\bibnamedelima Paul},
+           giveni={JP\bibinitperiod},
+           givenun=0,
+           prefix={von},
+           prefixi={V\bibinitperiod},
+           suffix={Junior},
+           suffixi={Jr\bibinitperiod},
+           suffixun=0}}%
+      }
+      \strng{namehash}{a311dbcb0b2e932c3b394170c6f58312}
+      \strng{fullhash}{a311dbcb0b2e932c3b394170c6f58312}
+      \strng{fullhashraw}{a311dbcb0b2e932c3b394170c6f58312}
+      \strng{bibnamehash}{a311dbcb0b2e932c3b394170c6f58312}
+      \strng{authorbibnamehash}{a311dbcb0b2e932c3b394170c6f58312}
+      \strng{authornamehash}{a311dbcb0b2e932c3b394170c6f58312}
+      \strng{authorfullhash}{a311dbcb0b2e932c3b394170c6f58312}
+      \strng{authorfullhashraw}{a311dbcb0b2e932c3b394170c6f58312}
+      \field{sortinit}{v}
+      \field{sortinithash}{afb52128e5b4dc4b843768c0113d673b}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Explicit Initials}
+      \field{year}{2022}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{corporate}{book}{}{}
+      \name{author}{1}{}{%
+        {{un=0,uniquepart=base,hash=531217507bec092b6ec36c0f78f46736}{%
+           family={World\bibnamedelimb Health\bibnamedelimb Organization},
+           familyi={W\bibinitperiod}}}%
+      }
+      \strng{namehash}{531217507bec092b6ec36c0f78f46736}
+      \strng{fullhash}{531217507bec092b6ec36c0f78f46736}
+      \strng{fullhashraw}{531217507bec092b6ec36c0f78f46736}
+      \strng{bibnamehash}{531217507bec092b6ec36c0f78f46736}
+      \strng{authorbibnamehash}{531217507bec092b6ec36c0f78f46736}
+      \strng{authornamehash}{531217507bec092b6ec36c0f78f46736}
+      \strng{authorfullhash}{531217507bec092b6ec36c0f78f46736}
+      \strng{authorfullhashraw}{531217507bec092b6ec36c0f78f46736}
+      \field{sortinit}{W}
+      \field{sortinithash}{4315d78024d0cea9b57a0c6f0e35ed0d}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Protected Corporate Family}
+      \field{year}{2021}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

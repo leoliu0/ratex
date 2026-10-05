@@ -1,0 +1,105 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{nyt/global//global/global/global}
+    \entry{two}{book}{}{}
+      \name{author}{3}{ul=2}{%
+        {{un=0,uniquepart=base,hash=3d1fbeb2193f0d66ca2855022fdcb20e}{%
+           family={Lovelace},
+           familyi={L\bibinitperiod},
+           given={Ada},
+           giveni={A\bibinitperiod},
+           givenun=0}}%
+        {{un=0,uniquepart=base,hash=eb8fba5b5e50ff0f327f47041fe3f891}{%
+           family={Church},
+           familyi={C\bibinitperiod},
+           given={Alonzo},
+           giveni={A\bibinitperiod},
+           givenun=0}}%
+        {{un=0,uniquepart=base,hash=1fa7f29bbe446f462f2b28d960a08cc5}{%
+           family={Hopper},
+           familyi={H\bibinitperiod},
+           given={Grace},
+           giveni={G\bibinitperiod},
+           givenun=0}}%
+      }
+      \strng{namehash}{79d2757758b19ef31eb0b9de75e79001}
+      \strng{fullhash}{1b83ac23aeff6a1786ac9b9080361b6a}
+      \strng{fullhashraw}{1b83ac23aeff6a1786ac9b9080361b6a}
+      \strng{bibnamehash}{79d2757758b19ef31eb0b9de75e79001}
+      \strng{authorbibnamehash}{79d2757758b19ef31eb0b9de75e79001}
+      \strng{authornamehash}{79d2757758b19ef31eb0b9de75e79001}
+      \strng{authorfullhash}{1b83ac23aeff6a1786ac9b9080361b6a}
+      \strng{authorfullhashraw}{1b83ac23aeff6a1786ac9b9080361b6a}
+      \field{sortinit}{L}
+      \field{sortinithash}{7c47d417cecb1f4bd38d1825c427a61a}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Beta}
+      \field{year}{2020}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{one}{book}{}{}
+      \name{author}{3}{ul=2}{%
+        {{un=0,uniquepart=base,hash=3d1fbeb2193f0d66ca2855022fdcb20e}{%
+           family={Lovelace},
+           familyi={L\bibinitperiod},
+           given={Ada},
+           giveni={A\bibinitperiod},
+           givenun=0}}%
+        {{un=0,uniquepart=base,hash=d6d9f41ce7ab57b0d45edbe153331923}{%
+           family={Turing},
+           familyi={T\bibinitperiod},
+           given={Alan},
+           giveni={A\bibinitperiod},
+           givenun=0}}%
+        {{un=0,uniquepart=base,hash=1fa7f29bbe446f462f2b28d960a08cc5}{%
+           family={Hopper},
+           familyi={H\bibinitperiod},
+           given={Grace},
+           giveni={G\bibinitperiod},
+           givenun=0}}%
+      }
+      \strng{namehash}{aa7379819289f28e5f0d1f0bccf8a08d}
+      \strng{fullhash}{92e3fef24b7f622cb1473f68077ac75e}
+      \strng{fullhashraw}{92e3fef24b7f622cb1473f68077ac75e}
+      \strng{bibnamehash}{aa7379819289f28e5f0d1f0bccf8a08d}
+      \strng{authorbibnamehash}{aa7379819289f28e5f0d1f0bccf8a08d}
+      \strng{authornamehash}{aa7379819289f28e5f0d1f0bccf8a08d}
+      \strng{authorfullhash}{92e3fef24b7f622cb1473f68077ac75e}
+      \strng{authorfullhashraw}{92e3fef24b7f622cb1473f68077ac75e}
+      \field{sortinit}{L}
+      \field{sortinithash}{7c47d417cecb1f4bd38d1825c427a61a}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Alpha}
+      \field{year}{2020}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

@@ -1,0 +1,230 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{nyt/global/7FC56270E7A70FA81A5935B72EACBE29/global/global/global}
+    \entry{gamma}{book}{}{}
+      \name{author}{1}{}{%
+        {{hash=1fa7f29bbe446f462f2b28d960a08cc5}{%
+           family={Hopper},
+           familyi={H\bibinitperiod},
+           given={Grace},
+           giveni={G\bibinitperiod}}}%
+      }
+      \list{location}{1}{%
+        {New York}%
+      }
+      \list{publisher}{1}{%
+        {Computing Press}%
+      }
+      \strng{namehash}{1fa7f29bbe446f462f2b28d960a08cc5}
+      \strng{fullhash}{1fa7f29bbe446f462f2b28d960a08cc5}
+      \strng{fullhashraw}{1fa7f29bbe446f462f2b28d960a08cc5}
+      \strng{bibnamehash}{1fa7f29bbe446f462f2b28d960a08cc5}
+      \strng{authorbibnamehash}{1fa7f29bbe446f462f2b28d960a08cc5}
+      \strng{authornamehash}{1fa7f29bbe446f462f2b28d960a08cc5}
+      \strng{authorfullhash}{1fa7f29bbe446f462f2b28d960a08cc5}
+      \strng{authorfullhashraw}{1fa7f29bbe446f462f2b28d960a08cc5}
+      \field{labelalpha}{Hop52}
+      \field{sortinit}{H}
+      \field{sortinithash}{23a3aa7c24e56cfa16945d55545109b5}
+      \field{labelprefix}{A}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Compilers}
+      \field{year}{1952}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{alpha}{book}{}{}
+      \name{author}{1}{}{%
+        {{hash=3d1fbeb2193f0d66ca2855022fdcb20e}{%
+           family={Lovelace},
+           familyi={L\bibinitperiod},
+           given={Ada},
+           giveni={A\bibinitperiod}}}%
+      }
+      \list{location}{1}{%
+        {London}%
+      }
+      \list{publisher}{1}{%
+        {Scientific Press}%
+      }
+      \strng{namehash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{fullhash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{fullhashraw}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{bibnamehash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{authorbibnamehash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{authornamehash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{authorfullhash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{authorfullhashraw}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \field{labelalpha}{Lov43}
+      \field{sortinit}{L}
+      \field{sortinithash}{7c47d417cecb1f4bd38d1825c427a61a}
+      \field{labelprefix}{A}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Analytical Engines}
+      \field{year}{1843}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{beta}{article}{}{}
+      \name{author}{2}{}{%
+        {{hash=d6d9f41ce7ab57b0d45edbe153331923}{%
+           family={Turing},
+           familyi={T\bibinitperiod},
+           given={Alan},
+           giveni={A\bibinitperiod}}}%
+        {{hash=eb8fba5b5e50ff0f327f47041fe3f891}{%
+           family={Church},
+           familyi={C\bibinitperiod},
+           given={Alonzo},
+           giveni={A\bibinitperiod}}}%
+      }
+      \strng{namehash}{8efff370205d34ecdb59d1df414aca5a}
+      \strng{fullhash}{8efff370205d34ecdb59d1df414aca5a}
+      \strng{fullhashraw}{8efff370205d34ecdb59d1df414aca5a}
+      \strng{bibnamehash}{8efff370205d34ecdb59d1df414aca5a}
+      \strng{authorbibnamehash}{8efff370205d34ecdb59d1df414aca5a}
+      \strng{authornamehash}{8efff370205d34ecdb59d1df414aca5a}
+      \strng{authorfullhash}{8efff370205d34ecdb59d1df414aca5a}
+      \strng{authorfullhashraw}{8efff370205d34ecdb59d1df414aca5a}
+      \field{labelalpha}{TC36}
+      \field{sortinit}{T}
+      \field{sortinithash}{9af77f0292593c26bde9a56e688eaee9}
+      \field{labelprefix}{A}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{Journal of Logic}
+      \field{number}{1}
+      \field{title}{Computable Numbers}
+      \field{volume}{2}
+      \field{year}{1936}
+      \field{dateera}{ce}
+      \true{nocite}
+      \field{pages}{10\bibrangedash 25}
+      \range{pages}{16}
+    \endentry
+  \enddatalist
+  \datalist[entry]{nyt/global//global/global/global}
+    \entry{gamma}{book}{}{}
+      \name{author}{1}{}{%
+        {{hash=1fa7f29bbe446f462f2b28d960a08cc5}{%
+           family={Hopper},
+           familyi={H\bibinitperiod},
+           given={Grace},
+           giveni={G\bibinitperiod}}}%
+      }
+      \list{location}{1}{%
+        {New York}%
+      }
+      \list{publisher}{1}{%
+        {Computing Press}%
+      }
+      \strng{namehash}{1fa7f29bbe446f462f2b28d960a08cc5}
+      \strng{fullhash}{1fa7f29bbe446f462f2b28d960a08cc5}
+      \strng{fullhashraw}{1fa7f29bbe446f462f2b28d960a08cc5}
+      \strng{bibnamehash}{1fa7f29bbe446f462f2b28d960a08cc5}
+      \strng{authorbibnamehash}{1fa7f29bbe446f462f2b28d960a08cc5}
+      \strng{authornamehash}{1fa7f29bbe446f462f2b28d960a08cc5}
+      \strng{authorfullhash}{1fa7f29bbe446f462f2b28d960a08cc5}
+      \strng{authorfullhashraw}{1fa7f29bbe446f462f2b28d960a08cc5}
+      \field{labelalpha}{Hop52}
+      \field{sortinit}{H}
+      \field{sortinithash}{23a3aa7c24e56cfa16945d55545109b5}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Compilers}
+      \field{year}{1952}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{alpha}{book}{}{}
+      \name{author}{1}{}{%
+        {{hash=3d1fbeb2193f0d66ca2855022fdcb20e}{%
+           family={Lovelace},
+           familyi={L\bibinitperiod},
+           given={Ada},
+           giveni={A\bibinitperiod}}}%
+      }
+      \list{location}{1}{%
+        {London}%
+      }
+      \list{publisher}{1}{%
+        {Scientific Press}%
+      }
+      \strng{namehash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{fullhash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{fullhashraw}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{bibnamehash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{authorbibnamehash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{authornamehash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{authorfullhash}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \strng{authorfullhashraw}{3d1fbeb2193f0d66ca2855022fdcb20e}
+      \field{labelalpha}{Lov43}
+      \field{sortinit}{L}
+      \field{sortinithash}{7c47d417cecb1f4bd38d1825c427a61a}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Analytical Engines}
+      \field{year}{1843}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{beta}{article}{}{}
+      \name{author}{2}{}{%
+        {{hash=d6d9f41ce7ab57b0d45edbe153331923}{%
+           family={Turing},
+           familyi={T\bibinitperiod},
+           given={Alan},
+           giveni={A\bibinitperiod}}}%
+        {{hash=eb8fba5b5e50ff0f327f47041fe3f891}{%
+           family={Church},
+           familyi={C\bibinitperiod},
+           given={Alonzo},
+           giveni={A\bibinitperiod}}}%
+      }
+      \strng{namehash}{8efff370205d34ecdb59d1df414aca5a}
+      \strng{fullhash}{8efff370205d34ecdb59d1df414aca5a}
+      \strng{fullhashraw}{8efff370205d34ecdb59d1df414aca5a}
+      \strng{bibnamehash}{8efff370205d34ecdb59d1df414aca5a}
+      \strng{authorbibnamehash}{8efff370205d34ecdb59d1df414aca5a}
+      \strng{authornamehash}{8efff370205d34ecdb59d1df414aca5a}
+      \strng{authorfullhash}{8efff370205d34ecdb59d1df414aca5a}
+      \strng{authorfullhashraw}{8efff370205d34ecdb59d1df414aca5a}
+      \field{labelalpha}{TC36}
+      \field{sortinit}{T}
+      \field{sortinithash}{9af77f0292593c26bde9a56e688eaee9}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{Journal of Logic}
+      \field{number}{1}
+      \field{title}{Computable Numbers}
+      \field{volume}{2}
+      \field{year}{1936}
+      \field{dateera}{ce}
+      \true{nocite}
+      \field{pages}{10\bibrangedash 25}
+      \range{pages}{16}
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

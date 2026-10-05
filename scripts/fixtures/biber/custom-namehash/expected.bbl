@@ -1,0 +1,137 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{nyt/global//global/global/global}
+    \entry{anna}{book}{}{}
+      \name{author}{1}{}{%
+        {{un=1,uniquepart=given,hash=e95f770ac4fb91ac2e4873e4b2dfc0e6}{%
+           family={Smith},
+           familyi={S\bibinitperiod},
+           given={Anna},
+           giveni={A\bibinitperiod},
+           givenun=1}}%
+      }
+      \strng{namehash}{e95f770ac4fb91ac2e4873e4b2dfc0e6}
+      \strng{fullhash}{e95f770ac4fb91ac2e4873e4b2dfc0e6}
+      \strng{fullhashraw}{18abcbd06a4a1c49e7b6291328a875b8}
+      \strng{bibnamehash}{e95f770ac4fb91ac2e4873e4b2dfc0e6}
+      \strng{authorbibnamehash}{e95f770ac4fb91ac2e4873e4b2dfc0e6}
+      \strng{authornamehash}{e95f770ac4fb91ac2e4873e4b2dfc0e6}
+      \strng{authorfullhash}{e95f770ac4fb91ac2e4873e4b2dfc0e6}
+      \strng{authorfullhashraw}{18abcbd06a4a1c49e7b6291328a875b8}
+      \field{sortinit}{S}
+      \field{sortinithash}{b164b07b29984b41daf1e85279fbc5ab}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Anna Work}
+      \field{year}{2020}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{jane}{book}{}{}
+      \name{author}{1}{}{%
+        {{un=2,uniquepart=given,hash=e95f770ac4fb91ac2e4873e4b2dfc0e6}{%
+           family={Smith},
+           familyi={S\bibinitperiod},
+           given={Jane},
+           giveni={J\bibinitperiod},
+           givenun=2}}%
+      }
+      \strng{namehash}{e95f770ac4fb91ac2e4873e4b2dfc0e6}
+      \strng{fullhash}{e95f770ac4fb91ac2e4873e4b2dfc0e6}
+      \strng{fullhashraw}{055f6811649a97bc3a36ff4b2581f441}
+      \strng{bibnamehash}{e95f770ac4fb91ac2e4873e4b2dfc0e6}
+      \strng{authorbibnamehash}{e95f770ac4fb91ac2e4873e4b2dfc0e6}
+      \strng{authornamehash}{e95f770ac4fb91ac2e4873e4b2dfc0e6}
+      \strng{authorfullhash}{e95f770ac4fb91ac2e4873e4b2dfc0e6}
+      \strng{authorfullhashraw}{055f6811649a97bc3a36ff4b2581f441}
+      \field{sortinit}{S}
+      \field{sortinithash}{b164b07b29984b41daf1e85279fbc5ab}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Jane Work}
+      \field{year}{2020}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{john}{book}{}{}
+      \name{author}{1}{}{%
+        {{un=2,uniquepart=given,hash=e95f770ac4fb91ac2e4873e4b2dfc0e6}{%
+           family={Smith},
+           familyi={S\bibinitperiod},
+           given={John},
+           giveni={J\bibinitperiod},
+           givenun=2}}%
+      }
+      \strng{namehash}{e95f770ac4fb91ac2e4873e4b2dfc0e6}
+      \strng{fullhash}{e95f770ac4fb91ac2e4873e4b2dfc0e6}
+      \strng{fullhashraw}{5d0ddda3a367ceb26fbaeca02e391c22}
+      \strng{bibnamehash}{e95f770ac4fb91ac2e4873e4b2dfc0e6}
+      \strng{authorbibnamehash}{e95f770ac4fb91ac2e4873e4b2dfc0e6}
+      \strng{authornamehash}{e95f770ac4fb91ac2e4873e4b2dfc0e6}
+      \strng{authorfullhash}{e95f770ac4fb91ac2e4873e4b2dfc0e6}
+      \strng{authorfullhashraw}{5d0ddda3a367ceb26fbaeca02e391c22}
+      \field{sortinit}{S}
+      \field{sortinithash}{b164b07b29984b41daf1e85279fbc5ab}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{John Work}
+      \field{year}{2020}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{alice}{book}{}{}
+      \name{author}{1}{}{%
+        {{un=0,uniquepart=base,hash=039c82509dd13bb913d4c1d881ca14aa}{%
+           family={Zed},
+           familyi={Z\bibinitperiod},
+           given={Alice},
+           giveni={A\bibinitperiod},
+           givenun=0}}%
+      }
+      \strng{namehash}{039c82509dd13bb913d4c1d881ca14aa}
+      \strng{fullhash}{039c82509dd13bb913d4c1d881ca14aa}
+      \strng{fullhashraw}{6ec2e272d2542ca2e6cc39487705d1d1}
+      \strng{bibnamehash}{039c82509dd13bb913d4c1d881ca14aa}
+      \strng{authorbibnamehash}{039c82509dd13bb913d4c1d881ca14aa}
+      \strng{authornamehash}{039c82509dd13bb913d4c1d881ca14aa}
+      \strng{authorfullhash}{039c82509dd13bb913d4c1d881ca14aa}
+      \strng{authorfullhashraw}{6ec2e272d2542ca2e6cc39487705d1d1}
+      \field{sortinit}{Z}
+      \field{sortinithash}{96892c0b0a36bb8557c40c49813d48b3}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Alice Work}
+      \field{year}{2021}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

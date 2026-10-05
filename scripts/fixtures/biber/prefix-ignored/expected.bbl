@@ -1,0 +1,115 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{nyt/global//global/global/global}
+    \entry{prefix}{book}{}{}
+      \name{author}{1}{}{%
+        {{un=0,uniquepart=base,hash=ffc94e68fce04e3013e23be06ad4112a}{%
+           family={Beethoven},
+           familyi={B\bibinitperiod},
+           given={Ludwig},
+           giveni={L\bibinitperiod},
+           givenun=0,
+           prefix={van},
+           prefixi={v\bibinitperiod},
+           prefixun=0}}%
+      }
+      \strng{namehash}{ffc94e68fce04e3013e23be06ad4112a}
+      \strng{fullhash}{ffc94e68fce04e3013e23be06ad4112a}
+      \strng{fullhashraw}{ffc94e68fce04e3013e23be06ad4112a}
+      \strng{bibnamehash}{ffc94e68fce04e3013e23be06ad4112a}
+      \strng{authorbibnamehash}{ffc94e68fce04e3013e23be06ad4112a}
+      \strng{authornamehash}{ffc94e68fce04e3013e23be06ad4112a}
+      \strng{authorfullhash}{ffc94e68fce04e3013e23be06ad4112a}
+      \strng{authorfullhashraw}{ffc94e68fce04e3013e23be06ad4112a}
+      \field{sortinit}{B}
+      \field{sortinithash}{d7095fff47cda75ca2589920aae98399}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Music}
+      \field{year}{1824}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{plain}{book}{}{}
+      \name{author}{1}{}{%
+        {{un=0,uniquepart=base,hash=3ebf53e52a3ce84f0ffb8553200a6a63}{%
+           family={Einstein},
+           familyi={E\bibinitperiod},
+           given={Albert},
+           giveni={A\bibinitperiod},
+           givenun=0}}%
+      }
+      \strng{namehash}{3ebf53e52a3ce84f0ffb8553200a6a63}
+      \strng{fullhash}{3ebf53e52a3ce84f0ffb8553200a6a63}
+      \strng{fullhashraw}{3ebf53e52a3ce84f0ffb8553200a6a63}
+      \strng{bibnamehash}{3ebf53e52a3ce84f0ffb8553200a6a63}
+      \strng{authorbibnamehash}{3ebf53e52a3ce84f0ffb8553200a6a63}
+      \strng{authornamehash}{3ebf53e52a3ce84f0ffb8553200a6a63}
+      \strng{authorfullhash}{3ebf53e52a3ce84f0ffb8553200a6a63}
+      \strng{authorfullhashraw}{3ebf53e52a3ce84f0ffb8553200a6a63}
+      \field{sortinit}{E}
+      \field{sortinithash}{8da8a182d344d5b9047633dfc0cc9131}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Physics}
+      \field{year}{1905}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{multi}{book}{}{}
+      \name{author}{1}{}{%
+        {{un=0,uniquepart=base,hash=5bf9f13c3fd0ecf1e2cef16dfbf76632}{%
+           family={Vallée\bibnamedelima Poussin},
+           familyi={V\bibinitperiod\bibinitdelim P\bibinitperiod},
+           given={Charles},
+           giveni={C\bibinitperiod},
+           givenun=0,
+           prefix={de\bibnamedelima la},
+           prefixi={d\bibinitperiod\bibinitdelim l\bibinitperiod},
+           prefixun=0}}%
+      }
+      \strng{namehash}{5bf9f13c3fd0ecf1e2cef16dfbf76632}
+      \strng{fullhash}{5bf9f13c3fd0ecf1e2cef16dfbf76632}
+      \strng{fullhashraw}{5bf9f13c3fd0ecf1e2cef16dfbf76632}
+      \strng{bibnamehash}{5bf9f13c3fd0ecf1e2cef16dfbf76632}
+      \strng{authorbibnamehash}{5bf9f13c3fd0ecf1e2cef16dfbf76632}
+      \strng{authornamehash}{5bf9f13c3fd0ecf1e2cef16dfbf76632}
+      \strng{authorfullhash}{5bf9f13c3fd0ecf1e2cef16dfbf76632}
+      \strng{authorfullhashraw}{5bf9f13c3fd0ecf1e2cef16dfbf76632}
+      \field{sortinit}{V}
+      \field{sortinithash}{afb52128e5b4dc4b843768c0113d673b}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Analysis}
+      \field{year}{1900}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

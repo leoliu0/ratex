@@ -1,0 +1,137 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{nyt/global//global/global/global}
+    \entry{nordic}{book}{}{}
+      \name{author}{1}{}{%
+        {{un=0,uniquepart=base,hash=9819aa54db3d4c67bf222695da5d3488}{%
+           family={Ångström},
+           familyi={Å\bibinitperiod},
+           given={Søren},
+           giveni={S\bibinitperiod},
+           givenun=0}}%
+      }
+      \strng{namehash}{9819aa54db3d4c67bf222695da5d3488}
+      \strng{fullhash}{9819aa54db3d4c67bf222695da5d3488}
+      \strng{fullhashraw}{9819aa54db3d4c67bf222695da5d3488}
+      \strng{bibnamehash}{9819aa54db3d4c67bf222695da5d3488}
+      \strng{authorbibnamehash}{9819aa54db3d4c67bf222695da5d3488}
+      \strng{authornamehash}{9819aa54db3d4c67bf222695da5d3488}
+      \strng{authorfullhash}{9819aa54db3d4c67bf222695da5d3488}
+      \strng{authorfullhashraw}{9819aa54db3d4c67bf222695da5d3488}
+      \field{sortinit}{Å}
+      \field{sortinithash}{2f401846e2029bad6b3ecc16d50031e2}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Øresund}
+      \field{year}{2018}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{umlaut}{book}{}{}
+      \name{author}{1}{}{%
+        {{un=0,uniquepart=base,hash=7a14b793f9c8206819859db7ee3c9fc9}{%
+           family={Müller},
+           familyi={M\bibinitperiod},
+           given={Jörg},
+           giveni={J\bibinitperiod},
+           givenun=0}}%
+      }
+      \strng{namehash}{7a14b793f9c8206819859db7ee3c9fc9}
+      \strng{fullhash}{7a14b793f9c8206819859db7ee3c9fc9}
+      \strng{fullhashraw}{7a14b793f9c8206819859db7ee3c9fc9}
+      \strng{bibnamehash}{7a14b793f9c8206819859db7ee3c9fc9}
+      \strng{authorbibnamehash}{7a14b793f9c8206819859db7ee3c9fc9}
+      \strng{authornamehash}{7a14b793f9c8206819859db7ee3c9fc9}
+      \strng{authorfullhash}{7a14b793f9c8206819859db7ee3c9fc9}
+      \strng{authorfullhashraw}{7a14b793f9c8206819859db7ee3c9fc9}
+      \field{sortinit}{M}
+      \field{sortinithash}{4625c616857f13d17ce56f7d4f97d451}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Über Äpfel}
+      \field{year}{2020}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{plain}{book}{}{}
+      \name{author}{1}{}{%
+        {{un=0,uniquepart=base,hash=6ff4981fcdabd3af20e03da8e086357c}{%
+           family={Smith},
+           familyi={S\bibinitperiod},
+           given={Zoe},
+           giveni={Z\bibinitperiod},
+           givenun=0}}%
+      }
+      \strng{namehash}{6ff4981fcdabd3af20e03da8e086357c}
+      \strng{fullhash}{6ff4981fcdabd3af20e03da8e086357c}
+      \strng{fullhashraw}{6ff4981fcdabd3af20e03da8e086357c}
+      \strng{bibnamehash}{6ff4981fcdabd3af20e03da8e086357c}
+      \strng{authorbibnamehash}{6ff4981fcdabd3af20e03da8e086357c}
+      \strng{authornamehash}{6ff4981fcdabd3af20e03da8e086357c}
+      \strng{authorfullhash}{6ff4981fcdabd3af20e03da8e086357c}
+      \strng{authorfullhashraw}{6ff4981fcdabd3af20e03da8e086357c}
+      \field{sortinit}{S}
+      \field{sortinithash}{b164b07b29984b41daf1e85279fbc5ab}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Zoology}
+      \field{year}{2021}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{accent}{book}{}{}
+      \name{author}{1}{}{%
+        {{un=0,uniquepart=base,hash=ae9620bde677544da551d468e0a83bf1}{%
+           family={Zola},
+           familyi={Z\bibinitperiod},
+           given={Émile},
+           giveni={É\bibinitperiod},
+           givenun=0}}%
+      }
+      \strng{namehash}{ae9620bde677544da551d468e0a83bf1}
+      \strng{fullhash}{ae9620bde677544da551d468e0a83bf1}
+      \strng{fullhashraw}{ae9620bde677544da551d468e0a83bf1}
+      \strng{bibnamehash}{ae9620bde677544da551d468e0a83bf1}
+      \strng{authorbibnamehash}{ae9620bde677544da551d468e0a83bf1}
+      \strng{authornamehash}{ae9620bde677544da551d468e0a83bf1}
+      \strng{authorfullhash}{ae9620bde677544da551d468e0a83bf1}
+      \strng{authorfullhashraw}{ae9620bde677544da551d468e0a83bf1}
+      \field{sortinit}{Z}
+      \field{sortinithash}{96892c0b0a36bb8557c40c49813d48b3}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Études}
+      \field{year}{2019}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

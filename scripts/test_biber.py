@@ -56,7 +56,9 @@ def compare(expected, actual):
 
 def resolve_binary(value):
     found = shutil.which(value)
-    candidate = Path(found or value).resolve()
+    # absolute(), not resolve(): a `biber -> texres` symlink selects the
+    # personality by its own name.
+    candidate = Path(found or value).absolute()
     if not candidate.is_file():
         raise RuntimeError(f"Biber executable not found: {value}")
     return candidate

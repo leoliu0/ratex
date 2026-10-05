@@ -1,6 +1,6 @@
 pkgbase = texres
 	pkgdesc = Ultra-fast, pure-Rust TeX engine and typesetting toolchain (built from source)
-	pkgver = 0.5.0
+	pkgver = 0.7.0
 	pkgrel = 1
 	url = https://github.com/leoliu0/texres
 	arch = x86_64
@@ -22,8 +22,11 @@ pkgbase = texres
 	depends = gcc-libs
 	provides = texres
 	conflicts = texres-bin
+	conflicts = ratex
+	conflicts = ratex-bin
+	replaces = ratex
 	options = !lto
-	source = texres-0.5.0.tar.gz::https://github.com/leoliu0/texres/archive/refs/tags/v0.5.0.tar.gz
-	sha256sums = 469fb82b5aeb24cba427eee292315141565aab40178353a2b0802fb40c25504d
+	source = texres-0.7.0.tar.gz::https://github.com/leoliu0/texres/archive/refs/tags/v0.7.0.tar.gz
+	sha256sums = 409217da635398634808f50b315e54b22833cc42da9a47c82318256da510c1f8
 
 pkgname = texres

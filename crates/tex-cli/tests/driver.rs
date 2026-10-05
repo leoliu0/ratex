@@ -172,6 +172,21 @@ fn copied_texres_builds_biblatex_with_embedded_biber() {
         find_file(&fixture.0.join("cache/texmk/jobs"), "main.log").unwrap()
     ).unwrap();
     assert!(!log.contains("undefined"));
+    let biber = fixture.0.join("biber");
+    std::os::unix::fs::symlink("texres", &biber).unwrap();
+    let bcf = find_file(&fixture.0.join("cache/texmk/jobs"), "main.bcf").unwrap();
+    std::fs::create_dir_all(fixture.0.join("out")).unwrap();
+    let output = Command::new(&biber)
+        .args(["-q", "--output-directory", "out"])
+        .arg(bcf).current_dir(&fixture.0).env_clear()
+        .env("HOME", fixture.0.join("home"))
+        .output().unwrap();
+    assert!(output.status.success(), "{}\n{}",
+        String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert!(output.stdout.is_empty() && output.stderr.is_empty());
+    let bbl = std::fs::read_to_string(fixture.0.join("out/main.bbl")).unwrap();
+    assert!(bbl.contains("\\entry{knuth84}"));
+    assert!(bbl.contains("\\field{title}{Literate Programming}"));
 }
 
 #[test]

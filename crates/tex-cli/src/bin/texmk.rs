@@ -3914,21 +3914,8 @@ fn run_embedded_bibtex() -> ! {
 
 fn run_embedded_biber() -> ! {
     enable_embedded_resources_by_default();
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.iter().any(|arg| matches!(arg.as_str(), "-v" | "--version")) {
-        println!("Biber 2.22 (TeXres {}; Rust)", env!("CARGO_PKG_VERSION"));
-        std::process::exit(0);
-    }
-    if args.len() != 1 || args[0].starts_with('-') {
-        eprintln!("Usage: biber JOB[.bcf]");
-        std::process::exit(2);
-    }
-    let mut bcf = PathBuf::from(&args[0]);
-    if bcf.extension().is_none() {
-        bcf.set_extension("bcf");
-    }
-    let source_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    std::process::exit(run_biber(&bcf, &source_dir, false));
+    let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    std::process::exit(tex_biber::cli_main(&args));
 }
 
 fn run_embedded_engine(program: &str) {

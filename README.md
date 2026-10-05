@@ -166,7 +166,7 @@ just to change which executable your editor uses.
 ## Usage
 
 ### Single-Command Build
-`texres` tracks dependencies, resolves packages from its embedded archive, runs BibTeX when the auxiliary state requires it, and repeats TeX passes (at most five) until the auxiliary files stop changing:
+`texres` tracks dependencies, resolves packages from its embedded archive, runs BibTeX or the embedded pure-Rust Biber for biblatex's default backend when auxiliary state requires it, and repeats TeX passes (at most five) until the auxiliary files stop changing. A link named `biber` runs Biber directly:
 
 ```bash
 # Compile a document

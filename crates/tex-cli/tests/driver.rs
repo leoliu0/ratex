@@ -133,6 +133,48 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn copied_texres_builds_biblatex_with_embedded_biber() {
+    let fixture = Fixture(std::env::temp_dir().join(format!(
+        "texres-biber-{}", std::process::id()
+    )));
+    std::fs::create_dir_all(&fixture.0).unwrap();
+    let executable = fixture.0.join("texres");
+    support::copy_executable(
+        std::path::Path::new(env!("CARGO_BIN_EXE_texres")), &executable,
+    );
+    fixture.write("main.tex", concat!(
+        "\\documentclass{article}\n",
+        "\\usepackage[style=authoryear]{biblatex}\n",
+        "\\addbibresource{refs.bib}\n",
+        "\\begin{document}\\cite{knuth84}\\printbibliography\\end{document}\n",
+    ));
+    fixture.write("refs.bib", "@article{knuth84, author={Donald E. Knuth}, title={Literate Programming}, journal={The Computer Journal}, year={1984}, volume={27}, number={2}, pages={97--111}, doi={10.1093/comjnl/27.2.97}}\n");
+    let output = Command::new(&executable)
+        .arg("main.tex").current_dir(&fixture.0).env_clear()
+        .env("HOME", fixture.0.join("home"))
+        .env("TEX_RS_CACHE_DIR", fixture.0.join("cache"))
+        .env("TEXMFDIST", fixture.0.join("absent-texmf"))
+        .env("SOURCE_DATE_EPOCH", "1700000000")
+        .output().unwrap();
+    assert!(output.status.success(), "{}\n{}",
+        String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    let pdf = lopdf::Document::load(fixture.0.join("main.pdf")).unwrap();
+    let pages: Vec<u32> = pdf.get_pages().keys().copied().collect();
+    let text = pdf.extract_text(&pages).unwrap();
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    // TeX Live 2026 pdflatex + Biber 2.22 oracle, authoryear style.
+    assert!(normalized.contains("Knuth 1984"));
+    let bibliography: String = normalized.chars().filter(|c| !c.is_whitespace()).collect();
+    let expected: String = "Knuth, Donald E. (1984). “Literate Programming”. In: The Computer Journal 27.2, pp. 97–111. doi: 10.1093/comjnl/27.2.97."
+        .chars().filter(|c| !c.is_whitespace()).collect();
+    assert!(bibliography.contains(&expected), "{normalized}");
+    let log = std::fs::read_to_string(
+        find_file(&fixture.0.join("cache/texmk/jobs"), "main.log").unwrap()
+    ).unwrap();
+    assert!(!log.contains("undefined"));
+}
+
+#[test]
 fn one_copied_texmk_builds_with_embedded_latex_and_bibtex_resources() {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -374,6 +416,7 @@ fn copied_texmk_symlink_personalities_need_no_sibling_executables() {
         "xelatex",
         "lualatex",
         "bibtex",
+        "biber",
         "tex-bibtex",
         "latexmk",
     ] {

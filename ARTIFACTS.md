@@ -64,9 +64,9 @@ Release archives (`tex-suite-v<version>-<platform>-<arch>.tar.gz`, or `.zip`
 on Windows) contain one executable, `bin/texres`, plus installer scripts, `README.txt`,
 license files, `manifest.json`, and `share/tex-suite/texmf/doc/fonts/` with
 font licenses, notices, and corresponding sources. The
-executable embeds the TeX engine, BibTeX, the LaTeX formats, packages, fonts,
+executable embeds the TeX engine, BibTeX, Biber, the LaTeX formats, packages, fonts,
 and maps. No command aliases are shipped; the executable dispatches on the name
-it is invoked as (`pdflatex`, `xelatex`, `lualatex`, `bibtex`, `latexmk`,
+it is invoked as (`pdflatex`, `xelatex`, `lualatex`, `bibtex`, `biber`, `latexmk`,
 `latexdiff`), so users may create such links themselves. The archive does not
 carry a raw `pdflatex.fmt` unless a distributor explicitly supplies
 `scripts/package_dist.py --fmt FILE`.

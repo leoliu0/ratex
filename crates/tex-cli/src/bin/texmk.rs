@@ -1,12 +1,12 @@
 //! texmk — latexmk-style driver for the Rust TeX engine.
 //!
 //! The only physical executable in a distribution (`texres`). It runs its
-//! embedded TeX engine and BibTeX implementation in isolated child processes
-//! until cross-references and bibliography output stabilize. Invoked as
-//! `pdflatex`, `xelatex`, `lualatex`, `bibtex`, or `latexdiff` (symlinks), it
+//! embedded TeX engine and BibTeX implementation in isolated child processes,
+//! and Biber in-process, until references and bibliography output stabilize.
+//! Invoked as `pdflatex`, `xelatex`, `lualatex`, `bibtex`, `biber`, or `latexdiff`, it
 //! runs that tool directly instead.
 //!
-//! Exit codes: 0 = converged, 1 = engine/bibtex failure, TeX errors (even
+//! Exit codes: 0 = converged, 1 = engine/bibliography failure, TeX errors (even
 //! when a nonstop-mode PDF was published), or no convergence, 2 = usage error.
 //!
 //! TeX support files always come from the archive embedded in the executable;
@@ -63,6 +63,7 @@ struct Signals {
     undef_refs: bool,
     undef_cites: bool,
     bbl_missing: bool,
+    biber_requested: bool,
     user_warnings: Vec<String>,
 }
 
@@ -1751,6 +1752,7 @@ impl Signals {
         self.undef_refs |= other.undef_refs;
         self.undef_cites |= other.undef_cites;
         self.bbl_missing |= other.bbl_missing;
+        self.biber_requested |= other.biber_requested;
         for w in other.user_warnings {
             if !self.user_warnings.contains(&w) {
                 self.user_warnings.push(w);
@@ -1800,6 +1802,7 @@ impl SignalScanner {
             "Label(s) may have changed".len(),
             "There were undefined references".len(),
             "There were undefined citations".len(),
+            "Please (re)run Biber".len(),
             "Citation".len(),
             "undefined".len(),
             "No file ".len(),
@@ -1841,6 +1844,7 @@ impl SignalScanner {
         self.signals.rerun |= contains("Rerun to get") || contains("Label(s) may have changed");
         self.signals.undef_refs |= contains("There were undefined references");
         self.signals.undef_cites |= contains("There were undefined citations");
+        self.signals.biber_requested |= contains("Please (re)run Biber");
         self.line_citation |= contains("Citation");
         self.line_undefined |= contains("undefined");
         self.line_no_file |= contains("No file ");
@@ -2810,6 +2814,83 @@ fn run_tool(
     Ok(captured)
 }
 
+fn biber_file(
+    kpse: &tex_kpse::Kpse, name: &str, aux_dir: &Path, source_dir: &Path,
+) -> Option<PathBuf> {
+    bibliography_dependency_path(kpse, aux_dir, source_dir, name, tex_kpse::Format::Bib)
+        .or_else(|| extra_bibliography_dependency_path(name, tex_kpse::Format::Bib, "BIBINPUTS"))
+        .or_else(|| extra_bibliography_dependency_path(name, tex_kpse::Format::Bib, "TEXINPUTS"))
+        .or_else(|| tex_kpse::embedded_tree::member_path(name).map(PathBuf::from))
+}
+
+fn biber_signature(bcf: &Path, source_dir: &Path) -> u64 {
+    let bytes = std::fs::read(bcf).unwrap_or_default();
+    let mut identity = format!("biber:{}\n", env!("CARGO_PKG_VERSION"));
+    identity.push_str(&String::from_utf8_lossy(&bytes));
+    if let Some(tool) = tool_override(&["biber"]) {
+        identity.push_str(&format!("\noverride={}: {:?}", tool.display(), file_hash(&tool)));
+    } else if let Some(metadata) = std::env::current_exe().ok()
+        .and_then(|path| std::fs::metadata(path).ok())
+    {
+        identity.push_str(&format!("\nembedded-size={}:modified={:?}",
+            metadata.len(), metadata.modified().ok()));
+    }
+    for variable in ["TEXINPUTS", "BIBINPUTS", "TEXBIBINPUTS", HERMETIC_ENV] {
+        identity.push_str(&format!("\n{variable}={:?}", std::env::var_os(variable)));
+    }
+    if let Ok(names) = tex_biber::datasource_names(&String::from_utf8_lossy(&bytes)) {
+        let kpse = tex_kpse::Kpse::with_roots(source_dir, &[]);
+        for name in names {
+            let path = biber_file(&kpse, &name, bcf.parent().unwrap_or(source_dir), source_dir);
+            identity.push_str(&format!("\n{name}={path:?}"));
+            if let Some(path) = path {
+                let bytes = tex_kpse::fs::read(&path).ok();
+                identity.push_str(&format!("{:?}", bytes.as_deref().map(stable_hash)));
+            }
+        }
+    }
+    stable_hash(identity.as_bytes())
+}
+
+fn run_biber(bcf: &Path, source_dir: &Path, silent: bool) -> i32 {
+    if !silent {
+        eprintln!("texmk: biber {}", bcf.display());
+    }
+    if let Some(tool) = tool_override(&["biber"]) {
+        return match run_tool(
+            &tool, &[bcf.to_string_lossy().into_owned()], silent, source_dir, &[],
+        ) {
+            Ok(out) if out.success => 0,
+            Ok(out) => {
+                out.replay();
+                1
+            }
+            Err(error) => {
+                eprintln!("texmk: cannot run {}: {error}", tool.display());
+                1
+            }
+        };
+    }
+    let kpse = tex_kpse::Kpse::with_roots(source_dir, &[]);
+    let find_file = |name: &str| biber_file(&kpse, name, bcf.parent().unwrap_or(source_dir), source_dir);
+    match tex_biber::run(&tex_biber::Options {
+        bcf: bcf.to_path_buf(),
+        output: None,
+        find_file: &find_file,
+    }) {
+        Ok(out) => {
+            if !silent || out.errors != 0 || out.warnings != 0 {
+                eprint!("{}", out.log);
+            }
+            i32::from(out.errors != 0)
+        }
+        Err(error) => {
+            eprintln!("texmk: biber: {error}");
+            1
+        }
+    }
+}
+
 fn run_bibtex(aux_stem: &Path, source_dir: &Path, silent: bool) -> i32 {
     let bibtex = match tool_override(&["tex-bibtex", "bibtex"])
         .map(Ok)
@@ -3289,6 +3370,7 @@ fn real_main() -> i32 {
     let mut prev_cites: Option<BTreeSet<String>> = None;
     let mut bibtex_done = false;
     let mut bibtex_runs = 0u32;
+    let mut biber_runs = 0u32;
     let mut passes = 0u32;
     let mut converged = false;
     let mut last_output = String::new();
@@ -3313,12 +3395,18 @@ fn real_main() -> i32 {
     }
     let initial_aux_text = &initial_aux_graph.combined;
     let initial_bibdata = aux_has_bibdata(initial_aux_text);
-    let initial_bibliography_ready = initial_bibdata
-        && bibliography_dependencies_available(initial_aux_text, &aux_dir, &source_dir);
-    if initial_aux_graph.complete && initial_bibliography_ready {
+    let initial_bcf = aux_dir.join(format!("{job}.bcf"));
+    let initial_biber = !initial_bibdata && initial_bcf.is_file();
+    let initial_bibliography_ready = initial_biber || (initial_bibdata
+        && bibliography_dependencies_available(initial_aux_text, &aux_dir, &source_dir));
+    if (initial_aux_graph.complete || initial_biber) && initial_bibliography_ready {
         prev_cites = Some(aux_citations(initial_aux_text));
-        let signature = bibliography_signature(initial_aux_text, &aux_dir, &source_dir);
-        if adopt_source_bibliography(
+        let signature = if initial_biber {
+            biber_signature(&initial_bcf, &source_dir)
+        } else {
+            bibliography_signature(initial_aux_text, &aux_dir, &source_dir)
+        };
+        if !initial_biber && adopt_source_bibliography(
             &mut manifest,
             &source_bbl,
             &bbl_path,
@@ -3334,7 +3422,11 @@ fn real_main() -> i32 {
             .is_some_and(|expected| owned_file_matches(&bbl_path, expected));
         if !bibliography_output_matches || manifest.bibliography_signature != Some(signature) {
             let _ = std::fs::remove_file(&bbl_path);
-            let rc = run_bibtex(&aux_stem, &source_dir, opt.silent);
+            let rc = if initial_biber {
+                run_biber(&initial_bcf, &source_dir, opt.silent)
+            } else {
+                run_bibtex(&aux_stem, &source_dir, opt.silent)
+            };
             if rc != 0 {
                 let source_bbl = source_dir.join(format!("{job}.bbl"));
                 if source_bbl.is_file() {
@@ -3350,7 +3442,7 @@ fn real_main() -> i32 {
             } else {
                 let Some(output_hash) = regular_file_hash(&bbl_path) else {
                     eprintln!(
-                        "texmk: bibtex succeeded without producing a regular output file {}",
+                        "texmk: bibliography tool succeeded without producing a regular output file {}",
                         bbl_path.display()
                     );
                     manifest.bibliography_signature = None;
@@ -3359,7 +3451,7 @@ fn real_main() -> i32 {
                     return 1;
                 };
                 bibtex_done = true;
-                bibtex_runs += 1;
+                if initial_biber { biber_runs += 1; } else { bibtex_runs += 1; }
                 recorded_outputs.borrow_mut().extend([
                     PathBuf::from(format!("{job}.bbl")),
                     PathBuf::from(format!("{job}.blg")),
@@ -3501,11 +3593,22 @@ fn real_main() -> i32 {
         let aux_text = &aux_graph.combined;
         let cites = aux_citations(aux_text);
         let bibdata = aux_has_bibdata(aux_text);
-        let bibliography_ready =
-            bibdata && bibliography_dependencies_available(aux_text, &aux_dir, &source_dir);
-        let bibliography_signature = (bibliography_ready && aux_graph.complete)
-            .then(|| bibliography_signature(aux_text, &aux_dir, &source_dir));
-        if bibliography_signature.is_some_and(|signature| {
+        let bcf_path = aux_dir.join(format!("{job}.bcf"));
+        let use_biber = !bibdata && (bcf_path.is_file()
+            || aux_text.contains("\\abx@aux@")
+            || signals.biber_requested);
+        let bibliography_ready = if use_biber {
+            true
+        } else {
+            bibdata && bibliography_dependencies_available(aux_text, &aux_dir, &source_dir)
+        };
+        let bibliography_signature = if use_biber {
+            Some(biber_signature(&bcf_path, &source_dir))
+        } else {
+            (bibliography_ready && aux_graph.complete)
+                .then(|| bibliography_signature(aux_text, &aux_dir, &source_dir))
+        };
+        if !use_biber && bibliography_signature.is_some_and(|signature| {
             adopt_source_bibliography(
                 &mut manifest,
                 &source_bbl,
@@ -3541,6 +3644,7 @@ fn real_main() -> i32 {
         let need_bibtex = bibliography_ready
             && (sig.bbl_missing
                 || cites_changed
+                || (use_biber && sig.biber_requested && !bibtex_done)
                 || manifest.bibliography_signature != bibliography_signature
                 || !manifest
                     .bibliography_output_hash
@@ -3549,7 +3653,11 @@ fn real_main() -> i32 {
                 || (!bibtex_done && manifest.bibliography_signature.is_none() && sig.undef_cites));
         if need_bibtex {
             let _ = std::fs::remove_file(&bbl_path);
-            let rc = run_bibtex(&aux_stem, &source_dir, opt.silent);
+            let rc = if use_biber {
+                run_biber(&bcf_path, &source_dir, opt.silent)
+            } else {
+                run_bibtex(&aux_stem, &source_dir, opt.silent)
+            };
             if rc != 0 {
                 let source_bbl = source_dir.join(format!("{job}.bbl"));
                 if source_bbl.is_file() {
@@ -3565,7 +3673,7 @@ fn real_main() -> i32 {
             } else {
                 let Some(output_hash) = regular_file_hash(&bbl_path) else {
                     eprintln!(
-                        "texmk: bibtex succeeded without producing a regular output file {}",
+                        "texmk: bibliography tool succeeded without producing a regular output file {}",
                         bbl_path.display()
                     );
                     manifest.bibliography_signature = None;
@@ -3574,7 +3682,7 @@ fn real_main() -> i32 {
                     return 1;
                 };
                 bibtex_done = true;
-                bibtex_runs += 1;
+                if use_biber { biber_runs += 1; } else { bibtex_runs += 1; }
                 recorded_outputs.borrow_mut().extend([
                     PathBuf::from(format!("{job}.bbl")),
                     PathBuf::from(format!("{job}.blg")),
@@ -3701,11 +3809,13 @@ fn real_main() -> i32 {
     }
     let pages = pages_from_output(&last_output)
         .or_else(|| (!child_cache_hit).then(|| pdf_pages(&pdf_path)).flatten());
-    let bib_note = if bibtex_runs > 0 {
-        format!(", {bibtex_runs} bibtex run(s)")
-    } else {
-        String::new()
-    };
+    let mut bib_note = String::new();
+    if bibtex_runs > 0 {
+        bib_note.push_str(&format!(", {bibtex_runs} bibtex run(s)"));
+    }
+    if biber_runs > 0 {
+        bib_note.push_str(&format!(", {biber_runs} biber run(s)"));
+    }
     // As latexmk does, a PDF produced despite TeX errors (recovered in an
     // explicitly requested nonstop/batch mode) is published, but the build
     // still fails.
@@ -3802,6 +3912,25 @@ fn run_embedded_bibtex() -> ! {
     std::process::exit(embedded_bibtex::run(&args, "1.0"));
 }
 
+fn run_embedded_biber() -> ! {
+    enable_embedded_resources_by_default();
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|arg| matches!(arg.as_str(), "-v" | "--version")) {
+        println!("Biber 2.22 (TeXres {}; Rust)", env!("CARGO_PKG_VERSION"));
+        std::process::exit(0);
+    }
+    if args.len() != 1 || args[0].starts_with('-') {
+        eprintln!("Usage: biber JOB[.bcf]");
+        std::process::exit(2);
+    }
+    let mut bcf = PathBuf::from(&args[0]);
+    if bcf.extension().is_none() {
+        bcf.set_extension("bcf");
+    }
+    let source_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    std::process::exit(run_biber(&bcf, &source_dir, false));
+}
+
 fn run_embedded_engine(program: &str) {
     enable_embedded_resources_by_default();
     std::env::set_var("TEX_SUITE_PROGRAM_NAME", program);
@@ -3817,6 +3946,7 @@ pub(crate) fn main() {
             return;
         }
         Ok("bibtex") => run_embedded_bibtex(),
+        Ok("biber") => run_embedded_biber(),
         Ok("latexdiff") => {
             let args: Vec<String> = std::env::args().skip(1).collect();
             std::process::exit(latexdiff::latexdiff_main(&args));
@@ -3832,6 +3962,7 @@ pub(crate) fn main() {
         "xelatex" => run_embedded_engine("xelatex"),
         "lualatex" => run_embedded_engine("lualatex"),
         "bibtex" | "tex-bibtex" => run_embedded_bibtex(),
+        "biber" => run_embedded_biber(),
         "latexdiff" => {
             let diff_args = if args.len() > 1 { &args[1..] } else { &[] };
             std::process::exit(latexdiff::latexdiff_main(diff_args));

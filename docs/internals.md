@@ -295,3 +295,163 @@ tex-runtime call it.
   `/usr/bin/bibtex` with the banner and usage statistics removed. To add a
   case, create the directory, generate the expected files with TeX Live, and
   list it in `oracle_cases!`.
+
+## Reference moved from the README
+
+### Single-pass engine personalities
+
+The single-pass personalities (`pdflatex`, `lualatex`, `xelatex` links) take
+pdfTeX's web2c options (`pdflatex --help`). `-ini` dumps `JOBNAME.fmt` into
+the output directory and `-fmt=NAME`, `&NAME`, a `%&NAME` first line, or
+`-progname=NAME` load such a TeXres dump (`NAME` equal to the program selects
+the built-in format). `-cnf-line=VAR=VALUE` sets a search or policy variable
+such as `TEXINPUTS` or `openout_any`; `-kpathsea-debug=N` (nonzero) traces
+file lookups in the transcript. `-translate-file=TCXNAME`, `-8bit` and a
+`%&-translate-file=` first line select which bytes 128-255 print as
+themselves rather than as `^^xx`: `pdflatex` and the built-in format use
+TeX Live's `cp227.tcx` table, `-ini` without a table prints `^^` notation,
+and the transcript and terminal carry the exact bytes TeX Live writes
+(`max_print_line` counts printed bytes). Deliberate differences: e-TeX is
+always on (also under `-ini` without `-etex`), missing files are never
+generated (`-mktex`), and `-output-format=dvi`, `-enc`, `-mltex`, `-ipc` are
+rejected. As in TeX's nonstop mode, a primitive `\input` of a missing file or
+an `\openout` that cannot be opened stops the job, since no other name can be
+supplied, and so does a terminal `\read`. `\pdffilesize`, `\pdfmdfivesum
+file`, `\pdffilemoddate` and `\pdffiledump` search the TeX input path only
+(kpse_find_tex), so a TFM, encoding or map file is not found by them.
+`\pdffilemoddate` reports a file's modification time like pdfTeX;
+files served from the embedded package archive have no timestamp and report
+`D:19700101000000Z`.
+
+PDF output follows pdfTeX's own bookkeeping: font, form and image resources
+are named `/F<n>`, `/Fm<n>` and `/Im<n>` from the owner font number and the
+per-document form/image counts, `\pdfuniqueresname` appends pdfTeX's
+CRC-32/base-62 job tag, and objects are numbered in creation order from 1.
+The Info dictionary lists Producer, user `\pdfinfo` keys, Creator, dates,
+Trapped and `PTEX.Fullbanner` (`PTEX_Fullbanner` with `\pdfptexuseunderscore`,
+absent under `\pdfsuppressptexinfo`), and `\pdftrailerid` fixes the `/ID`.
+Under LuaTeX the Producer is `LuaTeX-1.24.0` and the banner key is always
+`PTEX.FullBanner` (luatex ignores `\pdfsuppressptexinfo` and the underscore
+spelling).
+`-ini` starts with pdfTeX's `\pdfminorversion=4` and `\pdfcompresslevel=9`.
+There is no DVI writer, so `\pdfoutput` starts at 1 where TeX Live's `-ini`
+starts at 0.
+
+### XeTeX and LuaTeX modes
+
+**Engine modes and limits:** `-xelatex` (or a link named `xelatex`) runs the
+XeTeX engine, version 3.141592653-2.6-0.999998 as in TeX Live 2026, with the
+embedded XeLaTeX format built from TeX Live's `xelatex.ini`; the terminal
+banner reads `This is XeTeX, Version 3.141592653-2.6-0.999998 (TeXres x.y.z)`.
+Output goes to the PDF directly, without an XDV file: `\special`s are
+interpreted as `xdvipdfmx` does, pages default to A4 unless `\pdfpagewidth`
+and `\pdfpageheight` are set, and the PDF carries xdvipdfmx's producer data.
+Shell escape (`\write18`) is never run. pdfLaTeX has no native fonts: loading
+`fontspec` there fails with fontspec's own engine error, as in TeX Live.
+`-lualatex` runs the LuaTeX-compatible mode with the embedded LuaLaTeX format
+and an in-tree Lua VM, so `\directlua` works. `luatexja` and a few LuaTeX-only
+packages do not compile in any mode. Native fonts are loaded after the format
+is read, as in XeTeX; dumping native font state is rejected.
+
+### Native fonts and embedding
+
+The font syntax of XeTeX (`"Family/B:feature"`, `"[file.otf]:+liga"`,
+`mapping=tex-text`, `color=`, `embolden=`, ...) and fontspec's whole interface
+(`\setmainfont`, `\newfontfamily`, `\setCJKmainfont`, `Path`, `Extension`,
+`BoldFont`, `FontIndex`, `Scale`, OpenType features, ...) are the upstream
+implementations. Their diagnostics are TeX Live's as well: a missing font ends
+the run with fontspec's `The font "..." cannot be found` error, a missing
+shape produces `Font shape ... undefined`, and a character that a font lacks
+is reported as `Missing character: There is no ...`.
+Fonts are hermetic: a font is found among the project's files, the bundled
+font archive (by file name, or by family, PostScript, or full name from the
+bundled font index), and nothing else. TeXres does not search OS font stores,
+so a document that selects a system font by name (`Times New Roman`) fails
+where TeX Live with that font installed succeeds; ship the font file with the
+project and select it with `Path=./`. The bundled OpenType fonts include
+Latin Modern (text and math), TeX Gyre (text and math), STIX Two, XITS,
+Libertinus, Harano Aji, IPAex, Fandol (the default fonts of `ctex`), and
+the other families listed in the lock file.
+
+Mapped TrueType, CFF OpenType, and collection faces are embedded as CID fonts
+with glyph addressing and Unicode extraction maps. Subsets are shared across
+pages, sizes, aliases, and forms. Type 1 fonts retain their Type 1 representation.
+Font licenses, notices, and required corresponding sources ship under
+`share/tex-suite/texmf/doc/fonts`; the engine's MIT/Apache license does not
+replace those licenses.
+
+### Lua VM (`tex-lua`)
+
+The Lua VM (`tex-lua`) is an ordinary Rust library (`rlib`). Native Lua C
+modules loaded with `require`/`package.loadlib` resolve the `lua_*`/`luaL_*`
+functions from the host executable, which the workspace links with
+`--export-dynamic` (`.cargo/config.toml`); a host that embeds `tex-lua` must
+link the same way. Host Rust code that needs to allocate inside a native
+callback uses `Lua::create_callback`, whose `CallbackLua` is only borrowed for
+the duration of the call. In Lua 5.3 mode (LuaTeX's dialect) every byte >= 0x80
+is a letter in a name, so the names `LuaFunction::get_upvalue` and
+`set_upvalue` return are the bytes of the source text (`Vec<u8>`), and error
+messages, `debug.getlocal`/`getupvalue` and `string.dump` keep them. An error
+raised by a function handle that a callback calls while a coroutine (an async
+script, or one resumed from Lua) runs reaches that coroutine's `pcall` as the
+same Lua value; only a call made by the host alone, with no Lua code running,
+returns the message with its stack traceback.
+With the optional `sandbox` feature, `SandboxConfig::with_stdlib(Stdlib::Bit32)`
+enables Lua 5.3's `bit32` independently of the `math` library; it is hidden until
+selected.
+
+### Verification
+
+The Linux CI and release workflows run the font, graphics and engine fixtures listed in
+[`scripts/fixtures/fonts/manifest.json`](scripts/fixtures/fonts/manifest.json)
+through the built binary (`scripts/test_fonts.py`) with filesystem isolation,
+pdf.js and Poppler rendering/text extraction, and TeX Live 2026 as the
+reference. The extracted archive is run on every release platform, and the
+shell installer, `.deb`, macOS `.pkg`, and Windows installers are installed
+and exercised. The workspace test suite,
+the C and WebAssembly libraries, and the browser module are tested as well.
+The exact minimum documents from [#17](https://github.com/leoliu0/texres/issues/17)
+and [#18](https://github.com/leoliu0/texres/issues/18) run under LuaLaTeX and
+XeLaTeX respectively, checking Spanish text, embedded fonts and rendering.
+LuaLaTeX and XeLaTeX also have subsystem probes and paired package-interaction
+documents: source loading, token scanners, register/group scope, Lua callbacks,
+node ownership, fonts, math, Unicode, bidirectional text, CJK line breaking and
+vertical typesetting. Their complete extracted text is compared with the matching
+TeX Live 2026 engine, alongside font-program checks and both renderers.
+Use `scripts/test_fonts.py --engine lualatex` or `--engine xelatex` with
+`--texres` and `--output` to select a suite; its report groups failures by engine
+and feature family and retains compilation and viewer evidence.
+See [PERFORMANCE.md](PERFORMANCE.md) for how speed is measured.
+
+### Issue assistant
+
+The issue bot reads the complete issue and triggering comment, selects the
+reported `-pdf`, `-xelatex` or `-lualatex` command, and includes the actual
+command, binary version and bounded compiler log in its reply. `/reproduce`,
+`/test` and `/fix` reuse the issue's document unless the comment supplies a
+replacement; an explicit engine option can override the reported engine.
+Suggestions and feature requests without TeX are left for maintainer review,
+not answered with an irrelevant request for a compilation snippet. AI
+diagnosis receives the full report and treats proposed causes as hypotheses.
+
+### Workspace layout
+
+The project is a Cargo workspace:
+
+```
+texres/
+├── crates/
+│   ├── tex-core/        # TeX engine: expansion, typesetting, math, alignment, pages, PDF output, SyncTeX
+│   ├── tex-kpse/        # kpathsea-style resolver and the embedded zstd-compressed package archive
+│   ├── tex-bibtex/      # BibTeX implementation
+│   ├── tex-biber/       # Biber (biblatex backend) implementation
+│   ├── tex-cli/         # `texres` executable: build driver, engine/BibTeX personalities, latexdiff
+│   ├── tex-lua/         # Lua VM used by the LuaTeX-compatible mode
+│   ├── tex-mplib/       # MetaPost engine (mplib)
+│   ├── tex-ps/          # PostScript/EPS interpreter and PDF renderer
+│   ├── tex-runtime/     # in-process, in-memory compilation API
+│   ├── libtex/          # C ABI over tex-runtime
+│   └── tex-wasm/        # WebAssembly bindings over tex-runtime
+├── packaging/           # installers and native packages (Linux, macOS, Windows, AUR)
+└── scripts/             # packaging, font/corpus test harnesses, library builds
+```

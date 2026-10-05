@@ -5,6 +5,7 @@ members = [
     "crates/tex-kpse",
     "crates/tex-cli",
     "crates/tex-bibtex",
+    "crates/tex-biber",
     "crates/tex-runtime",
     "crates/libtex",
     "crates/tex-wasm",

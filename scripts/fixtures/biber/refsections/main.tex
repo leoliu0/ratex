@@ -1,0 +1,13 @@
+\documentclass{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[backend=biber,style=authoryear,sorting=nyt]{biblatex}
+\addbibresource{refs.bib}
+\begin{document}
+\begin{refsection}
+\cite{alpha}\printbibliography
+\end{refsection}
+\begin{refsection}
+\cite{beta,gamma}\printbibliography
+\end{refsection}
+\end{document}

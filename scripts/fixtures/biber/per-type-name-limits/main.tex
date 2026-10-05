@@ -1,0 +1,10 @@
+\documentclass{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[backend=biber,style=authoryear,sorting=nyt,maxnames=4,minnames=3]{biblatex}
+\ExecuteBibliographyOptions[book]{maxnames=2,minnames=1,giveninits=true,uniquelist=false}
+\ExecuteBibliographyOptions[article]{maxnames=3,minnames=2,giveninits=false,uniquelist=true}
+\addbibresource{refs.bib}
+\begin{document}
+\nocite{*}\printbibliography
+\end{document}

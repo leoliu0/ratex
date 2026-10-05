@@ -1,0 +1,9 @@
+\documentclass{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[backend=biber,style=authoryear,sorting=nyt]{biblatex}
+\DeclareSourcemap{\maps[datatype=bibtex]{\map{\step[fieldsource=journal,fieldtarget=journaltitle]\step[fieldset=keywords,fieldvalue={mapped}]}}}
+\addbibresource{refs.bib}
+\begin{document}
+\nocite{*}\printbibliography
+\end{document}

@@ -1,0 +1,9 @@
+\documentclass{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[backend=biber,style=authoryear,sorting=nyt]{biblatex}
+\DeclareUniquenameTemplate{\namepart[base=true]{family}\namepart[disambiguation=init]{given}}
+\addbibresource{refs.bib}
+\begin{document}
+\nocite{*}\printbibliography
+\end{document}

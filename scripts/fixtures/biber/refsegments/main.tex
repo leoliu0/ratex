@@ -1,0 +1,10 @@
+\documentclass{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[backend=biber,style=authoryear,sorting=nyt]{biblatex}
+\addbibresource{refs.bib}
+\begin{document}
+\begin{refsegment}\cite{alpha}\end{refsegment}
+\begin{refsegment}\cite{beta,gamma}\end{refsegment}
+\printbibliography[segment=1]\printbibliography[segment=2]
+\end{document}

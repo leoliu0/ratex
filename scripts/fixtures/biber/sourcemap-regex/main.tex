@@ -1,0 +1,18 @@
+\documentclass{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[backend=biber,style=authoryear,sorting=nyt]{biblatex}
+\DeclareSourcemap{
+  \maps[datatype=bibtex]{
+    \map[overwrite]{
+      \pertype{book}
+      \step[fieldsource=title,match=\regexp{^Draft: },replace=\regexp{Final: }]
+      \step[fieldsource=keywords,match=\regexp{science},final]
+      \step[fieldset=keywords,fieldvalue={, mapped},append]
+    }
+  }
+}
+\addbibresource{refs.bib}
+\begin{document}
+\nocite{*}\printbibliography
+\end{document}

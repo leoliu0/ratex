@@ -747,8 +747,8 @@ body.panel-collapsed .tabs .tab.active { background: transparent; }
 
 /* ==================================================================== Desk
    The TeXres look: a warm desk, the source as one white sheet on it and the
-   PDF pages lying beside it. Instrument Sans with mono labels, and the
-   site's green only on the primary action. */
+   PDF pages lying beside it. Instrument Sans with mono labels, and one rust
+   accent only on the primary action, the caret and the main-file tag. */
 
 :root[data-design='desk'] {
   color-scheme: light;
@@ -780,26 +780,26 @@ body.panel-collapsed .tabs .tab.active { background: transparent; }
   --hover: rgba(28, 30, 28, 0.05);
   --active: rgba(28, 30, 28, 0.08);
   --row-open: #ffffff;
-  --accent: #1a7f37;
-  --accent-tint: rgba(26, 127, 55, 0.1);
-  --accent-line: rgba(26, 127, 55, 0.4);
-  --caret: #1a7f37;
-  --primary: #1a7f37;
+  --accent: #b4441e;
+  --accent-tint: rgba(180, 68, 30, 0.09);
+  --accent-line: rgba(180, 68, 30, 0.4);
+  --caret: #b4441e;
+  --primary: #b4441e;
   --primary-ink: #ffffff;
-  --primary-hover: #116329;
-  --ok: #1a7f37;
+  --primary-hover: #973818;
+  --ok: #5f6b5d;
   --danger: #c4242f;
   --danger-tint: rgba(196, 36, 47, 0.07);
   --warn: #9a6700;
   --warn-tint: rgba(191, 135, 0, 0.12);
-  --selection: rgba(26, 127, 55, 0.15);
+  --selection: rgba(180, 68, 30, 0.13);
   --flash: rgba(212, 167, 44, 0.25);
   --card-shadow: 0 0 0 1px rgba(28, 30, 28, 0.05), 0 1px 2px rgba(28, 30, 28, 0.04), 0 8px 24px -12px rgba(28, 30, 28, 0.12);
   --shadow: 0 0 0 1px rgba(28, 30, 28, 0.07), 0 4px 8px -2px rgba(28, 30, 28, 0.05), 0 16px 32px -8px rgba(28, 30, 28, 0.16);
   --page-shadow: 0 0 0 1px rgba(28, 30, 28, 0.04), 0 1px 2px rgba(28, 30, 28, 0.05), 0 12px 28px -10px rgba(28, 30, 28, 0.22);
   --syn-command: #2557a7;
   --syn-keyword: #7547c2;
-  --syn-atom: #a04b14;
+  --syn-atom: #1d6b66;
   --syn-bracket: #a3a7a0;
   --syn-comment: #8b9088;
   --syn-number: #17766a;
@@ -821,26 +821,26 @@ body.panel-collapsed .tabs .tab.active { background: transparent; }
   --hover: rgba(230, 233, 228, 0.05);
   --active: rgba(230, 233, 228, 0.08);
   --row-open: #1b1e1b;
-  --accent: #3fb950;
-  --accent-tint: rgba(63, 185, 80, 0.12);
-  --accent-line: rgba(63, 185, 80, 0.45);
-  --caret: #3fb950;
-  --primary: #238636;
+  --accent: #e8794a;
+  --accent-tint: rgba(232, 121, 74, 0.12);
+  --accent-line: rgba(232, 121, 74, 0.45);
+  --caret: #e8794a;
+  --primary: #c4552a;
   --primary-ink: #ffffff;
-  --primary-hover: #2a9a40;
-  --ok: #3fb950;
+  --primary-hover: #d46236;
+  --ok: #9aa298;
   --danger: #f85149;
   --danger-tint: rgba(248, 81, 73, 0.1);
   --warn: #d29922;
   --warn-tint: rgba(210, 153, 34, 0.14);
-  --selection: rgba(63, 185, 80, 0.22);
+  --selection: rgba(232, 121, 74, 0.2);
   --flash: rgba(210, 153, 34, 0.22);
   --card-shadow: 0 0 0 1px rgba(230, 233, 228, 0.05), 0 8px 24px -12px rgba(0, 0, 0, 0.6);
   --shadow: 0 0 0 1px rgba(230, 233, 228, 0.08), 0 16px 32px -8px rgba(0, 0, 0, 0.7);
   --page-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 28px -10px rgba(0, 0, 0, 0.8);
   --syn-command: #79b8ff;
   --syn-keyword: #c9a2f5;
-  --syn-atom: #f0a868;
+  --syn-atom: #6cc2b9;
   --syn-bracket: #5f665d;
   --syn-comment: #767d74;
   --syn-number: #5fcfb8;

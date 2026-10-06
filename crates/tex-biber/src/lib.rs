@@ -26,6 +26,10 @@ mod perl_pattern;
 mod perl_unicode;
 mod perl_vm;
 mod process;
+#[cfg(feature = "remote")]
+mod remote;
+#[cfg(not(feature = "remote"))]
+#[path = "remote_unavailable.rs"]
 mod remote;
 mod tool;
 mod transliteration;

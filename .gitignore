@@ -29,3 +29,4 @@ output/
 /.pi/
 /.omp/
 /trust_own/
+/web/node_modules/

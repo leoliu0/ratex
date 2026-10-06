@@ -95,6 +95,43 @@ fn bibtex_error_messages_keep_the_bibliography() {
 }
 
 #[test]
+fn biblatex_runs_biber_once_per_build_and_follows_datasource_changes() {
+    let source = r"\documentclass{article}\usepackage{biblatex}\addbibresource{refs.bib}
+\begin{document}Citation~\cite{paper}.\printbibliography\end{document}";
+    let mut s = session(source);
+    s.add_file("refs.bib", br"@article{paper, author={Ada Lovelace}, title={Library Test}, journal={Testing}, year={2024}}").unwrap();
+    let r = s.compile("main.tex");
+    assert_eq!(r.status, Status::Success, "{}\n{}", r.diagnostics, r.log);
+    assert_eq!((r.biber_runs, r.bibtex_runs), (1, 0));
+    assert!(String::from_utf8_lossy(&r.files["main.bbl"]).contains("Lovelace"));
+    assert!(r.files.contains_key("main.blg"));
+    let pdf = lopdf::Document::load_mem(&r.pdf).unwrap();
+    let text = pdf.extract_text(&[1]).unwrap();
+    assert!(text.contains("Lovelace") && !text.contains("paper"), "{text}");
+
+    // A changed datasource changes the bibliography.
+    s.add_file("refs.bib", br"@article{paper, author={Grace Hopper}, title={Library Test}, journal={Testing}, year={2024}}").unwrap();
+    let r = s.compile("main.tex");
+    assert_eq!(r.status, Status::Success, "{}\n{}", r.diagnostics, r.log);
+    assert_eq!(r.biber_runs, 1);
+    assert!(String::from_utf8_lossy(&r.files["main.bbl"]).contains("Hopper"));
+}
+
+#[test]
+fn biber_datasource_errors_fail_the_build() {
+    let mut s = session(
+        r"\documentclass{article}\usepackage{biblatex}\addbibresource{refs.bib}
+\begin{document}Citation~\cite{paper}.\printbibliography\end{document}",
+    );
+    s.add_file("refs.bib", b"@article{paper, author={Ada Lovelace}, title={Unterminated").unwrap();
+    let r = s.compile("main.tex");
+    assert_eq!(r.status, Status::CompilationError, "{}", r.log);
+    assert_eq!(r.biber_runs, 1);
+    // As `texres` reports it: "biber: …/refs.bib: Unclosed BibTeX value".
+    assert!(r.diagnostics.contains("refs.bib: Unclosed BibTeX value"), "{}", r.diagnostics);
+}
+
+#[test]
 fn errors_and_repeated_sessions_do_not_reuse_stale_outputs() {
     let mut s = session(HELLO);
     let first = s.compile("main.tex");

@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TeXres Online</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="%STYLE%">
+<script type="application/json" id="texres-config">%CONFIG%</script>
+<script type="module" src="%MAIN%"></script>
+</head>
+<body data-state="idle">
+<header>
+  <strong>TeXres Online</strong>
+  <label>Project <select id="project"></select></label>
+  <button id="new-project">New</button>
+  <button id="rename-project">Rename</button>
+  <button id="delete-project">Delete</button>
+  <label class="file-button">Import zip<input id="import-zip" type="file" accept=".zip,application/zip" hidden></label>
+  <button id="export-zip">Export zip</button>
+  <span class="spacer"></span>
+  <label>Engine
+    <select id="engine">
+      <option value="auto">Auto</option>
+      <option value="pdflatex">pdfLaTeX</option>
+      <option value="xelatex">XeLaTeX</option>
+    </select>
+  </label>
+  <label title="SOURCE_DATE_EPOCH: fixes \today and PDF dates">Fixed date <input id="epoch" type="number" min="0" step="1" placeholder="Unix seconds"></label>
+  <label><input id="auto-compile" type="checkbox"> Auto-compile</label>
+  <button id="compile" class="primary" title="Ctrl+S">Compile</button>
+</header>
+<main>
+  <nav id="files">
+    <div class="toolbar">
+      <button id="new-file" title="New file (use a/b.tex for folders)">New</button>
+      <label class="file-button" title="Upload files into the selected folder">Upload<input id="upload" type="file" multiple hidden></label>
+      <button id="rename-file">Rename</button>
+      <button id="delete-file">Delete</button>
+      <button id="set-main" title="Compile this .tex file">Set main</button>
+    </div>
+    <div id="tree"></div>
+  </nav>
+  <section id="source">
+    <div class="toolbar">
+      <span id="open-path"></span>
+      <span class="spacer"></span>
+      <button id="sync-forward" title="Show the cursor position in the PDF (Ctrl+Enter)">Source → PDF</button>
+    </div>
+    <div id="editor"></div>
+    <div id="binary-view" hidden></div>
+  </section>
+  <section id="preview">
+    <div class="toolbar">
+      <span>Double-click the PDF to jump to the source.</span>
+      <span class="spacer"></span>
+      <button id="zoom-out">−</button>
+      <button id="zoom-in">+</button>
+    </div>
+    <div id="pdf"></div>
+  </section>
+</main>
+<footer>
+  <div class="tabs">
+    <button id="diagnostics-tab" class="active" data-panel="diagnostics">Problems</button>
+    <button data-panel="log-panel">Log</button>
+    <span id="status" role="status"></span>
+  </div>
+  <ul id="diagnostics"></ul>
+  <div id="log-panel" hidden><pre id="log"></pre></div>
+</footer>
+</body>
+</html>

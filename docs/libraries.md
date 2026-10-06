@@ -2,9 +2,10 @@
 
 Both interfaces compile a project entirely in memory using the bundled LaTeX
 format, packages and fonts. They run up to five TeX passes, with the same BibTeX
-engine used by `texres`. PDF serialization includes fonts and images. No TeX Live
-installation, subprocess, temporary document directory, or asset download is
-needed at runtime.
+and Biber engines used by `texres`. PDF serialization includes fonts and images.
+No TeX Live installation, subprocess, temporary document directory, or asset
+download is needed at runtime (except by the `lazy-assets` WebAssembly build
+below, whose host supplies package files on demand).
 
 The pass count reports work actually performed: automatic convergence does not
 force a redundant pass when no auxiliary state requires a rerun.
@@ -40,6 +41,13 @@ and TypeScript declarations are in `target/wasm/web/` and `target/wasm/nodejs/`.
 Use these generated packages, whose JavaScript supplies the required imports.
 All package assets are embedded; expect a substantial module download. The build
 script also accepts `CARGO_TARGET_DIR` and `WASM_BINDGEN` overrides.
+
+The `lazy-assets` feature of `tex-wasm` instead leaves the package archive and
+the XeLaTeX/LuaLaTeX formats out of the module (about 24 MB instead of over
+700 MB; the pdfLaTeX format and the package index stay inside). The archive's
+independently compressed 128 KiB chunks become separate files, and the host
+returns them synchronously from `setChunkLoader`, as `scripts/build-web.sh`
+and TeXres Online do.
 
 ## C API
 
@@ -80,7 +88,7 @@ const result = session.compile('main.tex');
 if (result.status !== 0) throw new Error(result.diagnostics || result.log);
 const pdf = result.pdf; // independent Uint8Array copy
 const aux = result.file('main.aux');
-console.log(result.fileNames, result.passes, result.bibtexRuns);
+console.log(result.fileNames, result.passes, result.bibtexRuns, result.biberRuns);
 result.free();
 session.free();
 ```
@@ -95,6 +103,14 @@ arguments. `compile(entry)` returns a result for ordinary document errors.
 `setEpoch(undefined)` restores the host clock. Copies returned by result getters
 remain valid after `.free()`. A Wasm trap is an internal failure: discard that
 Wasm instance rather than attempting to reuse it.
+
+`compileWith(entry, engine, synctex)` takes `"auto"`, `"pdflatex"`, `"xelatex"`
+or `"lualatex"`; with `synctex` true, the result also holds
+`<job>.synctex.gz`. `result.engine` names the engine that produced the result.
+A `lazy-assets` module needs `setChunkLoader(index => Uint8Array | undefined)`
+and `setFormatLoader(name => Uint8Array | undefined)` before compiling. Both
+loaders must answer synchronously (in a browser, from memory or a synchronous
+request inside a Web Worker); a missing chunk reads as a missing package file.
 
 ## Results and project rules
 
@@ -128,13 +144,38 @@ fresh from the session's current inputs; generated files are retained only in
 its result. Add a previous result's auxiliary files explicitly if desired.
 
 Both interfaces expose PDF bytes, accumulated logs, rendered diagnostics,
-generated files, TeX pass count, and BibTeX run count. The default clock is the
-host clock; set UTC Unix seconds for reproducible dates. Shell tools, Biber,
-interactive terminal input, and operating-system file access are unavailable
-through the library API. Native `fontspec`/`xeCJK` selection runs on the XeTeX engine with the same
+generated files, TeX pass count, and BibTeX and Biber run counts. biblatex's
+default `backend=biber` runs the built-in Biber whenever its control file or
+datasources change, as `texmk` does. The default clock is the host clock; set
+UTC Unix seconds for reproducible dates. Shell tools, interactive terminal
+input, and operating-system file access are unavailable through the library
+API; WebAssembly builds also cannot fetch URL datasources. Native `fontspec`/`xeCJK` selection runs on the XeTeX engine with the same
 bundled faces and shaping path as the CLI. Supply custom font files with
 `add_file` and select them by project-relative `Path`; a separate session
 cannot access those files. See the [font capabilities and engine limits](../README.md#fonts-and-unicode-in-the-source-build).
+
+## TeXres Online
+
+`web/` is a single-user editor that runs entirely in the browser: projects in
+IndexedDB, a CodeMirror 6 editor, pdf.js preview, SyncTeX in both directions,
+zip import/export, and the `lazy-assets` module in a Web Worker. Package chunks
+and the XeLaTeX format are downloaded when a document first needs them and are
+kept in the Cache API; a service worker keeps the page usable offline.
+LuaLaTeX is not offered: luaotfload needs a writable cache directory, which
+the WebAssembly build lacks.
+
+```sh
+# Requires the WebAssembly toolchain above, Python 3.14+ and Node 22+.
+./scripts/build-web.sh                 # writes target/web-dist/
+python3 -m http.server -d target/web-dist 8000
+```
+
+Any static file server works. `node web/test/e2e.mjs --dist target/web-dist
+--texres target/release/texres` drives the site in headless Chromium
+(`--chromium PATH`, default `/usr/bin/chromium`): it builds a biblatex article
+with a figure, an edit, an error, and a XeLaTeX document, requires PDFs
+byte-identical to native `texres`, checks SyncTeX, zip round trips and reload
+persistence, and prints the bytes downloaded in each phase.
 
 ## Verification
 

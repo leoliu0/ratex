@@ -337,19 +337,45 @@ pub fn get_embedded_package(filename: &str) -> Option<Vec<u8>> {
     read_package_entry(package_entry(filename)?)
 }
 
+/// Loads the compressed bytes of one archive chunk, by chunk index, in an
+/// `external-packages` build. It must return exactly the zstd frame (any
+/// compression level) that decodes to the build's chunk.
+#[cfg(feature = "external-packages")]
+pub type ChunkSource = fn(usize) -> Option<Vec<u8>>;
+
+#[cfg(feature = "external-packages")]
+static CHUNK_SOURCE: std::sync::OnceLock<ChunkSource> = std::sync::OnceLock::new();
+
+/// Install the loader of an `external-packages` build; only the first call
+/// takes effect. Until then every archive member reads as absent.
+#[cfg(feature = "external-packages")]
+pub fn set_chunk_source(source: ChunkSource) -> bool {
+    CHUNK_SOURCE.set(source).is_ok()
+}
+
+#[cfg(feature = "external-packages")]
+fn compressed_chunk(chunk_index: usize) -> Option<std::borrow::Cow<'static, [u8]>> {
+    CHUNK_SOURCE.get()?(chunk_index).map(std::borrow::Cow::Owned)
+}
+
+#[cfg(not(feature = "external-packages"))]
+fn compressed_chunk(chunk_index: usize) -> Option<std::borrow::Cow<'static, [u8]>> {
+    let [offset, length, _] = PACKAGE_CHUNKS.get(chunk_index)?;
+    let offset = offset as usize;
+    PACKAGES
+        .get(offset..offset.checked_add(length as usize)?)
+        .map(std::borrow::Cow::Borrowed)
+}
+
 fn read_package_entry(index: usize) -> Option<Vec<u8>> {
     let [_, _, chunk_index, member_offset, member_length, _] = PACKAGE_INDEX.get(index)?;
     let chunk_index = chunk_index as usize;
     let member_offset = member_offset as usize;
     let member = member_offset..member_offset.checked_add(member_length as usize)?;
-    let [offset, length, decoded_length] = PACKAGE_CHUNKS.get(chunk_index)?;
+    let [_, _, decoded_length] = PACKAGE_CHUNKS.get(chunk_index)?;
     let decoded_length = decoded_length as usize;
-    let compressed = || {
-        let offset = offset as usize;
-        PACKAGES.get(offset..offset.checked_add(length as usize)?)
-    };
     if decoded_length > MAX_CACHED_CHUNK_BYTES {
-        let bytes = decode_package_chunk(compressed()?, decoded_length)?;
+        let bytes = decode_package_chunk(&compressed_chunk(chunk_index)?, decoded_length)?;
         if member == (0..decoded_length) {
             return Some(bytes);
         }
@@ -366,7 +392,7 @@ fn read_package_entry(index: usize) -> Option<Vec<u8>> {
             // Decode outside the lock so concurrent readers of other chunks
             // do not serialize behind this one.
             let bytes: std::sync::Arc<[u8]> =
-                decode_package_chunk(compressed()?, decoded_length)?.into();
+                decode_package_chunk(&compressed_chunk(chunk_index)?, decoded_length)?.into();
             CHUNK_CACHE
                 .lock()
                 .ok()?
@@ -2165,6 +2191,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "external-packages"))]
     fn packed_package_index_is_sorted_and_self_consistent() {
         fn records<const N: usize>(table: PackedTable<N>) -> Vec<[u32; N]> {
             assert_eq!(table.0.len() % (N * 4), 0, "table holds whole records");

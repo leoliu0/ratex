@@ -6,9 +6,18 @@ edition.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Leave the package archive and the XeLaTeX/LuaLaTeX formats out of the
+# module; JavaScript supplies them on demand (`setChunkLoader`,
+# `setFormatLoader`), as the website does.
+lazy-assets = ["tex-kpse/external-packages", "tex-runtime/external-formats"]
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 dlmalloc = { workspace = true }
-tex-runtime = { path = "../tex-runtime" }
+tex-core = { path = "../tex-core" }
+tex-kpse = { path = "../tex-kpse" }
+# No sockets in WebAssembly: Biber URL datasources report an error.
+tex-runtime = { path = "../tex-runtime", default-features = false }
 wasm-bindgen = "0.2"
 js-sys = "0.3"
 # Enable entropy only at the JavaScript application boundary.

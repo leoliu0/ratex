@@ -10,16 +10,50 @@ use tex_kpse::fs::{self, MemoryFs, ResourceContext};
 pub mod engine_selection;
 
 const FORMAT_PDFLATEX: &[u8] = include_bytes!("../../tex-cli/assets/default.fmt.zst");
+#[cfg(not(feature = "external-formats"))]
 const FORMAT_XELATEX: &[u8] = include_bytes!("../../tex-cli/assets/xelatex.fmt.zst");
+#[cfg(not(feature = "external-formats"))]
 const FORMAT_LUALATEX: &[u8] = include_bytes!("../../tex-cli/assets/lualatex.fmt.zst");
 
-/// The embedded format of an engine.
-fn format_for_engine(kind: EngineKind) -> &'static [u8] {
-    match kind {
+/// The format of an engine.
+#[cfg(not(feature = "external-formats"))]
+fn format_for_engine(kind: EngineKind) -> Option<&'static [u8]> {
+    Some(match kind {
         EngineKind::PdfTeX => FORMAT_PDFLATEX,
         EngineKind::XeTeX => FORMAT_XELATEX,
         EngineKind::LuaTeX => FORMAT_LUALATEX,
+    })
+}
+
+/// Loads the `xelatex.fmt.zst` or `lualatex.fmt.zst` bytes of an
+/// `external-formats` build, which embeds only the pdfLaTeX format.
+#[cfg(feature = "external-formats")]
+pub type FormatSource = fn(EngineKind) -> Option<Vec<u8>>;
+
+#[cfg(feature = "external-formats")]
+static FORMAT_SOURCE: std::sync::OnceLock<FormatSource> = std::sync::OnceLock::new();
+
+/// Install the format loader of an `external-formats` build; only the first
+/// call takes effect. Each format is requested until one load succeeds.
+#[cfg(feature = "external-formats")]
+pub fn set_format_source(source: FormatSource) -> bool {
+    FORMAT_SOURCE.set(source).is_ok()
+}
+
+#[cfg(feature = "external-formats")]
+fn format_for_engine(kind: EngineKind) -> Option<&'static [u8]> {
+    static LOADED: [std::sync::OnceLock<Vec<u8>>; 2] =
+        [std::sync::OnceLock::new(), std::sync::OnceLock::new()];
+    let slot = match kind {
+        EngineKind::PdfTeX => return Some(FORMAT_PDFLATEX),
+        EngineKind::XeTeX => &LOADED[0],
+        EngineKind::LuaTeX => &LOADED[1],
+    };
+    if let Some(bytes) = slot.get() {
+        return Some(bytes);
     }
+    let bytes = FORMAT_SOURCE.get()?(kind)?;
+    Some(slot.get_or_init(|| bytes))
 }
 
 pub const MAX_PASSES: u32 = 5;
@@ -82,7 +116,8 @@ struct PassOutcome {
     status: Status,
     log: String,
     diagnostics: String,
-    has_bcf: bool,
+    /// The `.bcf` biblatex wrote for Biber, if any.
+    bcf: Option<Vec<u8>>,
     auxiliary_observations: BTreeMap<String, Vec<u8>>,
     /// The `.aux` records BibTeX reads; BibTeX reruns only when they change.
     bibliography_inputs: BTreeMap<String, Vec<String>>,
@@ -96,7 +131,7 @@ impl PassOutcome {
             status,
             log: String::new(),
             diagnostics,
-            has_bcf: false,
+            bcf: None,
             auxiliary_observations: BTreeMap::new(),
             bibliography_inputs: BTreeMap::new(),
             bibliography_required: false,
@@ -124,6 +159,7 @@ pub struct Compilation {
     pub files: BTreeMap<String, Vec<u8>>,
     pub passes: u32,
     pub bibtex_runs: u32,
+    pub biber_runs: u32,
 }
 
 impl Compilation {
@@ -158,6 +194,7 @@ impl Compilation {
             files: BTreeMap::new(),
             passes: 0,
             bibtex_runs: 0,
+            biber_runs: 0,
         }
     }
 }
@@ -334,6 +371,8 @@ impl Session {
         let mut result = Compilation::error_for(selected_engine, Status::NoConvergence, "");
         let mut previous = BTreeMap::new();
         let mut bibliography = None;
+        // Identity of the control file and datasources Biber last processed.
+        let mut biber_signature = None;
         let mut final_engine = None;
         // Passes of the current engine; `result.passes` counts every TeX pass.
         let mut pass = 0;
@@ -371,6 +410,7 @@ impl Session {
                             result.diagnostics.clear();
                             previous.clear();
                             bibliography = None;
+                            biber_signature = None;
                             final_engine = None;
                             pass = 0;
                             continue;
@@ -380,16 +420,41 @@ impl Session {
                 result.status = outcome.status;
                 break;
             }
-            if outcome.has_bcf {
-                result.status = Status::CompilationError;
-                result.diagnostics.push_str(
-                    "Biber is not available in the in-process library; use a BibTeX bibliography.\n",
-                );
-                break;
-            }
             final_engine = outcome.final_engine.take();
 
             let mut ran_bibtex = false;
+            // biblatex with `backend=biber` writes a control file and no
+            // `\bibdata`; texmk then runs Biber whenever its inputs change.
+            if let (Some(bcf), false) = (&outcome.bcf, outcome.bibliography_required) {
+                let find_file = |name: &str| biber_datasource(name, &aux_dir, cwd);
+                let signature = biber_inputs(bcf, &find_file);
+                if biber_signature.as_ref() != Some(&signature) {
+                    let run = tex_biber::run(&tex_biber::Options {
+                        bcf: aux_dir.join(format!("{job}.bcf")),
+                        output: None,
+                        output_directory: None,
+                        find_file: &find_file,
+                    });
+                    result.biber_runs += 1;
+                    match run {
+                        Ok(out) => {
+                            result.log.push_str(&format!("--- Biber ---\n{}", out.log));
+                            if out.errors != 0 {
+                                result.status = Status::CompilationError;
+                                result.diagnostics.push_str(&out.log);
+                                break;
+                            }
+                        }
+                        Err(error) => {
+                            result.status = Status::CompilationError;
+                            result.diagnostics.push_str(&format!("Biber: {error}\n"));
+                            break;
+                        }
+                    }
+                    biber_signature = Some(signature);
+                    ran_bibtex = true;
+                }
+            }
             if outcome.bibliography_required
                 && bibliography.as_ref() != Some(&outcome.bibliography_inputs)
             {
@@ -441,7 +506,21 @@ impl Session {
                         .push_str("document produced no PDF pages\n");
                 } else {
                     match driver::finish_pdf(&mut engine, request.optimize_pdf) {
-                        Ok(pdf) => result.pdf = pdf,
+                        Ok(pdf) => {
+                            result.pdf = pdf;
+                            // As pdfTeX does, once `\synctex` saw a page shipped.
+                            if request.synctex && engine.synctex.is_open() {
+                                match engine.synctex.to_synctex_gz() {
+                                    Ok(bytes) => {
+                                        let _ = fs::write(output_dir.join(format!("{job}.synctex.gz")), bytes);
+                                    }
+                                    Err(error) => {
+                                        result.status = Status::CompilationError;
+                                        result.diagnostics.push_str(&format!("SyncTeX: {error}\n"));
+                                    }
+                                }
+                            }
+                        }
                         Err(error) => {
                             result.status = Status::CompilationError;
                             result.diagnostics.push_str(&error);
@@ -471,7 +550,13 @@ impl Session {
         output_dir: &Path,
         job: &str,
     ) -> PassOutcome {
-        let mut engine = match tex_core::format::load_format_from(format_for_engine(selected_engine)) {
+        let Some(format) = format_for_engine(selected_engine) else {
+            return PassOutcome::failed(
+                Status::InternalError,
+                format!("the {} format is unavailable", selected_engine.command_name()),
+            );
+        };
+        let mut engine = match tex_core::format::load_format_from(format) {
             Ok(engine) => engine,
             Err(error) => {
                 return PassOutcome::failed(Status::InternalError, format!("embedded LaTeX format: {error}"))
@@ -525,13 +610,45 @@ impl Session {
             status,
             log: engine.log.clone(),
             diagnostics,
-            has_bcf: artifacts.keys().any(|name| name.ends_with(".bcf")),
+            bcf: fs::read(aux_dir.join(format!("{job}.bcf"))).ok(),
             auxiliary_observations: auxiliary_state(artifacts),
             bibliography_inputs,
             bibliography_required,
             final_engine: Some(engine),
         }
     }
+}
+
+/// A Biber datasource as texmk resolves it: the `.bib`-suffixed name, then
+/// the name itself, in the auxiliary and source directories, then the
+/// bundled tree. URLs stay unresolved for Biber's own transport.
+fn biber_datasource(name: &str, aux_dir: &Path, cwd: &Path) -> Option<PathBuf> {
+    if name.contains("://") {
+        return None;
+    }
+    let bare = name.strip_suffix(".bib").unwrap_or(name);
+    let with_extension = format!("{bare}.bib");
+    [aux_dir, cwd]
+        .into_iter()
+        .flat_map(|directory| [directory.join(&with_extension), directory.join(name)])
+        .find(|path| fs::metadata(path).is_ok_and(|metadata| metadata.is_file()))
+        .or_else(|| tex_kpse::embedded_tree::member_path(name).map(PathBuf::from))
+}
+
+/// The control file and the bytes of every datasource it names, so Biber
+/// reruns exactly when one of them changes.
+fn biber_inputs(
+    bcf: &[u8],
+    find_file: &dyn Fn(&str) -> Option<PathBuf>,
+) -> Vec<(String, Option<Vec<u8>>)> {
+    let mut inputs = vec![(String::new(), Some(bcf.to_vec()))];
+    if let Ok(names) = tex_biber::datasource_names(&String::from_utf8_lossy(bcf)) {
+        for name in names {
+            let bytes = find_file(&name).and_then(|path| fs::read(path).ok());
+            inputs.push((name, bytes));
+        }
+    }
+    inputs
 }
 
 fn validate_job_name(job: &str) -> Result<(), String> {

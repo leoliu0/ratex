@@ -34,6 +34,7 @@ void tex_result_free(tex_result *);
 uint32_t tex_result_status(const tex_result *);
 uint32_t tex_result_passes(const tex_result *);
 uint32_t tex_result_bibtex_runs(const tex_result *);
+uint32_t tex_result_biber_runs(const tex_result *);
 tex_bytes tex_result_pdf(const tex_result *);
 tex_bytes tex_result_log(const tex_result *);
 tex_bytes tex_result_diagnostics(const tex_result *);

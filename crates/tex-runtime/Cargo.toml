@@ -7,6 +7,14 @@ edition.workspace = true
 tex-core = { path = "../tex-core" }
 tex-kpse = { path = "../tex-kpse" }
 tex-bibtex = { path = "../tex-bibtex" }
+tex-biber = { path = "../tex-biber", default-features = false }
+
+[features]
+default = ["remote-bibliography"]
+# Biber's HTTP(S)/FTP datasources; WebAssembly builds have no sockets.
+remote-bibliography = ["tex-biber/remote"]
+# Embed only the pdfLaTeX format; `set_format_source` supplies the others.
+external-formats = []
 
 [dev-dependencies]
 lopdf = { version = "0.44.0", default-features = false }

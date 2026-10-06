@@ -5,8 +5,71 @@ static GLOBAL: dlmalloc::GlobalDlmalloc = dlmalloc::GlobalDlmalloc;
 
 #[cfg(target_arch = "wasm32")]
 mod bindings {
-    use tex_runtime::{Compilation, Session};
+    use tex_runtime::{Compilation, CompileRequest, EngineChoice, Session};
     use wasm_bindgen::prelude::*;
+
+    #[wasm_bindgen]
+    extern "C" {
+        #[wasm_bindgen(js_namespace = console, js_name = error)]
+        fn console_error(message: &str);
+    }
+
+    /// A panic aborts (traps) the module; report its message first, since
+    /// the trap itself carries none.
+    #[wasm_bindgen(start)]
+    fn start() {
+        std::panic::set_hook(Box::new(|info| {
+            console_error(&format!("texres internal error: {info}"));
+        }));
+    }
+
+    #[cfg(feature = "lazy-assets")]
+    thread_local! {
+        static CHUNK_LOADER: std::cell::RefCell<Option<js_sys::Function>> =
+            const { std::cell::RefCell::new(None) };
+        static FORMAT_LOADER: std::cell::RefCell<Option<js_sys::Function>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    /// Call a registered loader; only a `Uint8Array` result counts.
+    #[cfg(feature = "lazy-assets")]
+    fn call_loader(loader: &Option<js_sys::Function>, argument: JsValue) -> Option<Vec<u8>> {
+        let bytes = loader.as_ref()?.call1(&JsValue::NULL, &argument).ok()?;
+        bytes
+            .dyn_into::<js_sys::Uint8Array>()
+            .ok()
+            .map(|bytes| bytes.to_vec())
+    }
+
+    /// Supply the package archive of a `lazy-assets` build: `loader(index)`
+    /// synchronously returns the compressed chunk as a `Uint8Array`, or
+    /// `undefined` when it is unavailable (its members then read as absent).
+    #[cfg(feature = "lazy-assets")]
+    #[wasm_bindgen(js_name = setChunkLoader)]
+    pub fn set_chunk_loader(loader: js_sys::Function) {
+        CHUNK_LOADER.with_borrow_mut(|slot| *slot = Some(loader));
+        tex_kpse::set_chunk_source(|index| {
+            CHUNK_LOADER.with_borrow(|loader| call_loader(loader, JsValue::from(index as u32)))
+        });
+    }
+
+    /// Supply the XeLaTeX and LuaLaTeX formats of a `lazy-assets` build:
+    /// `loader("xelatex" | "lualatex")` synchronously returns the
+    /// `.fmt.zst` bytes as a `Uint8Array`, or `undefined`.
+    #[cfg(feature = "lazy-assets")]
+    #[wasm_bindgen(js_name = setFormatLoader)]
+    pub fn set_format_loader(loader: js_sys::Function) {
+        use tex_core::engine::EngineKind;
+        FORMAT_LOADER.with_borrow_mut(|slot| *slot = Some(loader));
+        tex_runtime::set_format_source(|kind| {
+            let name = match kind {
+                EngineKind::PdfTeX => "pdflatex",
+                EngineKind::XeTeX => "xelatex",
+                EngineKind::LuaTeX => "lualatex",
+            };
+            FORMAT_LOADER.with_borrow(|loader| call_loader(loader, JsValue::from_str(name)))
+        });
+    }
 
     #[wasm_bindgen(js_name = TexSession)]
     pub struct JsSession(Session);
@@ -46,6 +109,32 @@ mod bindings {
                     .compile_at(entry, (js_sys::Date::now() / 1000.0) as u64),
             )
         }
+        /// `engine` is `"auto"`, `"pdflatex"`, `"xelatex"` or `"lualatex"`;
+        /// `synctex` also writes `<job>.synctex.gz` among the result files.
+        #[wasm_bindgen(js_name = compileWith)]
+        pub fn compile_with(
+            &self,
+            entry: &str,
+            engine: &str,
+            synctex: bool,
+        ) -> Result<CompileResult, JsValue> {
+            use tex_core::engine::EngineKind;
+            let mut request = CompileRequest::new(entry);
+            request.engine = match engine {
+                "auto" => EngineChoice::Auto,
+                "pdflatex" => EngineChoice::Explicit(EngineKind::PdfTeX),
+                "xelatex" => EngineChoice::Explicit(EngineKind::XeTeX),
+                "lualatex" => EngineChoice::Explicit(EngineKind::LuaTeX),
+                _ => {
+                    return Err(JsValue::from_str(
+                        "expected engine auto, pdflatex, xelatex or lualatex",
+                    ))
+                }
+            };
+            request.synctex = synctex;
+            request.timestamp = Some((js_sys::Date::now() / 1000.0) as u64);
+            Ok(CompileResult(self.0.compile_request(request)))
+        }
     }
 
     #[wasm_bindgen]
@@ -56,6 +145,17 @@ mod bindings {
         #[wasm_bindgen(getter)]
         pub fn status(&self) -> u32 {
             self.0.status as u32
+        }
+        /// `pdflatex`, `xelatex` or `lualatex`: the engine that ran last.
+        #[wasm_bindgen(getter)]
+        pub fn engine(&self) -> String {
+            use tex_core::engine::EngineKind;
+            match self.0.selected_engine {
+                EngineKind::PdfTeX => "pdflatex",
+                EngineKind::XeTeX => "xelatex",
+                EngineKind::LuaTeX => "lualatex",
+            }
+            .to_owned()
         }
         #[wasm_bindgen(getter)]
         pub fn pdf(&self) -> Vec<u8> {
@@ -76,6 +176,10 @@ mod bindings {
         #[wasm_bindgen(getter, js_name = bibtexRuns)]
         pub fn bibtex_runs(&self) -> u32 {
             self.0.bibtex_runs
+        }
+        #[wasm_bindgen(getter, js_name = biberRuns)]
+        pub fn biber_runs(&self) -> u32 {
+            self.0.biber_runs
         }
         #[wasm_bindgen(getter, js_name = fileNames)]
         pub fn file_names(&self) -> Vec<String> {

@@ -192,6 +192,8 @@ result_number!(
 result_number!(tex_result_passes, u32, 0, |r: &Compilation| r.passes);
 result_number!(tex_result_bibtex_runs, u32, 0, |r: &Compilation| r
     .bibtex_runs);
+result_number!(tex_result_biber_runs, u32, 0, |r: &Compilation| r
+    .biber_runs);
 result_number!(tex_result_file_count, usize, 0, |r: &Compilation| r
     .files
     .len());

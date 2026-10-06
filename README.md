@@ -17,7 +17,8 @@ This runs LaTeX, BibTeX or Biber as many times as needed and writes
 `paper.pdf`. Output is compared against TeX Live 2026 in CI.
 
 There is also a C library and a WebAssembly module that compile documents in
-memory; see [docs/libraries.md](docs/libraries.md).
+memory, and TeXres Online, a static in-browser editor built on the module; see
+[docs/libraries.md](docs/libraries.md).
 
 ## Install
 

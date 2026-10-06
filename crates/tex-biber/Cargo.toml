@@ -16,8 +16,17 @@ sxd-document = "0.3.2"
 sxd-xpath = "0.4.2"
 url = "2.5.4"
 # Remote datasources: pure-Rust TLS (ring provider, no native TLS library).
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
 flate2 = { workspace = true }
 
 [dev-dependencies]
 serde_json = "1"
+
+[features]
+default = ["remote"]
+# HTTP(S)/FTP datasources. Without it (WebAssembly) URL datasources are an error.
+remote = ["dep:rustls"]
+
+[[test]]
+name = "remote"
+required-features = ["remote"]

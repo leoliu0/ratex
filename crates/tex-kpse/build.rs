@@ -324,6 +324,13 @@ fn main() {
     }
     std::fs::write(out.join("package_member_dirs.bin"), &member_dir_table).unwrap();
     std::fs::write(out.join("package_font_info.bin"), &font_info_table).unwrap();
+    if external_packages() {
+        // 17 MB of exact font-table copies only spare luaotfload a chunk
+        // decode; without them `metadata_slice` reads the whole program,
+        // which an external build fetches on demand like any member.
+        metadata_window_table.clear();
+        metadata_bytes.clear();
+    }
     std::fs::write(out.join("font_metadata_windows.bin"), &metadata_window_table).unwrap();
     std::fs::write(out.join("font_metadata_bytes.bin"), &metadata_bytes).unwrap();
 
@@ -472,7 +479,8 @@ struct BlobWriter {
 
 impl BlobWriter {
     fn create(out: &Path) -> Self {
-        let format = object_format();
+        // External packages stay a plain chunk file for the web asset build.
+        let format = if external_packages() { None } else { object_format() };
         let name = format
             .as_ref()
             .map_or_else(|| "packages.bin".to_owned(), ObjectFormat::library_file);
@@ -979,6 +987,11 @@ fn ar_member_header(library: &mut Fields, name: &str, size: usize) {
 /// crate (libtex) needs the `bundle-packages` feature, or its consumers
 /// would have to link `tex_kpse_packages` themselves.
 fn write_packages_blob(generated: &mut impl Write, blob: &BlobWriter, out: &Path) {
+    if external_packages() {
+        // `packages.bin` and `package_chunks.bin` stay in OUT_DIR for
+        // `scripts/web_assets.py`; the runtime asks its chunk source instead.
+        return;
+    }
     if blob.format.is_none() {
         writeln!(
             generated,
@@ -1000,6 +1013,11 @@ fn write_packages_blob(generated: &mut impl Write, blob: &BlobWriter, out: &Path
          static PACKAGES: &[u8] = unsafe {{ &PACKAGES_BLOB }};"
     )
     .unwrap();
+}
+
+/// The `external-packages` feature: chunks are served outside the binary.
+fn external_packages() -> bool {
+    std::env::var_os("CARGO_FEATURE_EXTERNAL_PACKAGES").is_some()
 }
 
 fn packed(value: usize) -> u32 {

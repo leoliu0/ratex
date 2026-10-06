@@ -1338,6 +1338,7 @@ name = "tex-runtime"
 version = "0.7.1"
 dependencies = [
  "lopdf",
+ "tex-biber",
  "tex-bibtex",
  "tex-core",
  "tex-kpse",
@@ -1350,6 +1351,8 @@ dependencies = [
  "dlmalloc",
  "getrandom 0.4.3",
  "js-sys",
+ "tex-core",
+ "tex-kpse",
  "tex-runtime",
  "wasm-bindgen",
 ]

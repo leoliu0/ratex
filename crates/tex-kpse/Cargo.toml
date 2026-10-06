@@ -19,3 +19,6 @@ embed-packages = []
 # Copy the embedded package library into the rlib so a `staticlib` built from
 # this crate contains it. Executables and cdylibs link it from OUT_DIR without.
 bundle-packages = ["embed-packages"]
+# Index the archive but read its compressed chunks through `set_chunk_source`
+# (the website fetches them on demand) instead of linking them in.
+external-packages = ["embed-packages"]

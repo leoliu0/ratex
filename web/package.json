@@ -1,0 +1,24 @@
+{
+  "name": "texres-online",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "@codemirror/autocomplete": "^6.18.0",
+    "@codemirror/commands": "^6.8.0",
+    "@codemirror/language": "^6.11.0",
+    "@codemirror/legacy-modes": "^6.5.0",
+    "@codemirror/lint": "^6.8.0",
+    "@codemirror/search": "^6.5.0",
+    "@codemirror/state": "^6.5.0",
+    "@codemirror/view": "^6.36.0",
+    "fflate": "^0.8.2",
+    "pdfjs-dist": "^5.4.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.0",
+    "playwright-core": "^1.55.0"
+  }
+}

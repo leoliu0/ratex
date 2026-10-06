@@ -28,7 +28,7 @@ brew tap leoliu0/texres https://github.com/leoliu0/texres.git
 brew install leoliu0/texres/texres
 ```
 
-Or use the installer for [Apple Silicon (.pkg)](https://github.com/leoliu0/texres/releases/download/v0.7.1/texres-v0.7.1-macos-aarch64.pkg) or [Intel (.pkg)](https://github.com/leoliu0/texres/releases/download/v0.7.1/texres-v0.7.1-macos-x86_64.pkg)
+Or download the macOS installer (`.pkg`, Apple Silicon or Intel) from the [latest release](https://github.com/leoliu0/texres/releases/latest).
 
 ### Linux (x86_64 and ARM64)
 
@@ -41,8 +41,8 @@ sudo apt install ./texres_0.7.1_amd64.deb
 # Fedora / RHEL / openSUSE
 sudo dnf install ./texres-0.7.1-1.x86_64.rpm
 
-# Arch
-sudo pacman -U ./texres-0.7.1-1-x86_64.pkg.tar.zst
+# Arch (AUR)
+yay -S texres-bin    # or build from source: yay -S texres
 
 # Any other glibc distribution (installs to ~/.local)
 tar -xzf tex-suite-v0.7.1-linux-x86_64.tar.gz && ./tex-suite-linux-x86_64/install.sh
@@ -51,11 +51,10 @@ tar -xzf tex-suite-v0.7.1-linux-x86_64.tar.gz && ./tex-suite-linux-x86_64/instal
 ARM64 builds need glibc 2.36 or newer (Debian 12 or later), which includes
 Linux Docker containers on Apple Silicon. Alpine and other musl systems are
 not supported.
-The AUR still carries the older release under the former name (`ratex`, `ratex-bin`).
 
 ### Windows
 
-[Download the installer (.exe)](https://github.com/leoliu0/texres/releases/download/v0.7.1/texres-setup-v0.7.1-windows-x64.exe)
+Download `texres-setup-…-windows-x64.exe` from the [latest release](https://github.com/leoliu0/texres/releases/latest).
 
 ### From source
 

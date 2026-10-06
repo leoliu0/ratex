@@ -9,8 +9,11 @@ Examples:
 Normal runs never invoke the oracle. If /usr/bin/pdflatex is unavailable, they
 use committed control files. --regen requires pdflatex and the pinned oracle;
 only main.bcf and expected.bbl are written back to the fixture directories.
-A fixture's expected-c.* (if present) is additionally compared/regenerated with
-the same arguments under LC_ALL=C.
+expected.* is recorded and compared under LC_ALL=C.UTF-8 on every platform (the
+caller's locale changes Perl's /l and other locale-dependent behaviour, and
+e.g. Windows has no POSIX locale variables). A fixture's expected-c.* (if
+present) is additionally compared/regenerated with the same arguments under
+LC_ALL=C.
 """
 
 import argparse
@@ -262,19 +265,20 @@ def main():
                     if output != "-":
                         output = str(Path(directory) / output)
                     logfile = str(Path(directory) / logfile)
-                # expected-c.* is the same case run under LC_ALL=C (Perl's /l
-                # and locale-dependent behaviour); expected.* uses the caller's locale.
-                variants = [(expected, None)]
+                # expected.* runs under a pinned UTF-8 locale and expected-c.*
+                # under LC_ALL=C (Perl's /l and locale-dependent behaviour).
+                variants = [(expected, "C.UTF-8")]
                 if (variant := expected.with_name(expected.name.replace("expected.", "expected-c.", 1))).is_file():
-                    variants.append((variant, {**os.environ, "LC_ALL": "C"}))
-                for expected, env in variants:
-                    label = fixture.name if env is None else f"{fixture.name} [LC_ALL=C]"
+                    variants.append((variant, "C"))
+                for expected, locale in variants:
+                    label = fixture.name if locale != "C" else f"{fixture.name} [LC_ALL=C]"
+                    env = {**os.environ, "LC_ALL": locale}
                     stdout = run([str(binary), *option_args(options), source], work, args.timeout, env)
                     actual_warnings = warnings((work / logfile).read_text())
                     actual = stdout if output == "-" else (work / output).read_bytes()
-                    warning_path = fixture / ("expected.warnings" if env is None else "expected-c.warnings")
+                    warning_path = fixture / ("expected.warnings" if locale != "C" else "expected-c.warnings")
                     if args.regen:
-                        if not tool and env is None:
+                        if not tool and locale != "C":
                             (fixture / "main.bcf").write_bytes((work / "main.bcf").read_bytes())
                         expected.write_bytes(actual)
                         if warning_path.is_file() or actual_warnings:

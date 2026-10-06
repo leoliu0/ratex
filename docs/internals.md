@@ -320,6 +320,10 @@ order; only those are compared order-insensitively. The `biber` binary and the
 - Perl regexes (sourcemaps, nosort, nonamestring, ...) run on a Perl-compatible
   VM (`perl_regex.rs`, `perl_pattern.rs`, `perl_vm.rs`); constructs that need a
   Perl interpreter (code blocks) are errors.
+- Perl's `/l` follows `LC_ALL`, `LC_CTYPE`, then `LANG` (unset is the C
+  locale) on every platform, as the Linux oracle does; nothing asks libc or
+  the OS. `test_biber.py` therefore pins `LC_ALL=C.UTF-8` for `expected.*`
+  and `LC_ALL=C` for `expected-c.*`.
 - Tests: `scripts/test_biber.py --biber BIN [--committed-bcf]` compares every
   fixture in `scripts/fixtures/biber/` (`--regen` re-records them with the
   oracle); `crates/tex-biber/tests/corpus.rs` runs the same corpus through the

@@ -1,0 +1,132 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{none/global/02129BB861061D1A052C592E2DC6B383/global/global/global}
+    \entry{e07}{thesis}{}{}
+      \name{author}{3}{}{%
+        {{hash=7a14b793f9c8206819859db7ee3c9fc9}{%
+           family={Müller},
+           familyi={M\bibinitperiod},
+           given={Jörg},
+           giveni={J\bibinitperiod}}}%
+        {{hash=b51ed3725402faf19702149d84e5e331}{%
+           family={{Research and Development Group}},
+           familyi={R\bibinitperiod}}}%
+        {{hash=f6f8f8da79a2278e874d528605e12fc9}{%
+           family={d'Angelo},
+           familyi={d\bibinitperiod},
+           given={Lucía},
+           giveni={L\bibinitperiod}}}%
+      }
+      \list{publisher}{1}{%
+        {Müller Verlag}%
+      }
+      \strng{namehash}{a5e5341ba3dfcf06884e085b1fee279c}
+      \strng{fullhash}{a5e5341ba3dfcf06884e085b1fee279c}
+      \strng{fullhashraw}{a5e5341ba3dfcf06884e085b1fee279c}
+      \strng{bibnamehash}{a5e5341ba3dfcf06884e085b1fee279c}
+      \strng{authorbibnamehash}{a5e5341ba3dfcf06884e085b1fee279c}
+      \strng{authornamehash}{a5e5341ba3dfcf06884e085b1fee279c}
+      \strng{authorfullhash}{a5e5341ba3dfcf06884e085b1fee279c}
+      \strng{authorfullhashraw}{a5e5341ba3dfcf06884e085b1fee279c}
+      \field{sortinit}{3}
+      \field{sortinithash}{ad6fe7482ffbd7b9f99c9e8b5dccd3d7}
+      \field{labeldatesource}{nodate}
+      \field{labelprefix}{X}
+      \true{uniqueprimaryauthor}
+      \field{labelnamesource}{author}
+      \true{nocite}
+    \endentry
+  \enddatalist
+  \datalist[entry]{nty/apasortcite//global/global/global}
+    \entry{e07}{thesis}{}{}
+      \name{author}{3}{}{%
+        {{hash=7a14b793f9c8206819859db7ee3c9fc9}{%
+           family={Müller},
+           familyi={M\bibinitperiod},
+           given={Jörg},
+           giveni={J\bibinitperiod}}}%
+        {{hash=b51ed3725402faf19702149d84e5e331}{%
+           family={{Research and Development Group}},
+           familyi={R\bibinitperiod}}}%
+        {{hash=f6f8f8da79a2278e874d528605e12fc9}{%
+           family={d'Angelo},
+           familyi={d\bibinitperiod},
+           given={Lucía},
+           giveni={L\bibinitperiod}}}%
+      }
+      \list{publisher}{1}{%
+        {Müller Verlag}%
+      }
+      \strng{namehash}{a5e5341ba3dfcf06884e085b1fee279c}
+      \strng{fullhash}{a5e5341ba3dfcf06884e085b1fee279c}
+      \strng{fullhashraw}{a5e5341ba3dfcf06884e085b1fee279c}
+      \strng{bibnamehash}{a5e5341ba3dfcf06884e085b1fee279c}
+      \strng{authorbibnamehash}{a5e5341ba3dfcf06884e085b1fee279c}
+      \strng{authornamehash}{a5e5341ba3dfcf06884e085b1fee279c}
+      \strng{authorfullhash}{a5e5341ba3dfcf06884e085b1fee279c}
+      \strng{authorfullhashraw}{a5e5341ba3dfcf06884e085b1fee279c}
+      \field{sortinit}{M}
+      \field{sortinithash}{4625c616857f13d17ce56f7d4f97d451}
+      \field{labeldatesource}{nodate}
+      \true{uniqueprimaryauthor}
+      \field{labelnamesource}{author}
+      \true{nocite}
+    \endentry
+  \enddatalist
+  \datalist[entry]{nty/global//global/global/global}
+    \entry{e07}{thesis}{}{}
+      \name{author}{3}{}{%
+        {{hash=7a14b793f9c8206819859db7ee3c9fc9}{%
+           family={Müller},
+           familyi={M\bibinitperiod},
+           given={Jörg},
+           giveni={J\bibinitperiod}}}%
+        {{hash=b51ed3725402faf19702149d84e5e331}{%
+           family={{Research and Development Group}},
+           familyi={R\bibinitperiod}}}%
+        {{hash=f6f8f8da79a2278e874d528605e12fc9}{%
+           family={d'Angelo},
+           familyi={d\bibinitperiod},
+           given={Lucía},
+           giveni={L\bibinitperiod}}}%
+      }
+      \list{publisher}{1}{%
+        {Müller Verlag}%
+      }
+      \strng{namehash}{a5e5341ba3dfcf06884e085b1fee279c}
+      \strng{fullhash}{a5e5341ba3dfcf06884e085b1fee279c}
+      \strng{fullhashraw}{a5e5341ba3dfcf06884e085b1fee279c}
+      \strng{bibnamehash}{a5e5341ba3dfcf06884e085b1fee279c}
+      \strng{authorbibnamehash}{a5e5341ba3dfcf06884e085b1fee279c}
+      \strng{authornamehash}{a5e5341ba3dfcf06884e085b1fee279c}
+      \strng{authorfullhash}{a5e5341ba3dfcf06884e085b1fee279c}
+      \strng{authorfullhashraw}{a5e5341ba3dfcf06884e085b1fee279c}
+      \field{sortinit}{M}
+      \field{sortinithash}{4625c616857f13d17ce56f7d4f97d451}
+      \field{labeldatesource}{nodate}
+      \true{uniqueprimaryauthor}
+      \field{labelnamesource}{author}
+      \true{nocite}
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

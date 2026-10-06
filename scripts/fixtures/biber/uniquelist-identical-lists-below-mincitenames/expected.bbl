@@ -1,0 +1,259 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{anyvt/global//global/global/global}
+    \entry{e03}{unpublished}{}{}
+      \name{author}{2}{}{%
+        {{hash=f39ab4a5e619366ef6f2781eb91e4ac5}{%
+           family={García},
+           familyi={G\bibinitperiod},
+           given={José},
+           giveni={J\bibinitperiod}}}%
+        {{hash=0e4a1db9738870318c109525dea1cffd}{%
+           family={García\bibnamedelima Márquez},
+           familyi={G\bibinitperiod\bibinitdelim M\bibinitperiod},
+           given={Gabriel},
+           giveni={G\bibinitperiod}}}%
+      }
+      \strng{namehash}{e2d4ff8a5483bb3635c933937d0cfb54}
+      \strng{fullhash}{e2d4ff8a5483bb3635c933937d0cfb54}
+      \strng{fullhashraw}{e2d4ff8a5483bb3635c933937d0cfb54}
+      \strng{bibnamehash}{e2d4ff8a5483bb3635c933937d0cfb54}
+      \strng{authorbibnamehash}{e2d4ff8a5483bb3635c933937d0cfb54}
+      \strng{authornamehash}{e2d4ff8a5483bb3635c933937d0cfb54}
+      \strng{authorfullhash}{e2d4ff8a5483bb3635c933937d0cfb54}
+      \strng{authorfullhashraw}{e2d4ff8a5483bb3635c933937d0cfb54}
+      \field{sortinit}{G}
+      \field{sortinithash}{32d67eca0634bf53703493fb1090a2e8}
+      \field{labelnamesource}{author}
+      \true{nocite}
+    \endentry
+    \entry{e01}{report}{}{}
+      \name{author}{5}{ul=2}{%
+        {{hash=f39ab4a5e619366ef6f2781eb91e4ac5}{%
+           family={García},
+           familyi={G\bibinitperiod},
+           given={José},
+           giveni={J\bibinitperiod}}}%
+        {{hash=6f58bc0b0eb123e65276b1668a21186b}{%
+           family={Waals},
+           familyi={W\bibinitperiod},
+           given={Johannes\bibnamedelima Diderik},
+           giveni={J\bibinitperiod\bibinitdelim D\bibinitperiod},
+           prefix={van\bibnamedelima der},
+           prefixi={v\bibinitperiod\bibinitdelim d\bibinitperiod}}}%
+        {{hash=293a545627bbb4f9a0e27a8028b3cf20}{%
+           family={Łukasiewicz},
+           familyi={Ł\bibinitperiod},
+           given={Jan},
+           giveni={J\bibinitperiod}}}%
+        {{hash=f8744afb2b8eb53c5804cbac615dbad1}{%
+           family={Neumann},
+           familyi={N\bibinitperiod},
+           given={John},
+           giveni={J\bibinitperiod},
+           prefix={von},
+           prefixi={v\bibinitperiod}}}%
+        {{hash=5c7e6e3a577fed3702f8a608cf07c141}{%
+           family={Smith},
+           familyi={S\bibinitperiod},
+           given={J.\bibnamedelimi P.},
+           giveni={J\bibinitperiod\bibinitdelim P\bibinitperiod}}}%
+      }
+      \strng{namehash}{8b4157803a8a0ce9809ea24baf629ecd}
+      \strng{fullhash}{933f2cb57dbdcef1971950a0989139e3}
+      \strng{fullhashraw}{933f2cb57dbdcef1971950a0989139e3}
+      \strng{bibnamehash}{8b4157803a8a0ce9809ea24baf629ecd}
+      \strng{authorbibnamehash}{8b4157803a8a0ce9809ea24baf629ecd}
+      \strng{authornamehash}{8b4157803a8a0ce9809ea24baf629ecd}
+      \strng{authorfullhash}{933f2cb57dbdcef1971950a0989139e3}
+      \strng{authorfullhashraw}{933f2cb57dbdcef1971950a0989139e3}
+      \field{extraname}{1}
+      \field{sortinit}{G}
+      \field{sortinithash}{32d67eca0634bf53703493fb1090a2e8}
+      \field{labelnamesource}{author}
+    \endentry
+    \entry{e02}{inproceedings}{}{}
+      \name{author}{5}{ul=2}{%
+        {{hash=f39ab4a5e619366ef6f2781eb91e4ac5}{%
+           family={García},
+           familyi={G\bibinitperiod},
+           given={José},
+           giveni={J\bibinitperiod}}}%
+        {{hash=6f58bc0b0eb123e65276b1668a21186b}{%
+           family={Waals},
+           familyi={W\bibinitperiod},
+           given={Johannes\bibnamedelima Diderik},
+           giveni={J\bibinitperiod\bibinitdelim D\bibinitperiod},
+           prefix={van\bibnamedelima der},
+           prefixi={v\bibinitperiod\bibinitdelim d\bibinitperiod}}}%
+        {{hash=293a545627bbb4f9a0e27a8028b3cf20}{%
+           family={Łukasiewicz},
+           familyi={Ł\bibinitperiod},
+           given={Jan},
+           giveni={J\bibinitperiod}}}%
+        {{hash=f8744afb2b8eb53c5804cbac615dbad1}{%
+           family={Neumann},
+           familyi={N\bibinitperiod},
+           given={John},
+           giveni={J\bibinitperiod},
+           prefix={von},
+           prefixi={v\bibinitperiod}}}%
+        {{hash=5c7e6e3a577fed3702f8a608cf07c141}{%
+           family={Smith},
+           familyi={S\bibinitperiod},
+           given={J.\bibnamedelimi P.},
+           giveni={J\bibinitperiod\bibinitdelim P\bibinitperiod}}}%
+      }
+      \strng{namehash}{8b4157803a8a0ce9809ea24baf629ecd}
+      \strng{fullhash}{933f2cb57dbdcef1971950a0989139e3}
+      \strng{fullhashraw}{933f2cb57dbdcef1971950a0989139e3}
+      \strng{bibnamehash}{8b4157803a8a0ce9809ea24baf629ecd}
+      \strng{authorbibnamehash}{8b4157803a8a0ce9809ea24baf629ecd}
+      \strng{authornamehash}{8b4157803a8a0ce9809ea24baf629ecd}
+      \strng{authorfullhash}{933f2cb57dbdcef1971950a0989139e3}
+      \strng{authorfullhashraw}{933f2cb57dbdcef1971950a0989139e3}
+      \field{extraname}{2}
+      \field{sortinit}{G}
+      \field{sortinithash}{32d67eca0634bf53703493fb1090a2e8}
+      \field{labelnamesource}{author}
+    \endentry
+  \enddatalist
+  \datalist[entry]{nty/global//global/global/global}
+    \entry{e03}{unpublished}{}{}
+      \name{author}{2}{}{%
+        {{hash=f39ab4a5e619366ef6f2781eb91e4ac5}{%
+           family={García},
+           familyi={G\bibinitperiod},
+           given={José},
+           giveni={J\bibinitperiod}}}%
+        {{hash=0e4a1db9738870318c109525dea1cffd}{%
+           family={García\bibnamedelima Márquez},
+           familyi={G\bibinitperiod\bibinitdelim M\bibinitperiod},
+           given={Gabriel},
+           giveni={G\bibinitperiod}}}%
+      }
+      \strng{namehash}{e2d4ff8a5483bb3635c933937d0cfb54}
+      \strng{fullhash}{e2d4ff8a5483bb3635c933937d0cfb54}
+      \strng{fullhashraw}{e2d4ff8a5483bb3635c933937d0cfb54}
+      \strng{bibnamehash}{e2d4ff8a5483bb3635c933937d0cfb54}
+      \strng{authorbibnamehash}{e2d4ff8a5483bb3635c933937d0cfb54}
+      \strng{authornamehash}{e2d4ff8a5483bb3635c933937d0cfb54}
+      \strng{authorfullhash}{e2d4ff8a5483bb3635c933937d0cfb54}
+      \strng{authorfullhashraw}{e2d4ff8a5483bb3635c933937d0cfb54}
+      \field{sortinit}{G}
+      \field{sortinithash}{32d67eca0634bf53703493fb1090a2e8}
+      \field{labelnamesource}{author}
+      \true{nocite}
+    \endentry
+    \entry{e01}{report}{}{}
+      \name{author}{5}{ul=2}{%
+        {{hash=f39ab4a5e619366ef6f2781eb91e4ac5}{%
+           family={García},
+           familyi={G\bibinitperiod},
+           given={José},
+           giveni={J\bibinitperiod}}}%
+        {{hash=6f58bc0b0eb123e65276b1668a21186b}{%
+           family={Waals},
+           familyi={W\bibinitperiod},
+           given={Johannes\bibnamedelima Diderik},
+           giveni={J\bibinitperiod\bibinitdelim D\bibinitperiod},
+           prefix={van\bibnamedelima der},
+           prefixi={v\bibinitperiod\bibinitdelim d\bibinitperiod}}}%
+        {{hash=293a545627bbb4f9a0e27a8028b3cf20}{%
+           family={Łukasiewicz},
+           familyi={Ł\bibinitperiod},
+           given={Jan},
+           giveni={J\bibinitperiod}}}%
+        {{hash=f8744afb2b8eb53c5804cbac615dbad1}{%
+           family={Neumann},
+           familyi={N\bibinitperiod},
+           given={John},
+           giveni={J\bibinitperiod},
+           prefix={von},
+           prefixi={v\bibinitperiod}}}%
+        {{hash=5c7e6e3a577fed3702f8a608cf07c141}{%
+           family={Smith},
+           familyi={S\bibinitperiod},
+           given={J.\bibnamedelimi P.},
+           giveni={J\bibinitperiod\bibinitdelim P\bibinitperiod}}}%
+      }
+      \strng{namehash}{8b4157803a8a0ce9809ea24baf629ecd}
+      \strng{fullhash}{933f2cb57dbdcef1971950a0989139e3}
+      \strng{fullhashraw}{933f2cb57dbdcef1971950a0989139e3}
+      \strng{bibnamehash}{8b4157803a8a0ce9809ea24baf629ecd}
+      \strng{authorbibnamehash}{8b4157803a8a0ce9809ea24baf629ecd}
+      \strng{authornamehash}{8b4157803a8a0ce9809ea24baf629ecd}
+      \strng{authorfullhash}{933f2cb57dbdcef1971950a0989139e3}
+      \strng{authorfullhashraw}{933f2cb57dbdcef1971950a0989139e3}
+      \field{extraname}{1}
+      \field{sortinit}{G}
+      \field{sortinithash}{32d67eca0634bf53703493fb1090a2e8}
+      \field{labelnamesource}{author}
+    \endentry
+    \entry{e02}{inproceedings}{}{}
+      \name{author}{5}{ul=2}{%
+        {{hash=f39ab4a5e619366ef6f2781eb91e4ac5}{%
+           family={García},
+           familyi={G\bibinitperiod},
+           given={José},
+           giveni={J\bibinitperiod}}}%
+        {{hash=6f58bc0b0eb123e65276b1668a21186b}{%
+           family={Waals},
+           familyi={W\bibinitperiod},
+           given={Johannes\bibnamedelima Diderik},
+           giveni={J\bibinitperiod\bibinitdelim D\bibinitperiod},
+           prefix={van\bibnamedelima der},
+           prefixi={v\bibinitperiod\bibinitdelim d\bibinitperiod}}}%
+        {{hash=293a545627bbb4f9a0e27a8028b3cf20}{%
+           family={Łukasiewicz},
+           familyi={Ł\bibinitperiod},
+           given={Jan},
+           giveni={J\bibinitperiod}}}%
+        {{hash=f8744afb2b8eb53c5804cbac615dbad1}{%
+           family={Neumann},
+           familyi={N\bibinitperiod},
+           given={John},
+           giveni={J\bibinitperiod},
+           prefix={von},
+           prefixi={v\bibinitperiod}}}%
+        {{hash=5c7e6e3a577fed3702f8a608cf07c141}{%
+           family={Smith},
+           familyi={S\bibinitperiod},
+           given={J.\bibnamedelimi P.},
+           giveni={J\bibinitperiod\bibinitdelim P\bibinitperiod}}}%
+      }
+      \strng{namehash}{8b4157803a8a0ce9809ea24baf629ecd}
+      \strng{fullhash}{933f2cb57dbdcef1971950a0989139e3}
+      \strng{fullhashraw}{933f2cb57dbdcef1971950a0989139e3}
+      \strng{bibnamehash}{8b4157803a8a0ce9809ea24baf629ecd}
+      \strng{authorbibnamehash}{8b4157803a8a0ce9809ea24baf629ecd}
+      \strng{authornamehash}{8b4157803a8a0ce9809ea24baf629ecd}
+      \strng{authorfullhash}{933f2cb57dbdcef1971950a0989139e3}
+      \strng{authorfullhashraw}{933f2cb57dbdcef1971950a0989139e3}
+      \field{extraname}{2}
+      \field{sortinit}{G}
+      \field{sortinithash}{32d67eca0634bf53703493fb1090a2e8}
+      \field{labelnamesource}{author}
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

@@ -1,0 +1,114 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{ynt/global/02129BB861061D1A052C592E2DC6B383/global/global/global}
+    \entry{e07}{inbook}{}{}
+      \name{editor}{3}{}{%
+        {{useprefix=true,hash=245b3b9ba37b03bcc40be6dd80048d5e}{%
+           family={van\bibnamedelima Gogh},
+           familyi={v\bibinitperiod\bibinitdelim G\bibinitperiod},
+           given={Vincent},
+           giveni={V\bibinitperiod},
+           prefix={van},
+           prefixi={v\bibinitperiod}}}%
+        {{hash=39b05844478963c6339f56949275fec7}{%
+           family={İnal},
+           familyi={İ\bibinitperiod},
+           given={İpek},
+           giveni={İ\bibinitperiod}}}%
+        {{hash=0e4a1db9738870318c109525dea1cffd}{%
+           family={García\bibnamedelima Márquez},
+           familyi={G\bibinitperiod\bibinitdelim M\bibinitperiod},
+           given={Gabriel},
+           giveni={G\bibinitperiod}}}%
+      }
+      \strng{editorbibnamehash}{755afeee8b3236b1556fc6ba4a493fd4}
+      \strng{editornamehash}{755afeee8b3236b1556fc6ba4a493fd4}
+      \strng{editorfullhash}{755afeee8b3236b1556fc6ba4a493fd4}
+      \strng{editorfullhashraw}{755afeee8b3236b1556fc6ba4a493fd4}
+      \field{sortinit}{9}
+      \field{sortinithash}{0a5ebc79d83c96b6579069544c73c7d4}
+      \field{labeldatesource}{nodate}
+      \field{labelprefix}{X}
+    \endentry
+  \enddatalist
+  \datalist[entry]{debug/apasortcite//global/global/global}
+    \entry{e07}{inbook}{}{}
+      \name{editor}{3}{}{%
+        {{useprefix=true,hash=245b3b9ba37b03bcc40be6dd80048d5e}{%
+           family={van\bibnamedelima Gogh},
+           familyi={v\bibinitperiod\bibinitdelim G\bibinitperiod},
+           given={Vincent},
+           giveni={V\bibinitperiod},
+           prefix={van},
+           prefixi={v\bibinitperiod}}}%
+        {{hash=39b05844478963c6339f56949275fec7}{%
+           family={İnal},
+           familyi={İ\bibinitperiod},
+           given={İpek},
+           giveni={İ\bibinitperiod}}}%
+        {{hash=0e4a1db9738870318c109525dea1cffd}{%
+           family={García\bibnamedelima Márquez},
+           familyi={G\bibinitperiod\bibinitdelim M\bibinitperiod},
+           given={Gabriel},
+           giveni={G\bibinitperiod}}}%
+      }
+      \strng{editorbibnamehash}{755afeee8b3236b1556fc6ba4a493fd4}
+      \strng{editornamehash}{755afeee8b3236b1556fc6ba4a493fd4}
+      \strng{editorfullhash}{755afeee8b3236b1556fc6ba4a493fd4}
+      \strng{editorfullhashraw}{755afeee8b3236b1556fc6ba4a493fd4}
+      \field{sortinit}{e}
+      \field{sortinithash}{8da8a182d344d5b9047633dfc0cc9131}
+      \field{labeldatesource}{nodate}
+    \endentry
+  \enddatalist
+  \datalist[entry]{debug/global//global/global/global}
+    \entry{e07}{inbook}{}{}
+      \name{editor}{3}{}{%
+        {{useprefix=true,hash=245b3b9ba37b03bcc40be6dd80048d5e}{%
+           family={van\bibnamedelima Gogh},
+           familyi={v\bibinitperiod\bibinitdelim G\bibinitperiod},
+           given={Vincent},
+           giveni={V\bibinitperiod},
+           prefix={van},
+           prefixi={v\bibinitperiod}}}%
+        {{hash=39b05844478963c6339f56949275fec7}{%
+           family={İnal},
+           familyi={İ\bibinitperiod},
+           given={İpek},
+           giveni={İ\bibinitperiod}}}%
+        {{hash=0e4a1db9738870318c109525dea1cffd}{%
+           family={García\bibnamedelima Márquez},
+           familyi={G\bibinitperiod\bibinitdelim M\bibinitperiod},
+           given={Gabriel},
+           giveni={G\bibinitperiod}}}%
+      }
+      \strng{editorbibnamehash}{755afeee8b3236b1556fc6ba4a493fd4}
+      \strng{editornamehash}{755afeee8b3236b1556fc6ba4a493fd4}
+      \strng{editorfullhash}{755afeee8b3236b1556fc6ba4a493fd4}
+      \strng{editorfullhashraw}{755afeee8b3236b1556fc6ba4a493fd4}
+      \field{sortinit}{e}
+      \field{sortinithash}{8da8a182d344d5b9047633dfc0cc9131}
+      \field{labeldatesource}{nodate}
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

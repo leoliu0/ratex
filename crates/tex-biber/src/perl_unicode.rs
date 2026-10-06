@@ -2,6 +2,31 @@
 //! All membership and mappings come from the PAR tables, not Rust's Unicode version.
 #[path = "perl_unicode_tables.rs"]
 mod tables;
+use std::sync::LazyLock;
+
+/// Property range tables; table `i` is `ranges[starts[i]..starts[i + 1]]`.
+struct Ranges { ranges: Vec<(u32, u32)>, starts: Vec<usize> }
+static RANGES: LazyLock<Ranges> = LazyLock::new(|| {
+    let data = crate::blob::inflate(include_bytes!("perl_unicode_tables.bin"));
+    let mut r = crate::blob::Reader::new(&data);
+    let count = r.len();
+    let (mut ranges, mut starts) = (Vec::new(), Vec::with_capacity(count + 1));
+    starts.push(0);
+    for _ in 0..count {
+        let n = r.len();
+        ranges.extend((0..n).map(|_| (r.u32(), r.u32())));
+        starts.push(ranges.len());
+    }
+    Ranges { ranges, starts }
+});
+fn table(i: usize) -> &'static [(u32, u32)] { &RANGES.ranges[RANGES.starts[i]..RANGES.starts[i + 1]] }
+
+static NAME_DATA: LazyLock<Vec<u8>> = LazyLock::new(|| crate::blob::inflate(include_bytes!("perl_unicode_names.bin")));
+/// Sorted (name, value) pairs borrowing from `NAME_DATA`.
+static NAMES: LazyLock<Vec<(&'static str, &'static str)>> = LazyLock::new(|| {
+    let mut r = crate::blob::Reader::new(&NAME_DATA);
+    (0..r.len()).map(|_| (r.str(), r.str())).collect()
+});
 
 pub fn in_ranges(ranges: &[(u32, u32)], c: char) -> bool {
     let point = c as u32;
@@ -9,9 +34,9 @@ pub fn in_ranges(ranges: &[(u32, u32)], c: char) -> bool {
     ranges.get(index).is_some_and(|&(start, _)| start <= point)
 }
 
-pub fn is_word(c: char) -> bool { in_ranges(tables::WORD, c) }
-pub fn is_space(c: char) -> bool { in_ranges(tables::SPACE, c) }
-pub fn needs_quoting(c: char) -> bool { in_ranges(tables::PERL_QUOTEMETA, c) }
+pub fn is_word(c: char) -> bool { in_ranges(table(tables::WORD), c) }
+pub fn is_space(c: char) -> bool { in_ranges(table(tables::SPACE), c) }
+pub fn needs_quoting(c: char) -> bool { in_ranges(table(tables::PERL_QUOTEMETA), c) }
 
 fn alias_index(aliases: &[(&str, usize)], name: &str) -> Option<usize> {
     aliases.binary_search_by(|&(key, _)| key.cmp(name)).ok().map(|i| aliases[i].1)
@@ -42,7 +67,7 @@ pub fn property_ranges_casei(name: &str, casei: bool) -> Result<&'static [(u32, 
     let index = if casei { alias_index(tables::CASE_PROPERTIES, &key) } else { None }
         .or_else(|| alias_index(tables::PROPERTIES, &strict))
         .or_else(|| alias_index(tables::PROPERTIES, &key));
-    index.map(|i| tables::TABLES[i]).ok_or_else(|| format!("Unknown Perl Unicode property {name:?}"))
+    index.map(table).ok_or_else(|| format!("Unknown Perl Unicode property {name:?}"))
 }
 
 pub fn property_contains(name: &str, c: char) -> Result<bool, String> {
@@ -135,7 +160,7 @@ fn match_folded_mode(literal:&str,haystack:&str,start:usize,ascii_restrict:bool,
 }
 
 pub fn named_sequence(name: &str) -> Option<&'static str> {
-    tables::NAMES.binary_search_by(|&(key, _)| key.cmp(name)).ok().map(|i| tables::NAMES[i].1)
+    NAMES.binary_search_by(|&(key, _)| key.cmp(name)).ok().map(|i| NAMES[i].1)
 }
 
 pub fn named_char(name: &str) -> Option<char> {
@@ -155,13 +180,13 @@ pub fn named_char(name: &str) -> Option<char> {
 enum Gcb { Other, Control, Cr, Lf, Extend, Zwj, Ri, Prepend, SpacingMark, L, V, T, Lv, Lvt }
 fn gcb(c: char) -> Gcb {
     use Gcb::*;
-    for (kind, ranges) in [
+    for (kind, i) in [
         (Control, tables::GCB_CONTROL), (Cr, tables::GCB_CR), (Lf, tables::GCB_LF),
         (Extend, tables::GCB_EXTEND), (Zwj, tables::GCB_ZWJ), (Ri, tables::GCB_REGIONALINDICATOR),
         (Prepend, tables::GCB_PREPEND), (SpacingMark, tables::GCB_SPACINGMARK),
         (L, tables::GCB_L), (V, tables::GCB_V), (T, tables::GCB_T), (Lv, tables::GCB_LV), (Lvt, tables::GCB_LVT),
     ] {
-        if in_ranges(ranges, c) { return kind; }
+        if in_ranges(table(i), c) { return kind; }
     }
     Other
 }
@@ -175,11 +200,11 @@ pub fn grapheme_end(value: &str, start: usize) -> Option<usize> {
     let mut previous = gcb(first);
     let mut end = start + first.len_utf8();
     let mut ri_count = usize::from(previous == Ri);
-    let mut ep_extend = in_ranges(tables::EXTPICT, first);
+    let mut ep_extend = in_ranges(table(tables::EXTPICT), first);
     let mut zwj_after_ep = false;
     for (offset, c) in chars {
         let next = gcb(c);
-        let pictographic = in_ranges(tables::EXTPICT, c);
+        let pictographic = in_ranges(table(tables::EXTPICT), c);
         let joined = if previous == Cr && next == Lf { true }
             else if matches!(previous, Control | Cr | Lf) || matches!(next, Control | Cr | Lf) { false }
             else { (previous == L && matches!(next, L | V | Lv | Lvt))
@@ -335,8 +360,9 @@ pub fn is_script_run(value: &str) -> bool {
             for i in 0..4 { possible[i] &= mask[i]; }
             if possible == [0; 4] { return false; }
         }
-        let i = tables::DIGIT.partition_point(|&(_, end)| end < point);
-        if let Some(&(start, _)) = tables::DIGIT.get(i) {
+        let digit = table(tables::DIGIT);
+        let i = digit.partition_point(|&(_, end)| end < point);
+        if let Some(&(start, _)) = digit.get(i) {
             if start <= point {
                 if zero.is_some_and(|old| old != start) { return false; }
                 zero = Some(start);

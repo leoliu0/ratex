@@ -9,6 +9,7 @@
 //! Datasource transformations are applied before inheritance and label generation.
 mod bcf;
 mod bib;
+mod blob;
 mod cli;
 mod collation;
 mod config;

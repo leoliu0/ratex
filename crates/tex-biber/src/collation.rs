@@ -1,6 +1,7 @@
 //! Unicode::Collate 1.31 semantics and the exact Biber 2.22 bundled tables.
 use crate::model::{Control, DataList, SortItem};
 use std::fmt::Write;
+use std::sync::OnceLock;
 #[path = "collation_normalization.rs"]
 pub(crate) mod normalization;
 use normalization::canonical_combining_class;
@@ -8,18 +9,41 @@ use normalization::canonical_combining_class;
 mod numeric;
 pub(crate) use numeric::integer_sort_value;
 
+/// (sequence offset, sequence length, element offset, element count)
 type Mapping = (usize, usize, usize, usize);
 type Element = [u16; 5];
 include!("uca_table.rs");
 include!("locale_language.rs");
+/// One collation table; rows are sorted by their sequence.
+struct Table { rows: Vec<Mapping>, sequences: Vec<u32>, elements: Vec<Element> }
+static EMPTY: Table = Table { rows: Vec::new(), sequences: Vec::new(), elements: Vec::new() };
+/// Inflate table `i` of `uca_table.bin` on first use.
+fn uca(i: usize) -> &'static Table {
+    static CELLS: [OnceLock<Table>; TABLES.len()] = [const { OnceLock::new() }; TABLES.len()];
+    CELLS[i].get_or_init(|| {
+        let (offset, length) = TABLES[i];
+        let data = crate::blob::inflate(&include_bytes!("uca_table.bin")[offset..offset + length]);
+        let mut r = crate::blob::Reader::new(&data);
+        let n = r.len();
+        let (mut sequence, mut element) = (0, 0);
+        let rows = r.bytes(2 * n).chunks_exact(2).map(|lengths| {
+            let row = (sequence, usize::from(lengths[0]), element, usize::from(lengths[1]));
+            sequence += row.1; element += row.3;
+            row
+        }).collect();
+        let sequences = (0..sequence).map(|_| r.u32()).collect();
+        let elements = (0..element).map(|_| [r.u16(), r.u16(), r.u16(), r.u16(), r.u16()]).collect();
+        Table { rows, sequences, elements }
+    })
+}
 
 #[derive(Clone)]
 pub(crate) struct Collator {
-    table: &'static [Mapping], suppress: &'static [u32], level: usize,
+    table: &'static Table, suppress: &'static [u32], level: usize,
     backwards: u8, upper: bool, kana: bool, ignore_secondary: bool,
     variable: String, normalization: String, identical: bool,
     highest: bool, minimal: bool, version: u8, terminator: u16, rearrange: Vec<u32>,
-    long: bool, cjk: &'static [Mapping], cjk_defined: bool, implicit_hangul: bool,
+    long: bool, cjk: &'static Table, cjk_defined: bool, implicit_hangul: bool,
 }
 fn truth(s: &str) -> bool { !matches!(s,""|"0"|"\0") }
 // Perl's numeric conversion consumes a decimal prefix, unlike Rust's parse().
@@ -141,7 +165,7 @@ fn locale_file(locale: &str) -> String {
 impl Collator {
     fn new(locale: &str) -> Self {
         let file=locale_file(locale);
-        let (_,table,backwards,upper,suppress,cjk)=LOCALES.iter().find(|x|x.0==file).copied().unwrap_or(("",&[],0,false,&[],&[]));
+        let (table,backwards,upper,suppress,cjk)=LOCALES.iter().find(|x|x.0==file).map(|&(_,table,backwards,upper,suppress,cjk)|(uca(table),backwards,upper,suppress,uca(cjk))).unwrap_or((&EMPTY,0,false,&[],&EMPTY));
         Self {table,suppress,level:4,backwards:if backwards>0{1<<backwards}else{0},upper,kana:false,ignore_secondary:false,variable:"shifted".into(),normalization:"NFD".into(),identical:false,highest:false,minimal:false,version:43,terminator:0,rearrange:Vec::new(),long:false,cjk,cjk_defined:true,implicit_hangul:false}
     }
     pub(crate) fn initial(c: &Control,d: &DataList) -> Self {
@@ -188,26 +212,26 @@ impl Collator {
             "backwards"=>self.backwards=if value=="\0"{0}else{1<<(number(value) as u8)},
             "rearrange"=>self.rearrange.clear(),
             "long_contraction"=>self.long=truth(value),
-            "overrideCJK"=>{if !truth(value){self.cjk=&[];self.cjk_defined=value!="\0";}},
+            "overrideCJK"=>{if !truth(value){self.cjk=&EMPTY;self.cjk_defined=value!="\0";}},
             "overrideHangul"=>self.implicit_hangul=value=="\0",
             _=>{},
         }
     }
     fn find(&self,seq: &[u32]) -> Option<&'static [Element]> {
-        fn search(table: &'static [Mapping],seq: &[u32])->Option<&'static [Element]>{let i=table.binary_search_by(|&(off,len,_,_)|SEQUENCES[off..off+len].cmp(seq)).ok()?;let (_,_,off,len)=table[i];Some(&WEIGHTS[off..off+len])}
-        search(self.table,seq).or_else(||if seq.len()>1&&self.suppress.contains(&seq[0]){None}else{search(DUCET,seq)}).or_else(||if seq.len()==1&&is_ideograph(seq[0],self.version){search(self.cjk,seq)}else{None})
+        fn search(t: &'static Table,seq: &[u32])->Option<&'static [Element]>{let i=t.rows.binary_search_by(|&(off,len,_,_)|t.sequences[off..off+len].cmp(seq)).ok()?;let (_,_,off,len)=t.rows[i];Some(&t.elements[off..off+len])}
+        search(self.table,seq).or_else(||if seq.len()>1&&self.suppress.contains(&seq[0]){None}else{search(uca(DUCET),seq)}).or_else(||if seq.len()==1&&is_ideograph(seq[0],self.version){search(self.cjk,seq)}else{None})
     }
     fn max_len(&self,cp: u32) -> usize {
-        [self.table,DUCET].into_iter().map(|table|{let start=table.partition_point(|&(off,_,_,_)|SEQUENCES[off]<cp);table[start..].iter().take_while(|&&(off,_,_,_)|SEQUENCES[off]==cp).map(|x|x.1).max().unwrap_or(1)}).max().unwrap_or(1)
+        [self.table,uca(DUCET)].into_iter().map(|t|{let start=t.rows.partition_point(|&(off,_,_,_)|t.sequences[off]<cp);t.rows[start..].iter().take_while(|&&(off,_,_,_)|t.sequences[off]==cp).map(|x|x.1).max().unwrap_or(1)}).max().unwrap_or(1)
     }
     fn prefix(&self,seq: &[u32]) -> bool {
-        [self.table,DUCET].into_iter().any(|table|{let start=table.partition_point(|&(off,len,_,_)|SEQUENCES[off..off+len].cmp(seq).is_lt());table.get(start).is_some_and(|&(off,len,_,_)|len>seq.len()&&SEQUENCES[off..off+len].starts_with(seq))})
+        [self.table,uca(DUCET)].into_iter().any(|t|{let start=t.rows.partition_point(|&(off,len,_,_)|t.sequences[off..off+len].cmp(seq).is_lt());t.rows.get(start).is_some_and(|&(off,len,_,_)|len>seq.len()&&t.sequences[off..off+len].starts_with(seq))})
     }
     fn implicit(&self,cp: u32,out: &mut Vec<Element>) {
         if cp==0xffff&&self.highest {out.push([0xfffe,0x20,5,0xffff,0]);return;}
         if cp==0xfffe&&self.minimal {out.push([1,0x20,5,0xfffe,0]);return;}
         let v=self.version;
-        if v==8&&self.cjk_defined&&self.cjk.is_empty()&&is_ideograph(cp,0){out.push([cp as u16,0x20,2,cp as u16,0]);return;}
+        if v==8&&self.cjk_defined&&self.cjk.rows.is_empty()&&is_ideograph(cp,0){out.push([cp as u16,0x20,2,cp as u16,0]);return;}
         let bound=if v>=43{0x9ffc}else if v>=38{0x9fef}else if v>=36{0x9fea}else if v>=32{0x9fd5}else if v>=24{0x9fcc}else if v>=20{0x9fcb}else if v>=18{0x9fc3}else if v>=14{0x9fbb}else{0x9fa5};
         let basic=(0x4e00..=bound).contains(&cp)||matches!(cp,0xfa0e|0xfa0f|0xfa11|0xfa13|0xfa14|0xfa1f|0xfa21|0xfa23|0xfa24|0xfa27|0xfa28|0xfa29);
         let ext=(0x3400..=if v>=43{0x4dbf}else{0x4db5}).contains(&cp)||(0x20000..=if v>=43{0x2a6dd}else{0x2a6d6}).contains(&cp)||v>=20&&(0x2a700..=0x2b734).contains(&cp)||v>=22&&(0x2b740..=0x2b81d).contains(&cp)||v>=32&&(0x2b820..=0x2cea1).contains(&cp)||v>=36&&(0x2ceb0..=0x2ebe0).contains(&cp)||v>=43&&(0x30000..=0x3134a).contains(&cp);

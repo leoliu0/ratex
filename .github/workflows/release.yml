@@ -208,6 +208,14 @@ jobs:
           sudo rm -rf "$HOME/Library/Android/sdk"
           df -h /
 
+      - name: Free runner disk space (linux)
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
       # Only texres ships (scripts/package_dist.py BINARIES); the tests below build
       # the rest of the workspace in the test profile.
       - name: Build release binary

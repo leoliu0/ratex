@@ -28,7 +28,7 @@ const EPOCH = 1700000000;
 const TYPES = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css',
   '.json': 'application/json', '.wasm': 'application/wasm', '.bin': 'application/octet-stream',
-  '.txt': 'text/plain',
+  '.txt': 'text/plain', '.woff2': 'font/woff2',
 };
 const traffic = { bytes: 0, requests: 0, byKind: {} };
 function resetTraffic() {
@@ -170,6 +170,11 @@ const editorLine = () => page.evaluate(() => {
   const active = document.querySelector('.cm-activeLineGutter');
   return Number(active?.textContent);
 });
+/** Pick `item` from the drop-down menu that `button` opens. */
+async function choose(button, item) {
+  await page.click(button);
+  await page.click(item);
+}
 
 // First visit: everything comes from the network.
 resetTraffic();
@@ -179,7 +184,7 @@ report.firstLoad = { ...snapshot(), init: await page.evaluate(() => window.texre
 
 // Create the project through the UI.
 answers.push('E2E Article');
-await page.click('#new-project');
+await choose('#project-menu-button', '#new-project');
 await page.waitForFunction(() => document.querySelector('#project option:checked')?.textContent === 'E2E Article');
 await page.uncheck('#auto-compile');
 await page.click('#settings-button');
@@ -194,7 +199,7 @@ await page.setInputFiles('#upload', { name: 'box.png', mimeType: 'image/png', bu
 await page.waitForSelector('.tree-row[data-path="box.png"]');
 answers.push('figures/box.png');
 await page.click('.tree-row[data-path="box.png"]');
-await page.click('#rename-file');
+await choose('#file-menu-button', '#rename-file');
 await page.waitForSelector('.tree-row[data-path="figures/box.png"]');
 await page.click('.tree-row[data-path="main.tex"]');
 
@@ -250,7 +255,7 @@ const fixed = await compileAndWait(() => page.click('#compile'));
 assert.equal(fixed.status, 0);
 
 // Zip export, then import as a second project with the same files.
-const [download] = await Promise.all([page.waitForEvent('download'), page.click('#export-zip')]);
+const [download] = await Promise.all([page.waitForEvent('download'), choose('#project-menu-button', '#export-zip')]);
 const zipPath = path.join(work, 'export.zip');
 await download.saveAs(zipPath);
 await page.setInputFiles('#import-zip', zipPath);
@@ -260,7 +265,7 @@ assert.deepEqual(imported, ['figures/box.png', 'main.tex', 'refs.bib']);
 
 // XeLaTeX through automatic engine selection (fontspec).
 answers.push('XeLaTeX');
-await page.click('#new-project');
+await choose('#project-menu-button', '#new-project');
 await page.waitForFunction(() => document.querySelector('#project option:checked')?.textContent === 'XeLaTeX');
 await page.uncheck('#auto-compile');
 await page.click('#settings-button');

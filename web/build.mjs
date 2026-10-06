@@ -113,18 +113,36 @@ const worker = emit('compile-worker', '.js', await bundle('compile-worker.js', {
   alias: { 'texres-wasm': path.join(wasmDir, 'tex.js') },
 }));
 const main = emit('main', '.js', await bundle('main.js'));
-const style = emit('style', '.css', await bundle('style.css', { loader: { '.css': 'css' } }));
+// Fonts referenced by the stylesheet land next to it under content-hashed names.
+const css = await build({
+  entryPoints: [path.join(here, 'src', 'style.css')],
+  bundle: true,
+  minify: true,
+  write: false,
+  outdir: assetsOut,
+  loader: { '.woff2': 'file' },
+  assetNames: '[name]-[hash]',
+  entryNames: 'style',
+  logLevel: 'warning',
+});
+const fonts = [];
+for (const file of css.outputFiles.filter((f) => f.path.endsWith('.woff2'))) {
+  fs.writeFileSync(file.path, file.contents);
+  written.add(path.basename(file.path));
+  fonts.push(`assets/${path.basename(file.path)}`);
+}
+const style = emit('style', '.css', css.outputFiles.find((f) => f.path.endsWith('.css')).contents);
 const pdfWorker = emit('pdf.worker', '.js',
   fs.readFileSync(path.join(here, 'node_modules/pdfjs-dist/build/pdf.worker.min.mjs')));
 
-const buildId = hash(Buffer.from([packages, wasm, worker, main, style, pdfWorker].join('\n')));
+const buildId = hash(Buffer.from([packages, wasm, worker, main, style, pdfWorker, ...fonts].join('\n')));
 const siteConfig = { build: buildId, wasm, worker, pdfWorker, packages, chunkBase: 'packages/' };
 const html = fs.readFileSync(path.join(here, 'index.html'), 'utf8')
   .replace('%STYLE%', style)
   .replace('%MAIN%', main)
   .replace('%CONFIG%', JSON.stringify(siteConfig).replace(/</g, '\\u003c'));
 fs.writeFileSync(path.join(dist, 'index.html'), html);
-const shell = ['./', main, style, worker, pdfWorker];
+const shell = ['./', main, style, worker, pdfWorker, ...fonts];
 fs.writeFileSync(path.join(dist, 'sw.js'), fs.readFileSync(path.join(here, 'src/sw.js'), 'utf8')
   .replace('%BUILD%', buildId)
   .replace('%SHELL%', JSON.stringify(shell)));
@@ -133,4 +151,5 @@ for (const name of fs.readdirSync(assetsOut)) {
 }
 // Legal notices for the bundled third-party code.
 fs.copyFileSync(path.join(here, 'node_modules/pdfjs-dist/LICENSE'), path.join(dist, 'LICENSE-pdfjs.txt'));
+fs.copyFileSync(path.join(here, 'fonts/OFL.txt'), path.join(dist, 'LICENSE-fonts.txt'));
 console.error(`site: ${dist} (build ${buildId})`);

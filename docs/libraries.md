@@ -163,6 +163,11 @@ and the XeLaTeX format are downloaded when a document first needs them and are
 kept in the Cache API; a service worker keeps the page usable offline.
 The interface follows the system's light or dark theme until the reader picks
 one with the top-bar toggle, and remembers resized panes in `localStorage`.
+Three interface styles share the same markup: Desk (default), Paper and
+Studio; pick one under Settings or with `?design=desk|paper|studio` (or
+`c|a|b`). Their fonts are Latin subsets of OFL families in `web/fonts/`
+(regenerate with `web/fonts/subset.sh`); the page loads only its style's fonts
+and the service worker keeps all of them for offline use.
 LuaLaTeX is not offered: luaotfload needs a writable cache directory, which
 the WebAssembly build lacks.
 

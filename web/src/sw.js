@@ -1,4 +1,4 @@
-// Offline shell: the page, scripts and the pdf.js worker. The compiler worker
+// Offline shell: the page, scripts, fonts and the pdf.js worker. The compiler worker
 // caches the WebAssembly module, formats and package chunks itself.
 const BUILD = '%BUILD%';
 const SHELL = %SHELL%;

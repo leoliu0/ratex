@@ -11,19 +11,20 @@ import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { stex } from '@codemirror/legacy-modes/mode/stex';
 import { tags } from '@lezer/highlight';
 
-// Colours come from the page's CSS variables, so one theme serves light and dark.
+// Colours and type come from the page's CSS variables, so one theme serves
+// every interface style, light and dark.
 const theme = EditorView.theme({
-  '&': { color: 'var(--ink)', backgroundColor: 'var(--surface)', fontSize: '13.5px' },
+  '&': { color: 'var(--ink)', backgroundColor: 'var(--surface)', fontSize: 'var(--code-size)' },
   '&.cm-focused': { outline: 'none' },
-  '.cm-scroller': { fontFamily: 'var(--mono)', lineHeight: '1.6' },
-  '.cm-content': { padding: '10px 0 40vh', caretColor: 'var(--accent)' },
-  '.cm-line': { padding: '0 16px 0 6px' },
+  '.cm-scroller': { fontFamily: 'var(--font-code)', lineHeight: 'var(--code-leading)' },
+  '.cm-content': { padding: '12px 0 40vh', caretColor: 'var(--caret)' },
+  '.cm-line': { padding: '0 24px 0 8px' },
   '.cm-gutters': { backgroundColor: 'var(--surface)', color: 'var(--ink-faint)', border: 'none' },
-  '.cm-lineNumbers .cm-gutterElement': { padding: '0 8px 0 14px', minWidth: '46px', opacity: '0.75' },
+  '.cm-lineNumbers .cm-gutterElement': { padding: '0 8px 0 16px', minWidth: '48px', opacity: '0.7' },
   '.cm-activeLine': { backgroundColor: 'var(--hover)' },
   '.cm-activeLineGutter': { backgroundColor: 'transparent', color: 'var(--ink)' },
   '.cm-activeLineGutter.cm-gutterElement': { opacity: '1' },
-  '.cm-cursor, .cm-dropCursor': { borderLeft: '2px solid var(--accent)' },
+  '.cm-cursor, .cm-dropCursor': { borderLeft: '2px solid var(--caret)' },
   '.cm-selectionBackground, &.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground':
     { backgroundColor: 'var(--selection)' },
   '.cm-selectionMatch': { backgroundColor: 'var(--warn-tint)' },
@@ -32,28 +33,28 @@ const theme = EditorView.theme({
   '.cm-searchMatch': { backgroundColor: 'var(--warn-tint)', outline: '1px solid var(--warn)' },
   '.cm-searchMatch.cm-searchMatch-selected': { backgroundColor: 'var(--flash)' },
   '.cm-flash': { backgroundColor: 'var(--flash)' },
-  '.cm-panels': { backgroundColor: 'var(--bg)', color: 'var(--ink)' },
+  '.cm-panels': { backgroundColor: 'var(--chrome)', color: 'var(--ink)' },
   '.cm-panels.cm-panels-top': { borderBottom: '1px solid var(--line)' },
   '.cm-panels.cm-panels-bottom': { borderTop: '1px solid var(--line)' },
-  '.cm-panel.cm-search': { padding: '6px 10px', fontFamily: 'var(--sans)' },
+  '.cm-panel.cm-search': { padding: '8px 12px', fontFamily: 'var(--font-ui)' },
   '.cm-panel.cm-search input, .cm-panel.cm-search button, .cm-panel.cm-search label': { fontSize: '12px' },
   '.cm-textfield': {
-    height: '26px', padding: '0 8px', border: '1px solid var(--line-strong)', borderRadius: '5px',
-    backgroundColor: 'var(--surface)', color: 'var(--ink)',
+    height: '28px', padding: '0 8px', border: '1px solid var(--field-line)', borderRadius: 'var(--radius)',
+    backgroundColor: 'var(--field)', color: 'var(--ink)',
   },
   '.cm-button': {
-    height: '26px', padding: '0 9px', backgroundImage: 'none', backgroundColor: 'var(--surface)',
-    border: '1px solid var(--line-strong)', borderRadius: '5px', color: 'var(--ink-soft)',
+    height: '28px', padding: '0 10px', backgroundImage: 'none', backgroundColor: 'var(--field)',
+    border: '1px solid var(--field-line)', borderRadius: 'var(--radius)', color: 'var(--ink-soft)',
   },
-  '.cm-tooltip': { backgroundColor: 'var(--surface)', border: '1px solid var(--line-strong)', borderRadius: '6px' },
+  '.cm-tooltip': { backgroundColor: 'var(--raised)', border: '1px solid var(--line)', borderRadius: '6px' },
 });
 
 const highlight = HighlightStyle.define([
-  { tag: tags.tagName, color: 'var(--syn-command)' },
+  { tag: tags.tagName, color: 'var(--syn-command)', fontWeight: 'var(--syn-command-weight)' },
   { tag: tags.keyword, color: 'var(--syn-keyword)' },
   { tag: tags.atom, color: 'var(--syn-atom)' },
   { tag: [tags.bracket, tags.punctuation], color: 'var(--syn-bracket)' },
-  { tag: tags.comment, color: 'var(--syn-comment)', fontStyle: 'italic' },
+  { tag: tags.comment, color: 'var(--syn-comment)', fontStyle: 'var(--syn-comment-style)' },
   { tag: tags.number, color: 'var(--syn-number)' },
   { tag: [tags.string, tags.special(tags.variableName)], color: 'var(--syn-string)' },
   { tag: tags.standard(tags.variableName), color: 'var(--syn-keyword)' },

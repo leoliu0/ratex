@@ -6,9 +6,21 @@
 <meta name="color-scheme" content="light dark">
 <title>TeXres Online</title>
 <script>{
+  // Interface style (?design=a|b|c or its name, remembered) and light/dark theme.
+  const designs = { a: 'paper', b: 'studio', c: 'desk' };
+  const known = (name) => Object.values(designs).includes(name);
   let theme = null;
-  try { theme = localStorage.getItem('texres-online:theme'); } catch {}
-  document.documentElement.dataset.theme = theme ?? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  let design = null;
+  try {
+    theme = localStorage.getItem('texres-online:theme');
+    const asked = new URLSearchParams(location.search).get('design');
+    design = designs[asked] ?? asked;
+    if (known(design)) localStorage.setItem('texres-online:design', design);
+    else design = localStorage.getItem('texres-online:design');
+  } catch {}
+  const root = document.documentElement;
+  root.dataset.theme = theme ?? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  root.dataset.design = known(design) ? design : 'desk';
 }</script>
 <link rel="stylesheet" href="%STYLE%">
 <script type="application/json" id="texres-config">%CONFIG%</script>
@@ -16,80 +28,87 @@
 </head>
 <body data-state="idle">
 <svg class="sprite" aria-hidden="true">
-  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
-  <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M13 21h8M17.5 3.5a2.12 2.12 0 0 1 3 3L8 19l-4 1 1-4Z"/></symbol>
-  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v5M14 11v5"/></symbol>
-  <symbol id="i-import" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></symbol>
-  <symbol id="i-export" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></symbol>
-  <symbol id="i-file-plus" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M12 18v-6M9 15h6"/></symbol>
-  <symbol id="i-upload" viewBox="0 0 24 24"><path d="M4 14.9A7 7 0 1 1 15.7 8h1.8a4.5 4.5 0 0 1 2.5 8.2M12 12v9M8 16l4-4 4 4"/></symbol>
-  <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 2 3.1 6.3 6.9 1-5 4.9 1.2 6.8-6.2-3.2L5.8 21 7 14.2 2 9.3l6.9-1z"/></symbol>
-  <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.5v15l12-7.5z" fill="currentColor"/></symbol>
-  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></symbol>
-  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M6.3 17.7l-1.4 1.4M19.1 4.9l-1.4 1.4"/></symbol>
-  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></symbol>
-  <symbol id="i-zoom-in" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3M11 8v6M8 11h6"/></symbol>
-  <symbol id="i-zoom-out" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3M8 11h6"/></symbol>
-  <symbol id="i-fit" viewBox="0 0 24 24"><path d="M3 4v16M21 4v16M7 12h10M10 9l-3 3 3 3M14 9l3 3-3 3"/></symbol>
-  <symbol id="i-locate" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></symbol>
-  <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
-  <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 6v12M6 12h12"/></symbol>
+  <symbol id="i-minus" viewBox="0 0 24 24"><path d="M6 12h12"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><g fill="currentColor" stroke="none"><circle cx="6" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="18" cy="12" r="1.5"/></g></symbol>
+  <symbol id="i-file-plus" viewBox="0 0 24 24"><path d="M13.5 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5zM13.5 3v5.5H19M12 11.5v6M9 14.5h6"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 15V4M7.5 8.5 12 4l4.5 4.5M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.8v14.4a.8.8 0 0 0 1.2.7l11.5-7.2a.8.8 0 0 0 0-1.4L8.2 4.1a.8.8 0 0 0-1.2.7Z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6l1.4 1.4M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4 6 18M18 6l1.4-1.4"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5Z"/></symbol>
+  <symbol id="i-fit" viewBox="0 0 24 24"><path d="M4 5v14M20 5v14M8 12h8M10.5 9.5 8 12l2.5 2.5M13.5 9.5 16 12l-2.5 2.5"/></symbol>
+  <symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14M13.5 6.5 19 12l-5.5 5.5"/></symbol>
+  <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9.5 6.5 5.5 5.5-5.5 5.5"/></symbol>
+  <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6.5 9.5 5.5 5.5 5.5-5.5"/></symbol>
   <symbol id="i-error" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5M12 16.2v.3"/></symbol>
   <symbol id="i-warning" viewBox="0 0 24 24"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0ZM12 9v4M12 17v.3"/></symbol>
-  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
-  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
-  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9l-.8-1.2A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
-  <symbol id="i-folder-open" viewBox="0 0 24 24"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.2 10H20a2 2 0 0 1 1.9 2.5l-1.5 6a2 2 0 0 1-2 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.7.9l.8 1.2a2 2 0 0 0 1.7.9H18a2 2 0 0 1 2 2v2"/></symbol>
-  <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6"/></symbol>
-  <symbol id="i-file-tex" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M8 13h8M8 17h5"/></symbol>
-  <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20M9 7h7"/></symbol>
-  <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/></symbol>
-  <symbol id="i-braces" viewBox="0 0 24 24"><path d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5a2 2 0 0 0 2 2h1M16 21h1a2 2 0 0 0 2-2v-5a2 2 0 0 1 2-2 2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1"/></symbol>
-  <symbol id="i-pdf" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M9 15h6M9 18h4M9 12h2"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M19.5 6.5 9 17l-4.5-4.5"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M17.5 6.5l-11 11M6.5 6.5l11 11"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.5 6.5a2 2 0 0 1 2-2h3.6l2.2 2.5h7.2a2 2 0 0 1 2 2v8.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z"/></symbol>
+  <symbol id="i-folder-open" viewBox="0 0 24 24"><path d="M3.5 17V6.5a2 2 0 0 1 2-2h3.6l2.2 2.5h6.2a2 2 0 0 1 2 2v1.5M3.5 17l2.4-6a1.5 1.5 0 0 1 1.4-1h13a1 1 0 0 1 .9 1.4l-2.3 6.4a1.5 1.5 0 0 1-1.4 1.2H5a1.5 1.5 0 0 1-1.5-2Z"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M13.5 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5zM13.5 3v5.5H19"/></symbol>
+  <symbol id="i-file-tex" viewBox="0 0 24 24"><path d="M13.5 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5zM13.5 3v5.5H19M8.5 13h7M8.5 16.5h4.5"/></symbol>
+  <symbol id="i-book" viewBox="0 0 24 24"><path d="M5 18.5v-13A2.5 2.5 0 0 1 7.5 3H19v15H7.5a2.5 2.5 0 0 0 0 5H19v-4.5M9 7.5h6"/></symbol>
+  <symbol id="i-image" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><circle cx="9.5" cy="9.5" r="1.5"/><path d="m20 15-3.6-3.6a1.5 1.5 0 0 0-2.1 0L5 20.5"/></symbol>
+  <symbol id="i-braces" viewBox="0 0 24 24"><path d="M8.5 4H8a2 2 0 0 0-2 2v4a2 2 0 0 1-2 2 2 2 0 0 1 2 2v4a2 2 0 0 0 2 2h.5M15.5 20h.5a2 2 0 0 0 2-2v-4a2 2 0 0 1 2-2 2 2 0 0 1-2-2V6a2 2 0 0 0-2-2h-.5"/></symbol>
+  <symbol id="i-pdf" viewBox="0 0 24 24"><path d="M13.5 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5zM13.5 3v5.5H19M8.5 12.5h7M8.5 15.5h7M8.5 18.5h4"/></symbol>
 </svg>
 
 <header class="topbar">
   <div class="brand" title="TeXres Online: LaTeX compiled in your browser">
-    <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7"/><path d="M9 10h14M16 10v13"/></svg>
+    <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8"/><path d="M10 10.5h12M16 10.5V23"/></svg>
     <span class="brand-name">TeXres <span class="brand-sub">Online</span></span>
   </div>
-  <div class="group">
-    <span class="select project-select"><select id="project" title="Switch project" aria-label="Project"></select></span>
-    <button id="new-project" class="icon" title="New project" aria-label="New project"><svg><use href="#i-plus"/></svg></button>
-    <button id="rename-project" class="icon" title="Rename project" aria-label="Rename project"><svg><use href="#i-pencil"/></svg></button>
-    <button id="delete-project" class="icon" title="Delete project" aria-label="Delete project"><svg><use href="#i-trash"/></svg></button>
-    <span class="divider"></span>
-    <label class="icon file-button" title="Import a .zip as a new project" aria-label="Import zip"><svg><use href="#i-import"/></svg><input id="import-zip" type="file" accept=".zip,application/zip" hidden></label>
-    <button id="export-zip" class="icon" title="Download the project as a .zip" aria-label="Export zip"><svg><use href="#i-export"/></svg></button>
+  <span class="crumb" aria-hidden="true">/</span>
+  <span class="select project-select"><select id="project" title="Switch project" aria-label="Project"></select></span>
+  <div class="menu-anchor">
+    <button id="project-menu-button" class="icon" title="Project actions" aria-label="Project actions" aria-haspopup="menu" aria-expanded="false" aria-controls="project-menu"><svg><use href="#i-more"/></svg></button>
+    <div id="project-menu" class="menu" role="menu" hidden>
+      <button id="new-project" role="menuitem">New project…</button>
+      <button id="rename-project" role="menuitem">Rename project…</button>
+      <hr>
+      <label class="file-button" role="menuitem" tabindex="-1">Import .zip as new project…<input id="import-zip" type="file" accept=".zip,application/zip" hidden></label>
+      <button id="export-zip" role="menuitem">Download as .zip</button>
+      <hr>
+      <button id="delete-project" class="danger" role="menuitem">Delete project…</button>
+    </div>
   </div>
   <span class="spacer"></span>
-  <div class="group">
-    <label class="field" title="TeX engine; Auto picks XeLaTeX for fontspec documents">
-      <span class="field-label">Engine</span>
-      <span class="select"><select id="engine">
-        <option value="auto">Auto</option>
-        <option value="pdflatex">pdfLaTeX</option>
-        <option value="xelatex">XeLaTeX</option>
-      </select></span>
-    </label>
-    <label class="switch" title="Compile automatically after you stop typing"><input id="auto-compile" type="checkbox" role="switch"> <span>Auto-compile</span></label>
-    <div class="popover-anchor">
-      <button id="settings-button" class="icon" title="Build settings" aria-label="Build settings" aria-expanded="false" aria-controls="settings"><svg><use href="#i-sliders"/></svg></button>
-      <div id="settings" class="popover" hidden>
+  <span id="compile-info" class="compile-info" hidden></span>
+  <label class="switch" title="Compile automatically after you stop typing"><input id="auto-compile" type="checkbox" role="switch"> <span>Auto-compile</span></label>
+  <div class="popover-anchor">
+    <button id="settings-button" class="icon" title="Settings" aria-label="Settings" aria-expanded="false" aria-controls="settings"><svg><use href="#i-sliders"/></svg></button>
+    <div id="settings" class="popover" hidden>
+      <div class="popover-section">
+        <label class="popover-field" for="engine">Engine</label>
+        <span class="select"><select id="engine">
+          <option value="auto">Auto</option>
+          <option value="pdflatex">pdfLaTeX</option>
+          <option value="xelatex">XeLaTeX</option>
+        </select></span>
+        <p class="hint">Auto picks XeLaTeX for documents that load fontspec.</p>
+      </div>
+      <div class="popover-section">
         <label class="popover-field" for="epoch">Fixed date</label>
         <input id="epoch" type="number" min="0" step="1" placeholder="Unix seconds, e.g. 1700000000">
         <p class="hint">Sets SOURCE_DATE_EPOCH, which fixes <code>\today</code> and the PDF dates. Leave empty to use the current time.</p>
       </div>
+      <div class="popover-section">
+        <label class="popover-field" for="design">Interface style</label>
+        <span class="select"><select id="design">
+          <option value="paper">Paper</option>
+          <option value="studio">Studio</option>
+          <option value="desk">Desk</option>
+        </select></span>
+      </div>
     </div>
   </div>
-  <div class="compile-wrap">
-    <span id="compile-info" class="compile-info" hidden></span>
-    <button id="compile" class="primary" title="Compile (Ctrl+S)">
-      <span class="spinner" aria-hidden="true"></span><svg class="play"><use href="#i-play"/></svg>
-      <span class="compile-label">Compile</span><kbd data-kbd>Ctrl S</kbd>
-    </button>
-  </div>
   <button id="theme-toggle" class="icon" title="Switch theme" aria-label="Switch theme"><svg><use href="#i-moon"/></svg></button>
+  <button id="compile" class="primary" title="Compile (Ctrl+S)">
+    <span class="spinner" aria-hidden="true"></span><svg class="play"><use href="#i-play"/></svg>
+    <span class="compile-label">Compile</span><kbd data-kbd>Ctrl S</kbd>
+  </button>
 </header>
 
 <main id="workspace">
@@ -99,9 +118,16 @@
       <span class="spacer"></span>
       <button id="new-file" class="icon" title="New file (type a/b.tex to create a folder)" aria-label="New file"><svg><use href="#i-file-plus"/></svg></button>
       <label class="icon file-button" title="Upload files into the selected folder" aria-label="Upload files"><svg><use href="#i-upload"/></svg><input id="upload" type="file" multiple hidden></label>
-      <button id="rename-file" class="icon" title="Rename or move the selected file or folder" aria-label="Rename"><svg><use href="#i-pencil"/></svg></button>
-      <button id="delete-file" class="icon" title="Delete the selected file or folder" aria-label="Delete"><svg><use href="#i-trash"/></svg></button>
-      <button id="set-main" class="icon" title="Compile the selected .tex file (set as main)" aria-label="Set main file"><svg><use href="#i-star"/></svg></button>
+      <div class="menu-anchor">
+        <button id="file-menu-button" class="icon" title="Actions for the selected file" aria-label="File actions" aria-haspopup="menu" aria-expanded="false" aria-controls="file-menu"><svg><use href="#i-more"/></svg></button>
+        <div id="file-menu" class="menu" role="menu" hidden>
+          <div id="file-menu-target" class="menu-label"></div>
+          <button id="rename-file" role="menuitem">Rename or move…</button>
+          <button id="set-main" role="menuitem">Set as main file</button>
+          <hr>
+          <button id="delete-file" class="danger" role="menuitem">Delete…</button>
+        </div>
+      </div>
     </div>
     <div id="tree"></div>
   </nav>
@@ -110,7 +136,7 @@
     <div class="pane-head">
       <span id="open-path" class="path"></span>
       <span class="spacer"></span>
-      <button id="sync-forward" class="ghost" title="Show the cursor position in the PDF (Ctrl+Enter)"><svg><use href="#i-locate"/></svg><span class="label">Show in PDF</span><kbd data-kbd>Ctrl ↵</kbd></button>
+      <button id="sync-forward" class="ghost" title="Show the cursor position in the PDF (Ctrl+Enter)"><span class="label">Show in PDF</span><svg><use href="#i-arrow-right"/></svg></button>
     </div>
     <div id="editor"></div>
     <div id="binary-view" hidden></div>
@@ -123,13 +149,12 @@
   <div class="gutter" data-resize="preview" role="separator" aria-orientation="vertical" title="Drag to resize"></div>
   <section id="preview" class="pane">
     <div class="pane-head">
-      <span id="page-info" class="pane-title">PDF</span>
-      <span class="hint pdf-hint">Double-click the PDF to jump to the source</span>
+      <span id="page-info" class="pane-title" title="Double-click the PDF to jump to the source">PDF</span>
       <span class="spacer"></span>
       <div class="zoom">
-        <button id="zoom-out" class="icon" title="Zoom out" aria-label="Zoom out"><svg><use href="#i-zoom-out"/></svg></button>
+        <button id="zoom-out" class="icon" title="Zoom out" aria-label="Zoom out"><svg><use href="#i-minus"/></svg></button>
         <span id="zoom-level" class="zoom-level">100%</span>
-        <button id="zoom-in" class="icon" title="Zoom in" aria-label="Zoom in"><svg><use href="#i-zoom-in"/></svg></button>
+        <button id="zoom-in" class="icon" title="Zoom in" aria-label="Zoom in"><svg><use href="#i-plus"/></svg></button>
         <button id="zoom-fit" class="icon" title="Fit to width" aria-label="Fit to width"><svg><use href="#i-fit"/></svg></button>
       </div>
     </div>
@@ -139,6 +164,7 @@
         <svg><use href="#i-pdf"/></svg>
         <p class="when-idle">No PDF yet</p>
         <p class="when-idle hint">Press <kbd data-kbd>Ctrl S</kbd> or <b>Compile</b> to build the document.</p>
+        <p class="when-idle hint tip">Then double-click the PDF to jump to the source.</p>
         <p class="when-busy"><span class="spinner"></span>Compiling…</p>
       </div>
     </div>

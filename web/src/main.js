@@ -200,7 +200,7 @@ async function loadProject(id) {
   $('engine').value = project.engine;
   $('auto-compile').checked = project.autoCompile;
   $('epoch').value = project.epoch ?? '';
-  $('settings-button').classList.toggle('has-value', project.epoch != null);
+  markSettings();
   await refreshProjectList();
   renderTree();
   const first = state.files.has(project.main) ? project.main : [...state.files.keys()].find(isText);
@@ -459,7 +459,7 @@ function renderTree() {
       row.className = `tree-row folder${collapsed ? '' : ' expanded'}`;
       row.dataset.path = path;
       row.title = `${path}/`;
-      row.style.paddingLeft = `${6 + depth * 14}px`;
+      row.style.paddingLeft = `${8 + depth * 16}px`;
       row.append(icon('chevron', 'twisty'), icon(collapsed ? 'folder' : 'folder-open', 'ficon folder'), nameOf(name));
       if (state.selected === path) row.classList.add('selected');
       row.onclick = () => {
@@ -478,7 +478,7 @@ function renderTree() {
       row.className = 'tree-row file';
       row.dataset.path = path;
       row.title = path;
-      row.style.paddingLeft = `${6 + depth * 14}px`;
+      row.style.paddingLeft = `${8 + depth * 16}px`;
       const space = document.createElement('span');
       space.className = 'twisty-space';
       row.append(space, fileIcon(path), nameOf(path.slice(prefix.length)));
@@ -569,7 +569,7 @@ async function compile() {
   }
   const entry = state.project.main;
   if (!state.files.has(entry)) {
-    setStatus(`Main file ${entry} does not exist; select a .tex file and click the star (Set main file).`);
+    setStatus(`Main file ${entry} does not exist; select a .tex file and choose Set as main file in the Files menu.`);
     return;
   }
   state.compiling = true;
@@ -733,13 +733,15 @@ on('import-zip', 'change', async (e) => {
 on('export-zip', 'click', exportZip);
 on('compile', 'click', compile);
 on('sync-forward', 'click', syncToPdf);
-on('engine', 'change', (e) => updateProject({ engine: e.target.value }));
+on('engine', 'change', async (e) => {
+  await updateProject({ engine: e.target.value });
+  markSettings();
+});
 on('auto-compile', 'change', (e) => updateProject({ autoCompile: e.target.checked }));
-on('epoch', 'change', (e) => {
+on('epoch', 'change', async (e) => {
   const value = e.target.value.trim();
-  const epoch = value === '' ? null : Math.max(0, Math.floor(Number(value)));
-  $('settings-button').classList.toggle('has-value', epoch !== null);
-  return updateProject({ epoch });
+  await updateProject({ epoch: value === '' ? null : Math.max(0, Math.floor(Number(value))) });
+  markSettings();
 });
 on('zoom-in', 'click', () => pdfView.setZoom(pdfView.zoom * 1.2));
 on('zoom-out', 'click', () => pdfView.setZoom(pdfView.zoom / 1.2));
@@ -846,8 +848,54 @@ for (const gutter of document.querySelectorAll('.gutter')) {
 }
 applyLayout();
 
-// --------------------------------------------------------- settings, theme --
+// ---------------------------------------------------- menus, settings, look --
 
+/** A drop-down menu: opens from its button; a choice, Escape or a click elsewhere closes it. */
+const menus = [];
+function setupMenu(buttonId, menuId, onOpen = () => {}) {
+  const button = $(buttonId);
+  const menu = $(menuId);
+  const items = () => [...menu.querySelectorAll('[role="menuitem"]')].filter((item) => !item.disabled);
+  const toggle = (open) => {
+    menu.hidden = !open;
+    button.setAttribute('aria-expanded', String(open));
+    if (open) {
+      onOpen();
+      items()[0]?.focus();
+    }
+  };
+  button.addEventListener('click', () => toggle(menu.hidden));
+  menu.addEventListener('click', (event) => {
+    if (event.target.closest('[role="menuitem"]')) toggle(false);
+  });
+  menu.addEventListener('keydown', (event) => {
+    const list = items();
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      const step = event.key === 'ArrowDown' ? 1 : -1;
+      list[(list.indexOf(document.activeElement) + step + list.length) % list.length]?.focus();
+    } else if ((event.key === 'Enter' || event.key === ' ') && document.activeElement.tagName === 'LABEL') {
+      event.preventDefault();
+      document.activeElement.click();
+    }
+  });
+  menus.push({ button, menu, close: () => toggle(false) });
+}
+setupMenu('project-menu-button', 'project-menu');
+setupMenu('file-menu-button', 'file-menu', () => {
+  const selected = state.selected;
+  const isFile = Boolean(selected) && state.files.has(selected);
+  $('file-menu-target').textContent = !selected ? 'Nothing selected' : isFile ? selected : `${selected}/`;
+  $('rename-file').disabled = !selected;
+  $('delete-file').disabled = !selected;
+  $('set-main').disabled = !isFile || extension(selected) !== 'tex' || selected === state.project.main;
+});
+
+/** Mark the settings button while a setting differs from its default. */
+function markSettings() {
+  const { engine, epoch } = state.project;
+  $('settings-button').classList.toggle('has-value', engine !== 'auto' || epoch != null);
+}
 function toggleSettings(open) {
   $('settings').hidden = !open;
   $('settings-button').setAttribute('aria-expanded', String(open));
@@ -856,6 +904,17 @@ function toggleSettings(open) {
 $('settings-button').addEventListener('click', () => toggleSettings($('settings').hidden));
 document.addEventListener('pointerdown', (event) => {
   if (!$('settings').hidden && !event.target.closest('.popover-anchor')) toggleSettings(false);
+  for (const { menu, close } of menus) {
+    if (!menu.hidden && !event.target.closest('.menu-anchor')?.contains(menu)) close();
+  }
+});
+
+const DESIGN_KEY = 'texres-online:design';
+$('design').value = document.documentElement.dataset.design;
+$('design').addEventListener('change', (e) => {
+  document.documentElement.dataset.design = e.target.value;
+  localStorage.setItem(DESIGN_KEY, e.target.value);
+  editor.view.requestMeasure();
 });
 
 const THEME_KEY = 'texres-online:theme';
@@ -887,6 +946,12 @@ window.addEventListener('keydown', (e) => {
   } else if (e.key === 'Escape' && !$('settings').hidden) {
     toggleSettings(false);
     $('settings-button').focus();
+  } else if (e.key === 'Escape') {
+    for (const { button, menu, close } of menus) {
+      if (menu.hidden) continue;
+      close();
+      button.focus();
+    }
   }
 });
 window.addEventListener('beforeunload', () => {

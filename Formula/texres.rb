@@ -1,17 +1,17 @@
 class Texres < Formula
   desc "Fast self-contained TeX engine written in Rust"
   homepage "https://github.com/leoliu0/texres"
-  version "0.7.0"
+  version "0.7.1"
   license any_of: ["MIT", "Apache-2.0"]
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/leoliu0/texres/releases/download/v0.7.0/tex-suite-v0.7.0-macos-aarch64.tar.gz"
-      sha256 "c9bed20251da70fbea419c9d51a9333b5efc07b2dda4fbbc0decc6348fa6bf82"
+      url "https://github.com/leoliu0/texres/releases/download/v0.7.1/tex-suite-v0.7.1-macos-aarch64.tar.gz"
+      sha256 "0ef3ff2162ab4a7f843ea69e3d4f2c95ef1a6f13e169fcb2cca9703fd0b73611"
     end
     if Hardware::CPU.intel?
-      url "https://github.com/leoliu0/texres/releases/download/v0.7.0/tex-suite-v0.7.0-macos-x86_64.tar.gz"
-      sha256 "907df6a603e72fa503daee941c36527fca1c35537a805bb18ed367fcda368a90"
+      url "https://github.com/leoliu0/texres/releases/download/v0.7.1/tex-suite-v0.7.1-macos-x86_64.tar.gz"
+      sha256 "bdc128651cea0e5a3891ffa18b0c5c81d3ef3fc5a765c02893376da33c1bc1c4"
     end
   end
 

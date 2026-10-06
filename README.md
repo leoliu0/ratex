@@ -24,7 +24,6 @@ memory; see [docs/libraries.md](docs/libraries.md).
 ### macOS (Homebrew)
 
 ```bash
-brew tap leoliu0/texres https://github.com/leoliu0/texres.git
 brew install leoliu0/texres/texres
 ```
 

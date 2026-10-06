@@ -55,3 +55,23 @@ jobs:
             git commit -m 'Publish Homebrew formula for latest release'
             git push origin HEAD:main
           fi
+      - name: Publish formula to the leoliu0/homebrew-texres tap
+        env:
+          TAP_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+        run: |
+          key="$(mktemp)"
+          tap="$(mktemp -d)"
+          trap 'rm -rf "$key" "$tap"' EXIT
+          printf '%s\n' "$TAP_KEY" > "$key"
+          chmod 600 "$key"
+          export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+          git clone -q git@github.com:leoliu0/homebrew-texres.git "$tap"
+          cp Formula/texres.rb "$tap/Formula/texres.rb"
+          cd "$tap"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Formula/texres.rb
+          if ! git diff --cached --quiet; then
+            git commit -m 'Publish TeXres formula for latest release'
+            git push origin HEAD:main
+          fi

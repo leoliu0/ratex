@@ -192,11 +192,15 @@ running build, releases the job lock, and exits 0.
 
 - **Dependencies** (`watch_dependencies`) are read from data the driver
   already keeps; nothing else tracks reads. The engine's `-recorder` file
-  (`<job>.fls`) supplies `INPUT` lines (`\input`/`\include` files, packages,
-  classes, images, and the font files from `FontLoader::dependency_files`)
-  and `MISSING` lines (the engine's failed lookups in project directories, an
-  extension of the format), so creating a file that a failed build asked for
-  triggers the next build. The `.bib`/`.bst` files named by the `.aux` graph
+  (`<job>.fls`, plain web2c `PWD`/`INPUT`/`OUTPUT`) supplies `INPUT` lines
+  (`\input`/`\include` files, packages, classes, images). What the recorder
+  lacks comes from a private file in the job's engine cache
+  (`.texmk-watch-dependencies`, never exported), which the engine writes only
+  when texmk names it in `TEX_RS_TEXMK_WATCH_DEPENDENCIES`: `FONT` lines (the
+  font files from `FontLoader::dependency_files`) and `MISSING` lines (the
+  engine's failed lookups in project directories), so creating a file that a
+  failed build asked for triggers the next build. The `.bib`/`.bst` files
+  named by the `.aux` graph
   (or the `.bcf` data sources for Biber) and a project-supplied `<job>.bbl`
   are added with the resolvers the bibliography signature uses. Dropped:
   embedded-archive paths, anything under the private jobs directory, and every

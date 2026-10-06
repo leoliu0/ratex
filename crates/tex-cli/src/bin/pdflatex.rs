@@ -31,6 +31,7 @@ const DEPCACHE_TOUCH_INTERVAL: std::time::Duration = std::time::Duration::from_s
 const DEPCACHE_RECORD_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const TEXMK_CACHE_HIT_MARKER_ENV: &str = "TEX_RS_CACHE_HIT_MARKER";
 const TEXMK_PUBLISHED_OUTPUT_ENV: &str = "TEX_RS_TEXMK_PUBLISHED_OUTPUT";
+const TEXMK_WATCH_DEPENDENCIES_ENV: &str = "TEX_RS_TEXMK_WATCH_DEPENDENCIES";
 const DEPCACHE_END_DOMAIN: &[u8] = b"TEX-DEPCACHE-7-END";
 
 use tex_kpse::platform_cache_dir;
@@ -1870,30 +1871,14 @@ fn parse_interaction(program: &str, value: &str) -> InteractionMode {
 }
 
 /// `-recorder`: a web2c-style `<job>.fls` listing the files this run read
-/// (`INPUT`, including the font resources), the project paths it looked for
-/// and did not find (`MISSING`, an extension) and the files it wrote
-/// (`OUTPUT`). texmk claims ownership only of OUTPUT files, never of whatever
-/// else appears in a shared directory, and its watch mode treats INPUT and
-/// MISSING paths as the document's dependencies.
+/// (`INPUT`) and wrote (`OUTPUT`). texmk claims ownership only of OUTPUT
+/// files, never of whatever else appears in a shared directory.
 fn write_recorder(engine: &Engine, aux_dir: &str, job: &str, log_path: &str) {
     use std::fmt::Write;
     let cwd = std::env::current_dir().unwrap_or_default();
     let mut text = format!("PWD {}\n", cwd.display());
-    let mut listed = std::collections::HashSet::new();
-    for path in engine
-        .loaded_files
-        .iter()
-        .chain(&engine.font_loader.dependency_files)
-    {
-        if listed.insert(path) {
-            let _ = writeln!(text, "INPUT {}", path.display());
-        }
-    }
-    let mut absent = std::collections::HashSet::new();
-    for path in &engine.missing_files {
-        if absent.insert(path) {
-            let _ = writeln!(text, "MISSING {}", path.display());
-        }
+    for path in &engine.loaded_files {
+        let _ = writeln!(text, "INPUT {}", path.display());
     }
     let fls_path = format!("{aux_dir}{job}.fls");
     for path in engine
@@ -1905,6 +1890,34 @@ fn write_recorder(engine: &Engine, aux_dir: &str, job: &str, log_path: &str) {
         let _ = writeln!(text, "OUTPUT {path}");
     }
     let _ = atomic_write_file(std::path::Path::new(&fls_path), text.as_bytes());
+}
+
+/// What texmk's watch mode needs beyond the recorder, written only when
+/// texmk names a private file for it in `TEX_RS_TEXMK_WATCH_DEPENDENCIES`
+/// (the recorder itself stays exactly web2c's `PWD`/`INPUT`/`OUTPUT`):
+/// `FONT` lines for the font resources read from disk, and `MISSING` lines for
+/// the paths of `\input`-style lookups that found nothing, which a later
+/// build would read if they appeared.
+fn write_watch_dependencies(engine: &Engine) {
+    use std::fmt::Write;
+    let Some(destination) = std::env::var_os(TEXMK_WATCH_DEPENDENCIES_ENV).filter(|value| !value.is_empty())
+    else {
+        return;
+    };
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let mut text = format!("PWD {}\n", cwd.display());
+    let mut listed = std::collections::HashSet::new();
+    for path in &engine.font_loader.dependency_files {
+        if listed.insert(path) {
+            let _ = writeln!(text, "FONT {}", path.display());
+        }
+    }
+    for path in &engine.missing_files {
+        if listed.insert(path) {
+            let _ = writeln!(text, "MISSING {}", path.display());
+        }
+    }
+    let _ = atomic_write_file(std::path::Path::new(&destination), text.as_bytes());
 }
 
 /// The parenthesized part of pdfTeX's `Output written on FILE (N pages, M
@@ -2994,6 +3007,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     if recorder {
         write_recorder(&eng, &aux_dir, &job, &log_path);
     }
+    write_watch_dependencies(&eng);
     let compilation_had_errors = eng.error_count > 0;
     if compilation_had_errors {
         if eng.interaction_mode != InteractionMode::Batch {

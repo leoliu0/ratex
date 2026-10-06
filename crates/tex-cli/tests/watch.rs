@@ -425,6 +425,11 @@ fn options_combine_and_the_builds_own_outputs_do_not_retrigger() {
     assert_eq!(watching, 2);
     assert!(project.path("build/renamed.pdf").is_file());
     assert!(project.path("build/renamed.aux").is_file(), "-k exports the aux file");
+    assert_web2c_recorder(&project.path("build/renamed.fls"));
+    assert!(
+        !project.path("build/.texmk-watch-dependencies").exists(),
+        "the watch list is private"
+    );
 
     project.save("main.tex", &article("Rewritten \\input{part}"));
     let cycle = session.cycle();
@@ -585,4 +590,51 @@ fn an_eps_figure_is_a_dependency_and_its_conversion_does_not_retrigger() {
     let next = session.cycle();
     assert_eq!(next.changed, "main.tex");
     assert_eq!(session.builds, 3);
+}
+
+/// A `-recorder` file as TeX Live writes it: `PWD` first, then only `INPUT`
+/// and `OUTPUT` lines, which latexmk and editors parse.
+fn assert_web2c_recorder(path: &Path) {
+    let text = std::fs::read_to_string(path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    let mut lines = text.lines();
+    assert!(lines.next().is_some_and(|line| line.starts_with("PWD ")), "{text}");
+    for line in lines {
+        assert!(
+            line.starts_with("INPUT ") || line.starts_with("OUTPUT "),
+            "non-standard recorder line {line:?} in {}",
+            path.display()
+        );
+    }
+    assert!(text.contains("INPUT "), "{text}");
+}
+
+#[test]
+fn exported_recorder_files_stay_web2c_compatible() {
+    let project = Project::new();
+    project.write("main.tex", &article("Text"));
+    let environment = |mut command: Command| {
+        command
+            .current_dir(&project.0)
+            .env("HOME", project.path("home"))
+            .env("TEX_RS_CACHE_DIR", project.path("cache"))
+            .output()
+            .unwrap()
+    };
+    let mut driver = Command::new(env!("CARGO_BIN_EXE_texres"));
+    driver.args(["-k", "main.tex"]);
+    let output = environment(driver);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_web2c_recorder(&project.path("main.fls"));
+
+    let standalone = Project::new();
+    standalone.write("main.tex", &article("Text"));
+    let output = Command::new(env!("CARGO_BIN_EXE_pdflatex"))
+        .args(["-recorder", "main.tex"])
+        .current_dir(&standalone.0)
+        .env("HOME", standalone.path("home"))
+        .env("TEX_RS_CACHE_DIR", standalone.path("cache"))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_web2c_recorder(&standalone.path("main.fls"));
 }

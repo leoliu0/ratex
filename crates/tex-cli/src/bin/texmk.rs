@@ -37,6 +37,7 @@ const CACHE_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 const CACHE_GC_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const TEXMK_CACHE_HIT_MARKER_ENV: &str = "TEX_RS_CACHE_HIT_MARKER";
 const TEXMK_PUBLISHED_OUTPUT_ENV: &str = "TEX_RS_TEXMK_PUBLISHED_OUTPUT";
+const TEXMK_WATCH_DEPENDENCIES_ENV: &str = "TEX_RS_TEXMK_WATCH_DEPENDENCIES";
 const TEXMK_INTERNAL_MODE_ENV: &str = "TEXMK_INTERNAL_MODE";
 const HERMETIC_ENV: &str = "TEX_RS_HERMETIC";
 const AUX_GRAPH_MAX_DEPTH: usize = 32;
@@ -3345,7 +3346,7 @@ fn build(opt: &Options, info: &mut BuildInfo) -> i32 {
     // The engine may omit this one future output from directory-membership
     // fingerprints. Direct reads and missing-file probes remain dependencies.
     let force_color = tex_core::diagnostics::color_enabled();
-    let engine_env = [
+    let mut engine_env = vec![
         (
             OsString::from(TEXMK_INTERNAL_MODE_ENV),
             OsString::from("engine"),
@@ -3367,6 +3368,16 @@ fn build(opt: &Options, info: &mut BuildInfo) -> i32 {
             OsString::from(if force_color { "1" } else { "0" }),
         ),
     ];
+    // Watch mode also wants the font files and failed lookups, which the
+    // recorder (kept in web2c's format) does not list. The file lives with the
+    // engine cache, which is neither snapshotted nor exported.
+    let watch_dependencies_file = engine_cache_dir.join(".texmk-watch-dependencies");
+    if opt.watch {
+        engine_env.push((
+            OsString::from(TEXMK_WATCH_DEPENDENCIES_ENV),
+            watch_dependencies_file.as_os_str().to_os_string(),
+        ));
+    }
     let recorded_outputs = std::cell::RefCell::new(BTreeSet::new());
     let trusted_aux_owned = trusted_aux_ownership(&mut manifest, &aux_dir, &pdf_path);
     prepare_owned_exports(
@@ -3405,6 +3416,7 @@ fn build(opt: &Options, info: &mut BuildInfo) -> i32 {
             pdf_path: pdf_path.clone(),
             synctex_path: synctex_path.clone(),
             manifest_path: manifest_path.clone(),
+            dependency_file: watch_dependencies_file.clone(),
             eps,
         });
     }
@@ -3965,6 +3977,8 @@ struct WatchInputs {
     pdf_path: PathBuf,
     synctex_path: PathBuf,
     manifest_path: PathBuf,
+    /// The engine's private list of font files and failed lookups.
+    dependency_file: PathBuf,
     /// EPS figures the driver converts for the engine.
     eps: EpsFigures,
 }
@@ -4005,10 +4019,11 @@ fn bibliography_watch_files(
 
 /// Every path the last build read, or looked for and did not find: the main
 /// file and whatever the engine's recorder (`.fls`) lists as `INPUT`
-/// (`\input`/`\include` files, packages and classes, images, fonts) or
-/// `MISSING` (a file absent now would be read once it appears, so creating
-/// the file a failed build asked for triggers the next one), plus the
-/// bibliography sources its auxiliary files name and a project-supplied
+/// (`\input`/`\include` files, packages and classes, images), plus the
+/// engine's private watch list: `FONT` files and `MISSING` lookups (a file
+/// absent now would be read once it appears, so creating the file a failed
+/// build asked for triggers the next one). Also watched are the
+/// bibliography sources the auxiliary files name and a project-supplied
 /// `<job>.bbl`. Excluded are the embedded archive, the private cache, and
 /// everything the build writes (per the recorder and the ownership
 /// manifest), so a build never triggers itself.
@@ -4033,10 +4048,21 @@ fn watch_dependencies(
                 cwd = PathBuf::from(directory);
             } else if let Some(path) = line.strip_prefix("INPUT ") {
                 read.insert(cwd.join(path));
-            } else if let Some(path) = line.strip_prefix("MISSING ") {
-                read.insert(cwd.join(path));
             } else if let Some(path) = line.strip_prefix("OUTPUT ") {
                 written.insert(cwd.join(path));
+            }
+        }
+    }
+    if let Ok(Some(text)) = read_to_string_bounded(&inputs.dependency_file, MANIFEST_MAX_BYTES) {
+        let mut cwd = inputs.source_dir.clone();
+        for line in text.lines() {
+            if let Some(directory) = line.strip_prefix("PWD ") {
+                cwd = PathBuf::from(directory);
+            } else if let Some(path) = line
+                .strip_prefix("FONT ")
+                .or_else(|| line.strip_prefix("MISSING "))
+            {
+                read.insert(cwd.join(path));
             }
         }
     }

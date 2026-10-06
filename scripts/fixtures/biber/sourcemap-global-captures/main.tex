@@ -1,0 +1,5 @@
+\documentclass{article}
+\usepackage[backend=biber,style=numeric,sorting=none]{biblatex}
+\DeclareSourcemap{\maps[datatype=bibtex]{\map[overwrite]{\step[fieldsource=title,match=\regexp{(\w+)},final]\step[fieldset=subtitle,fieldvalue={$2 / $1 / $3}]\step[fieldsource=title,match=\regexp{^$1},final]\step[fieldset=note,fieldvalue={capture-pattern}]}}}
+\addbibresource{refs.bib}
+\begin{document}\nocite{*}\printbibliography\end{document}

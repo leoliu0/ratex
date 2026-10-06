@@ -1,0 +1,229 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{none/global//global/global/global}
+    \entry{j00}{misc}{}{}
+      \field{sortinit}{2}
+      \field{sortinithash}{8b555b3791beccb63322c22f3320aa9a}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{day}{4}
+      \field{month}{10}
+      \field{title}{Case 00}
+      \field{year}{1582}
+      \true{datejulian}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{j01}{misc}{}{}
+      \field{sortinit}{3}
+      \field{sortinithash}{ad6fe7482ffbd7b9f99c9e8b5dccd3d7}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{day}{15}
+      \field{month}{10}
+      \field{title}{Case 01}
+      \field{year}{1582}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{j02}{misc}{}{}
+      \field{sortinit}{4}
+      \field{sortinithash}{9381316451d1b9788675a07e972a12a7}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{day}{20}
+      \field{month}{2}
+      \field{title}{Case 02}
+      \field{year}{1500}
+      \true{datejulian}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{j03}{misc}{}{}
+      \field{sortinit}{5}
+      \field{sortinithash}{20e9b4b0b173788c5dace24730f47d8c}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{day}{19}
+      \field{month}{2}
+      \field{title}{Case 03}
+      \field{year}{1500}
+      \true{datejulian}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{j04}{misc}{}{}
+      \field{sortinit}{6}
+      \field{sortinithash}{b33bc299efb3c36abec520a4c896a66d}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{day}{3}
+      \field{month}{1}
+      \field{title}{Case 04}
+      \field{year}{0}
+      \true{datejulian}
+      \field{dateera}{bce}
+      \true{nocite}
+    \endentry
+    \entry{j05}{misc}{}{}
+      \field{sortinit}{7}
+      \field{sortinithash}{108d0be1b1bee9773a1173443802c0a3}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{day}{3}
+      \field{month}{1}
+      \field{title}{Case 05}
+      \field{year}{1}
+      \true{datejulian}
+      \field{dateera}{bce}
+      \true{nocite}
+    \endentry
+    \entry{j06}{misc}{}{}
+      \field{sortinit}{8}
+      \field{sortinithash}{a231b008ebf0ecbe0b4d96dcc159445f}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 06}
+      \field{year}{1582}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{j07}{misc}{}{}
+      \field{sortinit}{9}
+      \field{sortinithash}{0a5ebc79d83c96b6579069544c73c7d4}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{month}{10}
+      \field{title}{Case 07}
+      \field{year}{1582}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{j08}{misc}{}{}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{day}{15}
+      \field{hour}{0}
+      \field{minute}{0}
+      \field{month}{10}
+      \field{second}{0}
+      \field{timezone}{+01\bibtzminsep 00}
+      \field{title}{Case 08}
+      \field{year}{1582}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{j09}{misc}{}{}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{day}{4}
+      \field{hour}{23}
+      \field{minute}{59}
+      \field{month}{10}
+      \field{second}{59}
+      \field{timezone}{-01\bibtzminsep 00}
+      \field{title}{Case 09}
+      \field{year}{1582}
+      \true{datejulian}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{j10}{misc}{}{}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{day}{23}
+      \field{endday}{22}
+      \field{endmonth}{12}
+      \field{endyear}{1500}
+      \field{month}{12}
+      \field{title}{Case 10}
+      \field{year}{1499}
+      \true{datejulian}
+      \true{enddatejulian}
+      \field{enddateera}{ce}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{j11}{misc}{}{}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{endday}{23}
+      \field{endmonth}{12}
+      \field{endyear}{1499}
+      \field{title}{Case 11}
+      \field{year}{}
+      \field{enddateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{j12}{misc}{}{}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{day}{23}
+      \field{month}{12}
+      \field{title}{Case 12}
+      \field{year}{1499}
+      \true{datejulian}
+      \true{enddatecirca}
+      \field{dateera}{ce}
+      \true{nocite}
+      \warn{\item misc entry 'j12' (refs.bib): Invalid format '1500-01-01/invalid~' of end date field 'date' - ignoring}
+    \endentry
+    \entry{j13}{misc}{}{}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{day}{23}
+      \field{month}{12}
+      \field{title}{Case 13}
+      \field{year}{1499}
+      \true{datejulian}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

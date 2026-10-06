@@ -1,0 +1,8 @@
+\documentclass{article}
+\usepackage[backend=biber,style=authoryear,sorting=none]{biblatex}
+\addbibresource[datatype=biblatexml]{refs.xml}
+\DeclareSourcemap{\maps[datatype=biblatexml]{\map[overwrite]{\step[fieldset={./bltx:title/text()},fieldvalue={:mapped},append]}}}
+\begin{document}
+\nocite{*}
+\printbibliography
+\end{document}

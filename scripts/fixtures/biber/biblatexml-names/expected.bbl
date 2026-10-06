@@ -1,0 +1,61 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{none/global//global/global/global}
+    \entry{names}{book}{}{}
+      \true{moreauthor}
+      \true{morelabelname}
+      \name{author}{2}{}{%
+        {{un=0,uniquepart=base,hash=9075e6a95bd677524ebc0c1a654c0e57}{%
+           family={de\bibnamedelimb la\bibnamedelimb Cruz},
+           familyi={d\bibinitperiod},
+           given={John\bibnamedelimb Paul},
+           giveni={J\bibinitperiod},
+           givenun=0}}%
+        {{un=0,uniquepart=base,hash=0ea567cb9d6654e1a373dbffdb9b257e}{%
+           family={Curie},
+           familyi={C\bibinitperiod},
+           given={Marie},
+           giveni={M\bibinitperiod},
+           givenun=0}}%
+      }
+      \strng{namehash}{a9bcda93cde625e77fdf9d25488053c5}
+      \strng{fullhash}{a9bcda93cde625e77fdf9d25488053c5}
+      \strng{fullhashraw}{a9bcda93cde625e77fdf9d25488053c5}
+      \strng{bibnamehash}{a9bcda93cde625e77fdf9d25488053c5}
+      \strng{authorbibnamehash}{a9bcda93cde625e77fdf9d25488053c5}
+      \strng{authornamehash}{a9bcda93cde625e77fdf9d25488053c5}
+      \strng{authorfullhash}{a9bcda93cde625e77fdf9d25488053c5}
+      \strng{authorfullhashraw}{a9bcda93cde625e77fdf9d25488053c5}
+      \field{sortinit}{2}
+      \field{sortinithash}{8b555b3791beccb63322c22f3320aa9a}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Names}
+      \field{year}{2020}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

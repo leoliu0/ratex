@@ -1,0 +1,5 @@
+\documentclass{article}
+\usepackage[backend=biber,style=numeric,sorting=none]{biblatex}
+\DeclareSourcemap{\maps[datatype=bibtex]{\map[overwrite]{\step[fieldsource=title,matches={Alpha Beta,Gamma Delta},replace={First,Second}]\step[fieldsource=title,matchesi={FIRST,SECOND},replace={UP,DOWN}]}}}
+\addbibresource{refs.bib}
+\begin{document}\nocite{*}\printbibliography\end{document}

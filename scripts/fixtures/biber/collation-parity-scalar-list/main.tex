@@ -1,0 +1,10 @@
+\documentclass{article}
+\usepackage[backend=biber,style=numeric]{biblatex}
+\addbibresource{refs.bib}
+
+\DeclareSortingTemplate{parity}{\sort{\field{location}}\sort{\field{title}}}
+\begin{document}
+\nocite{*}
+\newrefcontext[sorting=parity]
+\printbibliography
+\end{document}

@@ -1,0 +1,135 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{parity/global//global/global/global}
+    \entry{k000}{misc}{}{}
+      \field{sortinit}{A}
+      \field{sortinithash}{2f401846e2029bad6b3ecc16d50031e2}
+      \field{labeltitlesource}{title}
+      \field{langid}{Straße}
+      \field{subtitle}{a}
+      \field{title}{A}
+      \true{nocite}
+    \endentry
+    \entry{k001}{misc}{}{}
+      \field{sortinit}{a}
+      \field{sortinithash}{2f401846e2029bad6b3ecc16d50031e2}
+      \field{labeltitlesource}{title}
+      \field{langid}{STRASSE}
+      \field{subtitle}{B}
+      \field{title}{a}
+      \true{nocite}
+    \endentry
+    \entry{k005}{misc}{}{}
+      \field{sortinit}{ä}
+      \field{sortinithash}{2f401846e2029bad6b3ecc16d50031e2}
+      \field{labeltitlesource}{title}
+      \field{langid}{STRASSE}
+      \field{subtitle}{A}
+      \field{title}{ä}
+      \true{nocite}
+    \endentry
+    \entry{k004}{misc}{}{}
+      \field{sortinit}{Ä}
+      \field{sortinithash}{2f401846e2029bad6b3ecc16d50031e2}
+      \field{labeltitlesource}{title}
+      \field{langid}{Straße}
+      \field{subtitle}{ä}
+      \field{title}{Ä}
+      \true{nocite}
+    \endentry
+    \entry{k003}{misc}{}{}
+      \field{sortinit}{b}
+      \field{sortinithash}{d7095fff47cda75ca2589920aae98399}
+      \field{labeltitlesource}{title}
+      \field{langid}{STRASSE}
+      \field{subtitle}{Ä}
+      \field{title}{b}
+      \true{nocite}
+    \endentry
+    \entry{k002}{misc}{}{}
+      \field{sortinit}{B}
+      \field{sortinithash}{d7095fff47cda75ca2589920aae98399}
+      \field{labeltitlesource}{title}
+      \field{langid}{Straße}
+      \field{subtitle}{b}
+      \field{title}{B}
+      \true{nocite}
+    \endentry
+  \enddatalist
+  \datalist[entry]{nty/global//global/global/global}
+    \entry{k000}{misc}{}{}
+      \field{sortinit}{A}
+      \field{sortinithash}{2f401846e2029bad6b3ecc16d50031e2}
+      \field{labeltitlesource}{title}
+      \field{langid}{Straße}
+      \field{subtitle}{a}
+      \field{title}{A}
+      \true{nocite}
+    \endentry
+    \entry{k001}{misc}{}{}
+      \field{sortinit}{a}
+      \field{sortinithash}{2f401846e2029bad6b3ecc16d50031e2}
+      \field{labeltitlesource}{title}
+      \field{langid}{STRASSE}
+      \field{subtitle}{B}
+      \field{title}{a}
+      \true{nocite}
+    \endentry
+    \entry{k004}{misc}{}{}
+      \field{sortinit}{Ä}
+      \field{sortinithash}{2f401846e2029bad6b3ecc16d50031e2}
+      \field{labeltitlesource}{title}
+      \field{langid}{Straße}
+      \field{subtitle}{ä}
+      \field{title}{Ä}
+      \true{nocite}
+    \endentry
+    \entry{k005}{misc}{}{}
+      \field{sortinit}{ä}
+      \field{sortinithash}{2f401846e2029bad6b3ecc16d50031e2}
+      \field{labeltitlesource}{title}
+      \field{langid}{STRASSE}
+      \field{subtitle}{A}
+      \field{title}{ä}
+      \true{nocite}
+    \endentry
+    \entry{k002}{misc}{}{}
+      \field{sortinit}{B}
+      \field{sortinithash}{d7095fff47cda75ca2589920aae98399}
+      \field{labeltitlesource}{title}
+      \field{langid}{Straße}
+      \field{subtitle}{b}
+      \field{title}{B}
+      \true{nocite}
+    \endentry
+    \entry{k003}{misc}{}{}
+      \field{sortinit}{b}
+      \field{sortinithash}{d7095fff47cda75ca2589920aae98399}
+      \field{labeltitlesource}{title}
+      \field{langid}{STRASSE}
+      \field{subtitle}{Ä}
+      \field{title}{b}
+      \true{nocite}
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

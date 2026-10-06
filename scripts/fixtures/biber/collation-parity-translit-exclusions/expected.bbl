@@ -1,0 +1,267 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{parity/global//global/global/global}
+    \entry{k001}{misc}{}{}
+      \field{sortinit}{А}
+      \field{sortinithash}{9db8541854f3671fde760253476fbbdb}
+      \field{labeltitlesource}{title}
+      \field{langid}{STRASSE}
+      \field{subtitle}{Щ}
+      \field{title}{А}
+      \true{nocite}
+      \verb{urlraw}
+      \verb А
+      \endverb
+      \verb{url}
+      \verb %D0%90
+      \endverb
+    \endentry
+    \entry{k003}{misc}{}{}
+      \field{sortinit}{Б}
+      \field{sortinithash}{5261f8dfa92113358b76bb09b8629977}
+      \field{labeltitlesource}{title}
+      \field{langid}{STRASSE}
+      \field{subtitle}{Ю}
+      \field{title}{Б}
+      \true{nocite}
+      \verb{urlraw}
+      \verb Б
+      \endverb
+      \verb{url}
+      \verb %D0%91
+      \endverb
+    \endentry
+    \entry{k005}{misc}{}{}
+      \field{sortinit}{Е}
+      \field{sortinithash}{76907b4c1372b2bad4e358ead0d2e675}
+      \field{labeltitlesource}{title}
+      \field{langid}{STRASSE}
+      \field{subtitle}{Елена}
+      \field{title}{Е}
+      \true{nocite}
+      \verb{urlraw}
+      \verb Е
+      \endverb
+      \verb{url}
+      \verb %D0%95
+      \endverb
+    \endentry
+    \entry{k006}{misc}{}{}
+      \field{sortinit}{Е}
+      \field{sortinithash}{76907b4c1372b2bad4e358ead0d2e675}
+      \field{labeltitlesource}{title}
+      \field{langid}{Straße}
+      \field{subtitle}{Подъезд}
+      \field{title}{Елена}
+      \true{nocite}
+      \verb{urlraw}
+      \verb Елена
+      \endverb
+      \verb{url}
+      \verb %D0%95%D0%BB%D0%B5%D0%BD%D0%B0
+      \endverb
+    \endentry
+    \entry{k007}{misc}{}{}
+      \field{sortinit}{П}
+      \field{sortinithash}{b60c3989b0a91e15e157f5b4997c35c7}
+      \field{labeltitlesource}{title}
+      \field{langid}{STRASSE}
+      \field{subtitle}{Я}
+      \field{title}{Подъезд}
+      \true{nocite}
+      \verb{urlraw}
+      \verb Подъезд
+      \endverb
+      \verb{url}
+      \verb %D0%9F%D0%BE%D0%B4%D1%8A%D0%B5%D0%B7%D0%B4
+      \endverb
+    \endentry
+    \entry{k002}{misc}{}{}
+      \field{sortinit}{Щ}
+      \field{sortinithash}{718b266be59487244784b06f2c5477ee}
+      \field{labeltitlesource}{title}
+      \field{langid}{Straße}
+      \field{subtitle}{Б}
+      \field{title}{Щ}
+      \true{nocite}
+      \verb{urlraw}
+      \verb Щ
+      \endverb
+      \verb{url}
+      \verb %D0%A9
+      \endverb
+    \endentry
+    \entry{k004}{misc}{}{}
+      \field{sortinit}{Ю}
+      \field{sortinithash}{18aa9b94454966a5065fd1c052d09095}
+      \field{labeltitlesource}{title}
+      \field{langid}{Straße}
+      \field{subtitle}{Е}
+      \field{title}{Ю}
+      \true{nocite}
+      \verb{urlraw}
+      \verb Ю
+      \endverb
+      \verb{url}
+      \verb %D0%AE
+      \endverb
+    \endentry
+    \entry{k000}{misc}{}{}
+      \field{sortinit}{Я}
+      \field{sortinithash}{4d045f53699e0133749592603a9059cb}
+      \field{labeltitlesource}{title}
+      \field{langid}{Straße}
+      \field{subtitle}{А}
+      \field{title}{Я}
+      \true{nocite}
+      \verb{urlraw}
+      \verb Я
+      \endverb
+      \verb{url}
+      \verb %D0%AF
+      \endverb
+    \endentry
+  \enddatalist
+  \datalist[entry]{nty/global//global/global/global}
+    \entry{k001}{misc}{}{}
+      \field{sortinit}{A}
+      \field{sortinithash}{2f401846e2029bad6b3ecc16d50031e2}
+      \field{labeltitlesource}{title}
+      \field{langid}{STRASSE}
+      \field{subtitle}{Щ}
+      \field{title}{А}
+      \true{nocite}
+      \verb{urlraw}
+      \verb А
+      \endverb
+      \verb{url}
+      \verb %D0%90
+      \endverb
+    \endentry
+    \entry{k003}{misc}{}{}
+      \field{sortinit}{B}
+      \field{sortinithash}{d7095fff47cda75ca2589920aae98399}
+      \field{labeltitlesource}{title}
+      \field{langid}{STRASSE}
+      \field{subtitle}{Ю}
+      \field{title}{Б}
+      \true{nocite}
+      \verb{urlraw}
+      \verb Б
+      \endverb
+      \verb{url}
+      \verb %D0%91
+      \endverb
+    \endentry
+    \entry{k005}{misc}{}{}
+      \field{sortinit}{E}
+      \field{sortinithash}{8da8a182d344d5b9047633dfc0cc9131}
+      \field{labeltitlesource}{title}
+      \field{langid}{STRASSE}
+      \field{subtitle}{Елена}
+      \field{title}{Е}
+      \true{nocite}
+      \verb{urlraw}
+      \verb Е
+      \endverb
+      \verb{url}
+      \verb %D0%95
+      \endverb
+    \endentry
+    \entry{k006}{misc}{}{}
+      \field{sortinit}{E}
+      \field{sortinithash}{8da8a182d344d5b9047633dfc0cc9131}
+      \field{labeltitlesource}{title}
+      \field{langid}{Straße}
+      \field{subtitle}{Подъезд}
+      \field{title}{Елена}
+      \true{nocite}
+      \verb{urlraw}
+      \verb Елена
+      \endverb
+      \verb{url}
+      \verb %D0%95%D0%BB%D0%B5%D0%BD%D0%B0
+      \endverb
+    \endentry
+    \entry{k000}{misc}{}{}
+      \field{sortinit}{I}
+      \field{sortinithash}{8d291c51ee89b6cd86bf5379f0b151d8}
+      \field{labeltitlesource}{title}
+      \field{langid}{Straße}
+      \field{subtitle}{А}
+      \field{title}{Я}
+      \true{nocite}
+      \verb{urlraw}
+      \verb Я
+      \endverb
+      \verb{url}
+      \verb %D0%AF
+      \endverb
+    \endentry
+    \entry{k004}{misc}{}{}
+      \field{sortinit}{I}
+      \field{sortinithash}{8d291c51ee89b6cd86bf5379f0b151d8}
+      \field{labeltitlesource}{title}
+      \field{langid}{Straße}
+      \field{subtitle}{Е}
+      \field{title}{Ю}
+      \true{nocite}
+      \verb{urlraw}
+      \verb Ю
+      \endverb
+      \verb{url}
+      \verb %D0%AE
+      \endverb
+    \endentry
+    \entry{k007}{misc}{}{}
+      \field{sortinit}{P}
+      \field{sortinithash}{ff3bcf24f47321b42cb156c2cc8a8422}
+      \field{labeltitlesource}{title}
+      \field{langid}{STRASSE}
+      \field{subtitle}{Я}
+      \field{title}{Подъезд}
+      \true{nocite}
+      \verb{urlraw}
+      \verb Подъезд
+      \endverb
+      \verb{url}
+      \verb %D0%9F%D0%BE%D0%B4%D1%8A%D0%B5%D0%B7%D0%B4
+      \endverb
+    \endentry
+    \entry{k002}{misc}{}{}
+      \field{sortinit}{S}
+      \field{sortinithash}{b164b07b29984b41daf1e85279fbc5ab}
+      \field{labeltitlesource}{title}
+      \field{langid}{Straße}
+      \field{subtitle}{Б}
+      \field{title}{Щ}
+      \true{nocite}
+      \verb{urlraw}
+      \verb Щ
+      \endverb
+      \verb{url}
+      \verb %D0%A9
+      \endverb
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

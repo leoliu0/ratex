@@ -10,5 +10,13 @@ tex-kpse = { path = "../tex-kpse", default-features = false }
 roxmltree = "0.20"
 md5 = { package = "md-5", version = "0.11" }
 unicode-normalization = "0.1"
-unicode-segmentation = "1"
 regex = "1"
+fancy-regex = "0.19"
+sxd-document = "0.3.2"
+sxd-xpath = "0.4.2"
+curl = "0.4.49"
+url = "2.5.4"
+curl-sys = "0.4.90"
+
+[dev-dependencies]
+serde_json = "1"

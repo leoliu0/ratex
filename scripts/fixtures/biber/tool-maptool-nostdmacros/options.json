@@ -1,0 +1,5 @@
+{
+  "tool": true,
+  "nostdmacros": true,
+  "output_legacy_dates": true
+}

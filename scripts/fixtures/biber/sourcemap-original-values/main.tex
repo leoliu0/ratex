@@ -1,0 +1,5 @@
+\documentclass{article}
+\usepackage[backend=biber,style=numeric,sorting=none]{biblatex}
+\DeclareSourcemap{\maps[datatype=bibtex]{\map[overwrite]{\step[fieldsource=title,match=\regexp{Alpha},replace={Changed}]\step[fieldset=subtitle,origfieldval]\step[fieldset=note,origfield]\step[typesource=book,typetarget=report,final]\step[fieldset=type,origentrytype]}}}
+\addbibresource{refs.bib}
+\begin{document}\nocite{*}\printbibliography\end{document}

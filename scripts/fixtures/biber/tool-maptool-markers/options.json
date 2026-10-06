@@ -1,0 +1,6 @@
+{
+  "tool": true,
+  "namesep": "&&",
+  "listsep": "++",
+  "others_string": "rest"
+}

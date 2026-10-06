@@ -1,0 +1,5 @@
+{
+  "tool": true,
+  "input_format": "biblatexml",
+  "validate_bltxml": true
+}

@@ -1,0 +1,5 @@
+{
+  "tool": true,
+  "output_format": "bibtex",
+  "configfile": "tool.conf"
+}

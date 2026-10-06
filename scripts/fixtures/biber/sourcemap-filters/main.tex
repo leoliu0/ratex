@@ -1,0 +1,5 @@
+\documentclass{article}
+\usepackage[backend=biber,style=numeric,sorting=none]{biblatex}
+\DeclareSourcemap{\maps[datatype=bibtex]{\map{\pertype{BOOK}\pernottype{article}\perdatasource{refs.bib}\step[fieldset=subtitle,fieldvalue={filtered}]}\map{\pernottype{book}\step[fieldset=note,fieldvalue={not-book}]}\map{\perdatasource{other.bib}\step[fieldset=addendum,fieldvalue={wrong}]}}}
+\addbibresource{refs.bib}
+\begin{document}\nocite{*}\printbibliography\end{document}

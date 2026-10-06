@@ -1,0 +1,11 @@
+{
+  "tool": true,
+  "output_format": "bibtex",
+  "output_fieldcase": "lower",
+  "output_align": true,
+  "output_indent": "1t",
+  "output_field_order": "title,dates,names",
+  "output_xname": true,
+  "output_no_macrodefs": true,
+  "strip_comments": true
+}

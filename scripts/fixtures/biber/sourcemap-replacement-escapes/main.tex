@@ -1,0 +1,5 @@
+\documentclass{article}
+\usepackage[backend=biber,style=numeric,sorting=none]{biblatex}
+\DeclareSourcemap{\maps[datatype=bibtex]{\map[overwrite]{\step[fieldsource=title,match=\regexp{(\w+)\x20(\w+)},replace=\regexp{\u\L$1\E-\l\U${2}\E-\x{41}}]}}}
+\addbibresource{refs.bib}
+\begin{document}\nocite{*}\printbibliography\end{document}

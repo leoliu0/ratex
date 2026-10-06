@@ -1,0 +1,31 @@
+@STRING{PRESS = "Éditions"}
+
+@BOOK{z,
+  OPTIONS = {useprefix=true},
+  AUTHOR = {van Beethoven, Ludwig and Doe, Jr., John and {ACME Inc.} and others},
+  AUTHOR+an:default = {1=highlight;2:family=mine},
+  LOCATION = {Paris and London},
+  PUBLISHER = PRESS,
+  DATE = {2020-01},
+  KEYWORDS = {a,b},
+  PAGES = {10--20,30--40},
+  TITLE = {A {Book}},
+}
+
+@INPROCEEDINGS{a,
+  AUTHOR = {Alpha, Alice},
+  CROSSREF = {p},
+  DATE = {2021-02-03},
+  JOURNALTITLE = {J},
+}
+
+@PROCEEDINGS{p,
+  DATE = {2022},
+  TITLE = {Proceedings},
+}
+
+@XDATA{x,
+  PUBLISHER = Press,
+}
+
+@COMMENT{A comment}

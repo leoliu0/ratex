@@ -1,0 +1,3 @@
+The entry 'ascii' has characters which cannot be encoded in 'UTF-16LE'. Recoding problematic characters into macros.
+The entry 'unicode' has characters which cannot be encoded in 'UTF-16LE'. Recoding problematic characters into macros.
+The entry 'spaces' has characters which cannot be encoded in 'UTF-16LE'. Recoding problematic characters into macros.

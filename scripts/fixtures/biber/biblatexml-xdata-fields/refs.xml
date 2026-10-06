@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bltx:entries xmlns:bltx="http://biblatex-biber.sourceforge.net/biblatexml">
+<bltx:entry id="shared" entrytype="xdata"><bltx:title>Shared title</bltx:title><bltx:publisher><bltx:list><bltx:item>First Press</bltx:item><bltx:item>Second Press</bltx:item></bltx:list></bltx:publisher><bltx:names type="author"><bltx:name ><bltx:namepart type="given">John</bltx:namepart><bltx:namepart type="family">Smith</bltx:namepart></bltx:name><bltx:name ><bltx:namepart type="given">Anne</bltx:namepart><bltx:namepart type="family">Jones</bltx:namepart></bltx:name></bltx:names></bltx:entry><bltx:entry id="child" entrytype="book"><bltx:title xdata="shared-title"/><bltx:publisher><bltx:list><bltx:item xdata="shared-publisher-2"/></bltx:list></bltx:publisher><bltx:names type="author"><bltx:name xdata="shared-author-1"/></bltx:names></bltx:entry>
+</bltx:entries>

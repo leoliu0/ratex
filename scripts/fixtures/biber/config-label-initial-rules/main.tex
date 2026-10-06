@@ -1,0 +1,10 @@
+\documentclass{article}
+\usepackage[backend=biber,style=alphabetic]{biblatex}
+\DeclareLabelalphaTemplate{\labelelement{\field[strwidth=3]{labelname}}\labelelement{\field[strwidth=2,strside=right]{year}}}
+\DeclareNoinit{\noinit{Jean-}}
+\DeclareNolabel{\nolabel{[{}]}}
+\DeclareNolabelwidthcount{\nolabel{[’']}}
+\addbibresource{refs.bib}
+\begin{document}
+\nocite{*}\printbibliography
+\end{document}

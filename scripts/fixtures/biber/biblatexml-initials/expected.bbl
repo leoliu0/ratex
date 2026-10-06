@@ -1,0 +1,56 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{none/global//global/global/global}
+    \entry{initials}{book}{}{}
+      \name{author}{2}{}{%
+        {{un=0,uniquepart=base,hash=3981189b23d9a4ab757568a307afae1b}{%
+           family={Smith},
+           familyi={S\bibinitperiod},
+           given={John\bibnamedelima Paul-Anne},
+           giveni={JJ\bibinitperiod\bibinitdelim P\bibinithyphendelim A\bibinitperiod},
+           givenun=0}}%
+        {{un=0,uniquepart=base,hash=e1a7055edffc1b57d16e296168132fac}{%
+           family={Jones},
+           familyi={XY\bibinitperiod},
+           given={Alfred},
+           giveni={XY\bibinitperiod},
+           givenun=0}}%
+      }
+      \strng{namehash}{a1594c74dbd2d0b20969bec07c0268a3}
+      \strng{fullhash}{a1594c74dbd2d0b20969bec07c0268a3}
+      \strng{fullhashraw}{a1594c74dbd2d0b20969bec07c0268a3}
+      \strng{bibnamehash}{a1594c74dbd2d0b20969bec07c0268a3}
+      \strng{authorbibnamehash}{a1594c74dbd2d0b20969bec07c0268a3}
+      \strng{authornamehash}{a1594c74dbd2d0b20969bec07c0268a3}
+      \strng{authorfullhash}{a1594c74dbd2d0b20969bec07c0268a3}
+      \strng{authorfullhashraw}{a1594c74dbd2d0b20969bec07c0268a3}
+      \field{sortinit}{2}
+      \field{sortinithash}{8b555b3791beccb63322c22f3320aa9a}
+      \field{labeldatesource}{nodate}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Initials}
+      \true{nocite}
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

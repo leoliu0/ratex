@@ -1,0 +1,2 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE bltx:entries [<!ENTITY markup "&lt;not-a-node&gt;"><!ENTITY title "<bltx:title>Entity element</bltx:title>">]><bltx:entries xmlns:bltx="http://biblatex-biber.sourceforge.net/biblatexml"><bltx:entry id="markup" entrytype="book">&title;<bltx:note>&markup;</bltx:note></bltx:entry></bltx:entries>

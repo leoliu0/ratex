@@ -1,0 +1,147 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{gap/global//global/global/global}
+    \entry{b}{book}{}{}
+      \name{author}{2}{sortingnamekeytemplatename=given}{%
+        {{hash=894e4bb9cdfe7bedb993cd230d6d7534}{%
+           family={Shared},
+           familyi={S\bibinitperiod},
+           given={Same},
+           giveni={S\bibinitperiod}}}%
+        {{hash=04e43ef8a4932fc18cf17bb926d71c5f}{%
+           family={Z},
+           familyi={Z\bibinitperiod},
+           given={Alpha},
+           giveni={A\bibinitperiod}}}%
+      }
+      \strng{namehash}{8da3a19a4546b0f9cd1c52b7d36537f7}
+      \strng{fullhash}{8da3a19a4546b0f9cd1c52b7d36537f7}
+      \strng{fullhashraw}{8da3a19a4546b0f9cd1c52b7d36537f7}
+      \strng{bibnamehash}{8da3a19a4546b0f9cd1c52b7d36537f7}
+      \strng{authorbibnamehash}{8da3a19a4546b0f9cd1c52b7d36537f7}
+      \strng{authornamehash}{8da3a19a4546b0f9cd1c52b7d36537f7}
+      \strng{authorfullhash}{8da3a19a4546b0f9cd1c52b7d36537f7}
+      \strng{authorfullhashraw}{8da3a19a4546b0f9cd1c52b7d36537f7}
+      \field{labelalpha}{SZ20}
+      \field{sortinit}{S}
+      \field{sortinithash}{b164b07b29984b41daf1e85279fbc5ab}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{B}
+      \field{year}{2020}
+      \true{nocite}
+    \endentry
+    \entry{a}{book}{}{}
+      \name{author}{2}{sortingnamekeytemplatename=given}{%
+        {{hash=894e4bb9cdfe7bedb993cd230d6d7534}{%
+           family={Shared},
+           familyi={S\bibinitperiod},
+           given={Same},
+           giveni={S\bibinitperiod}}}%
+        {{hash=8884c3d8fd20c8fa92c6a9333719fbee}{%
+           family={A},
+           familyi={A\bibinitperiod},
+           given={Zulu},
+           giveni={Z\bibinitperiod}}}%
+      }
+      \strng{namehash}{37f19b666727b1ac5225bb49f79de286}
+      \strng{fullhash}{37f19b666727b1ac5225bb49f79de286}
+      \strng{fullhashraw}{37f19b666727b1ac5225bb49f79de286}
+      \strng{bibnamehash}{37f19b666727b1ac5225bb49f79de286}
+      \strng{authorbibnamehash}{37f19b666727b1ac5225bb49f79de286}
+      \strng{authornamehash}{37f19b666727b1ac5225bb49f79de286}
+      \strng{authorfullhash}{37f19b666727b1ac5225bb49f79de286}
+      \strng{authorfullhashraw}{37f19b666727b1ac5225bb49f79de286}
+      \field{labelalpha}{SA20}
+      \field{sortinit}{S}
+      \field{sortinithash}{b164b07b29984b41daf1e85279fbc5ab}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{A}
+      \field{year}{2020}
+      \true{nocite}
+    \endentry
+  \enddatalist
+  \datalist[entry]{anyt/global//global/global/global}
+    \entry{a}{book}{}{}
+      \name{author}{2}{sortingnamekeytemplatename=given}{%
+        {{hash=894e4bb9cdfe7bedb993cd230d6d7534}{%
+           family={Shared},
+           familyi={S\bibinitperiod},
+           given={Same},
+           giveni={S\bibinitperiod}}}%
+        {{hash=8884c3d8fd20c8fa92c6a9333719fbee}{%
+           family={A},
+           familyi={A\bibinitperiod},
+           given={Zulu},
+           giveni={Z\bibinitperiod}}}%
+      }
+      \strng{namehash}{37f19b666727b1ac5225bb49f79de286}
+      \strng{fullhash}{37f19b666727b1ac5225bb49f79de286}
+      \strng{fullhashraw}{37f19b666727b1ac5225bb49f79de286}
+      \strng{bibnamehash}{37f19b666727b1ac5225bb49f79de286}
+      \strng{authorbibnamehash}{37f19b666727b1ac5225bb49f79de286}
+      \strng{authornamehash}{37f19b666727b1ac5225bb49f79de286}
+      \strng{authorfullhash}{37f19b666727b1ac5225bb49f79de286}
+      \strng{authorfullhashraw}{37f19b666727b1ac5225bb49f79de286}
+      \field{labelalpha}{SA20}
+      \field{sortinit}{S}
+      \field{sortinithash}{b164b07b29984b41daf1e85279fbc5ab}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{A}
+      \field{year}{2020}
+      \true{nocite}
+    \endentry
+    \entry{b}{book}{}{}
+      \name{author}{2}{sortingnamekeytemplatename=given}{%
+        {{hash=894e4bb9cdfe7bedb993cd230d6d7534}{%
+           family={Shared},
+           familyi={S\bibinitperiod},
+           given={Same},
+           giveni={S\bibinitperiod}}}%
+        {{hash=04e43ef8a4932fc18cf17bb926d71c5f}{%
+           family={Z},
+           familyi={Z\bibinitperiod},
+           given={Alpha},
+           giveni={A\bibinitperiod}}}%
+      }
+      \strng{namehash}{8da3a19a4546b0f9cd1c52b7d36537f7}
+      \strng{fullhash}{8da3a19a4546b0f9cd1c52b7d36537f7}
+      \strng{fullhashraw}{8da3a19a4546b0f9cd1c52b7d36537f7}
+      \strng{bibnamehash}{8da3a19a4546b0f9cd1c52b7d36537f7}
+      \strng{authorbibnamehash}{8da3a19a4546b0f9cd1c52b7d36537f7}
+      \strng{authornamehash}{8da3a19a4546b0f9cd1c52b7d36537f7}
+      \strng{authorfullhash}{8da3a19a4546b0f9cd1c52b7d36537f7}
+      \strng{authorfullhashraw}{8da3a19a4546b0f9cd1c52b7d36537f7}
+      \field{labelalpha}{SZ20}
+      \field{sortinit}{S}
+      \field{sortinithash}{b164b07b29984b41daf1e85279fbc5ab}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{B}
+      \field{year}{2020}
+      \true{nocite}
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

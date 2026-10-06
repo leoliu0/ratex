@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bltx:entries xmlns:bltx="http://biblatex-biber.sourceforge.net/biblatexml">
+<bltx:entry id="initials" entrytype="book"><bltx:names type="author"><bltx:name><bltx:namepart type="given"><bltx:namepart initial="JJ">John</bltx:namepart><bltx:namepart>Paul-Anne</bltx:namepart></bltx:namepart><bltx:namepart type="family" initial="Ignored">Smith</bltx:namepart></bltx:name><bltx:name initial="XY"><bltx:namepart type="given">Alfred</bltx:namepart><bltx:namepart type="family">Jones</bltx:namepart></bltx:name></bltx:names><bltx:title>Initials</bltx:title></bltx:entry>
+</bltx:entries>

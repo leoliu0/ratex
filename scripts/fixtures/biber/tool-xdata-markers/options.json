@@ -1,0 +1,7 @@
+{
+  "tool": true,
+  "output_format": "bibtex",
+  "output_xdatamarker": "shared",
+  "output_xdatasep": ":",
+  "output_xnamesep": "!"
+}

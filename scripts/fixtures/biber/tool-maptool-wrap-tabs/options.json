@@ -1,0 +1,6 @@
+{
+  "tool": true,
+  "wraplines": 30,
+  "output_indent": "1t",
+  "output_align": true
+}

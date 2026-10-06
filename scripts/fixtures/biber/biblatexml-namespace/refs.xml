@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<x:entries xmlns:x="http://biblatex-biber.sourceforge.net/biblatexml" xmlns:bltx="http://biblatex-biber.sourceforge.net/biblatexml" xmlns:alien="urn:alien">
+<bltx:entry id="namespaced" entrytype="book"><bltx:title>Recognized title</bltx:title><x:title>Ignored title</x:title><alien:title>Ignored namespace</alien:title></bltx:entry>
+</x:entries>

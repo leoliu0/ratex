@@ -1,0 +1,10 @@
+\documentclass{article}
+\usepackage[backend=biber,style=numeric]{biblatex}
+\addbibresource{refs.bib}
+\DeclareSortTranslit{\translit{*}{Russian}{ALA-LC}}
+\DeclareSortingTemplate{parity}{\sort{\field{url}}\sort{\field{title}}}
+\begin{document}
+\nocite{*}
+\newrefcontext[sorting=parity]
+\printbibliography
+\end{document}

@@ -1,0 +1,2 @@
+\DeclareDatamodelFields[type=field,datatype=literal]{yeardivision}
+\DeclareDatamodelEntryfields{yeardivision}

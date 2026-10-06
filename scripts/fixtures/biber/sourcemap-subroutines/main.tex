@@ -1,0 +1,5 @@
+\documentclass{article}
+\usepackage[backend=biber,style=numeric,sorting=none]{biblatex}
+\DeclareSourcemap{\maps[datatype=bibtex]{\map[overwrite]{\step[fieldsource=title,match=\regexp{(?(DEFINE)(?&lt;word&gt;\w+))(?&amp;word)\x20(?&amp;word)},final]\step[fieldset=subtitle,fieldvalue={named-subroutines}]}}}
+\addbibresource{refs.bib}
+\begin{document}\nocite{*}\printbibliography\end{document}

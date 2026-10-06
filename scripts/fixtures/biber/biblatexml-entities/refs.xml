@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE bltx:entries [<!ENTITY title "Entity Title"><!ENTITY nested "before &title; after">]>
+<bltx:entries xmlns:bltx="http://biblatex-biber.sourceforge.net/biblatexml">
+<bltx:entry id="entity" entrytype="book"><bltx:title>&title; &#xE9; &amp; <![CDATA[<raw>]]></bltx:title><bltx:note>&nested;</bltx:note></bltx:entry>
+</bltx:entries>

@@ -1,0 +1,6 @@
+Datamodel: misc entry 'a' (refs.bib): Missing mandatory field - one of 'date, year' must be defined
+Datamodel: misc entry 'a' (refs.bib): Mandatory fields - only one of 'title, subtitle, titleaddon' must be defined - ignoring field 'subtitle'
+Datamodel: misc entry 'a' (refs.bib): Mandatory fields - only one of 'title, subtitle, titleaddon' must be defined - ignoring field 'titleaddon'
+Datamodel: misc entry 'b' (refs.bib): Missing mandatory field - one of 'date, year' must be defined
+Datamodel: misc entry 'b' (refs.bib): Missing mandatory field 'title'
+Datamodel: misc entry 'b' (refs.bib): Missing mandatory field - one of 'title, subtitle, titleaddon' must be defined

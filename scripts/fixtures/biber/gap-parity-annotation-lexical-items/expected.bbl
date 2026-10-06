@@ -1,0 +1,109 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{anyt/global//global/global/global}
+    \entry{a}{book}{}{}
+      \name{author}{12}{}{%
+        {{hash=80168770d1e3ddbc2a70a465724ca303}{%
+           family={Family1},
+           familyi={F\bibinitperiod},
+           given={Given1},
+           giveni={G\bibinitperiod}}}%
+        {{hash=a0c7731ce49e0ceb56523dab0f19a9bd}{%
+           family={Family2},
+           familyi={F\bibinitperiod},
+           given={Given2},
+           giveni={G\bibinitperiod}}}%
+        {{hash=7a69592a0703b6e2a410262dca5eb61a}{%
+           family={Family3},
+           familyi={F\bibinitperiod},
+           given={Given3},
+           giveni={G\bibinitperiod}}}%
+        {{hash=8bf6c3f921c8663ac7a609aa3444963a}{%
+           family={Family4},
+           familyi={F\bibinitperiod},
+           given={Given4},
+           giveni={G\bibinitperiod}}}%
+        {{hash=13969903a27f672ed3d26aa452d9ffc8}{%
+           family={Family5},
+           familyi={F\bibinitperiod},
+           given={Given5},
+           giveni={G\bibinitperiod}}}%
+        {{hash=7c2845f2cc948d6703a8d61e29d663c9}{%
+           family={Family6},
+           familyi={F\bibinitperiod},
+           given={Given6},
+           giveni={G\bibinitperiod}}}%
+        {{hash=c9e85407c73bfc335d1dc7ef9beac953}{%
+           family={Family7},
+           familyi={F\bibinitperiod},
+           given={Given7},
+           giveni={G\bibinitperiod}}}%
+        {{hash=ab080e4dc9b6c439b95901955889a25a}{%
+           family={Family8},
+           familyi={F\bibinitperiod},
+           given={Given8},
+           giveni={G\bibinitperiod}}}%
+        {{hash=aac0ed0dcc1daf5b4d277a5746f7e5c9}{%
+           family={Family9},
+           familyi={F\bibinitperiod},
+           given={Given9},
+           giveni={G\bibinitperiod}}}%
+        {{hash=313bac94d0ec41cda5edb587974ba1a2}{%
+           family={Family10},
+           familyi={F\bibinitperiod},
+           given={Given10},
+           giveni={G\bibinitperiod}}}%
+        {{hash=230fcd8d045ba41dd14422f34b5a481d}{%
+           family={Family11},
+           familyi={F\bibinitperiod},
+           given={Given11},
+           giveni={G\bibinitperiod}}}%
+        {{hash=7386dac07e0254ae7af161a4548af6a4}{%
+           family={Family12},
+           familyi={F\bibinitperiod},
+           given={Given12},
+           giveni={G\bibinitperiod}}}%
+      }
+      \strng{namehash}{f94c962399b306bd0a2485e1e2a1be8f}
+      \strng{fullhash}{8e408c8253b194ecd3ad2023fc4a5328}
+      \strng{fullhashraw}{8e408c8253b194ecd3ad2023fc4a5328}
+      \strng{bibnamehash}{f94c962399b306bd0a2485e1e2a1be8f}
+      \strng{authorbibnamehash}{f94c962399b306bd0a2485e1e2a1be8f}
+      \strng{authornamehash}{f94c962399b306bd0a2485e1e2a1be8f}
+      \strng{authorfullhash}{8e408c8253b194ecd3ad2023fc4a5328}
+      \strng{authorfullhashraw}{8e408c8253b194ecd3ad2023fc4a5328}
+      \field{labelalpha}{F+20}
+      \field{sortinit}{F}
+      \field{sortinithash}{2638baaa20439f1b5a8f80c6c08a13b4}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Annotations}
+      \field{year}{2020}
+      \true{nocite}
+      \annotation{item}{author}{default}{10}{}{0}{tenth}
+      \annotation{item}{author}{default}{2}{}{0}{second}
+      \annotation{part}{author}{default}{10}{given}{0}{ten}
+      \annotation{part}{author}{default}{2}{given}{0}{two}
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

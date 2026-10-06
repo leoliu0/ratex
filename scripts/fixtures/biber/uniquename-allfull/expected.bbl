@@ -1,0 +1,211 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{nyt/global//global/global/global}
+    \entry{c}{book}{}{}
+      \name{author}{4}{}{%
+        {{un=2,uniquepart=given,hash=b3745a86888964b5a05e89df93bde525}{%
+           family={Smith},
+           familyi={S\bibinitperiod},
+           given={Jack},
+           giveni={J\bibinitperiod},
+           givenun=2}}%
+        {{un=0,uniquepart=base,hash=2b289723c23662b2671499e6f9f0a829}{%
+           family={Davis},
+           familyi={D\bibinitperiod},
+           given={Alice},
+           giveni={A\bibinitperiod},
+           givenun=0}}%
+        {{un=0,uniquepart=base,hash=5e20f446d2daa6c87a39214f30e3117d}{%
+           family={Brown},
+           familyi={B\bibinitperiod},
+           given={Robert},
+           giveni={R\bibinitperiod},
+           givenun=0}}%
+        {{un=2,uniquepart=given,hash=985408f1bdaada6c9433401938ec697d}{%
+           family={Green},
+           familyi={G\bibinitperiod},
+           given={Chad},
+           giveni={C\bibinitperiod},
+           givenun=2}}%
+      }
+      \strng{namehash}{9968133aa1e7ff41823e918e6bdb3657}
+      \strng{fullhash}{72bd216cb6808333fd6dd3c06c73655e}
+      \strng{fullhashraw}{72bd216cb6808333fd6dd3c06c73655e}
+      \strng{bibnamehash}{9968133aa1e7ff41823e918e6bdb3657}
+      \strng{authorbibnamehash}{9968133aa1e7ff41823e918e6bdb3657}
+      \strng{authornamehash}{9968133aa1e7ff41823e918e6bdb3657}
+      \strng{authorfullhash}{72bd216cb6808333fd6dd3c06c73655e}
+      \strng{authorfullhashraw}{72bd216cb6808333fd6dd3c06c73655e}
+      \field{sortinit}{S}
+      \field{sortinithash}{b164b07b29984b41daf1e85279fbc5ab}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Three}
+      \field{year}{2021}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{b}{book}{}{}
+      \name{author}{4}{}{%
+        {{un=2,uniquepart=given,hash=055f6811649a97bc3a36ff4b2581f441}{%
+           family={Smith},
+           familyi={S\bibinitperiod},
+           given={Jane},
+           giveni={J\bibinitperiod},
+           givenun=2}}%
+        {{un=1,uniquepart=given,hash=961c4f67d58fd7905840dc42756cac23}{%
+           family={Jones},
+           familyi={J\bibinitperiod},
+           given={Bob},
+           giveni={B\bibinitperiod},
+           givenun=1}}%
+        {{un=0,uniquepart=base,hash=5e20f446d2daa6c87a39214f30e3117d}{%
+           family={Brown},
+           familyi={B\bibinitperiod},
+           given={Robert},
+           giveni={R\bibinitperiod},
+           givenun=0}}%
+        {{un=2,uniquepart=given,hash=6eaf40df0366e3a055dee01e950d1dc8}{%
+           family={Green},
+           familyi={G\bibinitperiod},
+           given={Chris},
+           giveni={C\bibinitperiod},
+           givenun=2}}%
+      }
+      \strng{namehash}{362368237cedf716bf0f3440a6549b4e}
+      \strng{fullhash}{5817ec0276a950c41ec9a8c086ca6240}
+      \strng{fullhashraw}{5817ec0276a950c41ec9a8c086ca6240}
+      \strng{bibnamehash}{362368237cedf716bf0f3440a6549b4e}
+      \strng{authorbibnamehash}{362368237cedf716bf0f3440a6549b4e}
+      \strng{authornamehash}{362368237cedf716bf0f3440a6549b4e}
+      \strng{authorfullhash}{5817ec0276a950c41ec9a8c086ca6240}
+      \strng{authorfullhashraw}{5817ec0276a950c41ec9a8c086ca6240}
+      \field{extraname}{1}
+      \field{sortinit}{S}
+      \field{sortinithash}{b164b07b29984b41daf1e85279fbc5ab}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Two}
+      \field{year}{2020}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d}{book}{}{}
+      \name{author}{4}{}{%
+        {{un=2,uniquepart=given,hash=055f6811649a97bc3a36ff4b2581f441}{%
+           family={Smith},
+           familyi={S\bibinitperiod},
+           given={Jane},
+           giveni={J\bibinitperiod},
+           givenun=2}}%
+        {{un=1,uniquepart=given,hash=961c4f67d58fd7905840dc42756cac23}{%
+           family={Jones},
+           familyi={J\bibinitperiod},
+           given={Bob},
+           giveni={B\bibinitperiod},
+           givenun=1}}%
+        {{un=0,uniquepart=base,hash=5e20f446d2daa6c87a39214f30e3117d}{%
+           family={Brown},
+           familyi={B\bibinitperiod},
+           given={Robert},
+           giveni={R\bibinitperiod},
+           givenun=0}}%
+        {{un=2,uniquepart=given,hash=6eaf40df0366e3a055dee01e950d1dc8}{%
+           family={Green},
+           familyi={G\bibinitperiod},
+           given={Chris},
+           giveni={C\bibinitperiod},
+           givenun=2}}%
+      }
+      \strng{namehash}{362368237cedf716bf0f3440a6549b4e}
+      \strng{fullhash}{5817ec0276a950c41ec9a8c086ca6240}
+      \strng{fullhashraw}{5817ec0276a950c41ec9a8c086ca6240}
+      \strng{bibnamehash}{362368237cedf716bf0f3440a6549b4e}
+      \strng{authorbibnamehash}{362368237cedf716bf0f3440a6549b4e}
+      \strng{authornamehash}{362368237cedf716bf0f3440a6549b4e}
+      \strng{authorfullhash}{5817ec0276a950c41ec9a8c086ca6240}
+      \strng{authorfullhashraw}{5817ec0276a950c41ec9a8c086ca6240}
+      \field{extraname}{2}
+      \field{sortinit}{S}
+      \field{sortinithash}{b164b07b29984b41daf1e85279fbc5ab}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Four}
+      \field{year}{2021}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{a}{book}{}{}
+      \name{author}{4}{}{%
+        {{un=2,uniquepart=given,hash=5d0ddda3a367ceb26fbaeca02e391c22}{%
+           family={Smith},
+           familyi={S\bibinitperiod},
+           given={John},
+           giveni={J\bibinitperiod},
+           givenun=2}}%
+        {{un=1,uniquepart=given,hash=930625160640f7b8c94f327d731f3bad}{%
+           family={Jones},
+           familyi={J\bibinitperiod},
+           given={Alice},
+           giveni={A\bibinitperiod},
+           givenun=1}}%
+        {{un=0,uniquepart=base,hash=5e20f446d2daa6c87a39214f30e3117d}{%
+           family={Brown},
+           familyi={B\bibinitperiod},
+           given={Robert},
+           giveni={R\bibinitperiod},
+           givenun=0}}%
+        {{un=2,uniquepart=given,hash=66aa514d744c9d83eff0e6735b023ad4}{%
+           family={Green},
+           familyi={G\bibinitperiod},
+           given={Carl},
+           giveni={C\bibinitperiod},
+           givenun=2}}%
+      }
+      \strng{namehash}{2d05b2cf738af6ea5fe08887b681d257}
+      \strng{fullhash}{55c6e2d20f158ada1aab9967758123fb}
+      \strng{fullhashraw}{55c6e2d20f158ada1aab9967758123fb}
+      \strng{bibnamehash}{2d05b2cf738af6ea5fe08887b681d257}
+      \strng{authorbibnamehash}{2d05b2cf738af6ea5fe08887b681d257}
+      \strng{authornamehash}{2d05b2cf738af6ea5fe08887b681d257}
+      \strng{authorfullhash}{55c6e2d20f158ada1aab9967758123fb}
+      \strng{authorfullhashraw}{55c6e2d20f158ada1aab9967758123fb}
+      \field{sortinit}{S}
+      \field{sortinithash}{b164b07b29984b41daf1e85279fbc5ab}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{One}
+      \field{year}{2020}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

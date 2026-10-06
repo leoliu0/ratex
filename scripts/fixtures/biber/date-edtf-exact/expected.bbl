@@ -1,0 +1,1214 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{none/global//global/global/global}
+    \entry{d00}{misc}{}{}
+      \field{sortinit}{2}
+      \field{sortinithash}{8b555b3791beccb63322c22f3320aa9a}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 00}
+      \field{year}{2020}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d01}{misc}{}{}
+      \field{sortinit}{3}
+      \field{sortinithash}{ad6fe7482ffbd7b9f99c9e8b5dccd3d7}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 01}
+      \field{year}{0}
+      \field{dateera}{bce}
+      \true{nocite}
+    \endentry
+    \entry{d02}{misc}{}{}
+      \field{sortinit}{4}
+      \field{sortinithash}{9381316451d1b9788675a07e972a12a7}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 02}
+      \field{year}{1}
+      \field{dateera}{bce}
+      \true{nocite}
+    \endentry
+    \entry{d03}{misc}{}{}
+      \field{sortinit}{5}
+      \field{sortinithash}{20e9b4b0b173788c5dace24730f47d8c}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 03}
+      \field{year}{17000000002}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d04}{misc}{}{}
+      \field{sortinit}{6}
+      \field{sortinithash}{b33bc299efb3c36abec520a4c896a66d}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 04}
+      \field{year}{1}
+      \field{dateera}{bce}
+      \true{nocite}
+    \endentry
+    \entry{d05}{misc}{}{}
+      \field{sortinit}{7}
+      \field{sortinithash}{108d0be1b1bee9773a1173443802c0a3}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 05}
+      \field{year}{2020}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d06}{misc}{}{}
+      \field{sortinit}{8}
+      \field{sortinithash}{a231b008ebf0ecbe0b4d96dcc159445f}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 06}
+      \field{year}{2020}
+      \field{yeardivision}{spring}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d07}{misc}{}{}
+      \field{sortinit}{9}
+      \field{sortinithash}{0a5ebc79d83c96b6579069544c73c7d4}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 07}
+      \field{year}{2020}
+      \field{yeardivision}{springS}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d08}{misc}{}{}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 08}
+      \field{year}{2020}
+      \field{yeardivision}{S2}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d09}{misc}{}{}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{labeldatesource}{nodate}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 09}
+      \true{nocite}
+      \warn{\item misc entry 'd09' (refs.bib): Invalid format '2020-42' of date field 'date' - ignoring}
+    \endentry
+    \entry{d10}{misc}{}{}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{labeldatesource}{nodate}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 10}
+      \true{nocite}
+      \warn{\item misc entry 'd10' (refs.bib): Invalid format '2020-00' of date field 'date' - ignoring}
+    \endentry
+    \entry{d11}{misc}{}{}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{day}{29}
+      \field{month}{2}
+      \field{title}{Case 11}
+      \field{year}{2020}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d12}{misc}{}{}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{labeldatesource}{nodate}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 12}
+      \true{nocite}
+      \warn{\item misc entry 'd12' (refs.bib): Invalid format '2019-02-29' of date field 'date' - ignoring}
+    \endentry
+    \entry{d13}{misc}{}{}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{day}{1}
+      \field{hour}{0}
+      \field{minute}{0}
+      \field{month}{1}
+      \field{second}{0}
+      \field{title}{Case 13}
+      \field{year}{2020}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d14}{misc}{}{}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{day}{1}
+      \field{hour}{23}
+      \field{minute}{59}
+      \field{month}{1}
+      \field{second}{59}
+      \field{timezone}{Z}
+      \field{title}{Case 14}
+      \field{year}{2020}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d15}{misc}{}{}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{labeldatesource}{nodate}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 15}
+      \true{nocite}
+      \warn{\item misc entry 'd15' (refs.bib): Invalid format '2020-01-01T24:00:00' of date field 'date' - ignoring}
+    \endentry
+    \entry{d16}{misc}{}{}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{labeldatesource}{nodate}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 16}
+      \true{nocite}
+      \warn{\item misc entry 'd16' (refs.bib): Invalid format '2020-01-01T23:59:60Z' of date field 'date' - ignoring}
+    \endentry
+    \entry{d17}{misc}{}{}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{day}{31}
+      \field{hour}{23}
+      \field{minute}{59}
+      \field{month}{12}
+      \field{second}{60}
+      \field{timezone}{Z}
+      \field{title}{Case 17}
+      \field{year}{2016}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d18}{misc}{}{}
+      \field{sortinit}{2}
+      \field{sortinithash}{8b555b3791beccb63322c22f3320aa9a}
+      \field{labeldatesource}{nodate}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 18}
+      \true{nocite}
+      \warn{\item misc entry 'd18' (refs.bib): Invalid format '2016-12-31T23:59:60' of date field 'date' - ignoring}
+    \endentry
+    \entry{d19}{misc}{}{}
+      \field{sortinit}{2}
+      \field{sortinithash}{8b555b3791beccb63322c22f3320aa9a}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{day}{1}
+      \field{hour}{0}
+      \field{minute}{59}
+      \field{month}{1}
+      \field{second}{60}
+      \field{timezone}{+01\bibtzminsep 00}
+      \field{title}{Case 19}
+      \field{year}{2017}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d20}{misc}{}{}
+      \field{sortinit}{2}
+      \field{sortinithash}{8b555b3791beccb63322c22f3320aa9a}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 20}
+      \field{year}{2020}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d21}{misc}{}{}
+      \field{sortinit}{2}
+      \field{sortinithash}{8b555b3791beccb63322c22f3320aa9a}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 21}
+      \field{year}{2020}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d22}{misc}{}{}
+      \field{sortinit}{2}
+      \field{sortinithash}{8b555b3791beccb63322c22f3320aa9a}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{day}{1}
+      \field{hour}{12}
+      \field{minute}{0}
+      \field{month}{1}
+      \field{second}{0}
+      \field{timezone}{+23\bibtzminsep 59}
+      \field{title}{Case 22}
+      \field{year}{2020}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d23}{misc}{}{}
+      \field{sortinit}{2}
+      \field{sortinithash}{8b555b3791beccb63322c22f3320aa9a}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{day}{1}
+      \field{hour}{12}
+      \field{minute}{0}
+      \field{month}{1}
+      \field{second}{0}
+      \field{timezone}{+24\bibtzminsep 00}
+      \field{title}{Case 23}
+      \field{year}{2020}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d24}{misc}{}{}
+      \field{sortinit}{2}
+      \field{sortinithash}{8b555b3791beccb63322c22f3320aa9a}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{day}{1}
+      \field{hour}{12}
+      \field{minute}{0}
+      \field{month}{1}
+      \field{second}{0}
+      \field{timezone}{Z}
+      \field{title}{Case 24}
+      \field{year}{2020}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d25}{misc}{}{}
+      \field{sortinit}{2}
+      \field{sortinithash}{8b555b3791beccb63322c22f3320aa9a}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{day}{1}
+      \field{hour}{12}
+      \field{minute}{0}
+      \field{month}{1}
+      \field{second}{0}
+      \field{timezone}{Z}
+      \field{title}{Case 25}
+      \field{year}{2020}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d26}{misc}{}{}
+      \field{sortinit}{2}
+      \field{sortinithash}{8b555b3791beccb63322c22f3320aa9a}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 26}
+      \field{year}{2020}
+      \true{dateuncertain}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d27}{misc}{}{}
+      \field{sortinit}{2}
+      \field{sortinithash}{8b555b3791beccb63322c22f3320aa9a}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 27}
+      \field{year}{2020}
+      \true{datecirca}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d28}{misc}{}{}
+      \field{sortinit}{3}
+      \field{sortinithash}{ad6fe7482ffbd7b9f99c9e8b5dccd3d7}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 28}
+      \field{year}{2020}
+      \true{datecirca}
+      \true{dateuncertain}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d29}{misc}{}{}
+      \field{sortinit}{3}
+      \field{sortinithash}{ad6fe7482ffbd7b9f99c9e8b5dccd3d7}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 29}
+      \field{year}{2020}
+      \true{datecirca}
+      \true{dateuncertain}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d30}{misc}{}{}
+      \field{sortinit}{3}
+      \field{sortinithash}{ad6fe7482ffbd7b9f99c9e8b5dccd3d7}
+      \field{labeldatesource}{nodate}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 30}
+      \true{nocite}
+      \warn{\item misc entry 'd30' (refs.bib): Invalid format '2020?~' of date field 'date' - ignoring}
+    \endentry
+    \entry{d31}{misc}{}{}
+      \field{sortinit}{3}
+      \field{sortinithash}{ad6fe7482ffbd7b9f99c9e8b5dccd3d7}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 31}
+      \field{year}{2020}
+      \true{datecirca}
+      \true{dateuncertain}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d32}{misc}{}{}
+      \field{sortinit}{3}
+      \field{sortinithash}{ad6fe7482ffbd7b9f99c9e8b5dccd3d7}
+      \field{labeldatesource}{nodate}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 32}
+      \true{nocite}
+      \warn{\item misc entry 'd32' (refs.bib): Invalid format '2020?%' of date field 'date' - ignoring}
+    \endentry
+    \entry{d33}{misc}{}{}
+      \field{sortinit}{3}
+      \field{sortinithash}{ad6fe7482ffbd7b9f99c9e8b5dccd3d7}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{endyear}{2021}
+      \field{title}{Case 33}
+      \field{year}{2020}
+      \true{enddateuncertain}
+      \field{enddateera}{ce}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d34}{misc}{}{}
+      \field{sortinit}{3}
+      \field{sortinithash}{ad6fe7482ffbd7b9f99c9e8b5dccd3d7}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{endyear}{2021}
+      \field{title}{Case 34}
+      \field{year}{}
+      \true{dateunknown}
+      \field{enddateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d35}{misc}{}{}
+      \field{sortinit}{3}
+      \field{sortinithash}{ad6fe7482ffbd7b9f99c9e8b5dccd3d7}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{endyear}{2021}
+      \field{title}{Case 35}
+      \field{year}{}
+      \field{enddateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d36}{misc}{}{}
+      \field{sortinit}{3}
+      \field{sortinithash}{ad6fe7482ffbd7b9f99c9e8b5dccd3d7}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{endyear}{}
+      \field{title}{Case 36}
+      \field{year}{2020}
+      \true{enddateunknown}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d37}{misc}{}{}
+      \field{sortinit}{3}
+      \field{sortinithash}{ad6fe7482ffbd7b9f99c9e8b5dccd3d7}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{endyear}{}
+      \field{title}{Case 37}
+      \field{year}{2020}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d38}{misc}{}{}
+      \field{sortinit}{4}
+      \field{sortinithash}{9381316451d1b9788675a07e972a12a7}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 38}
+      \field{year}{2020}
+      \true{enddateuncertain}
+      \field{dateera}{ce}
+      \true{nocite}
+      \warn{\item misc entry 'd38' (refs.bib): Invalid format '2020/invalid?' of end date field 'date' - ignoring}
+    \endentry
+    \entry{d39}{misc}{}{}
+      \field{sortinit}{4}
+      \field{sortinithash}{9381316451d1b9788675a07e972a12a7}
+      \field{labeldatesource}{nodate}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 39}
+      \true{nocite}
+      \warn{\item misc entry 'd39' (refs.bib): Invalid format 'invalid/2021' of date field 'date' - ignoring}
+    \endentry
+    \entry{d40}{misc}{}{}
+      \field{sortinit}{4}
+      \field{sortinithash}{9381316451d1b9788675a07e972a12a7}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{endyear}{1999}
+      \field{title}{Case 40}
+      \field{year}{1990}
+      \field{dateunspecified}{yearindecade}
+      \field{enddateera}{ce}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d41}{misc}{}{}
+      \field{sortinit}{4}
+      \field{sortinithash}{9381316451d1b9788675a07e972a12a7}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{endyear}{1999}
+      \field{title}{Case 41}
+      \field{year}{1900}
+      \field{dateunspecified}{yearincentury}
+      \field{enddateera}{ce}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d42}{misc}{}{}
+      \field{sortinit}{4}
+      \field{sortinithash}{9381316451d1b9788675a07e972a12a7}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{endmonth}{12}
+      \field{endyear}{2020}
+      \field{month}{1}
+      \field{title}{Case 42}
+      \field{year}{2020}
+      \field{dateunspecified}{monthinyear}
+      \field{enddateera}{ce}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d43}{misc}{}{}
+      \field{sortinit}{4}
+      \field{sortinithash}{9381316451d1b9788675a07e972a12a7}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{day}{1}
+      \field{endday}{31}
+      \field{endmonth}{12}
+      \field{endyear}{2020}
+      \field{month}{1}
+      \field{title}{Case 43}
+      \field{year}{2020}
+      \field{dateunspecified}{dayinyear}
+      \field{enddateera}{ce}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d44}{misc}{}{}
+      \field{sortinit}{4}
+      \field{sortinithash}{9381316451d1b9788675a07e972a12a7}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{day}{1}
+      \field{endday}{29}
+      \field{endmonth}{2}
+      \field{endyear}{2020}
+      \field{month}{2}
+      \field{title}{Case 44}
+      \field{year}{2020}
+      \field{dateunspecified}{dayinmonth}
+      \field{enddateera}{ce}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d45}{misc}{}{}
+      \field{sortinit}{4}
+      \field{sortinithash}{9381316451d1b9788675a07e972a12a7}
+      \field{labeldatesource}{nodate}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 45}
+      \field{dateunspecified}{dayinmonth}
+      \true{nocite}
+      \warn{\item misc entry 'd45' (refs.bib): Invalid format '2020-13-XX' of date field 'date' - ignoring}
+    \endentry
+    \entry{d46}{misc}{}{}
+      \field{sortinit}{4}
+      \field{sortinithash}{9381316451d1b9788675a07e972a12a7}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{endyear}{2099}
+      \field{title}{Case 46}
+      \field{year}{2000}
+      \field{dateunspecified}{yearincentury}
+      \field{enddateera}{ce}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d47}{misc}{}{}
+      \field{sortinit}{4}
+      \field{sortinithash}{9381316451d1b9788675a07e972a12a7}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 47}
+      \field{year}{}
+      \true{nocite}
+    \endentry
+    \entry{d48}{misc}{}{}
+      \field{sortinit}{5}
+      \field{sortinithash}{20e9b4b0b173788c5dace24730f47d8c}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 48}
+      \field{year}{}
+      \true{nocite}
+    \endentry
+    \entry{d49}{misc}{}{}
+      \field{sortinit}{5}
+      \field{sortinithash}{20e9b4b0b173788c5dace24730f47d8c}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{day}{٢٩}
+      \field{month}{٠٢}
+      \field{title}{Case 49}
+      \field{year}{٢٠٢٠}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d50}{misc}{}{}
+      \field{sortinit}{5}
+      \field{sortinithash}{20e9b4b0b173788c5dace24730f47d8c}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{endyear}{0}
+      \field{title}{Case 50}
+      \field{year}{0}
+      \field{dateunspecified}{yearindecade}
+      \field{enddateera}{bce}
+      \field{dateera}{bce}
+      \true{nocite}
+    \endentry
+    \entry{d51}{misc}{}{}
+      \field{sortinit}{5}
+      \field{sortinithash}{20e9b4b0b173788c5dace24730f47d8c}
+      \field{labeldatesource}{nodate}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 51}
+      \field{dateunspecified}{monthinyear}
+      \true{nocite}
+      \warn{\item misc entry 'd51' (refs.bib): Invalid format '٢٠٢٠-XX' of date field 'date' - ignoring}
+    \endentry
+    \entry{d52}{misc}{}{}
+      \field{sortinit}{5}
+      \field{sortinithash}{20e9b4b0b173788c5dace24730f47d8c}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{endmonth}{12}
+      \field{endyear}{2020}
+      \field{month}{1}
+      \field{title}{Case 52}
+      \field{year}{2020}
+      \field{dateunspecified}{monthinyear}
+      \field{enddateera}{ce}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d53}{misc}{}{}
+      \field{sortinit}{5}
+      \field{sortinithash}{20e9b4b0b173788c5dace24730f47d8c}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{endmonth}{12}
+      \field{endyear}{2020}
+      \field{month}{1}
+      \field{title}{Case 53}
+      \field{year}{2020}
+      \field{dateunspecified}{monthinyear}
+      \field{enddateera}{ce}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d54}{misc}{}{}
+      \field{sortinit}{5}
+      \field{sortinithash}{20e9b4b0b173788c5dace24730f47d8c}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{day}{1}
+      \field{endday}{31}
+      \field{endmonth}{1}
+      \field{endyear}{2020}
+      \field{month}{1}
+      \field{title}{Case 54}
+      \field{year}{2020}
+      \field{dateunspecified}{dayinmonth}
+      \field{enddateera}{ce}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d55}{misc}{}{}
+      \field{sortinit}{5}
+      \field{sortinithash}{20e9b4b0b173788c5dace24730f47d8c}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 55}
+      \field{year}{2020}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d56}{misc}{}{}
+      \field{sortinit}{5}
+      \field{sortinithash}{20e9b4b0b173788c5dace24730f47d8c}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 56}
+      \field{year}{2020}
+      \true{dateuncertain}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d57}{misc}{}{}
+      \field{sortinit}{5}
+      \field{sortinithash}{20e9b4b0b173788c5dace24730f47d8c}
+      \field{labeldatesource}{nodate}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 57}
+      \true{nocite}
+      \warn{\item misc entry 'd57' (refs.bib): Invalid format '2020/2021/2022' of date field 'date' - ignoring}
+    \endentry
+    \entry{d58}{misc}{}{}
+      \field{sortinit}{6}
+      \field{sortinithash}{b33bc299efb3c36abec520a4c896a66d}
+      \field{labeldatesource}{nodate}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 58}
+      \true{nocite}
+      \warn{\item misc entry 'd58' (refs.bib): Invalid format '2020-01-01T12:00:00.1' of date field 'date' - ignoring}
+    \endentry
+    \entry{d59}{misc}{}{}
+      \field{sortinit}{6}
+      \field{sortinithash}{b33bc299efb3c36abec520a4c896a66d}
+      \field{labeldatesource}{nodate}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 59}
+      \true{nocite}
+      \warn{\item misc entry 'd59' (refs.bib): Invalid format '2020-01-01T12:00' of date field 'date' - ignoring}
+    \endentry
+    \entry{d60}{misc}{}{}
+      \field{sortinit}{6}
+      \field{sortinithash}{b33bc299efb3c36abec520a4c896a66d}
+      \field{labeldatesource}{nodate}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 60}
+      \true{nocite}
+      \warn{\item misc entry 'd60' (refs.bib): Invalid format '2020-123' of date field 'date' - ignoring}
+    \endentry
+    \entry{d61}{misc}{}{}
+      \field{sortinit}{6}
+      \field{sortinithash}{b33bc299efb3c36abec520a4c896a66d}
+      \field{labeldatesource}{nodate}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 61}
+      \true{nocite}
+      \warn{\item misc entry 'd61' (refs.bib): Invalid format '[2020,2021]' of date field 'date' - ignoring}
+    \endentry
+    \entry{d62}{misc}{}{}
+      \field{sortinit}{6}
+      \field{sortinithash}{b33bc299efb3c36abec520a4c896a66d}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{month}{1}
+      \field{title}{Case 62}
+      \field{year}{2020}
+      \true{dateuncertain}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d63}{misc}{}{}
+      \field{sortinit}{6}
+      \field{sortinithash}{b33bc299efb3c36abec520a4c896a66d}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{day}{1}
+      \field{month}{1}
+      \field{title}{Case 63}
+      \field{year}{2020}
+      \true{datecirca}
+      \true{dateuncertain}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d64}{misc}{}{}
+      \field{sortinit}{6}
+      \field{sortinithash}{b33bc299efb3c36abec520a4c896a66d}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 64}
+      \field{year}{10000}
+      \field{dateera}{bce}
+      \true{nocite}
+    \endentry
+    \entry{d65}{misc}{}{}
+      \field{sortinit}{6}
+      \field{sortinithash}{b33bc299efb3c36abec520a4c896a66d}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 65}
+      \field{year}{0}
+      \field{dateera}{bce}
+      \true{nocite}
+    \endentry
+    \entry{d66}{misc}{}{}
+      \field{sortinit}{6}
+      \field{sortinithash}{b33bc299efb3c36abec520a4c896a66d}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 66}
+      \field{year}{19128946707783167}
+      \field{dateera}{bce}
+      \true{nocite}
+    \endentry
+    \entry{d67}{misc}{}{}
+      \field{sortinit}{6}
+      \field{sortinithash}{b33bc299efb3c36abec520a4c896a66d}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 67}
+      \field{year}{2147483648}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d68}{misc}{}{}
+      \field{sortinit}{7}
+      \field{sortinithash}{108d0be1b1bee9773a1173443802c0a3}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 68}
+      \field{year}{2147483649}
+      \field{dateera}{bce}
+      \true{nocite}
+    \endentry
+    \entry{d69}{misc}{}{}
+      \field{sortinit}{7}
+      \field{sortinithash}{108d0be1b1bee9773a1173443802c0a3}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 69}
+      \field{year}{999999999999}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d70}{misc}{}{}
+      \field{sortinit}{7}
+      \field{sortinithash}{108d0be1b1bee9773a1173443802c0a3}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{endyear}{2021}
+      \field{endyeardivision}{S2}
+      \field{title}{Case 70}
+      \field{year}{2020}
+      \field{enddateera}{ce}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d71}{misc}{}{}
+      \field{sortinit}{7}
+      \field{sortinithash}{108d0be1b1bee9773a1173443802c0a3}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{endmonth}{2}
+      \field{endyear}{2021}
+      \field{month}{1}
+      \field{title}{Case 71}
+      \field{year}{2020}
+      \field{enddateera}{ce}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d72}{misc}{}{}
+      \field{sortinit}{7}
+      \field{sortinithash}{108d0be1b1bee9773a1173443802c0a3}
+      \field{labeldatesource}{nodate}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 72}
+      \true{nocite}
+      \warn{\item misc entry 'd72' (refs.bib): Invalid format '20200101' of date field 'date' - ignoring}
+    \endentry
+    \entry{d73}{misc}{}{}
+      \field{sortinit}{7}
+      \field{sortinithash}{108d0be1b1bee9773a1173443802c0a3}
+      \field{labeldatesource}{nodate}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 73}
+      \true{nocite}
+      \warn{\item misc entry 'd73' (refs.bib): Invalid format '2020/01/01' of date field 'date' - ignoring}
+    \endentry
+    \entry{d74}{misc}{}{}
+      \field{sortinit}{7}
+      \field{sortinithash}{108d0be1b1bee9773a1173443802c0a3}
+      \field{labeldatesource}{nodate}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 74}
+      \true{nocite}
+      \warn{\item misc entry 'd74' (refs.bib): Invalid format '01.01.2020' of date field 'date' - ignoring}
+    \endentry
+    \entry{d75}{misc}{}{}
+      \field{sortinit}{7}
+      \field{sortinithash}{108d0be1b1bee9773a1173443802c0a3}
+      \field{labeldatesource}{nodate}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 75}
+      \true{nocite}
+      \warn{\item misc entry 'd75' (refs.bib): Invalid format '01/01/2020' of date field 'date' - ignoring}
+    \endentry
+    \entry{d76}{misc}{}{}
+      \field{sortinit}{7}
+      \field{sortinithash}{108d0be1b1bee9773a1173443802c0a3}
+      \field{labeldatesource}{nodate}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 76}
+      \true{nocite}
+      \warn{\item misc entry 'd76' (refs.bib): Invalid format '2020-1-1' of date field 'date' - ignoring}
+    \endentry
+    \entry{d77}{misc}{}{}
+      \field{sortinit}{7}
+      \field{sortinithash}{108d0be1b1bee9773a1173443802c0a3}
+      \field{labeldatesource}{nodate}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 77}
+      \true{nocite}
+      \warn{\item misc entry 'd77' (refs.bib): Invalid format '2020-W01-1' of date field 'date' - ignoring}
+    \endentry
+    \entry{d78}{misc}{}{}
+      \field{sortinit}{8}
+      \field{sortinithash}{a231b008ebf0ecbe0b4d96dcc159445f}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{day}{1}
+      \field{hour}{12}
+      \field{minute}{0}
+      \field{month}{1}
+      \field{second}{0}
+      \field{timezone}{+99\bibtzminsep 59}
+      \field{title}{Case 78}
+      \field{year}{2020}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d79}{misc}{}{}
+      \field{sortinit}{8}
+      \field{sortinithash}{a231b008ebf0ecbe0b4d96dcc159445f}
+      \field{labeldatesource}{nodate}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 79}
+      \true{nocite}
+      \warn{\item misc entry 'd79' (refs.bib): Invalid format '2020-01-01T12:00:00+12:60' of date field 'date' - ignoring}
+    \endentry
+    \entry{d80}{misc}{}{}
+      \field{sortinit}{8}
+      \field{sortinithash}{a231b008ebf0ecbe0b4d96dcc159445f}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 80}
+      \field{year}{1}
+      \field{dateera}{bce}
+      \true{nocite}
+    \endentry
+    \entry{d81}{misc}{}{}
+      \field{sortinit}{8}
+      \field{sortinithash}{a231b008ebf0ecbe0b4d96dcc159445f}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 81}
+      \field{year}{1}
+      \field{dateera}{bce}
+      \true{nocite}
+    \endentry
+    \entry{d82}{misc}{}{}
+      \field{sortinit}{8}
+      \field{sortinithash}{a231b008ebf0ecbe0b4d96dcc159445f}
+      \field{labeldatesource}{nodate}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 82}
+      \true{nocite}
+      \warn{\item misc entry 'd82' (refs.bib): Invalid format 'Y-999999999999999999999' of date field 'date' - ignoring}
+    \endentry
+    \entry{d83}{misc}{}{}
+      \field{sortinit}{8}
+      \field{sortinithash}{a231b008ebf0ecbe0b4d96dcc159445f}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 83}
+      \field{year}{2020}
+      \true{enddatecirca}
+      \true{enddateuncertain}
+      \field{dateera}{ce}
+      \true{nocite}
+      \warn{\item misc entry 'd83' (refs.bib): Invalid format '2020/invalid%' of end date field 'date' - ignoring}
+    \endentry
+    \entry{d84}{misc}{}{}
+      \field{sortinit}{8}
+      \field{sortinithash}{a231b008ebf0ecbe0b4d96dcc159445f}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 84}
+      \field{year}{2020}
+      \true{enddatecirca}
+      \field{dateera}{ce}
+      \true{nocite}
+      \warn{\item misc entry 'd84' (refs.bib): Invalid format '2020/2021?~' of end date field 'date' - ignoring}
+    \endentry
+    \entry{legacy}{misc}{}{}
+      \field{sortinit}{8}
+      \field{sortinithash}{a231b008ebf0ecbe0b4d96dcc159445f}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{month}{spring}
+      \field{title}{Legacy}
+      \field{year}{2020}
+      \true{nocite}
+    \endentry
+    \entry{legacyinvalid}{misc}{}{}
+      \field{sortinit}{8}
+      \field{sortinithash}{a231b008ebf0ecbe0b4d96dcc159445f}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{month}{13}
+      \field{title}{Invalid legacy}
+      \field{year}{1999}
+      \true{nocite}
+      \warn{\item misc entry 'legacyinvalid' (refs.bib): Invalid format 'bad' of date field 'date' - ignoring}
+    \endentry
+    \entry{zero}{misc}{}{}
+      \field{sortinit}{8}
+      \field{sortinithash}{a231b008ebf0ecbe0b4d96dcc159445f}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{month}{1}
+      \field{title}{Zero}
+      \field{year}{1999}
+      \field{dateera}{bce}
+      \true{nocite}
+      \warn{\item Overwriting field 'month' with month value from field 'date' for entry 'zero'}
+    \endentry
+    \entry{prefixed}{misc}{}{}
+      \field{sortinit}{9}
+      \field{sortinithash}{0a5ebc79d83c96b6579069544c73c7d4}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{event}
+      \field{labeltitlesource}{title}
+      \field{eventyear}{2001}
+      \field{eventyeardivision}{spring}
+      \field{origday}{15}
+      \field{origendyear}{40}
+      \field{origmonth}{3}
+      \field{origyear}{44}
+      \field{title}{Prefixed}
+      \field{urlday}{1}
+      \field{urlhour}{12}
+      \field{urlminute}{0}
+      \field{urlmonth}{1}
+      \field{urlsecond}{0}
+      \field{urltimezone}{Z}
+      \field{urlyear}{2020}
+      \field{eventdateera}{ce}
+      \true{origenddatecirca}
+      \field{origenddateera}{ce}
+      \field{origdateera}{bce}
+      \field{urldateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d85}{misc}{}{}
+      \field{sortinit}{9}
+      \field{sortinithash}{0a5ebc79d83c96b6579069544c73c7d4}
+      \field{labeldatesource}{nodate}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 85}
+      \true{nocite}
+      \warn{\item misc entry 'd85' (refs.bib): Invalid format '0' of date field 'date' - ignoring}
+    \endentry
+    \entry{d86}{misc}{}{}
+      \field{sortinit}{9}
+      \field{sortinithash}{0a5ebc79d83c96b6579069544c73c7d4}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{endyear}{2021}
+      \field{title}{Case 86}
+      \field{year}{}
+      \true{dateunknown}
+      \field{enddateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d87}{misc}{}{}
+      \field{sortinit}{9}
+      \field{sortinithash}{0a5ebc79d83c96b6579069544c73c7d4}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{endyear}{}
+      \field{title}{Case 87}
+      \field{year}{2020}
+      \true{enddateunknown}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{d88}{misc}{}{}
+      \field{sortinit}{9}
+      \field{sortinithash}{0a5ebc79d83c96b6579069544c73c7d4}
+      \field{labeldatesource}{nodate}
+      \field{labeltitlesource}{title}
+      \field{title}{Case 88}
+      \true{nocite}
+      \warn{\item misc entry 'd88' (refs.bib): Invalid format '/0' of date field 'date' - ignoring}
+    \endentry
+    \entry{d89}{misc}{}{}
+      \field{sortinit}{9}
+      \field{sortinithash}{0a5ebc79d83c96b6579069544c73c7d4}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{endyear}{}
+      \field{title}{Case 89}
+      \field{year}{}
+      \true{dateunknown}
+      \true{nocite}
+    \endentry
+    \entry{prefixyear}{misc}{}{}
+      \field{sortinit}{9}
+      \field{sortinithash}{0a5ebc79d83c96b6579069544c73c7d4}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{month}{2}
+      \field{title}{Numeric prefix}
+      \field{year}{2020}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{markeronly}{misc}{}{}
+      \field{sortinit}{9}
+      \field{sortinithash}{0a5ebc79d83c96b6579069544c73c7d4}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Marker only}
+      \field{year}{2020}
+      \field{dateera}{ce}
+      \true{nocite}
+      \warn{\item misc entry 'markeronly' (refs.bib): Invalid format '2020/?' of end date field 'date' - ignoring}
+    \endentry
+    \entry{markers}{misc}{}{}
+      \field{sortinit}{9}
+      \field{sortinithash}{0a5ebc79d83c96b6579069544c73c7d4}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Markers}
+      \field{year}{2020}
+      \true{enddateuncertain}
+      \field{dateera}{ce}
+      \true{nocite}
+      \warn{\item misc entry 'markers' (refs.bib): Invalid format '2020/~?' of end date field 'date' - ignoring}
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

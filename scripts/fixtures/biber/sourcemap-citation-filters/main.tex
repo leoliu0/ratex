@@ -1,0 +1,5 @@
+\documentclass{article}
+\usepackage[backend=biber,style=numeric,sorting=none]{biblatex}
+\DeclareSourcemap{\maps[datatype=bibtex]{\map{\step[cited,final]\step[fieldset=subtitle,fieldvalue={cited}]}\map{\step[nocited,final]\step[fieldset=subtitle,fieldvalue={nocited}]}\map{\step[citedornocited,final]\step[fieldset=note,fieldvalue={specific}]}\map{\step[allnocited,final]\step[fieldset=addendum,fieldvalue={all}]}\map{\step[starnocited,final]\step[fieldset=annotation,fieldvalue={star-only}]}}}
+\addbibresource{refs.bib}
+\begin{document}\cite{a}\nocite{b}\nocite{*}\printbibliography\end{document}

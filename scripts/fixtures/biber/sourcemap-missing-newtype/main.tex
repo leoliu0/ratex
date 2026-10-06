@@ -1,0 +1,5 @@
+\documentclass{article}
+\usepackage[backend=biber,style=numeric,sorting=none]{biblatex}
+\DeclareSourcemap{\maps[datatype=bibtex]{\map{\step[fieldsource=entrykey,match=\regexp{^a$},final]\step[entrynew=missingtype]\step[fieldset=subtitle,fieldvalue={continued}]}}}
+\addbibresource{refs.bib}
+\begin{document}\nocite{*}\printbibliography\end{document}

@@ -1,0 +1,5 @@
+\documentclass{article}
+\usepackage[backend=biber,style=numeric,sorting=none]{biblatex}
+\DeclareSourcemap{\maps[datatype=bibtex]{\map[overwrite]{\step[fieldsource=title,notmatchi=\regexp{gamma},final]\step[fieldset=subtitle,fieldvalue={$1}]\step[fieldsource=title,notmatch=\regexp{^Alpha},final]\step[fieldset=addendum,fieldvalue={wrong}]}}}
+\addbibresource{refs.bib}
+\begin{document}\nocite{*}\printbibliography\end{document}

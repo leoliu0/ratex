@@ -1,0 +1,77 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{anyt/global//global/global/global}
+    \entry{a}{book}{}{}
+      \name{author}{1}{}{%
+        {{hash=06d0897633dfd94d3a7b29c6c17c1e21}{%
+           family={A\bibnamedelima Brown},
+           familyi={A\bibinitperiod\bibinitdelim B\bibinitperiod},
+           given={Alpha\bibnamedelima Beta},
+           giveni={A\bibinitperiod\bibinitdelim B\bibinitperiod}}}%
+      }
+      \strng{namehash}{06d0897633dfd94d3a7b29c6c17c1e21}
+      \strng{fullhash}{0441a2b83e09431d6d8c9899f33af4d4}
+      \strng{fullhashraw}{0441a2b83e09431d6d8c9899f33af4d4}
+      \strng{bibnamehash}{06d0897633dfd94d3a7b29c6c17c1e21}
+      \strng{authorbibnamehash}{06d0897633dfd94d3a7b29c6c17c1e21}
+      \strng{authornamehash}{06d0897633dfd94d3a7b29c6c17c1e21}
+      \strng{authorfullhash}{0441a2b83e09431d6d8c9899f33af4d4}
+      \strng{authorfullhashraw}{0441a2b83e09431d6d8c9899f33af4d4}
+      \field{extraname}{1}
+      \field{labelalpha}{r20}
+      \field{sortinit}{r}
+      \field{sortinithash}{5e1c39a9d46ffb6bebd8f801023a9486}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{The Zoo}
+      \field{year}{2020}
+      \true{nocite}
+    \endentry
+    \entry{b}{book}{}{}
+      \name{author}{1}{}{%
+        {{hash=06d0897633dfd94d3a7b29c6c17c1e21}{%
+           family={A\bibnamedelima Brown},
+           familyi={A\bibinitperiod\bibinitdelim B\bibinitperiod},
+           given={Alpha\bibnamedelima Beta},
+           giveni={A\bibinitperiod\bibinitdelim B\bibinitperiod}}}%
+      }
+      \strng{namehash}{06d0897633dfd94d3a7b29c6c17c1e21}
+      \strng{fullhash}{0441a2b83e09431d6d8c9899f33af4d4}
+      \strng{fullhashraw}{0441a2b83e09431d6d8c9899f33af4d4}
+      \strng{bibnamehash}{06d0897633dfd94d3a7b29c6c17c1e21}
+      \strng{authorbibnamehash}{06d0897633dfd94d3a7b29c6c17c1e21}
+      \strng{authornamehash}{06d0897633dfd94d3a7b29c6c17c1e21}
+      \strng{authorfullhash}{0441a2b83e09431d6d8c9899f33af4d4}
+      \strng{authorfullhashraw}{0441a2b83e09431d6d8c9899f33af4d4}
+      \field{extraname}{2}
+      \field{labelalpha}{r21}
+      \field{sortinit}{r}
+      \field{sortinithash}{5e1c39a9d46ffb6bebd8f801023a9486}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{An Apple}
+      \field{year}{2021}
+      \true{nocite}
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

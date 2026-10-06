@@ -1,0 +1,7 @@
+{
+  "tool": true,
+  "input_format": "biblatexml",
+  "validate_bltxml": true,
+  "no_default_datamodel": true,
+  "configfile": "biber.conf"
+}

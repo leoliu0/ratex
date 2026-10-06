@@ -1,0 +1,5 @@
+\documentclass{article}
+\usepackage[backend=biber,style=numeric,sorting=none]{biblatex}
+\DeclareSourcemap{\maps[datatype=bibtex]{\map{\step[entrytarget=absent,fieldset=subtitle,fieldvalue={wrong}]\step[fieldset=addendum,fieldvalue={after-missing-target}]}}}
+\addbibresource{refs.bib}
+\begin{document}\nocite{*}\printbibliography\end{document}

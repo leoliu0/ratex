@@ -1,0 +1,5 @@
+\documentclass{article}
+\usepackage[backend=biber,style=numeric,sorting=none]{biblatex}
+\DeclareSourcemap{\maps[datatype=bibtex]{\map[overwrite]{\step[fieldsource=entrykey,match=\regexp{^a$},final]\step[entrynew={made},entrynewtype=book,entrynocite]\step[entrytarget={made},fieldset=title,fieldvalue={Created title}]\step[entrytarget={made},fieldset=year,fieldvalue={2019}]\step[entryclone={cloned},entrynocite]\step[entrytarget={cloned},fieldset=title,fieldvalue={Cloned title}]\step[entrytarget={cloned},fieldset=note,null]}}}
+\addbibresource{refs.bib}
+\begin{document}\nocite{*}\printbibliography\end{document}

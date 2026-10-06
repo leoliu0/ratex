@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bltx:entries xmlns:bltx="http://biblatex-biber.sourceforge.net/biblatexml">
+<bltx:entry id="lists" entrytype="book"><bltx:title>Lists</bltx:title><bltx:publisher><bltx:list><bltx:item>A and B</bltx:item><bltx:item>Other</bltx:item><bltx:item>others</bltx:item></bltx:list></bltx:publisher><bltx:location>New York and Boston</bltx:location><bltx:keywords><bltx:list><bltx:item>alpha,beta</bltx:item><bltx:item>gamma</bltx:item></bltx:list></bltx:keywords><bltx:language><bltx:list><bltx:item>english</bltx:item><bltx:item>french</bltx:item></bltx:list></bltx:language></bltx:entry>
+</bltx:entries>

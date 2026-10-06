@@ -1,0 +1,61 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{none/global//global/global/global}
+    \entry{original}{book}{}{}
+      \field{sortinit}{2}
+      \field{sortinithash}{8b555b3791beccb63322c22f3320aa9a}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{title}{Original}
+      \field{year}{1900}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{reprint}{book}{}{}
+      \field{sortinit}{3}
+      \field{sortinithash}{ad6fe7482ffbd7b9f99c9e8b5dccd3d7}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{relatedstring}{Original edition}
+      \field{relatedtype}{reprintof}
+      \field{title}{Reprint}
+      \field{year}{2000}
+      \field{dateera}{ce}
+      \field{related}{919c8b643b7133116b02fc0d9bb7df3f}
+      \true{nocite}
+    \endentry
+    \entry{919c8b643b7133116b02fc0d9bb7df3f}{book}{skipbib=true,skipbiblist=true,skiplab=true}{}
+      \field{sortinit}{4}
+      \field{sortinithash}{9381316451d1b9788675a07e972a12a7}
+      \field{labeldatesource}{}
+      \field{labeltitlesource}{title}
+      \field{clonesourcekey}{original}
+      \field{title}{Original}
+      \field{year}{1900}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

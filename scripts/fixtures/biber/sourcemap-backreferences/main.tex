@@ -1,0 +1,5 @@
+\documentclass{article}
+\usepackage[backend=biber,style=numeric,sorting=none]{biblatex}
+\DeclareSourcemap{\maps[datatype=bibtex]{\map[overwrite]{\step[fieldsource=keywords,match=\regexp{(\w+),\1},replace={same}]\step[fieldsource=title,match=\regexp{(?&lt;first&gt;\w+)\x20(?&lt;second&gt;\w+)},replace=\regexp{$+{second}/$+{first}}]}}}
+\addbibresource{refs.bib}
+\begin{document}\nocite{*}\printbibliography\end{document}

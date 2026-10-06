@@ -1,0 +1,8 @@
+\documentclass{article}
+\usepackage[backend=biber,style=alphabetic,maxalphanames=3,minalphanames=1]{biblatex}
+\DeclareLabelalphaTemplate{\labelelement{\field[strwidth=3,ifnames=1-2,padchar=x,padside=left,lowercase=true]{labelname}\field[strwidth=1,names=2-+,namessep=/,noalphaothers]{labelname}}\labelelement{\field[strwidth=2,strside=right]{year}}}
+\DeclareLabelalphaTemplate[article]{\labelelement{\field[strwidth=2,uppercase]{title}}\labelelement{\literal{A}}}
+\addbibresource{refs.bib}
+\begin{document}
+\nocite{*}\printbibliography
+\end{document}

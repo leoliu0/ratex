@@ -1,0 +1,2 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bltx:entries xmlns:bltx="http://biblatex-biber.sourceforge.net/biblatexml"><bltx:entry id="text-range" entrytype="book"><bltx:title>Text ranges</bltx:title><bltx:pages><bltx:list><bltx:item><bltx:start>A,B</bltx:start><bltx:end>C;D</bltx:end></bltx:item><bltx:item><bltx:start>Part--One</bltx:start><bltx:end>Part--Two</bltx:end></bltx:item></bltx:list></bltx:pages></bltx:entry></bltx:entries>

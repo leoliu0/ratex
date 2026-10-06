@@ -1,0 +1,17 @@
+\documentclass{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[english]{babel}
+\usepackage[backend=biber,datecirca=true,dateuncertain=false,giveninits=false,maxbibnames=3,maxnames=4,minbibnames=1,mincrossrefs=3,minnames=4,sorting=nty,sortlocale=de_DE,style=apa,uniquelist=minyear,uniquename=false,useprefix=true]{biblatex}
+\ExecuteBibliographyOptions[incollection]{maxnames=2,minnames=1}
+\addbibresource{refs.bib}
+\begin{document}
+
+\autocite{e08,e06,e04}
+\nocite{*}
+\printbibliography
+\begin{refcontext}[sorting=none,labelprefix=X]
+\nocite{*}
+\printbibliography
+\end{refcontext}
+\end{document}

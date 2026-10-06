@@ -1,0 +1,8 @@
+Datamodel: misc entry 'a' (refs.bib): Invalid field 'volume' for entrytype 'misc'
+Datamodel: misc entry 'a' (refs.bib): Missing mandatory field - one of 'date, year' must be defined
+Datamodel: misc entry 'a' (refs.bib): Invalid value of field 'volume' must be '>=2' - ignoring field
+Datamodel: misc entry 'b' (refs.bib): Invalid field 'volume' for entrytype 'misc'
+Datamodel: misc entry 'b' (refs.bib): Missing mandatory field - one of 'date, year' must be defined
+Datamodel: misc entry 'c' (refs.bib): Invalid field 'volume' for entrytype 'misc'
+Datamodel: misc entry 'c' (refs.bib): Missing mandatory field - one of 'date, year' must be defined
+Datamodel: misc entry 'c' (refs.bib): Invalid value of field 'volume' must be '<=5' - ignoring field

@@ -1,0 +1,98 @@
+[
+  {
+    "option": "entry",
+    "value": "1",
+    "exit": 25,
+    "output": "change of entry via change() is not allowed! at /tmp/par-6c656f/cache-ca76922df53da5a0abac6e540f94b3547c023ec5/inc/lib/Biber.pm line 4304.\n"
+  },
+  {
+    "option": "ignoreChar",
+    "value": "1",
+    "exit": 25,
+    "output": "change of ignoreChar via change() is not allowed! at /tmp/par-6c656f/cache-ca76922df53da5a0abac6e540f94b3547c023ec5/inc/lib/Biber.pm line 4304.\n"
+  },
+  {
+    "option": "ignoreName",
+    "value": "1",
+    "exit": 25,
+    "output": "change of ignoreName via change() is not allowed! at /tmp/par-6c656f/cache-ca76922df53da5a0abac6e540f94b3547c023ec5/inc/lib/Biber.pm line 4304.\n"
+  },
+  {
+    "option": "undefChar",
+    "value": "1",
+    "exit": 25,
+    "output": "change of undefChar via change() is not allowed! at /tmp/par-6c656f/cache-ca76922df53da5a0abac6e540f94b3547c023ec5/inc/lib/Biber.pm line 4304.\n"
+  },
+  {
+    "option": "undefName",
+    "value": "1",
+    "exit": 25,
+    "output": "change of undefName via change() is not allowed! at /tmp/par-6c656f/cache-ca76922df53da5a0abac6e540f94b3547c023ec5/inc/lib/Biber.pm line 4304.\n"
+  },
+  {
+    "option": "suppress",
+    "value": "1",
+    "exit": 25,
+    "output": "change of suppress via change() is not allowed! at /tmp/par-6c656f/cache-ca76922df53da5a0abac6e540f94b3547c023ec5/inc/lib/Biber.pm line 4304.\n"
+  },
+  {
+    "option": "mapping",
+    "value": "1",
+    "exit": 25,
+    "output": "change of mapping via change() is not allowed! at /tmp/par-6c656f/cache-ca76922df53da5a0abac6e540f94b3547c023ec5/inc/lib/Biber.pm line 4304.\n"
+  },
+  {
+    "option": "maxlength",
+    "value": "1",
+    "exit": 25,
+    "output": "change of maxlength via change() is not allowed! at /tmp/par-6c656f/cache-ca76922df53da5a0abac6e540f94b3547c023ec5/inc/lib/Biber.pm line 4304.\n"
+  },
+  {
+    "option": "contraction",
+    "value": "1",
+    "exit": 25,
+    "output": "change of contraction via change() is not allowed! at /tmp/par-6c656f/cache-ca76922df53da5a0abac6e540f94b3547c023ec5/inc/lib/Biber.pm line 4304.\n"
+  },
+  {
+    "option": "rewrite",
+    "value": "1",
+    "exit": 25,
+    "output": "change of rewrite via change() is not allowed! at /tmp/par-6c656f/cache-ca76922df53da5a0abac6e540f94b3547c023ec5/inc/lib/Biber.pm line 4304.\n"
+  },
+  {
+    "option": "level",
+    "value": "0",
+    "exit": 25,
+    "output": "Illegal level 0 (in value for key 'level') lower than 1. at /tmp/par-6c656f/cache-ca76922df53da5a0abac6e540f94b3547c023ec5/inc/lib/Biber.pm line 4304.\n"
+  },
+  {
+    "option": "UCA_Version",
+    "value": "42",
+    "exit": 25,
+    "output": "Illegal UCA version (passed 42). at /tmp/par-6c656f/cache-ca76922df53da5a0abac6e540f94b3547c023ec5/inc/lib/Biber.pm line 4304.\n"
+  },
+  {
+    "option": "backwards",
+    "value": "[2,3]",
+    "exit": 25,
+    "output": "Argument \"[2,3]\" isn't numeric in numeric le (<=) at /tmp/par-6c656f/cache-ca76922df53da5a0abac6e540f94b3547c023ec5/inc/lib/Unicode/Collate.pm line 172.\nIllegal level 0 (in value for key 'backwards') lower than 1. at /tmp/par-6c656f/cache-ca76922df53da5a0abac6e540f94b3547c023ec5/inc/lib/Biber.pm line 4304.\n"
+  },
+  {
+    "option": "rearrange",
+    "value": "[3584,3585]",
+    "exit": 25,
+    "output": "Unicode::Collate: list for rearrangement must be store in ARRAYREF at /tmp/par-6c656f/cache-ca76922df53da5a0abac6e540f94b3547c023ec5/inc/lib/Biber.pm line 4304.\n"
+  },
+  {
+    "option": "normalization",
+    "value": "nfd",
+    "exit": 25,
+    "output": "Unicode::Collate unknown normalization form name: nfd at /tmp/par-6c656f/cache-ca76922df53da5a0abac6e540f94b3547c023ec5/inc/lib/Biber.pm line 4304.\n"
+  },
+  {
+    "option": "variable",
+    "value": "invalid",
+    "exit": 25,
+    "output": "Unicode::Collate unknown variable parameter name: invalid at /tmp/par-6c656f/cache-ca76922df53da5a0abac6e540f94b3547c023ec5/inc/lib/Biber.pm line 4304.\n"
+  }
+]

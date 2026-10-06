@@ -296,6 +296,42 @@ tex-runtime call it.
   case, create the directory, generate the expected files with TeX Live, and
   list it in `oracle_cases!`.
 
+## Biber (`crates/tex-biber`)
+
+A port of Biber 2.22 (Perl source: `biber-2.22/lib/`). Ground truth is the
+pinned 2.22 binary: the `.bbl` (and tool-mode output) matches byte for byte and
+the `.blg` warnings match. Biber prints two blocks of messages in Perl hash
+order; only those are compared order-insensitively. The `biber` binary and the
+`texres` personality symlinked as `biber` share `tex_biber::run_configured`.
+
+- Pipeline (`lib.rs`): read datasources (`bib.rs`, `biblatexml.rs`, remote
+  sources in `remote.rs`), latex-decode every non-verbatim/uri `.bib` field
+  (Biber's `parse_decode`, before sourcemaps), sourcemaps, `normalize` into
+  typed fields/names/lists/dates, inheritance, citekey selection, validation,
+  then `process::prepare` and per-datalist `process::contextualize`, and
+  `output.rs`.
+- Uniqueness (`uniqueness.rs`) ports `process_namedis`, the
+  uniquename/uniquelist fixpoint and `DataList::set_uniquelist` literally,
+  including state that persists across passes. DataList state is keyed by
+  the Names object (`NameList::id`): inherited and cloned lists share it and
+  the last citekey wins. Visible names follow `process_visible_names`.
+- Option lookups follow `getblxoption`: entry options, then per-type, then
+  global; `label{name,title,date}spec` are per entry type.
+- Perl regexes (sourcemaps, nosort, nonamestring, ...) run on a Perl-compatible
+  VM (`perl_regex.rs`, `perl_pattern.rs`, `perl_vm.rs`); constructs that need a
+  Perl interpreter (code blocks) are errors.
+- Tests: `scripts/test_biber.py --biber BIN [--committed-bcf]` compares every
+  fixture in `scripts/fixtures/biber/` (`--regen` re-records them with the
+  oracle); `crates/tex-biber/tests/corpus.rs` runs the same corpus through the
+  library, `tests/errors.rs` fatal tool errors, and `tests/remote.rs` remote
+  datasources against local HTTP/FTP/NNTP/Gopher servers. Generated fixture
+  families have `scripts/generate_biber_*.py` writers.
+- Differential fuzzing: `scripts/biber_fuzz.py --biber BIN --seed N --count
+  2000 --jobs J` builds random documents, generates BCFs with
+  `/usr/bin/pdflatex` and compares the oracle's `.bbl` with the candidate's;
+  failures keep inputs and a replay command. Fix every mismatch by porting the
+  Perl logic and add a minimised oracle fixture for each root cause.
+
 ## Reference moved from the README
 
 ### Single-pass engine personalities

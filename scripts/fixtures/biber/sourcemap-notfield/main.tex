@@ -1,0 +1,5 @@
+\documentclass{article}
+\usepackage[backend=biber,style=numeric,sorting=none]{biblatex}
+\DeclareSourcemap{\maps[datatype=bibtex]{\map{\step[notfield=note,final]\step[fieldset=note,fieldvalue={no-note}]}\map{\step[notfield=note]\step[fieldset=addendum,fieldvalue={continued}]}\map{\step[fieldset=keywords,null]\step[fieldset=annotation,fieldvalue={removed-keywords}]}}}
+\addbibresource{refs.bib}
+\begin{document}\nocite{*}\printbibliography\end{document}

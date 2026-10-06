@@ -2876,6 +2876,7 @@ fn run_biber(bcf: &Path, source_dir: &Path, silent: bool) -> i32 {
     match tex_biber::run(&tex_biber::Options {
         bcf: bcf.to_path_buf(),
         output: None,
+        output_directory: None,
         find_file: &find_file,
     }) {
         Ok(out) => {

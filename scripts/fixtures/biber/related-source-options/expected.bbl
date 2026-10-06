@@ -1,0 +1,81 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{nyt/global//global/global/global}
+    \entry{a}{book}{}{}
+      \name{author}{1}{}{%
+        {{un=0,uniquepart=base,hash=9f6064b2183315cbb21b7225191539cf}{%
+           family={Alpha},
+           familyi={A\bibinitperiod},
+           given={Alice},
+           giveni={A\bibinitperiod},
+           givenun=0}}%
+      }
+      \strng{namehash}{9f6064b2183315cbb21b7225191539cf}
+      \strng{fullhash}{9f6064b2183315cbb21b7225191539cf}
+      \strng{fullhashraw}{9f6064b2183315cbb21b7225191539cf}
+      \strng{bibnamehash}{9f6064b2183315cbb21b7225191539cf}
+      \strng{authorbibnamehash}{9f6064b2183315cbb21b7225191539cf}
+      \strng{authornamehash}{9f6064b2183315cbb21b7225191539cf}
+      \strng{authorfullhash}{9f6064b2183315cbb21b7225191539cf}
+      \strng{authorfullhashraw}{9f6064b2183315cbb21b7225191539cf}
+      \field{sortinit}{A}
+      \field{sortinithash}{2f401846e2029bad6b3ecc16d50031e2}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{One}
+      \field{year}{2020}
+      \field{dateera}{ce}
+      \field{related}{92eb5ffee6ae2fec3ad71c777531578f}
+      \true{nocite}
+    \endentry
+    \entry{92eb5ffee6ae2fec3ad71c777531578f}{book}{skipbib=false,skipbiblist=true,skiplab=true,useprefix=true}{}
+      \name{author}{1}{}{%
+        {{un=0,uniquepart=base,hash=3c2ec11a0da942a2e843a0e8c08d600e}{%
+           family={Bravo},
+           familyi={B\bibinitperiod},
+           given={Bob},
+           giveni={B\bibinitperiod},
+           givenun=0}}%
+      }
+      \strng{namehash}{3c2ec11a0da942a2e843a0e8c08d600e}
+      \strng{fullhash}{3c2ec11a0da942a2e843a0e8c08d600e}
+      \strng{fullhashraw}{3c2ec11a0da942a2e843a0e8c08d600e}
+      \strng{bibnamehash}{3c2ec11a0da942a2e843a0e8c08d600e}
+      \strng{authorbibnamehash}{3c2ec11a0da942a2e843a0e8c08d600e}
+      \strng{authornamehash}{3c2ec11a0da942a2e843a0e8c08d600e}
+      \strng{authorfullhash}{3c2ec11a0da942a2e843a0e8c08d600e}
+      \strng{authorfullhashraw}{3c2ec11a0da942a2e843a0e8c08d600e}
+      \field{sortinit}{B}
+      \field{sortinithash}{d7095fff47cda75ca2589920aae98399}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{clonesourcekey}{b}
+      \field{title}{Two}
+      \field{year}{2021}
+      \field{dateera}{ce}
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

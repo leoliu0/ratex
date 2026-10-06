@@ -1,0 +1,5 @@
+\documentclass{article}
+\usepackage[backend=biber,style=numeric,sorting=none]{biblatex}
+\DeclareSourcemap{\maps[datatype=bibtex]{\map[refsection=1]{\step[fieldset=subtitle,fieldvalue={section-one}]}\map[refsection=0]{\step[fieldset=subtitle,fieldvalue={section-zero}]}}}
+\addbibresource{refs.bib}
+\begin{document}\nocite{*}\printbibliography\begin{refsection}\nocite{*}\printbibliography\end{refsection}\end{document}

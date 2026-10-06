@@ -1,0 +1,1 @@
+<bltx:entries xmlns:bltx="http://biblatex-biber.sourceforge.net/biblatexml"><bltx:entry id="a" entrytype="book"><bltx:ids><bltx:key>alias</bltx:key><bltx:key>b</bltx:key></bltx:ids><bltx:title>First</bltx:title></bltx:entry><bltx:entry id="b" entrytype="book"><bltx:ids><bltx:key>alias</bltx:key></bltx:ids><bltx:title>Second</bltx:title></bltx:entry></bltx:entries>

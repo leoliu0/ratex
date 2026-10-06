@@ -1,0 +1,4 @@
+@xdata{xd,author={Alice Adams and Bob Brown},author+an={=sourcefield;1=sourceone;2:family=sourcefamily},author+an:role={1=writer}}
+@book{a,xdata={xd},author={Jane Jones and Joe James and Jim Jones},author+an={=targetfield;2=targettwo;1:given=targetgiven;3:family=targetfamily},author+an:role={2=reader},title={Scope replacement},date={2020}}
+@xdata{xditem,author={Alice Adams},author+an={1=sourceitem}}
+@book{b,xdata={xditem},author={Jane Jones},author+an={=retainedfield;1:given=retainedpart;1=targetitem},title={Retained absent scopes},date={2020}}

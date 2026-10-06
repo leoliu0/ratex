@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bltx:entries xmlns:bltx="http://biblatex-biber.sourceforge.net/biblatexml">
+<bltx:entry id="options" entrytype="book"><bltx:options>useprefix=false,giveninits=true</bltx:options><bltx:names type="author" useprefix="true" uniquename="false" nohashothers="true" morenames="true"><bltx:name useprefix="false" gender="sm" id="fixed"><bltx:namepart type="given">Ludwig</bltx:namepart><bltx:namepart type="family">Beethoven</bltx:namepart></bltx:name></bltx:names><bltx:title>Options</bltx:title></bltx:entry>
+</bltx:entries>

@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bltx:entries xmlns:bltx="http://biblatex-biber.sourceforge.net/biblatexml">
+<bltx:entry id="simple-range" entrytype="book"><bltx:title>Simple range</bltx:title><bltx:date>2000/2002</bltx:date></bltx:entry><bltx:entry id="unspecified-range" entrytype="book"><bltx:title>Unspecified range</bltx:title><bltx:date><bltx:start>198X</bltx:start><bltx:end>1990</bltx:end></bltx:date></bltx:entry><bltx:entry id="invalid-end" entrytype="book"><bltx:title>Invalid end date</bltx:title><bltx:date><bltx:start>2000</bltx:start><bltx:end>invalid</bltx:end></bltx:date></bltx:entry>
+</bltx:entries>

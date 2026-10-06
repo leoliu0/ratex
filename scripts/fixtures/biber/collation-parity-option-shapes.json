@@ -1,0 +1,12 @@
+[
+  {"option":"level","value":"2.5","exit":0},
+  {"option":"backwards","value":"2,3","exit":0,"warning":"Argument \"2,3\" isn't numeric"},
+  {"option":"backwards","value":"[2,3]","exit":25,"error":"Illegal level 0 (in value for key 'backwards') lower than 1."},
+  {"option":"rearrange","value":"0","exit":25,"error":"Unicode::Collate: list for rearrangement must be store in ARRAYREF"},
+  {"option":"rearrange","value":null,"exit":0},
+  {"option":"table","value":"does-not-exist","exit":0},
+  {"option":"table","value":"does-not-exist","locale":"en_US","exit":25,"error":"change of table via change() is not allowed!"},
+  {"option":"normalization","value":"FCC","exit":0},
+  {"option":"normalization","value":"FCD","exit":0},
+  {"option":"preprocess","value":"sub {}","exit":0,"engine_policy":"Code-valued collation constructs are intentionally rejected."}
+]

@@ -1,0 +1,5 @@
+{
+  "tool": true,
+  "input_format": "biblatexml",
+  "output_format": "bibtex"
+}

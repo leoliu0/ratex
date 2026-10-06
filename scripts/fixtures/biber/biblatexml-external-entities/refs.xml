@@ -1,0 +1,2 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE bltx:entries [<!ENTITY ext SYSTEM "file:///etc/hostname">]><bltx:entries xmlns:bltx="http://biblatex-biber.sourceforge.net/biblatexml"><bltx:entry id="external" entrytype="book"><bltx:title>Before &ext; after</bltx:title></bltx:entry></bltx:entries>

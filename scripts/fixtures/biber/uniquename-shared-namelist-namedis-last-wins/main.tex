@@ -1,0 +1,16 @@
+\documentclass{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[english]{babel}
+\usepackage[backend=biber,datecirca=false,dateuncertain=false,giveninits=false,maxbibnames=6,maxnames=2,minbibnames=6,mincrossrefs=1,minnames=2,sorting=ynt,sortlocale=tr_TR,style=authoryear-comp,uniquelist=minyear,uniquename=init,useprefix=true]{biblatex}
+\addbibresource{refs.bib}
+\begin{document}
+
+\autocite{e06,e08,e02}
+\nocite{*}
+\printbibliography
+\begin{refcontext}[sorting=none,labelprefix=B]
+\nocite{*}
+\printbibliography
+\end{refcontext}
+\end{document}

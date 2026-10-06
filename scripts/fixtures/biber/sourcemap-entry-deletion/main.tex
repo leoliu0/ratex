@@ -1,0 +1,5 @@
+\documentclass{article}
+\usepackage[backend=biber,style=numeric,sorting=none]{biblatex}
+\DeclareSourcemap{\maps[datatype=bibtex]{\map{\step[fieldsource=entrykey,match=\regexp{^a$},final]\step[entrynull]}\map{\step[fieldsource=title,match=\regexp{Gamma},final]\step[fieldset=subtitle,fieldvalue={survivor}]}}}
+\addbibresource{refs.bib}
+\begin{document}\nocite{*}\printbibliography\end{document}

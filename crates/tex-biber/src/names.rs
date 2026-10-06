@@ -1,26 +1,29 @@
 //! BibTeX name parsing and Biber's base LaTeX recoding rules.
-use crate::model::{Name, NameList};
-use unicode_normalization::UnicodeNormalization;
-use unicode_segmentation::UnicodeSegmentation;
+use crate::model::{namelist_id, Control, Name, NameList};
+use crate::collation::normalization::normalize;
 use regex::Regex;
 use std::{borrow::Cow,sync::LazyLock};
 
 const PARTS: [&str; 4] = ["family", "given", "prefix", "suffix"];
 
-pub fn parse(input: &str) -> NameList {
-    let decoded = decode_latex(input);
-    let mut list = NameList::default();
-    for raw in split_names(&decoded) {
+pub fn parse(control: &Control, input: &str) -> NameList {
+    let mut list = NameList { id: namelist_id(), ..NameList::default() };
+    let separator=control.options.get("xnamesep").map(String::as_str).unwrap_or("=");
+    let marker=control.options.get("xdatamarker").map(String::as_str).unwrap_or("xdata");
+    for raw in split_words(input,control.options.get("namesep").filter(|s|!s.is_empty()).map(String::as_str).unwrap_or("and")) {
         if raw.trim().is_empty() { continue; }
-        if let Some((key,value))=raw.split_once('=') {
+        if raw.trim().split_once(separator).is_some_and(|(key,_)|key.eq_ignore_ascii_case(marker)) {
+            let mut name=Name::default();name.options.insert("xdata".into(),raw.trim().into());list.names.push(name);continue;
+        }
+        if let Some((key,value))=raw.split_once(separator) {
             let key=key.trim().to_lowercase();let value=value.trim();
-            if namelist_option(&key) && !value.chars().any(char::is_whitespace) && !value.contains(',') {
-                store_option(&mut list.options,key,if value.is_empty(){"true"}else{value});
+            if (namelist_option(&key)||control.options.contains_key(&format!("optionscope.NAMELIST.{key}.datatype"))) && !value.chars().any(char::is_whitespace) && !value.contains(',') {
+                store_option(control,"NAMELIST",&mut list.options,key,if value.is_empty(){"true"}else{value});
                 continue;
             }
         }
-        let mut name = parse_one(raw.trim());
-        if format!("{}{}{}{}",name.family,name.given,name.prefix,name.suffix).to_lowercase()=="others" {list.others=true;continue;}
+        let mut name = parse_one(control, raw.trim());
+        if format!("{}{}{}{}",name.family,name.given,name.prefix,name.suffix).to_lowercase()==control.options.get("others_string").map(String::as_str).unwrap_or("others") {list.others=true;continue;}
         name.hash = hash_string(&name_hash_key(&name));
         list.names.push(name);
     }
@@ -32,7 +35,7 @@ pub fn parse(input: &str) -> NameList {
     list
 }
 
-fn split_names(s: &str) -> Vec<&str> {
+pub(crate) fn split_words<'a>(s: &'a str,separator:&str) -> Vec<&'a str> {
     let mut result = Vec::new();
     let mut depth = 0usize;
     let mut start = 0;
@@ -42,10 +45,10 @@ fn split_names(s: &str) -> Vec<&str> {
         if c == '\\' { escaped = true; continue; }
         if c == '{' { depth += 1; }
         if c == '}' { depth = depth.saturating_sub(1); }
-        if depth == 0 && s.get(i..i+3).is_some_and(|v|v.eq_ignore_ascii_case("and")) &&
+        if !separator.is_empty() && depth == 0 && s.get(i..i+separator.len()).is_some_and(|v|v.eq_ignore_ascii_case(separator)) &&
             (i == 0 || s[..i].chars().next_back().is_some_and(char::is_whitespace)) &&
-            (i+3 == s.len() || s[i+3..].chars().next().is_some_and(char::is_whitespace)) {
-            result.push(s[start..i].trim()); start = i+3;
+            (i+separator.len() == s.len() || s[i+separator.len()..].chars().next().is_some_and(char::is_whitespace)) {
+            result.push(s[start..i].trim()); start = i+separator.len();
         }
     }
     result.push(s[start..].trim()); result
@@ -88,27 +91,29 @@ fn lower_token(s: &str) -> bool {
 pub fn join_name_parts(parts: &[&str]) -> String {
     match parts.len() {
         0=>String::new(), 1=>parts[0].to_owned(), 2=>format!("{}~{}",parts[0],parts[1]),
-        n=> { let mut s=parts[0].to_owned(); s.push(if parts[0].graphemes(true).count()<3 {'~'} else {' '}); s.push_str(&parts[1..n-1].join(" "));s.push('~');s.push_str(parts[n-1]);s }
+        n=> { let mut s=parts[0].to_owned(); s.push(if crate::gcstring::length(parts[0])<3 {'~'} else {' '}); s.push_str(&parts[1..n-1].join(" "));s.push('~');s.push_str(parts[n-1]);s }
     }
 }
 
-fn parse_one(raw: &str) -> Name {
+fn parse_one(control: &Control, raw: &str) -> Name {
     let mut n=Name::default();
     let raw=raw.replace("\\ ", " ").split_whitespace().collect::<Vec<_>>().join(" ");
-    let extended=split_top(&raw,true).iter().any(|p| p.split_once('=').is_some_and(|(k,_)|PARTS.contains(&k.trim()) || PARTS.iter().any(|p|k.trim()==format!("{p}-i"))));
+    let parts:Vec<&str>=if control.nameparts.is_empty(){PARTS.to_vec()}else{control.nameparts.iter().map(String::as_str).collect()};
+    let separator=control.options.get("xnamesep").map(String::as_str).unwrap_or("=");
+    let extended=!control.options.get("noxname").is_some_and(|s|matches!(s.as_str(),"1"|"true"))&&split_top(&raw,true).iter().any(|p| p.split_once(separator).is_some_and(|(k,_)|parts.contains(&k.trim()) || parts.iter().any(|p|k.trim()==format!("{p}-i"))));
     if extended {
         for item in split_top(&raw,true) {
-            let Some((k,v))=item.split_once('=') else {continue};
+            let Some((k,v))=item.split_once(separator) else {continue};
             let k=k.trim().to_lowercase();let v=v.trim();
             let v=if v.starts_with('"') && v.ends_with('"') && v.len()>1 {&v[1..v.len()-1]}else{v};
             if k=="id" {n.hashid=v.to_owned();}
-            else if let Some(part)=k.strip_suffix("-i").filter(|p|PARTS.contains(p)) {n.initial_tokens.insert(part.to_owned(), explicit_initials(v));}
-            else if PARTS.contains(&k.as_str()) {
+            else if let Some(part)=k.strip_suffix("-i").filter(|p|parts.contains(p)) {n.initial_tokens.insert(part.to_owned(), explicit_initials(v));}
+            else if parts.contains(&k.as_str()) {
                 let protected=has_outer(v);
                 let value=if protected {v[1..v.len()-1].to_owned()}else{join_name_parts(&split_top(v,false))};
                 set_part(&mut n,&k,value);
                 if protected {n.options.insert(format!("protected-{k}"),"true".to_owned());}
-            } else {store_option(&mut n.options,k,v);}
+            } else {store_option(control,"NAME",&mut n.options,k,v);}
         }
     } else {
         let mut whole=raw.as_str();
@@ -129,17 +134,24 @@ fn parse_one(raw: &str) -> Name {
             if commas.len()>2 {n.suffix=join_name_parts(&split_top(commas[1].trim(),false));n.given=join_name_parts(&split_top(commas[2].trim(),false));}
             else{n.given=join_name_parts(&split_top(commas[1].trim(),false));}
         }
-        for part in PARTS {
+        for &part in &parts {
             let value=get_part(&n,part).to_owned();
             if has_outer(&value) {n.strip.insert(part.to_owned());set_part(&mut n,part,value[1..value.len()-1].to_owned());}
         }
     }
-    for part in PARTS {
+    for &part in &parts {
         let value=get_part(&n,part);
         if value.is_empty(){continue;}
         if !n.initial_tokens.contains_key(part) {
-            let cleaned=strip_noinit(value);let value=cleaned.as_ref();
             let protected=n.strip.contains(part) || n.options.contains_key(&format!("protected-{part}"));
+            let initial_input=if protected {
+                let mut input=String::with_capacity(value.len()+usize::from(!extended)*2);
+                if !extended{input.push('{');}
+                input.extend(value.chars().map(|c|if crate::perl_unicode::is_space(c){'_'}else{c}));
+                if !extended{input.push('}');}
+                Cow::Owned(input)
+            }else{Cow::Borrowed(value)};
+            let cleaned=strip_initial(control,&initial_input);let value=cleaned.as_ref();
             let tokens=if protected && !extended {vec![initial_grapheme(value)]}
                 else if protected { value.split('~').map(initial).collect() }
                 else {split_top(value,false).into_iter().map(initial).collect()};
@@ -150,8 +162,8 @@ fn parse_one(raw: &str) -> Name {
     n
 }
 
-fn get_part<'a>(n:&'a Name,p:&str)->&'a str {match p {"family"=>&n.family,"given"=>&n.given,"prefix"=>&n.prefix,_=>&n.suffix}}
-fn set_part(n:&mut Name,p:&str,v:String){match p {"family"=>n.family=v,"given"=>n.given=v,"prefix"=>n.prefix=v,_=>n.suffix=v}}
+fn get_part<'a>(n:&'a Name,p:&str)->&'a str {n.part(p)}
+fn set_part(n:&mut Name,p:&str,v:String){n.set_part(p,v)}
 fn dash(c:char)->bool {matches!(c,'-'|'\u{2010}'..='\u{2015}'|'\u{2e17}'|'\u{2e1a}'|'\u{2e3a}'|'\u{2e3b}'|'\u{301c}'|'\u{3030}'|'\u{fe31}'|'\u{fe32}'|'\u{fe58}'|'\u{fe63}'|'\u{ff0d}')}
 fn initial(s:&str)->String {
     if !has_outer(s) {
@@ -169,19 +181,21 @@ fn initial(s:&str)->String {
     }
     initial_grapheme(s)
 }
+/// Utils::gen_initials leaf: first GCString cluster, two when it is `\p{Dia}`.
 fn initial_grapheme(s:&str)->String {
-    let unbraced=s.trim_start_matches('{');let mut graphemes=unbraced.graphemes(true);
-    let first=graphemes.next().unwrap_or("");
-    if DIACRITIC.is_match(first){format!("{}{}",first,graphemes.next().unwrap_or(""))}else{first.to_owned()}
+    let unbraced=s.trim_start_matches('{');
+    let first=crate::gcstring::prefix(unbraced,1);
+    if first.chars().next().is_some_and(|c|crate::perl_unicode::property_contains("Dia",c).unwrap_or(false)){crate::gcstring::prefix(unbraced,2).to_owned()}else{first.to_owned()}
 }
+/// bibtex.pm `_split_initials`: Perl `\b{gcb}` pieces; braces toggle (not nest) a compound initial.
 fn explicit_initials(s:&str)->Vec<String> {
-    let mut out=Vec::new();let mut grouped=String::new();let mut depth=0usize;
-    for g in s.graphemes(true) {
-        if g=="{" {if depth>0{grouped.push('{');}depth+=1;}
-        else if g=="}" && depth>0 {depth-=1;if depth==0{out.push(std::mem::take(&mut grouped));}else{grouped.push('}');}}
-        else if depth>0 {grouped.push_str(g);}else{out.push(g.to_owned());}
+    let mut out=Vec::new();let mut compound=String::new();let mut inside=false;
+    for g in crate::perl_unicode::graphemes(s) {
+        if g=="{" {inside=true;}
+        else if g=="}" {inside=false;out.push(std::mem::take(&mut compound));}
+        else if inside {compound.push_str(g);}else{out.push(g.to_owned());}
     }
-    if !grouped.is_empty(){out.push(grouped);}out
+    out
 }
 pub fn render_initials(tokens:&[String])->String {
     if tokens.is_empty(){return String::new();}
@@ -192,26 +206,15 @@ pub fn name_hash_key(n:&Name)->String {
     if !n.hashid.is_empty(){return n.hashid.clone();}
     format!("{}{}{}{}",n.family,n.given,n.prefix,n.suffix)
 }
-pub fn hash_string(s:&str)->String {
-    let mut normalized=String::with_capacity(s.len());let mut chars=s.chars().peekable();
-    while let Some(c)=chars.next(){
-        if c=='\\' {
-            let mut macro_name=String::new();while chars.peek().is_some_and(|c|c.is_alphabetic()){macro_name.push(chars.next().unwrap());}
-            if !macro_name.is_empty(){normalized.push_str(&macro_name);normalized.push(':');}
-            else if let Some(c)=chars.next(){normalized.push_str(&format!("{}:",c as u32));}
-            while chars.peek().is_some_and(|c|c.is_whitespace()){chars.next();}
-        }else if !matches!(c,'{'|'}'|'~'|'.')&&!c.is_whitespace(){normalized.push(c);}
-    }
-    crate::md5_hex(normalized.nfc().collect::<String>().as_bytes())
-}
+pub fn hash_string(s:&str)->String {crate::process::digest(&crate::process::hash_normalize(s))}
 
 /// Biber 2.22's default `base` decode set, in Recode.pm substitution order.
 /// The temporary brace markers distinguish literal protection from accent
 /// grouping. Decoding a plain letter macro never removes its enclosing braces.
-/// NFC is the output form (Biber internally uses NFD).
+/// NFD is the output form, as Recode's default `normalization`.
 pub fn decode_latex(input:&str)->String {
     let text=BOX_SPACE.replace_all(input, |c:&regex::Captures| {
-        if c[2].graphemes(true).count()==1 {format!("\\{}{{{}}}",&c[1],&c[2])}else{c[0].to_owned()}
+        if crate::perl_unicode::graphemes(&c[2]).count()==1 {format!("\\{}{{{}}}",&c[1],&c[2])}else{c[0].to_owned()}
     });
     let text=CHAR_MACRO.replace_all(&text, |c:&regex::Captures| {
         let (digits,radix)=if let Some(v)=c.get(1){(v.as_str(),16)}else if let Some(v)=c.get(2){(v.as_str(),8)}else{(c.get(3).unwrap().as_str(),10)};
@@ -225,7 +228,7 @@ pub fn decode_latex(input:&str)->String {
     // Only a brace immediately following an accent command is an argument.
     let text=SIMPLE_GROUP.replace_all(&text, |c:&regex::Captures| {
         let start=c.get(0).unwrap().start();
-        if c[1].graphemes(true).count()==1 && !accent_before(&text[..start]) {
+        if crate::perl_unicode::graphemes(&c[1]).count()==1 && !accent_before(&text[..start]) {
             format!("\u{f}{}\u{e}",&c[1])
         }else{c[0].to_owned()}
     });
@@ -242,7 +245,7 @@ pub fn decode_latex(input:&str)->String {
         let ch=text[i..].chars().next().unwrap();
         if matches!(ch,'{'|'\u{1f}') && !MACRO_ARGUMENT.is_match(&text[..i]) {
             let start=i+ch.len_utf8();
-            if let Some(g)=text[start..].graphemes(true).next() {
+            if let Some(g)=crate::perl_unicode::graphemes(&text[start..]).next() {
                 let end=start+g.len();
                 if text[end..].starts_with(['}','\u{1e}']) {
                     out.push_str(g);i=end+1;continue;
@@ -251,7 +254,7 @@ pub fn decode_latex(input:&str)->String {
         }
         out.push(ch);i+=ch.len_utf8();
     }
-    out.replace(['\u{1f}','\u{f}'],"{").replace(['\u{1e}','\u{e}'],"}").replace("ı\u{301}","í").nfc().collect()
+    normalize(&out.replace(['\u{1f}','\u{f}'],"{").replace(['\u{1e}','\u{e}'],"}").replace("ı\u{301}","í"),"NFD").into_owned()
 }
 
 static BOX_SPACE:LazyLock<Regex>=LazyLock::new(||Regex::new(r"\\(h?box)\s+\{([^{}]+)\}").unwrap());
@@ -684,12 +687,10 @@ fn accent_macro(name: &str) -> Option<&'static str> {
 fn namelist_option(k:&str)->bool{
     matches!(k,"nametemplates"|"sortingnamekeytemplatename"|"uniquenametemplatename"|"labelalphanametemplatename"|"namehashtemplatename"|"uniquelist"|"uniquename"|"familyinits"|"giveninits"|"prefixinits"|"suffixinits"|"terseinits"|"nohashothers"|"nosortothers"|"useprefix")
 }
-fn store_option(options:&mut std::collections::BTreeMap<String,String>,key:String,value:&str){
-    if key=="nametemplates" {
-        for k in ["sortingnamekeytemplatename","uniquenametemplatename","labelalphanametemplatename","namehashtemplatename"] {options.insert(k.to_owned(),value.to_owned());}
-    }else{options.insert(key,value.to_owned());}
+fn store_option(control:&Control,scope:&str,options:&mut std::collections::BTreeMap<String,String>,key:String,value:&str){
+    let raw=format!("{key}={value}");
+    options.extend(expand_options(control,scope,&raw));
 }
-static DIACRITIC:LazyLock<Regex>=LazyLock::new(||Regex::new(r"^\p{Diacritic}").unwrap());
 static NOINIT_PREFIX:LazyLock<Regex>=LazyLock::new(||Regex::new(r"\b\p{Ll}{2}\p{Pd}").unwrap());
 static NOINIT_MACRO:LazyLock<Regex>=LazyLock::new(||Regex::new(r"\\[A-Za-z]+\s*(?:\{([^}]*)\})?").unwrap());
 fn strip_noinit(s:&str)->Cow<'_,str>{
@@ -703,4 +704,89 @@ fn strip_noinit(s:&str)->Cow<'_,str>{
     if value.contains(['\u{2bf}','\u{2018}']){value=Cow::Owned(value.replace(['\u{2bf}','\u{2018}'],""));}
     let replaced=NOINIT_MACRO.replace_all(&value,"$1");
     if matches!(replaced,Cow::Borrowed(_)){drop(replaced);value}else{Cow::Owned(replaced.into_owned())}
+}
+
+// Biber precompiles these expressions with bare qr//. The later /gxms
+// substitution does not override the flags of that compiled expression.
+thread_local! {
+    static TEXT_RULES: std::cell::RefCell<std::collections::BTreeMap<String,crate::perl_regex::Regex>> = std::cell::RefCell::new(std::collections::BTreeMap::new());
+}
+pub(crate) fn text_rules<'a>(control:&'a Control,key:&str)->impl Iterator<Item=&'a str> {
+    control.text_rules.get(key).into_iter().flat_map(|rules|rules.iter().map(String::as_str))
+        .chain(control.options.get(key).filter(|_|!control.text_rules.contains_key(key)).into_iter().flat_map(|patterns|patterns.lines()))
+}
+pub(crate) fn validate_control_rules(control:&Control)->Result<(),String> {
+    for key in control.options.keys() {
+        if !matches!(key.as_str(),"noinit"|"nolabel"|"nolabelwidthcount") && !key.starts_with("nosort.") && !key.starts_with("nonamestring.") {continue;}
+        for pattern in text_rules(control,key).filter(|s|!s.is_empty()) {
+            TEXT_RULES.with(|cache| {
+                let mut cache=cache.borrow_mut();
+                if !cache.contains_key(pattern) {
+                    let rule=crate::perl_regex::Regex::compile(pattern,false)
+                        .map_err(|error|format!("Invalid {key} regular expression '{pattern}': {error}"))?;
+                    cache.insert(pattern.to_owned(),rule);
+                }
+                Ok::<(),String>(())
+            })?;
+        }
+    }
+    Ok(())
+}
+pub(crate) fn with_text_rule<T>(pattern:&str,f:impl FnOnce(&crate::perl_regex::Regex)->T)->Option<T> {
+    TEXT_RULES.with(|cache| {
+        let mut cache=cache.borrow_mut();
+        if !cache.contains_key(pattern) {
+            let rule=crate::perl_regex::Regex::compile(pattern,false).ok()?;
+            cache.insert(pattern.to_owned(),rule);
+        }
+        Some(f(&cache[pattern]))
+    })
+}
+pub(crate) fn strip_rules<'a>(control:&Control,key:&str,value:&'a str)->Cow<'a,str> {
+    let mut value=Cow::Borrowed(value);
+    for pattern in text_rules(control,key).filter(|s|!s.is_empty()) {
+        if let Some(Some(replaced))=with_text_rule(pattern,|rule| {
+            let mut matches=rule.inner.find_iter(&value);
+            let first=matches.next()?.ok()?;
+            let mut out=String::with_capacity(value.len());out.push_str(&value[..first.start()]);
+            let mut end=first.end();
+            for found in matches {let found=found.ok()?;out.push_str(&value[end..found.start()]);end=found.end();}
+            out.push_str(&value[end..]);Some(out)
+        }) {value=Cow::Owned(replaced);}
+    }
+    value
+}
+pub(crate) fn strip_initial<'a>(control:&Control,value:&'a str)->Cow<'a,str> {
+    if control.options.contains_key("noinit") {strip_rules(control,"noinit",value)}else{strip_noinit(value)}
+}
+pub fn initial_tokens_xml(_control:&Control,raw:&str)->Vec<String> {vec![initial(raw)]}
+pub(crate) fn expand_options(control:&Control,scope:&str,value:&str)->std::collections::BTreeMap<String,String> {
+    let mut options=std::collections::BTreeMap::new();
+    for raw in crate::bib::xsv(control,value) {
+        let (key,value)=raw.split_once('=').unwrap_or((&raw,"true"));let key=key.trim();let value=value.trim();
+        let value=if control.options.get(&format!("optionscope.{scope}.{key}.datatype")).is_some_and(|s|s=="boolean") {
+            if value.eq_ignore_ascii_case("true")||value=="1"{"true"}else if value.eq_ignore_ascii_case("false")||value=="0"{"false"}else{value}
+        }else{value};
+        let input=control.options.get(&format!("optionscope.{scope}.{key}.backendin"));
+        if let Some(input)=input {
+            for sub in input.split(',') {
+                let sub=sub.trim();
+                if let Some((sub,val))=sub.split_once('=') {
+                    let sub=sub.trim();let val=val.trim();
+                    if matches!(value,"0"|"false") {
+                        if control.options.get(&format!("optionscope.{scope}.{sub}.datatype")).is_some_and(|s|s=="boolean"){options.insert(sub.into(),if matches!(val,"true"|"1"){"false"}else{"true"}.into());}
+                    }else{options.insert(sub.into(),val.into());}
+                }else{options.insert(sub.into(),value.into());}
+            }
+        }else if key=="nametemplates" {
+            for sub in ["sortingnamekeytemplatename","uniquenametemplatename","labelalphanametemplatename","namehashtemplatename"]{options.insert(sub.into(),value.into());}
+        }else{
+            let value=if control.options.get(&format!("optionscope.{scope}.{key}.datatype")).is_some_and(|s|s=="boolean"){match value{"1"|"true"=>"true","0"|"false"=>"false",_=>value}}else{value};
+            options.insert(key.into(),value.into());
+        }
+    }
+    options
+}
+pub(crate) fn output_option(control:&Control,scope:&str,key:&str)->bool {
+    control.options.get(&format!("optionscope.{scope}.{key}.backendout")).is_some_and(|s|matches!(s.as_str(),"1"|"true"))
 }

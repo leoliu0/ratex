@@ -1,0 +1,7 @@
+\documentclass{article}
+\usepackage[backend=biber,style=alphabetic]{biblatex}
+\DeclareLabelalphaTemplate{\labelelement{\field[strwidth=v]{labelname}}\labelelement{\field[strwidth=2,strside=right]{year}}}
+\addbibresource{refs.bib}
+\begin{document}
+\nocite{*}\printbibliography
+\end{document}

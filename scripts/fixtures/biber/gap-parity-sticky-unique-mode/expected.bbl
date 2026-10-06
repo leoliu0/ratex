@@ -1,0 +1,95 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{nyt/global//global/global/global}
+    \entry{a}{book}{}{}
+      \name{author}{2}{}{%
+        {{un=0,uniquepart=base,hash=1a81a0003c03ed76c7217a93e26aa5b3}{%
+           family={First},
+           familyi={F\bibinitperiod},
+           given={Same},
+           giveni={S\bibinitperiod},
+           givenun=0}}%
+        {{un=0,uniquepart=base,hash=320dc4b0e52d27437ea84ba1d4293d70}{%
+           family={Shared},
+           familyi={S\bibinitperiod},
+           given={Alice},
+           giveni={A\bibinitperiod},
+           givenun=0}}%
+      }
+      \strng{namehash}{390426135eed0fb8d66a03f698a96459}
+      \strng{fullhash}{390426135eed0fb8d66a03f698a96459}
+      \strng{fullhashraw}{390426135eed0fb8d66a03f698a96459}
+      \strng{bibnamehash}{390426135eed0fb8d66a03f698a96459}
+      \strng{authorbibnamehash}{390426135eed0fb8d66a03f698a96459}
+      \strng{authornamehash}{390426135eed0fb8d66a03f698a96459}
+      \strng{authorfullhash}{390426135eed0fb8d66a03f698a96459}
+      \strng{authorfullhashraw}{390426135eed0fb8d66a03f698a96459}
+      \field{extraname}{1}
+      \field{sortinit}{F}
+      \field{sortinithash}{2638baaa20439f1b5a8f80c6c08a13b4}
+      \field{extradate}{1}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{A}
+      \field{year}{2020}
+      \true{nocite}
+    \endentry
+    \entry{b}{book}{}{}
+      \name{author}{2}{}{%
+        {{un=0,uniquepart=base,hash=1a81a0003c03ed76c7217a93e26aa5b3}{%
+           family={First},
+           familyi={F\bibinitperiod},
+           given={Same},
+           giveni={S\bibinitperiod},
+           givenun=0}}%
+        {{un=0,uniquepart=base,hash=9382f0238666c52e5a21f98adc5b3fdb}{%
+           family={Shared},
+           familyi={S\bibinitperiod},
+           given={Anne},
+           giveni={A\bibinitperiod},
+           givenun=0}}%
+      }
+      \strng{namehash}{d805a86cb585da51d5f9fd5a5ae72035}
+      \strng{fullhash}{d805a86cb585da51d5f9fd5a5ae72035}
+      \strng{fullhashraw}{d805a86cb585da51d5f9fd5a5ae72035}
+      \strng{bibnamehash}{d805a86cb585da51d5f9fd5a5ae72035}
+      \strng{authorbibnamehash}{d805a86cb585da51d5f9fd5a5ae72035}
+      \strng{authornamehash}{d805a86cb585da51d5f9fd5a5ae72035}
+      \strng{authorfullhash}{d805a86cb585da51d5f9fd5a5ae72035}
+      \strng{authorfullhashraw}{d805a86cb585da51d5f9fd5a5ae72035}
+      \field{extraname}{2}
+      \field{sortinit}{F}
+      \field{sortinithash}{2638baaa20439f1b5a8f80c6c08a13b4}
+      \field{extradate}{2}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{B}
+      \field{year}{2020}
+      \true{nocite}
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

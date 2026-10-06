@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bltx:entries xmlns:bltx="http://biblatex-biber.sourceforge.net/biblatexml">
+<bltx:entry id="ranges" entrytype="book"><bltx:title>Ranges</bltx:title><bltx:pages><bltx:list><bltx:item><bltx:start>1</bltx:start><bltx:end>10</bltx:end></bltx:item><bltx:item><bltx:start>30</bltx:start><bltx:end>34</bltx:end></bltx:item><bltx:item><bltx:start>42</bltx:start><bltx:end/></bltx:item></bltx:list></bltx:pages></bltx:entry>
+</bltx:entries>

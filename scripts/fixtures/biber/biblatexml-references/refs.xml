@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bltx:entries xmlns:bltx="http://biblatex-biber.sourceforge.net/biblatexml">
+<bltx:entry id="parent" entrytype="collection"><bltx:title>Collection</bltx:title><bltx:date>2001</bltx:date><bltx:publisher>Press</bltx:publisher></bltx:entry><bltx:entry id="child" entrytype="incollection"><bltx:title>Chapter</bltx:title><bltx:crossref>parent</bltx:crossref><bltx:ids><bltx:key>alias-one</bltx:key><bltx:key>alias-two</bltx:key></bltx:ids></bltx:entry>
+</bltx:entries>

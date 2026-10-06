@@ -1,0 +1,55 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{nyt/global//global/global/global}
+    \entry{a}{misc}{}{}
+      \field{sortinit}{B}
+      \field{sortinithash}{d7095fff47cda75ca2589920aae98399}
+      \field{labeldatesource}{nodate}
+      \field{labeltitlesource}{title}
+      \field{edition}{xiv}
+      \field{number}{3.5}
+      \field{title}{Bad}
+      \true{nocite}
+      \warn{\item Datamodel: misc entry 'a' (refs.bib): Invalid field 'edition' for entrytype 'misc'}
+      \warn{\item Datamodel: misc entry 'a' (refs.bib): Invalid field 'number' for entrytype 'misc'}
+      \warn{\item Datamodel: misc entry 'a' (refs.bib): Invalid field 'volume' for entrytype 'misc'}
+      \warn{\item Datamodel: misc entry 'a' (refs.bib): Missing mandatory field - one of 'date, year' must be defined}
+      \warn{\item Datamodel: misc entry 'a' (refs.bib): Invalid value of field 'volume' must be datatype 'integer' - ignoring field}
+    \endentry
+    \entry{b}{misc}{}{}
+      \field{sortinit}{N}
+      \field{sortinithash}{22369a73d5f88983a108b63f07f37084}
+      \field{labeldatesource}{nodate}
+      \field{labeltitlesource}{title}
+      \field{edition}{IIII}
+      \field{number}{1e2}
+      \field{title}{Numeric}
+      \field{volume}{-3}
+      \true{nocite}
+      \warn{\item Datamodel: misc entry 'b' (refs.bib): Invalid field 'edition' for entrytype 'misc'}
+      \warn{\item Datamodel: misc entry 'b' (refs.bib): Invalid field 'number' for entrytype 'misc'}
+      \warn{\item Datamodel: misc entry 'b' (refs.bib): Invalid field 'volume' for entrytype 'misc'}
+      \warn{\item Datamodel: misc entry 'b' (refs.bib): Missing mandatory field - one of 'date, year' must be defined}
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

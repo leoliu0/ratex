@@ -1,0 +1,9 @@
+\documentclass{article}
+\usepackage[backend=biber,style=numeric]{biblatex}
+\addbibresource{refs.bib}
+\DeclareSortingTemplate[locale=fi__phonebook]{localeprobe}{\sort{\field{title}}\sort{\field{entrykey}}}
+\begin{document}
+\nocite{*}
+\newrefcontext[sorting=localeprobe]
+\printbibliography
+\end{document}

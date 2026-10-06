@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bltx:entries xmlns:bltx="http://biblatex-biber.sourceforge.net/biblatexml">
+<bltx:entry id="names" entrytype="book"><bltx:names type="author" morenames="1"><bltx:name ><bltx:namepart type="given">John Paul</bltx:namepart><bltx:namepart type="family">de la Cruz</bltx:namepart></bltx:name><bltx:name ><bltx:namepart type="given">Marie</bltx:namepart><bltx:namepart type="family">Curie</bltx:namepart></bltx:name></bltx:names><bltx:title>Names</bltx:title><bltx:date>2020</bltx:date></bltx:entry>
+</bltx:entries>

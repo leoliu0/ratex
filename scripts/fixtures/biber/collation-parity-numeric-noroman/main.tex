@@ -1,0 +1,10 @@
+\documentclass{article}
+\usepackage[backend=biber,style=numeric]{biblatex}
+\addbibresource{refs.bib}
+\ExecuteBibliographyOptions{noroman=true}
+\DeclareSortingTemplate{parity}{\sort{\field{volume}}\sort{\field{entrykey}}}
+\begin{document}
+\nocite{*}
+\newrefcontext[sorting=parity]
+\printbibliography
+\end{document}

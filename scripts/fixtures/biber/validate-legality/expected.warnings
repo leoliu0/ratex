@@ -1,0 +1,5 @@
+Datamodel: unknown entry 'a' (refs.bib): Field 'unknownfield' invalid in data model - ignoring
+Datamodel: unknown entry 'a' (refs.bib): Invalid entry type 'unknown' - defaulting to 'misc'
+Datamodel: misc entry 'a' (refs.bib): Missing mandatory field - one of 'date, year' must be defined
+Datamodel: misc entry 'b' (refs.bib): Invalid field 'customlegal' for entrytype 'misc'
+Datamodel: misc entry 'b' (refs.bib): Missing mandatory field - one of 'date, year' must be defined

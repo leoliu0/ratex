@@ -1,0 +1,5 @@
+{
+  "oracle_exit": 2,
+  "candidate_exit": 2,
+  "boundary": "oracle error parity"
+}

@@ -1,0 +1,6 @@
+ISBN '123456789012X' in entry 'a' is invalid - run biber with '--validate_datamodel' for details.
+Datamodel: misc entry 'a' (refs.bib): Invalid field 'isbn' for entrytype 'misc'
+Datamodel: misc entry 'a' (refs.bib): Invalid field 'issn' for entrytype 'misc'
+Datamodel: misc entry 'a' (refs.bib): Missing mandatory field - one of 'date, year' must be defined
+Datamodel: misc entry 'a' (refs.bib): Invalid ISMN in value of field 'ismn'
+Datamodel: misc entry 'b' (refs.bib): Missing mandatory field - one of 'date, year' must be defined

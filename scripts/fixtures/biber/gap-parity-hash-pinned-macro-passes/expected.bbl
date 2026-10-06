@@ -1,0 +1,133 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{anyt/global//global/global/global}
+    \entry{adjacent}{book}{}{}
+      \name{author}{1}{}{%
+        {{hash=d9deee831c37b12dfccf7b24fffc924b}{%
+           family={One},
+           familyi={O\bibinitperiod},
+           given={G},
+           giveni={G\bibinitperiod}}}%
+      }
+      \strng{namehash}{d9deee831c37b12dfccf7b24fffc924b}
+      \strng{fullhash}{d9deee831c37b12dfccf7b24fffc924b}
+      \strng{fullhashraw}{12dbe856c8c6fba4dc608f639b4e664b}
+      \strng{bibnamehash}{d9deee831c37b12dfccf7b24fffc924b}
+      \strng{authorbibnamehash}{d9deee831c37b12dfccf7b24fffc924b}
+      \strng{authornamehash}{d9deee831c37b12dfccf7b24fffc924b}
+      \strng{authorfullhash}{d9deee831c37b12dfccf7b24fffc924b}
+      \strng{authorfullhashraw}{12dbe856c8c6fba4dc608f639b4e664b}
+      \field{extraname}{1}
+      \field{labelalpha}{O20}
+      \field{sortinit}{O}
+      \field{sortinithash}{2cd7140a07aea5341f9e2771efe90aae}
+      \field{extraalpha}{1}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{adjacent}
+      \field{year}{2020}
+      \true{nocite}
+    \endentry
+    \entry{adjacent_nonletter}{book}{}{}
+      \name{author}{1}{}{%
+        {{hash=93be738bcfc0fac85dd1e05885f41e13}{%
+           family={One},
+           familyi={O\bibinitperiod},
+           given={G},
+           giveni={G\bibinitperiod}}}%
+      }
+      \strng{namehash}{93be738bcfc0fac85dd1e05885f41e13}
+      \strng{fullhash}{93be738bcfc0fac85dd1e05885f41e13}
+      \strng{fullhashraw}{12dbe856c8c6fba4dc608f639b4e664b}
+      \strng{bibnamehash}{93be738bcfc0fac85dd1e05885f41e13}
+      \strng{authorbibnamehash}{93be738bcfc0fac85dd1e05885f41e13}
+      \strng{authornamehash}{93be738bcfc0fac85dd1e05885f41e13}
+      \strng{authorfullhash}{93be738bcfc0fac85dd1e05885f41e13}
+      \strng{authorfullhashraw}{12dbe856c8c6fba4dc608f639b4e664b}
+      \field{extraname}{2}
+      \field{labelalpha}{O20}
+      \field{sortinit}{O}
+      \field{sortinithash}{2cd7140a07aea5341f9e2771efe90aae}
+      \field{extraalpha}{2}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{adjacent_nonletter}
+      \field{year}{2020}
+      \true{nocite}
+    \endentry
+    \entry{nonletter}{book}{}{}
+      \name{author}{1}{}{%
+        {{hash=3eb0d91d43f417dfd5de16489e18963a}{%
+           family={One},
+           familyi={O\bibinitperiod},
+           given={G},
+           giveni={G\bibinitperiod}}}%
+      }
+      \strng{namehash}{3eb0d91d43f417dfd5de16489e18963a}
+      \strng{fullhash}{3eb0d91d43f417dfd5de16489e18963a}
+      \strng{fullhashraw}{12dbe856c8c6fba4dc608f639b4e664b}
+      \strng{bibnamehash}{3eb0d91d43f417dfd5de16489e18963a}
+      \strng{authorbibnamehash}{3eb0d91d43f417dfd5de16489e18963a}
+      \strng{authornamehash}{3eb0d91d43f417dfd5de16489e18963a}
+      \strng{authorfullhash}{3eb0d91d43f417dfd5de16489e18963a}
+      \strng{authorfullhashraw}{12dbe856c8c6fba4dc608f639b4e664b}
+      \field{extraname}{3}
+      \field{labelalpha}{O20}
+      \field{sortinit}{O}
+      \field{sortinithash}{2cd7140a07aea5341f9e2771efe90aae}
+      \field{extraalpha}{3}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{nonletter}
+      \field{year}{2020}
+      \true{nocite}
+    \endentry
+    \entry{unicode16}{book}{}{}
+      \name{author}{1}{}{%
+        {{hash=693729274ceaa88731099a1b64553524}{%
+           family={One},
+           familyi={O\bibinitperiod},
+           given={G},
+           giveni={G\bibinitperiod}}}%
+      }
+      \strng{namehash}{693729274ceaa88731099a1b64553524}
+      \strng{fullhash}{693729274ceaa88731099a1b64553524}
+      \strng{fullhashraw}{12dbe856c8c6fba4dc608f639b4e664b}
+      \strng{bibnamehash}{693729274ceaa88731099a1b64553524}
+      \strng{authorbibnamehash}{693729274ceaa88731099a1b64553524}
+      \strng{authornamehash}{693729274ceaa88731099a1b64553524}
+      \strng{authorfullhash}{693729274ceaa88731099a1b64553524}
+      \strng{authorfullhashraw}{12dbe856c8c6fba4dc608f639b4e664b}
+      \field{extraname}{4}
+      \field{labelalpha}{O20}
+      \field{sortinit}{O}
+      \field{sortinithash}{2cd7140a07aea5341f9e2771efe90aae}
+      \field{extraalpha}{4}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{unicode16}
+      \field{year}{2020}
+      \true{nocite}
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

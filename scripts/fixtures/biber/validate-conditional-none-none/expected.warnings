@@ -1,0 +1,3 @@
+Datamodel: misc entry 'a' (refs.bib): Missing mandatory field - one of 'date, year' must be defined
+Datamodel: misc entry 'b' (refs.bib): Missing mandatory field - one of 'date, year' must be defined
+Datamodel: misc entry 'b' (refs.bib): Constraint violation - none of fields (url, doi) must exist when none of fields (subtitle, titleaddon) exist. Ignoring them.

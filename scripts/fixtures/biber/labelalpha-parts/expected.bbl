@@ -1,0 +1,121 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{anyt/global//global/global/global}
+    \entry{a}{book}{}{}
+      \name{author}{3}{}{%
+        {{useprefix=true,hash=4f75e06ea913233d508dabccb4cbc019}{%
+           family={Beauvoir-Dupont},
+           familyi={B\bibinithyphendelim D\bibinitperiod},
+           given={Jean},
+           giveni={J\bibinitperiod},
+           prefix={de\bibnamedelima la},
+           prefixi={d\bibinitperiod\bibinitdelim l\bibinitperiod}}}%
+        {{hash=d6d9f41ce7ab57b0d45edbe153331923}{%
+           family={Turing},
+           familyi={T\bibinitperiod},
+           given={Alan},
+           giveni={A\bibinitperiod}}}%
+        {{hash=3d1fbeb2193f0d66ca2855022fdcb20e}{%
+           family={Lovelace},
+           familyi={L\bibinitperiod},
+           given={Ada},
+           giveni={A\bibinitperiod}}}%
+      }
+      \strng{namehash}{673f5dc37f47173c5e0080910bb3ecd6}
+      \strng{fullhash}{673f5dc37f47173c5e0080910bb3ecd6}
+      \strng{fullhashraw}{673f5dc37f47173c5e0080910bb3ecd6}
+      \strng{bibnamehash}{673f5dc37f47173c5e0080910bb3ecd6}
+      \strng{authorbibnamehash}{673f5dc37f47173c5e0080910bb3ecd6}
+      \strng{authornamehash}{673f5dc37f47173c5e0080910bb3ecd6}
+      \strng{authorfullhash}{673f5dc37f47173c5e0080910bb3ecd6}
+      \strng{authorfullhashraw}{673f5dc37f47173c5e0080910bb3ecd6}
+      \field{labelalpha}{dlBEDU+20}
+      \field{sortinit}{d}
+      \field{sortinithash}{6f385f66841fb5e82009dc833c761848}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{One}
+      \field{year}{2020}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{c}{book}{}{}
+      \name{author}{1}{}{%
+        {{hash=5d0ddda3a367ceb26fbaeca02e391c22}{%
+           family={Smith},
+           familyi={S\bibinitperiod},
+           given={John},
+           giveni={J\bibinitperiod}}}%
+      }
+      \strng{namehash}{5d0ddda3a367ceb26fbaeca02e391c22}
+      \strng{fullhash}{5d0ddda3a367ceb26fbaeca02e391c22}
+      \strng{fullhashraw}{5d0ddda3a367ceb26fbaeca02e391c22}
+      \strng{bibnamehash}{5d0ddda3a367ceb26fbaeca02e391c22}
+      \strng{authorbibnamehash}{5d0ddda3a367ceb26fbaeca02e391c22}
+      \strng{authornamehash}{5d0ddda3a367ceb26fbaeca02e391c22}
+      \strng{authorfullhash}{5d0ddda3a367ceb26fbaeca02e391c22}
+      \strng{authorfullhashraw}{5d0ddda3a367ceb26fbaeca02e391c22}
+      \field{labelalpha}{ID}
+      \field{sortinit}{I}
+      \field{sortinithash}{8d291c51ee89b6cd86bf5379f0b151d8}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{shorthand}{ID}
+      \field{title}{Three}
+      \field{year}{2022}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+    \entry{b}{book}{}{}
+      \name{author}{2}{}{%
+        {{hash=cd7ff57413611683f6b843480da59a06}{%
+           family={Li},
+           familyi={L\bibinitperiod},
+           given={Joan},
+           giveni={J\bibinitperiod}}}%
+        {{hash=055f6811649a97bc3a36ff4b2581f441}{%
+           family={Smith},
+           familyi={S\bibinitperiod},
+           given={Jane},
+           giveni={J\bibinitperiod}}}%
+      }
+      \strng{namehash}{f7b3242ff70612e4119a3bc92ee7d594}
+      \strng{fullhash}{f7b3242ff70612e4119a3bc92ee7d594}
+      \strng{fullhashraw}{f7b3242ff70612e4119a3bc92ee7d594}
+      \strng{bibnamehash}{f7b3242ff70612e4119a3bc92ee7d594}
+      \strng{authorbibnamehash}{f7b3242ff70612e4119a3bc92ee7d594}
+      \strng{authornamehash}{f7b3242ff70612e4119a3bc92ee7d594}
+      \strng{authorfullhash}{f7b3242ff70612e4119a3bc92ee7d594}
+      \strng{authorfullhashraw}{f7b3242ff70612e4119a3bc92ee7d594}
+      \field{labelalpha}{LI/SM21}
+      \field{sortinit}{L}
+      \field{sortinithash}{7c47d417cecb1f4bd38d1825c427a61a}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Two}
+      \field{year}{2021}
+      \field{dateera}{ce}
+      \true{nocite}
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

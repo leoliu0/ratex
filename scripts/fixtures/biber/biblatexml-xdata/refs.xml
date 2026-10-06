@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bltx:entries xmlns:bltx="http://biblatex-biber.sourceforge.net/biblatexml">
+<bltx:entry id="shared" entrytype="xdata"><bltx:title>Inherited title</bltx:title><bltx:publisher>Shared press</bltx:publisher><bltx:date>2003</bltx:date></bltx:entry><bltx:entry id="child" entrytype="book"><bltx:xdata><bltx:list><bltx:item>shared</bltx:item></bltx:list></bltx:xdata></bltx:entry>
+</bltx:entries>

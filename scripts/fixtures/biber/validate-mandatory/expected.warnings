@@ -1,0 +1,3 @@
+Datamodel: article entry 'a' (refs.bib): Missing mandatory field - one of 'date, year' must be defined
+Datamodel: article entry 'a' (refs.bib): Missing mandatory field 'author'
+Datamodel: article entry 'a' (refs.bib): Missing mandatory field 'journaltitle'

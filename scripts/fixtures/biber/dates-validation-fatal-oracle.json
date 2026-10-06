@@ -1,0 +1,85 @@
+{
+  "oracle": "Biber2.22",
+  "base_bcf": "validate-date-xor/main.bcf",
+  "replace_existing_constraints": true,
+  "cases": [
+    {
+      "name": "invalid-pattern-absent",
+      "constraint_xml": "<bcf:constraint type=\"data\" datatype=\"pattern\" pattern=\"[\"><bcf:field>note</bcf:field></bcf:constraint>",
+      "refs_bib": "@misc{a,title={Absent},year={2020}}\n",
+      "args": [
+        "--validate-datamodel"
+      ],
+      "redeclare_note_date": false,
+      "exit_code": 0,
+      "has_bbl": true,
+      "messages": []
+    },
+    {
+      "name": "invalid-pattern-zero",
+      "constraint_xml": "<bcf:constraint type=\"data\" datatype=\"pattern\" pattern=\"[\"><bcf:field>note</bcf:field></bcf:constraint>",
+      "refs_bib": "@misc{a,title={Zero},year={2020},note={0}}\n",
+      "args": [
+        "--validate-datamodel"
+      ],
+      "redeclare_note_date": false,
+      "exit_code": 0,
+      "has_bbl": true,
+      "messages": []
+    },
+    {
+      "name": "invalid-pattern-active",
+      "constraint_xml": "<bcf:constraint type=\"data\" datatype=\"pattern\" pattern=\"[\"><bcf:field>note</bcf:field></bcf:constraint>",
+      "refs_bib": "@misc{a,title={Active},year={2020},note={active}}\n",
+      "args": [
+        "--validate-datamodel"
+      ],
+      "redeclare_note_date": false,
+      "exit_code": 25,
+      "has_bbl": true,
+      "messages": [
+        "Unmatched [ in regex; marked by <-- HERE in m/[ <-- HERE / at /tmp/par-6c656f/cache-ca76922df53da5a0abac6e540f94b3547c023ec5/inc/lib/Biber/Utils.pm line 1155.\n"
+      ]
+    },
+    {
+      "name": "invalid-pattern-validation-disabled",
+      "constraint_xml": "<bcf:constraint type=\"data\" datatype=\"pattern\" pattern=\"[\"><bcf:field>note</bcf:field></bcf:constraint>",
+      "refs_bib": "@misc{a,title={Disabled},year={2020},note={active}}\n",
+      "args": [],
+      "redeclare_note_date": false,
+      "exit_code": 0,
+      "has_bbl": true,
+      "messages": [],
+      "disable_validation_in_bcf": true
+    },
+    {
+      "name": "date-name-constructor-fatal",
+      "constraint_xml": "",
+      "refs_bib": "@misc{a,title={Invalid declaration},year={2020}}\n",
+      "args": [],
+      "redeclare_note_date": true,
+      "exit_code": 2,
+      "has_bbl": true,
+      "messages": [
+        "Fatal datamodel error: date field 'note' must end with string 'date'"
+      ]
+    },
+    {
+      "name": "dieondatamodel-continues",
+      "constraint_xml": "<bcf:constraint type=\"mandatory\"><bcf:field>note</bcf:field><bcf:field>url</bcf:field></bcf:constraint>",
+      "refs_bib": "@misc{a,title={Errors},year={2020},unknownfield={input warning}}\n",
+      "args": [
+        "--validate-datamodel",
+        "--dieondatamodel"
+      ],
+      "redeclare_note_date": false,
+      "exit_code": 2,
+      "has_bbl": true,
+      "messages": [
+        "Datamodel: misc entry 'a' (refs.bib): Missing mandatory field 'note'",
+        "Datamodel: misc entry 'a' (refs.bib): Missing mandatory field 'url'",
+        "Datamodel: misc entry 'a' (refs.bib): Field 'unknownfield' invalid in data model - ignoring"
+      ]
+    }
+  ]
+}

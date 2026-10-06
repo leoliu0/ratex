@@ -1,0 +1,5 @@
+{
+  "tool": true,
+  "configfile": "tool.conf",
+  "output_fieldcase": "lower"
+}

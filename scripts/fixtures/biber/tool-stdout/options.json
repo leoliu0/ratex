@@ -1,0 +1,6 @@
+{
+  "tool": true,
+  "output_format": "bibtex",
+  "output_file": "-",
+  "quiet": true
+}

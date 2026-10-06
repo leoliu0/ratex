@@ -1,0 +1,10 @@
+\documentclass{article}
+\usepackage[backend=biber,style=numeric]{biblatex}
+\addbibresource{refs.bib}
+\DeclareSortTranslit{\translit{title}{Russian}{ALA-LC}}\DeclareSortTranslit[misc]{\translit{title}{IAST}{Devanagari}}
+\DeclareSortingTemplate[locale=en]{localeprobe}{\sort{\field{title}}\sort{\field{entrykey}}}
+\begin{document}
+\nocite{*}
+\newrefcontext[sorting=localeprobe]
+\printbibliography
+\end{document}

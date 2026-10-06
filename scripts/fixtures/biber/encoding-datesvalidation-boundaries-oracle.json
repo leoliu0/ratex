@@ -1,0 +1,2417 @@
+{
+  "oracle": "Biber2.22 Encode3.20 FB_CROAK + FileSlurper newline/BOM normalization",
+  "cases": [
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b2428441b28421b284a1b284a1b24421b2442217e0a",
+      "ok": true,
+      "utf8_hex": "e297870a"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "217e0a2121",
+      "ok": true,
+      "utf8_hex": "217e0a2121"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "217e0a217e0a1b2428445f601b24421b242844",
+      "ok": true,
+      "utf8_hex": "217e0a217e0ae8b786"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b242844217e0a80616263",
+      "ok": true,
+      "utf8_hex": "e392920a"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b26401b24422121",
+      "ok": true,
+      "utf8_hex": "e38080"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "6162631b26401b2442",
+      "ok": true,
+      "utf8_hex": "616263"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "217e0a1b28421b28421b242844",
+      "ok": true,
+      "utf8_hex": "217e0a"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b284a1b581b24421b28426162631b5880",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "6162631b2428441b284a1b26401b24421b28491b2849",
+      "ok": true,
+      "utf8_hex": "616263"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "21215f601b28497f2121616263",
+      "ok": true,
+      "utf8_hex": "21215f607fefbda1efbda1e797b0"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b26401b24427f",
+      "ok": true,
+      "utf8_hex": "7f"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "5f601b2849",
+      "ok": true,
+      "utf8_hex": "5f60"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "6162631b28421b26401b244280616263",
+      "ok": true,
+      "utf8_hex": "616263"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "807f6162636162631b2428441b242844",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b26401b24421b26401b2442",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b24421b284a1b2442",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "21211b28491b26401b244221211b58",
+      "ok": true,
+      "utf8_hex": "2121e38080"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "217e0a1b58217e0a",
+      "ok": true,
+      "utf8_hex": "217e0a"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b284a",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b284a1b284a21211b586162631b2849217e0a",
+      "ok": true,
+      "utf8_hex": "2121"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "61626321211b26401b24421b26401b2442",
+      "ok": true,
+      "utf8_hex": "6162632121"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b2849",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "616263",
+      "ok": true,
+      "utf8_hex": "616263"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "7f1b2442217e0a1b28421b28421b2842",
+      "ok": true,
+      "utf8_hex": "7fe297870a"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b28421b28495f601b58217e0a5f60",
+      "ok": true,
+      "utf8_hex": "efbe9f"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "21212121",
+      "ok": true,
+      "utf8_hex": "21212121"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b242844",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b242844",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b2428445f601b2849",
+      "ok": true,
+      "utf8_hex": "e8b786"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b24421b284a2121217e0a1b581b26401b2442",
+      "ok": true,
+      "utf8_hex": "2121217e0a"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "6162631b28497f6162631b2849217e0a1b2842",
+      "ok": true,
+      "utf8_hex": "6162637fe797b05c784533efbda15c7846450a"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b581b2428441b26401b244221211b58217e0a",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "801b26401b2442616263217e0a1b26401b24426162631b2442",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "6162631b58217e0a1b2442616263",
+      "ok": true,
+      "utf8_hex": "616263"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "616263616263",
+      "ok": true,
+      "utf8_hex": "616263616263"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b24427f801b2428442121",
+      "ok": true,
+      "utf8_hex": "7f"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "7f7f1b24422121",
+      "ok": true,
+      "utf8_hex": "7f7fe38080"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "801b2442",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b28427f1b24426162637f",
+      "ok": true,
+      "utf8_hex": "7fe797b05c7845337f"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b24426162631b58",
+      "ok": true,
+      "utf8_hex": "e797b0"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b284221211b242844801b242844616263",
+      "ok": true,
+      "utf8_hex": "2121"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b24421b284a1b24425f601b582121",
+      "ok": true,
+      "utf8_hex": "e78399"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "5f605f60",
+      "ok": true,
+      "utf8_hex": "5f605f60"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b26401b2442217e0a",
+      "ok": true,
+      "utf8_hex": "e297870a"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b284a1b2428447f1b2849",
+      "ok": true,
+      "utf8_hex": "7f"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b581b284a5f601b24421b284a1b26401b24421b58",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "21211b242844",
+      "ok": true,
+      "utf8_hex": "2121"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "6162636162635f60212180",
+      "ok": true,
+      "utf8_hex": "6162636162635f602121"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "217e0a1b284a1b26401b24426162631b28421b2442",
+      "ok": true,
+      "utf8_hex": "217e0ae797b0"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b26401b244221211b26401b2442",
+      "ok": true,
+      "utf8_hex": "e38080"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "217e0a1b28421b244221211b26401b24421b2442",
+      "ok": true,
+      "utf8_hex": "217e0ae38080"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "7f1b28491b242844",
+      "ok": true,
+      "utf8_hex": "7f"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b284221211b581b28427f",
+      "ok": true,
+      "utf8_hex": "2121"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "7f1b28421b58217e0a1b28422121",
+      "ok": true,
+      "utf8_hex": "7f"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b581b26401b2442217e0a",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "21215f601b284280",
+      "ok": true,
+      "utf8_hex": "21215f60"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "80805f60",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "801b585f60805f602121",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b586162631b2849616263",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "7f21211b58616263",
+      "ok": true,
+      "utf8_hex": "7f2121"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "217e0a",
+      "ok": true,
+      "utf8_hex": "217e0a"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b26401b24421b26401b244280217e0a5f60616263",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b284a6162631b242844",
+      "ok": true,
+      "utf8_hex": "616263"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b26401b24421b284261626321211b2442",
+      "ok": true,
+      "utf8_hex": "6162632121"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b284221217f1b284a",
+      "ok": true,
+      "utf8_hex": "21217f"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b26401b24425f601b58217e0a1b2428441b28421b2842",
+      "ok": true,
+      "utf8_hex": "e78399"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "5f60",
+      "ok": true,
+      "utf8_hex": "5f60"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b26401b244221216162637f217e0a",
+      "ok": true,
+      "utf8_hex": "e38080e797b05c7845337fe297870a"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b28491b26401b2442",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b28491b28491b24421b28497f616263",
+      "ok": true,
+      "utf8_hex": "7fe797b0"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b26401b244221212121",
+      "ok": true,
+      "utf8_hex": "e38080e38080"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b26401b24422121805f601b2428441b28491b242844",
+      "ok": true,
+      "utf8_hex": "e38080"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b2842",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "21211b284a801b26401b244221215f60",
+      "ok": true,
+      "utf8_hex": "2121"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b28491b26401b244221211b2849616263",
+      "ok": true,
+      "utf8_hex": "e38080e797b0"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b28421b28491b24421b24421b2442",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b26401b2442217e0a",
+      "ok": true,
+      "utf8_hex": "e297870a"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b2842",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b585f605f601b28421b581b24421b284a",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b284a1b2428446162631b242844",
+      "ok": true,
+      "utf8_hex": "e981a7"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b26401b24425f60",
+      "ok": true,
+      "utf8_hex": "e78399"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b284a2121217e0a217e0a1b28497f1b2849",
+      "ok": true,
+      "utf8_hex": "2121217e0a217e0a7f"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "801b2442",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b26401b24421b5880",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "6162637f5f601b242844",
+      "ok": true,
+      "utf8_hex": "6162637f5f60"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b28421b2428441b28496162631b2849",
+      "ok": true,
+      "utf8_hex": "e797b0"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "217e0a",
+      "ok": true,
+      "utf8_hex": "217e0a"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "217e0a212180217e0a1b2442",
+      "ok": true,
+      "utf8_hex": "217e0a2121"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b58217e0a1b26401b24421b585f606162631b2842",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b284a5f605f6021211b28421b58",
+      "ok": true,
+      "utf8_hex": "5f605f602121"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "21211b26401b24427f1b24421b58616263",
+      "ok": true,
+      "utf8_hex": "21217f"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b284a7f1b284a1b581b28421b2842",
+      "ok": true,
+      "utf8_hex": "7f"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "6162631b284a7f1b26401b24421b581b26401b24422121",
+      "ok": true,
+      "utf8_hex": "6162637f"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "616263",
+      "ok": true,
+      "utf8_hex": "616263"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "2121616263616263",
+      "ok": true,
+      "utf8_hex": "2121616263616263"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "616263217e0a1b581b244221212121",
+      "ok": true,
+      "utf8_hex": "616263217e0a"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "5f6021217f1b24421b2428446162631b242844",
+      "ok": true,
+      "utf8_hex": "5f6021217fe981a7"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b242844616263",
+      "ok": true,
+      "utf8_hex": "e981a7"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "801b26401b24427f1b2428441b26401b2442616263",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b284a1b2428441b284a1b2428441b581b58",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b28491b2428441b581b28491b26401b24421b284a",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "2121",
+      "ok": true,
+      "utf8_hex": "2121"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "7f217e0a",
+      "ok": true,
+      "utf8_hex": "7f217e0a"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b28491b2428441b242844217e0a5f606162637f",
+      "ok": true,
+      "utf8_hex": "e392920ae8b786e981a75c7845337f"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b28491b28491b2842",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b284a7f",
+      "ok": true,
+      "utf8_hex": "7f"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b2849801b2428441b28497f616263",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "6162631b28491b28497f",
+      "ok": true,
+      "utf8_hex": "6162637f"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b242844616263217e0a",
+      "ok": true,
+      "utf8_hex": "e981a7e987825c7846450a"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "616263801b2842",
+      "ok": true,
+      "utf8_hex": "616263"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b244280",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b24421b2442801b581b26401b24421b242844",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b24425f601b28492121",
+      "ok": true,
+      "utf8_hex": "e78399efbda1efbda1"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "6162636162631b284a1b26401b2442",
+      "ok": true,
+      "utf8_hex": "616263616263"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "5f60217e0a21211b284221211b2849",
+      "ok": true,
+      "utf8_hex": "5f60217e0a21212121"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "7f1b24425f601b26401b24421b26401b2442",
+      "ok": true,
+      "utf8_hex": "7fe78399"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "5f606162631b26401b2442217e0a1b58616263",
+      "ok": true,
+      "utf8_hex": "5f60616263e297870a"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b28421b26401b24422121801b2842",
+      "ok": true,
+      "utf8_hex": "e38080"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "21211b284a1b24421b26401b2442616263217e0a",
+      "ok": true,
+      "utf8_hex": "2121e797b0e7a3a75c7846450a"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b587f1b581b2428441b2849",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "1b581b242943",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "21210e0e2121801b242943",
+      "ok": true,
+      "utf8_hex": "21210e0e21215c783830"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "616263",
+      "ok": true,
+      "utf8_hex": "616263"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "1b58210a211b581b580e",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "210a211b242943210a210f6162632121",
+      "ok": true,
+      "utf8_hex": "210a21210a210f6162632121"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "210a2121211b581b242943616263616263",
+      "ok": true,
+      "utf8_hex": "210a212121"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "800e800f0f80",
+      "ok": true,
+      "utf8_hex": "5c7838305c7838300f5c783830"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "0f210a210f210a210e",
+      "ok": true,
+      "utf8_hex": "0f210a210f210a210e"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "210a21210a21616263",
+      "ok": true,
+      "utf8_hex": "210a21210a21616263"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "6162631b242943210a21210a210e",
+      "ok": true,
+      "utf8_hex": "616263210a21210a210e"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "80210a216162632121210a210e",
+      "ok": true,
+      "utf8_hex": "5c783830210a216162632121210a210e"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "1b2429436162631b2429431b5880210a21",
+      "ok": true,
+      "utf8_hex": "616263"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "1b580e",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "802121210a211b58",
+      "ok": true,
+      "utf8_hex": "5c7838302121210a21"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "0e0f0e210a210f210a21",
+      "ok": true,
+      "utf8_hex": "5c7841310a5c784131210a21"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "6162630e616263",
+      "ok": true,
+      "utf8_hex": "6162630e616263"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "6162630e210a2121212121",
+      "ok": true,
+      "utf8_hex": "6162630e210a2121212121"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "0e6162631b58",
+      "ok": true,
+      "utf8_hex": "0e616263"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "1b58210a21800f",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "0f800e",
+      "ok": true,
+      "utf8_hex": "0f5c7838300e"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "1b580f616263",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "210a211b58",
+      "ok": true,
+      "utf8_hex": "210a21"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "6162636162630f1b58",
+      "ok": true,
+      "utf8_hex": "6162636162630f"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "802121",
+      "ok": true,
+      "utf8_hex": "5c7838302121"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "801b58",
+      "ok": true,
+      "utf8_hex": "5c783830"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "0e800e6162636162631b242943",
+      "ok": true,
+      "utf8_hex": "0e5c7838300e616263616263"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "801b242943",
+      "ok": true,
+      "utf8_hex": "5c783830"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "1b242943210a210e",
+      "ok": true,
+      "utf8_hex": "210a210e"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "1b588021212121210a21",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "1b2429430f6162630e616263",
+      "ok": true,
+      "utf8_hex": "0f6162630e616263"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "616263210a21616263",
+      "ok": true,
+      "utf8_hex": "616263210a21616263"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "0e0e2121",
+      "ok": true,
+      "utf8_hex": "0e0e2121"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "21211b58",
+      "ok": true,
+      "utf8_hex": "2121"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "61626321211b2429431b242943616263",
+      "ok": true,
+      "utf8_hex": "6162632121616263"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "1b242943",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "0e21210f",
+      "ok": true,
+      "utf8_hex": "e38080"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "1b2429430f8021210e80616263",
+      "ok": true,
+      "utf8_hex": "0f5c78383021210e5c783830616263"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "0e2121616263",
+      "ok": true,
+      "utf8_hex": "0e2121616263"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "80210a216162636162631b242943210a21",
+      "ok": true,
+      "utf8_hex": "5c783830210a21616263616263210a21"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "801b5821218061626380",
+      "ok": true,
+      "utf8_hex": "5c783830"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "210a211b242943801b242943",
+      "ok": true,
+      "utf8_hex": "210a215c783830"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "210a211b5821210e210a21",
+      "ok": true,
+      "utf8_hex": "210a21"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "80",
+      "ok": true,
+      "utf8_hex": "5c783830"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "21210f",
+      "ok": true,
+      "utf8_hex": "21210f"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "2121",
+      "ok": true,
+      "utf8_hex": "2121"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "21210f210a21",
+      "ok": true,
+      "utf8_hex": "21210f210a21"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "0e",
+      "ok": true,
+      "utf8_hex": "0e"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "21210f6162630f6162630f",
+      "ok": true,
+      "utf8_hex": "21210f6162630f6162630f"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "0e6162630f1b5880",
+      "ok": true,
+      "utf8_hex": "e9a3a1"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "210a21",
+      "ok": true,
+      "utf8_hex": "210a21"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "0e6162630e6162631b580e210a21",
+      "ok": true,
+      "utf8_hex": "0e6162630e616263"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "0e616263",
+      "ok": true,
+      "utf8_hex": "0e616263"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "1b2429432121210a2121216162631b242943",
+      "ok": true,
+      "utf8_hex": "2121210a212121616263"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "210a21800e",
+      "ok": true,
+      "utf8_hex": "210a215c7838300e"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "1b582121",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "21211b242943",
+      "ok": true,
+      "utf8_hex": "2121"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "0e1b242943212121211b581b2429430e",
+      "ok": true,
+      "utf8_hex": "0e21212121"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "800f21210e1b242943",
+      "ok": true,
+      "utf8_hex": "5c7838300f21210e"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "0e",
+      "ok": true,
+      "utf8_hex": "0e"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "1b58210a210e0f1b58",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "210a21",
+      "ok": true,
+      "utf8_hex": "210a21"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "0f212180",
+      "ok": true,
+      "utf8_hex": "0f21215c783830"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "1b580e0e21210e616263",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "210a2180210a21616263616263",
+      "ok": true,
+      "utf8_hex": "210a215c783830210a21616263616263"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "1b24294380800f",
+      "ok": true,
+      "utf8_hex": "5c7838305c7838300f"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "801b2429432121",
+      "ok": true,
+      "utf8_hex": "5c7838302121"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "210a21",
+      "ok": true,
+      "utf8_hex": "210a21"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "210a2161626361626361626321210f",
+      "ok": true,
+      "utf8_hex": "210a2161626361626361626321210f"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "210a210f1b242943210a21",
+      "ok": true,
+      "utf8_hex": "210a210f210a21"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "80616263",
+      "ok": true,
+      "utf8_hex": "5c783830616263"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "0e0e",
+      "ok": true,
+      "utf8_hex": "0e0e"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "21218080800e801b242943",
+      "ok": true,
+      "utf8_hex": "21215c7838305c7838305c7838300e5c783830"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "0f616263",
+      "ok": true,
+      "utf8_hex": "0f616263"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "2121",
+      "ok": true,
+      "utf8_hex": "2121"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "800f6162630e8080",
+      "ok": true,
+      "utf8_hex": "5c7838300f6162630e5c7838305c783830"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "210a2161626380",
+      "ok": true,
+      "utf8_hex": "210a216162635c783830"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "801b5821212121",
+      "ok": true,
+      "utf8_hex": "5c783830"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "6162631b5880210a2180210a21",
+      "ok": true,
+      "utf8_hex": "616263"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "2121210a212121",
+      "ok": true,
+      "utf8_hex": "2121210a212121"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "6162631b2429430f21210f2121",
+      "ok": true,
+      "utf8_hex": "6162630f21210f2121"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "2121801b2429431b242943",
+      "ok": true,
+      "utf8_hex": "21215c783830"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "0e1b58806162630f",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "0f0e210a210f",
+      "ok": true,
+      "utf8_hex": "0f5c7841310a"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "80210a2161626321216162630e0f",
+      "ok": true,
+      "utf8_hex": "5c783830210a216162632121616263"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "210a21",
+      "ok": true,
+      "utf8_hex": "210a21"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "1b581b242943210a21210a211b242943616263",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "1b58",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "2121616263802121",
+      "ok": true,
+      "utf8_hex": "21216162635c7838302121"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "1b5821210f210a211b582121",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "212180",
+      "ok": true,
+      "utf8_hex": "21215c783830"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "616263",
+      "ok": true,
+      "utf8_hex": "616263"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "210a211b2429431b58",
+      "ok": true,
+      "utf8_hex": "210a21"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "1b581b2429430e80210a21616263",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "806162631b2429436162631b580e0f",
+      "ok": true,
+      "utf8_hex": "5c783830616263616263"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "0f210a21210a21",
+      "ok": true,
+      "utf8_hex": "0f210a21210a21"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "0f0e1b2429436162631b581b2429430f",
+      "ok": true,
+      "utf8_hex": "0fe9a3a1"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "80",
+      "ok": true,
+      "utf8_hex": "5c783830"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "1b581b2429432121",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "21210f2121",
+      "ok": true,
+      "utf8_hex": "21210f2121"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "210a210f21211b582121212180",
+      "ok": true,
+      "utf8_hex": "210a210f2121"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "2121210a21",
+      "ok": true,
+      "utf8_hex": "2121210a21"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "0f6162632121",
+      "ok": true,
+      "utf8_hex": "0f6162632121"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "0e21210e0e1b581b2429431b242943",
+      "ok": true,
+      "utf8_hex": "0e21210e0e"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "21211b2429431b581b58",
+      "ok": true,
+      "utf8_hex": "2121"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "0e1b242943",
+      "ok": true,
+      "utf8_hex": "0e"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "0f",
+      "ok": true,
+      "utf8_hex": "0f"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "21210e",
+      "ok": true,
+      "utf8_hex": "21210e"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "0e1b2429430e21210f",
+      "ok": true,
+      "utf8_hex": "0ee38080"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "0e6162631b2429430e616263800f",
+      "ok": true,
+      "utf8_hex": "e9a3a15c7845330ee9a3a15c7845335c783830"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "0e80210a216162630e",
+      "ok": true,
+      "utf8_hex": "0e5c783830210a216162630e"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "0f1b58210a212121",
+      "ok": true,
+      "utf8_hex": "0f"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "21210f0e210a21210a210f1b58",
+      "ok": true,
+      "utf8_hex": "21210f5c7841310ae380800a"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "1b242943",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "2121",
+      "ok": true,
+      "utf8_hex": "2121"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "21210f21212121800f210a21",
+      "ok": true,
+      "utf8_hex": "21210f212121215c7838300f210a21"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "21211b58",
+      "ok": true,
+      "utf8_hex": "2121"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "6162631b2429431b58",
+      "ok": true,
+      "utf8_hex": "616263"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "800f0e",
+      "ok": true,
+      "utf8_hex": "5c7838300f0e"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "8080800e61626380",
+      "ok": true,
+      "utf8_hex": "5c7838305c7838305c7838300e6162635c783830"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "1b2429431b580e2121616263",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "217e7e21210a7e0a",
+      "ok": true,
+      "utf8_hex": "217e21210a"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "800a7e7e7e0a",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "807e7b217e7e787e616263",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7d7e7e0a0a2121217e217e",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7e80",
+      "ok": true,
+      "utf8_hex": "7e"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7d0a7e0a",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "807e7e217e217e",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "2121",
+      "ok": true,
+      "utf8_hex": "2121"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e2121217e2121217e7e0a",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "21217e7d7e78",
+      "ok": true,
+      "utf8_hex": "2121"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "80217e217e80",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "807e21216162637e7b7e0a7e",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "80",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e0a",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7d7e7d",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7d217e807e7b7e7d",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7b21212121800a7e7e",
+      "ok": true,
+      "utf8_hex": "e38080e38080"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "0a21217e7e",
+      "ok": true,
+      "utf8_hex": "0a21217e"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "21217e7b7e7d7e7b80",
+      "ok": true,
+      "utf8_hex": "2121"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "21217e787e7b7e",
+      "ok": true,
+      "utf8_hex": "2121"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7e616263",
+      "ok": true,
+      "utf8_hex": "7e616263"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7b807e780a7e787e7b",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7e0a7e7e7b0a7e80",
+      "ok": true,
+      "utf8_hex": "7e0a7e7b0a"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "217e7e7e7e",
+      "ok": true,
+      "utf8_hex": "217e7e"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7e787e7e7e7e7e7e7e",
+      "ok": true,
+      "utf8_hex": "7e787e7e7e"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "0a",
+      "ok": true,
+      "utf8_hex": "0a"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e787e7d217e2121807e0a",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e78807e7d7e7e7e21217e0a",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7e2121616263616263",
+      "ok": true,
+      "utf8_hex": "7e2121616263616263"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "0a217e",
+      "ok": true,
+      "utf8_hex": "0a21"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e0a7e7d",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e0a7e6162637e0a217e",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "0a7e7b217e217e7e7b",
+      "ok": true,
+      "utf8_hex": "0ae38093e38093"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7e21217e7b",
+      "ok": true,
+      "utf8_hex": "7e2121"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7d7e7e21217e7b",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7b7e7b80616263",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "8080217e7e7b7e7b",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e0a0a7e",
+      "ok": true,
+      "utf8_hex": "0a"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7b7e7e7b807e7e7e7d",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e217e7e7b7e0a7e787e0a616263",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e217e7e7d7e7e",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7d7e7b7e7d7e7d807e78",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7e7e7d807e0a7e616263217e",
+      "ok": true,
+      "utf8_hex": "7e"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "217e7e7e7e7d0a7e7e0a",
+      "ok": true,
+      "utf8_hex": "217e7e7d0a7e0a"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e782121",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7e78807e0a",
+      "ok": true,
+      "utf8_hex": "7e78"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "21217e0a7e7b7e78217e",
+      "ok": true,
+      "utf8_hex": "2121"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "6162637e0a7e7e",
+      "ok": true,
+      "utf8_hex": "6162637e"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7d2121",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "616263807e7b0a7e0a",
+      "ok": true,
+      "utf8_hex": "616263"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "616263217e7e7d",
+      "ok": true,
+      "utf8_hex": "616263217e7d"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "80",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7e7e7d21217e",
+      "ok": true,
+      "utf8_hex": "7e"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7e217e0a",
+      "ok": true,
+      "utf8_hex": "7e21"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "2121807e7d7e7e7e78217e7e",
+      "ok": true,
+      "utf8_hex": "2121"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "2121807e787e7d7e",
+      "ok": true,
+      "utf8_hex": "2121"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e80",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "807e7e7e7d217e21210a",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7e7b",
+      "ok": true,
+      "utf8_hex": "7e7b"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7e7e0a",
+      "ok": true,
+      "utf8_hex": "7e"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7e7e0a",
+      "ok": true,
+      "utf8_hex": "7e"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "21217e0a7e7821217e7d7e0a",
+      "ok": true,
+      "utf8_hex": "2121"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "217e7e0a217e6162630a7e0a616263",
+      "ok": true,
+      "utf8_hex": "217e0a21"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e787e0a",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e21210a",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "217e7e7e80",
+      "ok": true,
+      "utf8_hex": "217e"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "217e",
+      "ok": true,
+      "utf8_hex": "21"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7d7e7e",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e787e787e787e0a",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7d7e78217e7e7b",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e0a807e78217e807e7b2121",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "0a7e7b7e787e7e6162630a",
+      "ok": true,
+      "utf8_hex": "0a"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7e7e807e7e78616263217e",
+      "ok": true,
+      "utf8_hex": "7e"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7d7e7e7d7e7b0a7e",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e80",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "217e7e7e7e7e7d0a",
+      "ok": true,
+      "utf8_hex": "217e7e"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7d7e78217e7e0a0a7e0a",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e0a7e7d6162637e7e787e7e7e",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "6162637e0a7e7d7e807e0a",
+      "ok": true,
+      "utf8_hex": "616263"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7e21217e0a21217e",
+      "ok": true,
+      "utf8_hex": "7e21212121"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7e0a21212121",
+      "ok": true,
+      "utf8_hex": "7e0a21212121"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7b7e7e7e787e787e7b217e217e",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "21217e7e782121",
+      "ok": true,
+      "utf8_hex": "21217e782121"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "21217e2121807e",
+      "ok": true,
+      "utf8_hex": "2121"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "806162630a7e2121616263",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7d2121",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7b616263",
+      "ok": true,
+      "utf8_hex": "e5be95"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7e7e7b",
+      "ok": true,
+      "utf8_hex": "7e"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "2121217e7e7e",
+      "ok": true,
+      "utf8_hex": "2121217e"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7e6162637e787e0a21210a",
+      "ok": true,
+      "utf8_hex": "7e616263"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "61626321216162636162637e78",
+      "ok": true,
+      "utf8_hex": "6162632121616263616263"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7b7e7d",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "6162637e7b7e7e217e21217e7e7d",
+      "ok": true,
+      "utf8_hex": "616263"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7b7e7b7e7b",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7e7d616263217e7e78",
+      "ok": true,
+      "utf8_hex": "7e7d616263217e78"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7d7e0a7e0a",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "616263616263807e0a0a",
+      "ok": true,
+      "utf8_hex": "616263616263"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "6162637e7b7e7e7e7d7e7b",
+      "ok": true,
+      "utf8_hex": "616263"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7b7e0a7e7b7e7e7e0a616263",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "2121",
+      "ok": true,
+      "utf8_hex": "2121"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "0a7e0a",
+      "ok": true,
+      "utf8_hex": "0a"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "807e78",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e0a2121616263",
+      "ok": true,
+      "utf8_hex": "2121616263"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e787e0a7e7b",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7e7e78217e7e7d6162637e0a217e",
+      "ok": true,
+      "utf8_hex": "7e"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7e0a217e7e7d",
+      "ok": true,
+      "utf8_hex": "7e0a217e7d"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "217e807e7d7e7b2121",
+      "ok": true,
+      "utf8_hex": "21"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "6162637e7d80217e7e0a",
+      "ok": true,
+      "utf8_hex": "616263"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "21217e0a7e7e7e",
+      "ok": true,
+      "utf8_hex": "21217e"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "21210a7e",
+      "ok": true,
+      "utf8_hex": "21210a"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e0a217e",
+      "ok": true,
+      "utf8_hex": "21"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "217e7e7b",
+      "ok": true,
+      "utf8_hex": "217e7b"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e78807e7e7e7b7e0a7e",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7e7e7e0a",
+      "ok": true,
+      "utf8_hex": "7e7e0a"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "0a217e7e7821217e0a",
+      "ok": true,
+      "utf8_hex": "0a217e782121"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "0a7e7b",
+      "ok": true,
+      "utf8_hex": "0a"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "616263616263",
+      "ok": true,
+      "utf8_hex": "616263616263"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7e",
+      "ok": true,
+      "utf8_hex": "7e"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e80217e6162637e0a7e7e",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "UTF-16",
+      "input_hex": "",
+      "ok": true,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "UTF-16",
+      "input_hex": "0041",
+      "ok": true,
+      "utf8_hex": "41"
+    },
+    {
+      "encoding": "UTF-16",
+      "input_hex": "fffe4100",
+      "ok": true,
+      "utf8_hex": "41"
+    },
+    {
+      "encoding": "UTF-16",
+      "input_hex": "feff0041",
+      "ok": true,
+      "utf8_hex": "41"
+    },
+    {
+      "encoding": "UTF-16",
+      "input_hex": "00",
+      "ok": false,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "UTF-16",
+      "input_hex": "d800dc00",
+      "ok": true,
+      "utf8_hex": "f0908080"
+    },
+    {
+      "encoding": "UTF-16",
+      "input_hex": "d800",
+      "ok": false,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "UTF-16",
+      "input_hex": "dc00",
+      "ok": false,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "UTF-16",
+      "input_hex": "fffefeff",
+      "ok": false,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "UTF-16",
+      "input_hex": "ffff",
+      "ok": false,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "UTF-16",
+      "input_hex": "fffeff",
+      "ok": false,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "UTF-16LE",
+      "input_hex": "4100",
+      "ok": true,
+      "utf8_hex": "41"
+    },
+    {
+      "encoding": "UTF-16LE",
+      "input_hex": "00d800dc",
+      "ok": true,
+      "utf8_hex": "f0908080"
+    },
+    {
+      "encoding": "UTF-16LE",
+      "input_hex": "fffe4100",
+      "ok": true,
+      "utf8_hex": "41"
+    },
+    {
+      "encoding": "UTF-16LE",
+      "input_hex": "feff",
+      "ok": false,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "UTF-16LE",
+      "input_hex": "00dc",
+      "ok": false,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "UTF-16LE",
+      "input_hex": "00d84100",
+      "ok": false,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "iso-8859-1",
+      "input_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+      "ok": true,
+      "utf8_hex": "c280c281c282c283c2840ac286c287c288c289c28ac28bc28cc28dc28ec28fc290c291c292c293c294c295c296c297c298c299c29ac29bc29cc29dc29ec29f"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "6162637e",
+      "ok": true,
+      "utf8_hex": "616263"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "6162637e78",
+      "ok": true,
+      "utf8_hex": "616263"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7b21217e7d",
+      "ok": true,
+      "utf8_hex": "e38080"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7b2121",
+      "ok": true,
+      "utf8_hex": "e38080"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7b21217e7d5a",
+      "ok": true,
+      "utf8_hex": "e380805a"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7b217e7d",
+      "ok": true,
+      "utf8_hex": "e38093"
+    },
+    {
+      "encoding": "hz",
+      "input_hex": "7e7b21217e0a21217e7d",
+      "ok": true,
+      "utf8_hex": "e38080"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "6162631b",
+      "ok": true,
+      "utf8_hex": "616263"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b244221211b284258",
+      "ok": true,
+      "utf8_hex": "e3808058"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b2442211b284258",
+      "ok": true,
+      "utf8_hex": "5c78413158"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b2849215f1b2842",
+      "ok": true,
+      "utf8_hex": "efbda1efbe9f"
+    },
+    {
+      "encoding": "iso-2022-jp",
+      "input_hex": "1b2442210a21",
+      "ok": true,
+      "utf8_hex": "5c7841310a"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "1b2429430e21210f58",
+      "ok": true,
+      "utf8_hex": "e3808058"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "1b2429430e2121",
+      "ok": true,
+      "utf8_hex": "0e2121"
+    },
+    {
+      "encoding": "iso-2022-kr",
+      "input_hex": "581b5a",
+      "ok": true,
+      "utf8_hex": "58"
+    },
+    {
+      "encoding": "UTF-8",
+      "input_hex": "efb790",
+      "ok": false,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "UTF-16BE",
+      "input_hex": "fdd0",
+      "ok": false,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "UTF-32BE",
+      "input_hex": "0000fdd0",
+      "ok": false,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "UTF-8",
+      "input_hex": "f09fbfbe",
+      "ok": false,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "UTF-16BE",
+      "input_hex": "d83fdffe",
+      "ok": false,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "UTF-32BE",
+      "input_hex": "0001fffe",
+      "ok": false,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "UTF-8",
+      "input_hex": "f48fbfbf",
+      "ok": false,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "UTF-16BE",
+      "input_hex": "dbffdfff",
+      "ok": false,
+      "utf8_hex": ""
+    },
+    {
+      "encoding": "UTF-32BE",
+      "input_hex": "0010ffff",
+      "ok": false,
+      "utf8_hex": ""
+    }
+  ]
+}

@@ -11,21 +11,21 @@ pub fn parse(control: &Control, entry: &mut Entry, field: &str, value: &str) {
     entry.fields.remove(field);
     let mut split=value.split('/');
     let start=split.next().unwrap_or("");let end=split.next();
-    if split.next().is_some() || (start.is_empty() && end.unwrap_or("").is_empty()) {warn_invalid(entry,field,value,false);return;}
+    if split.next().is_some() || (!date_truthy(start) && !date_truthy(end.unwrap_or(""))) {warn_invalid(entry,field,value,false);return;}
     let expanded=expand_unspecified(start);
     let (start,end,unspecified)=if let Some((a,b,u))=&expanded {(a.as_str(),Some(b.as_str()),Some(*u))}
         else if start.contains('X'){("",None,None)}else{(start,end,None)};
-    if end.is_some_and(str::is_empty){entry.flags.insert(format!("{prefix}enddateunknown"));}
-    if end.is_some() && start.is_empty(){entry.flags.insert(format!("{prefix}dateunknown"));}
+    if let Some(u)=unspecified {derived_field(entry,format!("{prefix}dateunspecified"),u.to_owned());}
+    if end.is_some_and(|v|!date_truthy(v)){entry.flags.insert(format!("{prefix}enddateunknown"));}
+    if end.is_some() && !date_truthy(start){entry.flags.insert(format!("{prefix}dateunknown"));}
     let Some(first)=parse_point(control,start) else {warn_invalid(entry,field,value,false);return};
-    if let Some(u)=unspecified {entry.fields.insert(format!("{prefix}dateunspecified"),u.to_owned());}
     let start_present=first.era.is_some();
     if prefix.is_empty() && start_present {
         for part in ["year","month"] {
             if let (Some(previous),Some(next))=(entry.fields.get(part),first.parts.get(part)) {
                 let parsed=next.chars().map(|c|decimal(c).map_or(c,|d|char::from(b'0'+d))).collect::<String>().parse::<i64>().unwrap_or(0);
-                let legacy=previous.parse::<i64>().unwrap_or(0);
-                if !previous.is_empty() && previous!="0" && (part!="year" || parsed!=0) && parsed!=legacy {
+                let legacy=legacy_numeric(previous);
+                if date_truthy(previous) && (part!="year" || parsed!=0) && parsed as f64!=legacy {
                     entry.warnings.push(format!("Overwriting field '{part}' with {part} value from field 'date' for entry '{}'",entry.key));
                 }
             }
@@ -37,14 +37,56 @@ pub fn parse(control: &Control, entry: &mut Entry, field: &str, value: &str) {
             // Biber collects end-point metadata only inside its nonempty-start branch.
             if !start_present {last.uncertain=false;last.approximate=false;last.julian=false;}
             apply(entry,prefix,"end",last);
-        }else{warn_invalid(entry,field,value,true);}
+        }else{
+            // Metadata is captured by Date::Format preprocessing even when the endpoint fails.
+            if start_present {let (uncertain,approximate)=metadata(end);if uncertain{entry.flags.insert(format!("{prefix}enddateuncertain"));}if approximate{entry.flags.insert(format!("{prefix}enddatecirca"));}}
+            warn_invalid(entry,field,value,true);
+        }
     }
 }
+
+/// BiblateXML stores start/end independently and never expands unspecified dates into an end.
+pub fn parse_xml(control:&Control,entry:&mut Entry,field:&str,start:&str,end:Option<&str>)->Result<(),String>{
+    let prefix=field.strip_suffix("date").unwrap_or(field);
+    entry.fields.remove(field);
+    entry.computed.insert(format!("{prefix}datesplit"),"1".to_owned());
+    let mut split=start.split('/');let first=split.next().unwrap_or("");let last=split.next();
+    let valid_range=date_truthy(first)||last.is_some_and(date_truthy);
+    let expanded=expand_unspecified(first);
+    let (first,last,unspecified)=if let Some((a,b,u))=&expanded{(a.as_str(),Some(b.as_str()),Some(*u))}else if first.contains('X'){("",None,None)}else{(first,last,None)};
+    if valid_range&&last.is_some_and(|v|!date_truthy(v)){entry.flags.insert(format!("{prefix}enddateunknown"));}
+    if valid_range&&last.is_some()&&!date_truthy(first){entry.flags.insert(format!("{prefix}dateunknown"));}
+    let parsed=if valid_range&&split.next().is_none(){parse_point(control,first)}else{None};
+    // Perl's list assignment is truthy even on a failed parse: the accessor raises a fatal error.
+    let p=parsed.ok_or_else(||"Can't call method \"year\" on an undefined value".to_owned())?;
+    if p.era.is_none(){return Err("Can't locate object method \"year\" via package \"0\"".to_owned());}
+    if let Some(u)=unspecified{derived_field(entry,format!("{prefix}dateunspecified"),u.to_owned());}
+    apply_xml(entry,prefix,"",p);
+    if let Some(end)=end{
+        if let Some(p)=parse_point(control,end){apply_xml(entry,prefix,"end",p);}
+        else{entry.warnings.push(format!("{} entry '{}' ({}): Invalid format '{}' of date field 'bltx:date' range end - ignoring",entry.kind,entry.key,entry.source,end));}
+    }
+    Ok(())
+}
+fn apply_xml(entry:&mut Entry,prefix:&str,end:&str,mut p:Point){
+    // XML dates use DateTime accessors directly rather than restoring Unicode digit scripts.
+    for (part,value) in &mut p.parts{
+        if *part=="yeardivision"||*part=="timezone"||value.is_empty(){continue;}
+        let normalized:String=value.chars().map(|c|decimal(c).map_or(c,|d|char::from(b'0'+d))).collect();
+        *value=normalized.parse::<i64>().map(|v|v.to_string()).unwrap_or(normalized);
+    }
+    apply(entry,prefix,end,p);
+}
+fn date_truthy(raw:&str)->bool{!raw.is_empty()&&raw!="0"}
 
 #[derive(Default)]
 struct Point {parts:BTreeMap<&'static str,String>,era:Option<&'static str>,uncertain:bool,approximate:bool,julian:bool,dayofyear:Option<u16>}
 fn apply(entry:&mut Entry,prefix:&str,end:&str,p:Point){
-    for (part,value) in p.parts {entry.fields.insert(format!("{prefix}{end}{part}"),value);}
+    for (part,value) in p.parts {
+        let name=format!("{prefix}{end}{part}");
+        if part=="yeardivision"{derived_field(entry,name,value);}
+        else{entry.fields.insert(name,value);}
+    }
     if let Some(era)=p.era {
         entry.computed.insert(format!("{prefix}datesplit"),"1".to_owned());
         entry.computed.insert(format!("{prefix}{end}era"),era.to_owned());
@@ -54,40 +96,80 @@ fn apply(entry:&mut Entry,prefix:&str,end:&str,p:Point){
     if p.approximate {entry.flags.insert(format!("{prefix}{end}datecirca"));}
     if p.julian {entry.flags.insert(format!("{prefix}{end}datejulian"));}
 }
+
+/// Authored datafields shadow generated divisions without deleting the derived value.
+pub(crate) fn authored_field(entry:&mut Entry,field:&str){
+    if !field.ends_with("yeardivision")&&!field.ends_with("dateunspecified"){return;}
+    if entry.computed.remove(&format!("derivedfield:{field}")).is_some(){
+        if let Some(value)=entry.fields.remove(field){entry.computed.insert(format!("shadowderivedfield:{field}"),value);}
+    }
+}
+
+/// A datafield takes precedence over a derived field even when the date node comes later.
+pub(crate) fn derived_field(entry:&mut Entry,field:String,value:String){
+    let marker=format!("derivedfield:{field}");
+    if entry.fields.contains_key(&field)&&!entry.computed.contains_key(&marker){
+        entry.computed.insert(format!("shadowderivedfield:{field}"),value);
+    }else{
+        entry.fields.insert(field,value);entry.computed.insert(marker,"1".to_owned());
+    }
+}
 fn leap(year:i64)->bool{year%4==0 && (year%100!=0 || year%400==0)}
 fn month_days(year:i64,month:u8)->u8{match month{1|3|5|7|8|10|12=>31,4|6|9|11=>30,2=>if leap(year){29}else{28},_=>0}}
 fn expand_unspecified(s:&str)->Option<(String,String,&'static str)>{
-    if !s.is_ascii(){
-        let normalized:String=s.chars().map(|c|if matches!(c,'\u{2010}'..='\u{2015}'|'\u{2e17}'|'\u{2e1a}'|'\u{2e3a}'|'\u{2e3b}'|'\u{301c}'|'\u{3030}'|'\u{fe31}'|'\u{fe32}'|'\u{fe58}'|'\u{fe63}'|'\u{ff0d}'){'-'}else{c}).collect();
-        return if normalized.is_ascii(){expand_unspecified(&normalized)}else{None};
-    }
-    if s.len()==4 && s[..3].bytes().all(|c|c.is_ascii_digit()) && s.ends_with('X'){return Some((s.replace('X',"0"),s.replace('X',"9"),"yearindecade"));}
-    if s.len()==4 && s[..2].bytes().all(|c|c.is_ascii_digit()) && s.ends_with("XX"){return Some((s.replace('X',"0"),s.replace('X',"9"),"yearincentury"));}
+    if !s.contains('X'){return None;}
+    let normalized:String=s.chars().map(|c|if matches!(c,'\u{2010}'..='\u{2015}'|'\u{2e17}'|'\u{2e1a}'|'\u{2e3a}'|'\u{2e3b}'|'\u{301c}'|'\u{3030}'|'\u{fe31}'|'\u{fe32}'|'\u{fe58}'|'\u{fe63}'|'\u{ff0d}'|'\u{2212}'|'\u{05be}'|'\u{1400}'|'\u{1806}'|'\u{10ead}'){'-'}else{c}).collect();
+    let s=normalized.as_str();
+    let chars:Vec<char>=s.chars().collect();
+    if chars.len()==4 && chars[..3].iter().all(|c|decimal(*c).is_some()) && chars[3]=='X'{return Some((s.replace('X',"0"),s.replace('X',"9"),"yearindecade"));}
+    if chars.len()==4 && chars[..2].iter().all(|c|decimal(*c).is_some()) && chars[2..]==['X','X']{return Some((s.replace('X',"0"),s.replace('X',"9"),"yearincentury"));}
     let parts:Vec<_>=s.split('-').collect();
-    if parts.first()?.len()!=4 || !parts[0].bytes().all(|c|c.is_ascii_digit()){return None;}
+    if parts.first()?.chars().count()!=4 || !parts[0].chars().all(|c|decimal(c).is_some()){return None;}
     match parts.as_slice(){
         [year,"XX"]=>Some((format!("{year}-01"),format!("{year}-12"),"monthinyear")),
         [year,"XX","XX"]=>Some((format!("{year}-01-01"),format!("{year}-12-31"),"dayinyear")),
-        [year,month,"XX"] if month.len()==2=>{let y=year.parse().ok()?;let m=month.parse().ok()?;let days=month_days(y,m);if days==0{return None;}Some((format!("{year}-{month}-01"),format!("{year}-{month}-{days}"),"dayinmonth"))},
+        [year,month,"XX"] if month.chars().count()==2 && month.chars().all(|c|decimal(c).is_some())=>{
+            let y=year.parse().unwrap_or(0);let days=month.parse().ok().map(|m|month_days(y,m)).unwrap_or(0);
+            Some((format!("{year}-{month}-01"),if days==0{format!("{year}-{month}-")}else{format!("{year}-{month}-{days}")},"dayinmonth"))
+        },
         _=>None,
     }
 }
 static DATE_RE:LazyLock<Regex>=LazyLock::new(||Regex::new(r"^(?:(-?[0-9]{4})(?:-([0-9]{2})(?:-([0-9]{2})(?:T([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.[0-9]{3})?)?)?)?|Y(-?[0-9]{5,}))$").unwrap());
 fn parse_point(control:&Control,raw:&str)->Option<Point>{
-    if raw.is_empty() || raw==".." {let mut p=Point::default();p.parts.insert("year",String::new());return Some(p);}
-    let mut p=Point::default();let mut raw=raw.to_owned();
+    if !date_truthy(raw) || raw==".." {let mut p=Point::default();p.parts.insert("year",String::new());return Some(p);}
+    let mut p=Point::default();let mut raw=raw;
     // Biber removes these in this order, permitting '~?' as well as '%'.
-    if raw.trim_end().ends_with('?'){p.uncertain=true;raw=raw.trim().strip_suffix('?')?.trim().to_owned();}
-    if raw.trim_end().ends_with('~'){p.approximate=true;raw=raw.trim().strip_suffix('~')?.trim().to_owned();}
-    if raw.trim_end().ends_with('%'){p.uncertain=true;p.approximate=true;raw=raw.trim().strip_suffix('%')?.trim().to_owned();}
-    let mut scripts=BTreeMap::new();
-    let mut ascii=String::with_capacity(raw.len());let mut run=String::new();let mut arabic=String::new();
+    if let Some(v)=strip_marker(raw,'?'){p.uncertain=true;raw=v;}
+    if let Some(v)=strip_marker(raw,'~'){p.approximate=true;raw=v;}
+    if let Some(v)=strip_marker(raw,'%'){p.uncertain=true;p.approximate=true;raw=v;}
+    let mut scripts=BTreeMap::new();let mut conversion=BTreeMap::new();
+    let mut ascii=String::with_capacity(raw.len());
+    if raw.is_ascii(){ascii.push_str(raw);}else{
+    let mut run=String::new();let mut arabic=String::new();
     for c in raw.chars().chain(std::iter::once('\0')) {
         if let Some(d)=decimal(c){run.push(c);arabic.push(char::from(b'0'+d));}
         else{
-            if !run.is_empty(){if run!=arabic {scripts.insert(arabic.clone(),run.clone());if let Ok(n)=arabic.parse::<u64>(){scripts.insert(n.to_string(),run.clone());}}ascii.push_str(&arabic);run.clear();arabic.clear();}
+            if !run.is_empty(){
+                // Unicode::UCD::num rejects mixed digit scripts; sprintf then treats undef as zero.
+                let mut bases=run.chars().map(|c|c as u32-decimal(c).unwrap()as u32);let base=bases.next().unwrap();
+                let mixed=bases.any(|b|b!=base);
+                if mixed{arabic="0".repeat(run.chars().count());}
+                if run!=arabic {
+                    scripts.insert(arabic.clone(),run.clone());
+                    if !mixed {if let Ok(n)=arabic.parse::<u64>(){scripts.insert(n.to_string(),run.clone());}}
+                    conversion.insert(run.clone(),arabic.clone());
+                }
+                run.clear();arabic.clear();
+            }
+        }
+    }
+    for c in raw.chars().chain(std::iter::once('\0')){
+        if decimal(c).is_some(){run.push(c);}else{
+            if !run.is_empty(){if conversion.is_empty(){ascii.push_str(&run);}else if let Some(v)=conversion.get(&run){ascii.push_str(v);}run.clear();}
             if c!='\0'{ascii.push(c);}
         }
+    }
     }
     if !ascii.is_ascii(){return None;}
     let mut zone=None;
@@ -96,13 +178,14 @@ fn parse_point(control:&Control,raw:&str)->Option<Point>{
         let z=&ascii[ascii.len()-6..];
         if matches!(z.as_bytes()[0],b'+'|b'-') && z.as_bytes()[3]==b':' && z[1..3].bytes().all(|c|c.is_ascii_digit()) && z[4..].bytes().all(|c|c.is_ascii_digit()) {
             let h:u8=z[1..3].parse().ok()?;let m:u8=z[4..].parse().ok()?;
-            if h>23||m>59{return None;}
-            zone=Some(format!("{}\\bibtzminsep {}",&z[..3],&z[4..]));ascii.truncate(ascii.len()-6);
+            if m>59{return None;}
+            zone=Some(if h==0&&m==0{"Z".to_owned()}else{format!("{}\\bibtzminsep {}",&z[..3],&z[4..])});ascii.truncate(ascii.len()-6);
         }
     }
     let caps=DATE_RE.captures(&ascii)?;
-    let year:i64=caps.get(1).or_else(||caps.get(7))?.as_str().parse().ok()?;
-    // DateTime accepts only a finite signed machine integer range.
+    let year=perl_year(caps.get(1).or_else(||caps.get(7))?.as_str())?;
+    // DateTime's native calendar roundtrip uses signed 64-bit wrapping arithmetic.
+    let year=if caps.get(7).is_some(){datetime_year(year)}else{year};
     p.era=Some(if year<=0{"bce"}else{"ce"});
     let year_text=year.to_string();p.parts.insert("year",scripts.get(&year_text).cloned().unwrap_or(year_text));
     let mut month=None;let mut day=None;
@@ -118,8 +201,8 @@ fn parse_point(control:&Control,raw:&str)->Option<Point>{
         if second==60 && !valid_leap_second(year,month?,day?,hour,minute,zone.as_deref()){return None;}
         for (name,value) in [("hour",hour),("minute",minute),("second",second)]{let v=value.to_string();p.parts.insert(name,scripts.get(&v).cloned().unwrap_or(v));}
     }
-    if let Some(zone)=zone {p.parts.insert("timezone",zone);}
-    if control.option("","julian")=="true" {
+    if caps.get(4).is_some(){if let Some(zone)=zone {p.parts.insert("timezone",zone);}}
+    if matches!(control.option("","julian"),"true"|"1") {
         if let (Some(m),Some(d))=(month,day) {
             let boundary=control.option("","gregorianstart");
             let mut parts=boundary.split('-').filter_map(|v|v.parse::<i64>().ok());
@@ -127,7 +210,7 @@ fn parse_point(control:&Control,raw:&str)->Option<Point>{
             if (year,m as i64,d as i64)<cutoff {
                 let (jy,jm,jd)=gregorian_to_julian(year,m,d);
                 p.julian=true;p.era=Some(if jy<=0{"bce"}else{"ce"});
-                p.parts.insert("year",jy.to_string());p.parts.insert("month",jm.to_string());p.parts.insert("day",jd.to_string());
+                for (part,value) in [("year",jy.to_string()),("month",jm.to_string()),("day",jd.to_string())]{p.parts.insert(part,scripts.get(&value).cloned().unwrap_or(value));}
                 p.dayofyear=Some((1..jm).map(|m|julian_month_days(jy,m)as u16).sum::<u16>()+jd as u16);
             }
         }
@@ -162,6 +245,39 @@ fn valid_leap_second(year:i64,month:u8,day:u8,hour:u8,minute:u8,zone:Option<&str
     let target=day_number(year,month,day)+time.div_euclid(1440)as i128;
     const LEAPS:&[(i64,u8,u8)]=&[(1972,6,30),(1972,12,31),(1973,12,31),(1974,12,31),(1975,12,31),(1976,12,31),(1977,12,31),(1978,12,31),(1979,12,31),(1981,6,30),(1982,6,30),(1983,6,30),(1985,6,30),(1987,12,31),(1989,12,31),(1990,12,31),(1992,6,30),(1993,6,30),(1994,6,30),(1995,12,31),(1997,6,30),(1998,12,31),(2005,12,31),(2008,12,31),(2012,6,30),(2015,6,30),(2016,12,31)];
     LEAPS.iter().any(|&(y,m,d)|day_number(y,m,d)==target)
+}
+fn metadata(raw:&str)->(bool,bool){
+    let mut raw=raw;let mut uncertain=false;let mut approximate=false;
+    if let Some(v)=strip_marker(raw,'?'){uncertain=true;raw=v;}
+    if let Some(v)=strip_marker(raw,'~'){approximate=true;raw=v;}
+    if strip_marker(raw,'%').is_some(){uncertain=true;approximate=true;}
+    (uncertain,approximate)
+}
+fn strip_marker(raw:&str,marker:char)->Option<&str>{
+    let prefix=raw.trim().strip_suffix(marker)?.trim();
+    (!prefix.is_empty()).then_some(prefix)
+}
+fn legacy_numeric(raw:&str)->f64{
+    // Perl's numeric comparison accepts an initial numeric prefix, including exponent notation.
+    static NUMBER:LazyLock<Regex>=LazyLock::new(||Regex::new(r"^\s*([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)").unwrap());
+    NUMBER.captures(raw).and_then(|c|c.get(1)?.as_str().parse().ok()).unwrap_or(0.0)
+}
+fn perl_year(raw:&str)->Option<i64>{
+    if let Ok(v)=raw.parse::<i64>(){return Some(v);}
+    if !raw.starts_with('-'){return Some(raw.parse::<u64>().map(|v|v as i64).unwrap_or(-1));}
+    None
+}
+fn datetime_year(mut y:i64)->i64{
+    // DateTime.xs _ymd2rd(year, 1, 1), then _rd2ymd; preserve overflow, not idealised ISO arithmetic.
+    y=y.wrapping_sub(1);let mut d=1_i64;
+    if y<0{let adj=399_i64.wrapping_sub(y)/400;d=d.wrapping_sub(146097_i64.wrapping_mul(adj));y=y.wrapping_add(400_i64.wrapping_mul(adj));}
+    d=d.wrapping_add((13*367-1094)/12).wrapping_add((y%100).wrapping_mul(1461)/4).wrapping_add((y/100).wrapping_mul(36524).wrapping_add(y/400)).wrapping_sub(306);
+    d=d.wrapping_add(306);let mut adjustment=0_i64;
+    if d<=0{adjustment=(d.wrapping_neg()/146097).wrapping_add(1).wrapping_neg();d=d.wrapping_sub(adjustment.wrapping_mul(146097));}
+    let c=d.wrapping_mul(4).wrapping_sub(1)/146097;d=d.wrapping_sub(c.wrapping_mul(146097)/4);
+    let mut y=d.wrapping_mul(4).wrapping_sub(1)/1461;d=d.wrapping_sub(y.wrapping_mul(1461)/4);
+    let m=d.wrapping_mul(12).wrapping_add(1093)/367;y=y.wrapping_add(c.wrapping_mul(100)).wrapping_add(adjustment.wrapping_mul(400));
+    if m>12{y=y.wrapping_add(1);}y
 }
 fn warn_invalid(entry:&mut Entry,field:&str,value:&str,end:bool){
     entry.warnings.push(format!("{} entry '{}' ({}): Invalid format '{}' of {}date field '{}' - ignoring",entry.kind,entry.key,entry.source,value,if end{"end "}else{""},field));

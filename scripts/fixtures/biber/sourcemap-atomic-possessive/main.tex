@@ -1,0 +1,5 @@
+\documentclass{article}
+\usepackage[backend=biber,style=numeric,sorting=none]{biblatex}
+\DeclareSourcemap{\maps[datatype=bibtex]{\map[overwrite]{\step[fieldsource=title,match=\regexp{(?&gt;(Alpha|Al))pha},replace={wrong}]\step[fieldsource=title,match=\regexp{\w++\w},replace={wrong}]\step[fieldsource=title,match=\regexp{A++lpha},replace={First}]}}}
+\addbibresource{refs.bib}
+\begin{document}\nocite{*}\printbibliography\end{document}

@@ -1,0 +1,113 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{nyt/global//global/global/global}
+    \entry{b}{book}{}{}
+      \name{author}{2}{}{%
+        {{un=0,uniquepart=base,hash=4af4cfbe312650284afd806e0b65e87a}{%
+           family={Adams},
+           familyi={A\bibinitperiod},
+           given={Alice},
+           giveni={A\bibinitperiod},
+           givenun=0}}%
+        {{un=0,uniquepart=base,hash=68daf6a0f5044b721bd1b19645b725d7}{%
+           family={Brown},
+           familyi={B\bibinitperiod},
+           given={Bob},
+           giveni={B\bibinitperiod},
+           givenun=0}}%
+      }
+      \list{location}{1}{%
+        {Rome}%
+      }
+      \strng{namehash}{7a4c7800bbd344c76bc2c45e771bfb8c}
+      \strng{fullhash}{7a4c7800bbd344c76bc2c45e771bfb8c}
+      \strng{fullhashraw}{7a4c7800bbd344c76bc2c45e771bfb8c}
+      \strng{bibnamehash}{7a4c7800bbd344c76bc2c45e771bfb8c}
+      \strng{authorbibnamehash}{7a4c7800bbd344c76bc2c45e771bfb8c}
+      \strng{authornamehash}{7a4c7800bbd344c76bc2c45e771bfb8c}
+      \strng{authorfullhash}{7a4c7800bbd344c76bc2c45e771bfb8c}
+      \strng{authorfullhashraw}{7a4c7800bbd344c76bc2c45e771bfb8c}
+      \field{extraname}{1}
+      \field{sortinit}{A}
+      \field{sortinithash}{2f401846e2029bad6b3ecc16d50031e2}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Own}
+      \field{year}{2021}
+      \field{dateera}{ce}
+      \true{nocite}
+      \annotation{item}{author}{default}{1}{}{0}{shared}
+      \annotation{part}{author}{default}{2}{family}{1}{literal}
+    \endentry
+    \entry{a}{book}{}{}
+      \name{author}{3}{}{%
+        {{un=0,uniquepart=base,hash=5d0ddda3a367ceb26fbaeca02e391c22}{%
+           family={Smith},
+           familyi={S\bibinitperiod},
+           given={John},
+           giveni={J\bibinitperiod},
+           givenun=0}}%
+        {{un=0,uniquepart=base,hash=68daf6a0f5044b721bd1b19645b725d7}{%
+           family={Brown},
+           familyi={B\bibinitperiod},
+           given={Bob},
+           giveni={B\bibinitperiod},
+           givenun=0}}%
+        {{un=0,uniquepart=base,hash=045ddfa87955accc32625a989ce559a9}{%
+           family={Green},
+           familyi={G\bibinitperiod},
+           given={Jane},
+           giveni={J\bibinitperiod},
+           givenun=0}}%
+      }
+      \list{location}{3}{%
+        {Berlin}%
+        {Paris}%
+        {Rome}%
+      }
+      \strng{namehash}{693e355bc41fee59d7ded079af9bccb4}
+      \strng{fullhash}{693e355bc41fee59d7ded079af9bccb4}
+      \strng{fullhashraw}{693e355bc41fee59d7ded079af9bccb4}
+      \strng{bibnamehash}{693e355bc41fee59d7ded079af9bccb4}
+      \strng{authorbibnamehash}{693e355bc41fee59d7ded079af9bccb4}
+      \strng{authornamehash}{693e355bc41fee59d7ded079af9bccb4}
+      \strng{authorfullhash}{693e355bc41fee59d7ded079af9bccb4}
+      \strng{authorfullhashraw}{693e355bc41fee59d7ded079af9bccb4}
+      \field{sortinit}{S}
+      \field{sortinithash}{b164b07b29984b41daf1e85279fbc5ab}
+      \field{extradatescope}{labelyear}
+      \field{labeldatesource}{}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Shared Title}
+      \field{year}{2020}
+      \field{dateera}{ce}
+      \true{nocite}
+      \field{pages}{10\bibrangedash 14}
+      \range{pages}{5}
+      \annotation{part}{author}{default}{2}{family}{1}{literal}
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

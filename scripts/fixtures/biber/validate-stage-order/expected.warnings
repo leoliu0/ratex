@@ -1,0 +1,5 @@
+Datamodel: misc entry 'a' (refs.bib): Invalid field 'volume' for entrytype 'misc'
+Datamodel: misc entry 'a' (refs.bib): Invalid field 'volumes' for entrytype 'misc'
+Datamodel: misc entry 'a' (refs.bib): Missing mandatory field - one of 'date, year' must be defined
+Datamodel: misc entry 'a' (refs.bib): Mandatory fields - only one of 'volume, volumes' must be defined - ignoring field 'volumes'
+Datamodel: misc entry 'a' (refs.bib): Constraint violation - none of fields (title, note) must exist when one of fields (url) exist. Ignoring them.

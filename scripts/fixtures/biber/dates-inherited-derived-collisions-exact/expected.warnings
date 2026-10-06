@@ -1,0 +1,4 @@
+Datamodel: misc entry 'p' (refs.bib): Invalid field 'origyeardivision' for entrytype 'misc'
+Datamodel: misc entry 'p' (refs.bib): Invalid field 'yeardivision' for entrytype 'misc'
+Datamodel: misc entry 'childauthored' (refs.bib): Invalid field 'yeardivision' for entrytype 'misc'
+Datamodel: misc entry 'xchild' (refs.bib): Invalid field 'yeardivision' for entrytype 'misc'

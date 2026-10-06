@@ -1,0 +1,38 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{nyt/global//global/global/global}
+    \entry{a}{misc}{}{}
+      \field{sortinit}{Z}
+      \field{sortinithash}{96892c0b0a36bb8557c40c49813d48b3}
+      \field{labeldatesource}{nodate}
+      \field{labeltitlesource}{title}
+      \field{number}{0}
+      \field{title}{Zero ignored}
+      \field{volume}{-1}
+      \true{nocite}
+      \warn{\item Datamodel: misc entry 'a' (refs.bib): Invalid field 'number' for entrytype 'misc'}
+      \warn{\item Datamodel: misc entry 'a' (refs.bib): Invalid field 'volume' for entrytype 'misc'}
+      \warn{\item Datamodel: misc entry 'a' (refs.bib): Missing mandatory field - one of 'date, year' must be defined}
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

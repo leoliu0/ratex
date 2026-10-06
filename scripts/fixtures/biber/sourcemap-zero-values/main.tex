@@ -1,0 +1,5 @@
+\documentclass{article}
+\usepackage[backend=biber,style=numeric,sorting=none]{biblatex}
+\DeclareSourcemap{\maps[datatype=bibtex]{\map[overwrite]{\step[fieldsource=note]\step[fieldset=subtitle,origfieldval]\step[fieldset=addendum,fieldvalue={0}]\step[fieldset=annotation,fieldvalue={ignored},appendstrict]}}}
+\addbibresource{refs.bib}
+\begin{document}\nocite{*}\printbibliography\end{document}

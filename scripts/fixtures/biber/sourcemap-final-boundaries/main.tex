@@ -1,0 +1,12 @@
+\documentclass{article}
+\usepackage[backend=biber,style=numeric,sorting=none]{biblatex}
+\DeclareSourcemap{\maps[datatype=bibtex]{
+\map{\step[fieldsource=missing,final]\step[fieldset=note,fieldvalue={wrong}]}
+\map{\step[fieldsource=missing]\step[fieldset=note,fieldvalue={after-missing}]}
+\map{\step[fieldset=title,fieldvalue={wrong},final]\step[fieldset=subtitle,fieldvalue={wrong}]}
+\map{\step[fieldsource=title,fieldtarget=note,final]\step[fieldset=subtitle,fieldvalue={target-collision-continues}]}
+\map{\step[fieldsource=title,match=\regexp{never},final]\step[fieldset=addendum,fieldvalue={wrong}]}
+\map{\step[fieldsource=title,match=\regexp{never},replace={nothing},final]\step[fieldset=addendum,fieldvalue={replace-mismatch-continues}]}
+}}
+\addbibresource{refs.bib}
+\begin{document}\nocite{*}\printbibliography\end{document}

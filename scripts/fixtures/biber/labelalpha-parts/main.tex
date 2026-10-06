@@ -1,0 +1,8 @@
+\documentclass{article}
+\usepackage[backend=biber,style=alphabetic,maxalphanames=2,minalphanames=1]{biblatex}
+\DeclareLabelalphaNameTemplate{\namepart[use=true,pre=true,strwidth=1,compound=true]{prefix}\namepart[compound=true]{family}}
+\DeclareLabelalphaTemplate{\labelelement{\field[final]{shorthand}\field[strwidth=2,uppercase=true,namessep=/]{labelname}}\labelelement{\field[strwidth=2,strside=right]{year}}}
+\addbibresource{refs.bib}
+\begin{document}
+\nocite{*}\printbibliography
+\end{document}

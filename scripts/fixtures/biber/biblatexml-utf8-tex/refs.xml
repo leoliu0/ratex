@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bltx:entries xmlns:bltx="http://biblatex-biber.sourceforge.net/biblatexml">
+<bltx:entry id="utf8" entrytype="book"><bltx:title>Ökologisch {NASA} \LaTeX{} \"{O} &amp; % # _</bltx:title><bltx:names type="author"><bltx:name ><bltx:namepart type="given">J\"{o}rg</bltx:namepart><bltx:namepart type="family">Müller</bltx:namepart></bltx:name></bltx:names><bltx:publisher>Café</bltx:publisher><bltx:url>https://example.test/é?x=a b&amp;y=2</bltx:url><bltx:doi>10.1000/é</bltx:doi></bltx:entry>
+</bltx:entries>

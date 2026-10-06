@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bltx:entries xmlns:bltx="http://biblatex-biber.sourceforge.net/biblatexml">
+<bltx:entry id="same" entrytype="book"><bltx:title>First title</bltx:title><bltx:title>Second title</bltx:title></bltx:entry><bltx:entry id="same" entrytype="book"><bltx:title>Duplicate entry</bltx:title></bltx:entry><bltx:entry entrytype="book"><bltx:title>No key</bltx:title></bltx:entry>
+</bltx:entries>

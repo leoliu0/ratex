@@ -1,0 +1,5 @@
+\documentclass{article}
+\usepackage[backend=biber,style=numeric,sorting=none]{biblatex}
+\DeclareSourcemap{\maps[datatype=bibtex]{\map[overwrite]{\step[fieldsource=title,match=\regexp{(?&lt;=Alpha\x20)Beta(?!x)},replace={Omega}]\step[fieldsource=title,match=\regexp{(?&lt;!Gamma\x20)Delta},replace={Theta}]\step[fieldsource=title,match=\regexp{(\w+)(?=\x20)},replace=\regexp{\L$1\E}]}}}
+\addbibresource{refs.bib}
+\begin{document}\nocite{*}\printbibliography\end{document}

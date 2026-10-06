@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bltx:entries xmlns:bltx="http://biblatex-biber.sourceforge.net/biblatexml">
+<bltx:entry id="original" entrytype="book"><bltx:title>Original</bltx:title><bltx:date>1900</bltx:date></bltx:entry><bltx:entry id="reprint" entrytype="book"><bltx:title>Reprint</bltx:title><bltx:date>2000</bltx:date><bltx:related><bltx:list><bltx:item ids="original" type="reprintof" string="Original edition"/></bltx:list></bltx:related></bltx:entry>
+</bltx:entries>

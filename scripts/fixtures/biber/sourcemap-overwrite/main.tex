@@ -1,0 +1,5 @@
+\documentclass{article}
+\usepackage[backend=biber,style=numeric,sorting=none]{biblatex}
+\DeclareSourcemap{\maps[datatype=bibtex,overwrite]{\map[overwrite=false]{\step[fieldset=title,fieldvalue={wrong}]\step[fieldset=subtitle,fieldvalue={continues}]}\map[overwrite]{\step[fieldsource=title,fieldtarget=note]\step[fieldset=title,origfieldval]\step[fieldset=subtitle,fieldvalue={: appended},append]}}}
+\addbibresource{refs.bib}
+\begin{document}\nocite{*}\printbibliography\end{document}

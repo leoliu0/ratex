@@ -1,0 +1,10 @@
+\documentclass{article}
+\usepackage[backend=biber,style=numeric]{biblatex}
+\addbibresource{refs.bib}
+
+\DeclareSortingTemplate{parity}{\sort[sortcase=false]{\field{title}}\sort[sortupper=false]{\field{subtitle}}\sort[sortcase=false]{\field{title}}\sort{\field{entrykey}}}
+\begin{document}
+\nocite{*}
+\newrefcontext[sorting=parity]
+\printbibliography
+\end{document}

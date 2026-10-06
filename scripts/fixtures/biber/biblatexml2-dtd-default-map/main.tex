@@ -1,0 +1,8 @@
+\documentclass{article}
+\usepackage[backend=biber,style=authoryear,sorting=none]{biblatex}
+\addbibresource[datatype=biblatexml]{refs.xml}
+\DeclareSourcemap{\maps[datatype=biblatexml]{\map{\step[typesource=book,typetarget=misc]}}}
+\begin{document}
+\nocite{*}
+\printbibliography
+\end{document}

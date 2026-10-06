@@ -1,0 +1,6 @@
+{
+  "tool": true,
+  "configfile": "biber.conf",
+  "validate_datamodel": true,
+  "dieondatamodel": true
+}

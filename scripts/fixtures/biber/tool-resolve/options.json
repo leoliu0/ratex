@@ -1,0 +1,5 @@
+{
+  "tool": true,
+  "output_format": "bibtex",
+  "output_resolve_crossrefs": true
+}

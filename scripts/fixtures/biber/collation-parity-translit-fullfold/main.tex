@@ -1,0 +1,10 @@
+\documentclass{article}
+\usepackage[backend=biber,style=numeric]{biblatex}
+\addbibresource{refs.bib}
+\DeclareSortTranslit{\translit[STRASSE]{title}{Russian}{ALA-LC}}
+\DeclareSortingTemplate{parity}{\sort{\field{title}}\sort{\field{entrykey}}}
+\begin{document}
+\nocite{*}
+\newrefcontext[sorting=parity]
+\printbibliography
+\end{document}

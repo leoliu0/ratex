@@ -1,0 +1,3 @@
+Datamodel: misc entry 'a' (refs.bib): Missing mandatory field - one of 'date, year' must be defined
+Datamodel: Pattern constraint has no pattern!
+Datamodel: misc entry 'a' (refs.bib): Invalid value (pattern match fails) for field 'note'

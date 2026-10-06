@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bltx:entries xmlns:bltx="http://biblatex-biber.sourceforge.net/biblatexml">
+<bltx:entry id="parts" entrytype="book"><bltx:names type="author"><bltx:name><bltx:namepart type="given">John</bltx:namepart><bltx:namepart type="middle">Paul</bltx:namepart><bltx:namepart type="family">Smith</bltx:namepart></bltx:name></bltx:names><bltx:title>Custom parts</bltx:title></bltx:entry>
+</bltx:entries>

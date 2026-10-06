@@ -1,0 +1,4 @@
+<bltx:entries xmlns:bltx="http://biblatex-biber.sourceforge.net/biblatexml">
+<bltx:entry id="datefirst" entrytype="book"><bltx:title>Date Before Authored</bltx:title><bltx:date>2020-21</bltx:date><bltx:yeardivision>summer</bltx:yeardivision></bltx:entry>
+<bltx:entry id="authoredfirst" entrytype="book"><bltx:title>Authored Before Date</bltx:title><bltx:yeardivision>summer</bltx:yeardivision><bltx:date>2020-21</bltx:date></bltx:entry>
+</bltx:entries>

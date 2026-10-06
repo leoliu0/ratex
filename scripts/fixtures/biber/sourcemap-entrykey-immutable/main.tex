@@ -1,0 +1,5 @@
+\documentclass{article}
+\usepackage[backend=biber,style=numeric,sorting=none]{biblatex}
+\DeclareSourcemap{\maps[datatype=bibtex]{\map[overwrite]{\step[fieldsource=entrykey,match=\regexp{a},replace={changed},final]\step[fieldset=subtitle,fieldvalue={after-replacement}]}\map[overwrite]{\step[fieldsource=entrykey,fieldtarget=note,final]\step[fieldset=addendum,fieldvalue={after-rename}]}}}
+\addbibresource{refs.bib}
+\begin{document}\nocite{*}\printbibliography\end{document}

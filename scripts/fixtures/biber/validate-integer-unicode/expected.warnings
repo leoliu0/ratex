@@ -1,0 +1,18 @@
+Datamodel: misc entry 'a' (refs.bib): Invalid field 'volume' for entrytype 'misc'
+Datamodel: misc entry 'a' (refs.bib): Missing mandatory field - one of 'date, year' must be defined
+Datamodel: misc entry 'a' (refs.bib): Invalid value of field 'volume' must be datatype 'integer' - ignoring field
+Datamodel: misc entry 'b' (refs.bib): Invalid field 'volume' for entrytype 'misc'
+Datamodel: misc entry 'b' (refs.bib): Missing mandatory field - one of 'date, year' must be defined
+Datamodel: misc entry 'c' (refs.bib): Invalid field 'volume' for entrytype 'misc'
+Datamodel: misc entry 'c' (refs.bib): Missing mandatory field - one of 'date, year' must be defined
+Datamodel: misc entry 'c' (refs.bib): Invalid value of field 'volume' must be datatype 'integer' - ignoring field
+Datamodel: misc entry 'd' (refs.bib): Invalid field 'volume' for entrytype 'misc'
+Datamodel: misc entry 'd' (refs.bib): Missing mandatory field - one of 'date, year' must be defined
+Datamodel: misc entry 'd' (refs.bib): Invalid value of field 'volume' must be datatype 'integer' - ignoring field
+Datamodel: misc entry 'e' (refs.bib): Invalid field 'volume' for entrytype 'misc'
+Datamodel: misc entry 'e' (refs.bib): Missing mandatory field - one of 'date, year' must be defined
+Datamodel: misc entry 'f' (refs.bib): Invalid field 'volume' for entrytype 'misc'
+Datamodel: misc entry 'f' (refs.bib): Missing mandatory field - one of 'date, year' must be defined
+Datamodel: misc entry 'f' (refs.bib): Invalid value of field 'volume' must be datatype 'integer' - ignoring field
+Datamodel: misc entry 'g' (refs.bib): Invalid field 'volume' for entrytype 'misc'
+Datamodel: misc entry 'g' (refs.bib): Missing mandatory field - one of 'date, year' must be defined

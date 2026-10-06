@@ -1,0 +1,5 @@
+\documentclass{article}
+\usepackage[backend=biber,style=numeric,sorting=none]{biblatex}
+\DeclareSourcemap{\maps[datatype=bibtex]{\map[overwrite]{\step[fieldsource=title,match=\regexp{(?ix) ^ ( alpha ) \s+ ( beta ) $},replace=\regexp{\U$2\E-\l$1}]\step[fieldsource=title,match=\regexp{(?i)gamma},replace={lower}]}}}
+\addbibresource{refs.bib}
+\begin{document}\nocite{*}\printbibliography\end{document}

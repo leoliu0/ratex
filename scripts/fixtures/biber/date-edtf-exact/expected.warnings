@@ -1,0 +1,34 @@
+misc entry 'd79' (refs.bib): Invalid format '2020-01-01T12:00:00+12:60' of date field 'date' - ignoring
+misc entry 'd85' (refs.bib): Invalid format '0' of date field 'date' - ignoring
+misc entry 'd15' (refs.bib): Invalid format '2020-01-01T24:00:00' of date field 'date' - ignoring
+misc entry 'd18' (refs.bib): Invalid format '2016-12-31T23:59:60' of date field 'date' - ignoring
+misc entry 'd88' (refs.bib): Invalid format '/0' of date field 'date' - ignoring
+misc entry 'd12' (refs.bib): Invalid format '2019-02-29' of date field 'date' - ignoring
+misc entry 'd82' (refs.bib): Invalid format 'Y-999999999999999999999' of date field 'date' - ignoring
+misc entry 'd51' (refs.bib): Invalid format '٢٠٢٠-XX' of date field 'date' - ignoring
+misc entry 'd84' (refs.bib): Invalid format '2020/2021?~' of end date field 'date' - ignoring
+misc entry 'markeronly' (refs.bib): Invalid format '2020/?' of end date field 'date' - ignoring
+misc entry 'd39' (refs.bib): Invalid format 'invalid/2021' of date field 'date' - ignoring
+misc entry 'd58' (refs.bib): Invalid format '2020-01-01T12:00:00.1' of date field 'date' - ignoring
+misc entry 'd57' (refs.bib): Invalid format '2020/2021/2022' of date field 'date' - ignoring
+misc entry 'd83' (refs.bib): Invalid format '2020/invalid%' of end date field 'date' - ignoring
+Overwriting field 'month' with month value from field 'date' for entry 'zero'
+misc entry 'd45' (refs.bib): Invalid format '2020-13-XX' of date field 'date' - ignoring
+misc entry 'd10' (refs.bib): Invalid format '2020-00' of date field 'date' - ignoring
+misc entry 'd16' (refs.bib): Invalid format '2020-01-01T23:59:60Z' of date field 'date' - ignoring
+misc entry 'd30' (refs.bib): Invalid format '2020?~' of date field 'date' - ignoring
+misc entry 'markers' (refs.bib): Invalid format '2020/~?' of end date field 'date' - ignoring
+misc entry 'd74' (refs.bib): Invalid format '01.01.2020' of date field 'date' - ignoring
+misc entry 'd75' (refs.bib): Invalid format '01/01/2020' of date field 'date' - ignoring
+misc entry 'd09' (refs.bib): Invalid format '2020-42' of date field 'date' - ignoring
+misc entry 'd72' (refs.bib): Invalid format '20200101' of date field 'date' - ignoring
+misc entry 'legacyinvalid' (refs.bib): Invalid format 'bad' of date field 'date' - ignoring
+misc entry 'd77' (refs.bib): Invalid format '2020-W01-1' of date field 'date' - ignoring
+misc entry 'd76' (refs.bib): Invalid format '2020-1-1' of date field 'date' - ignoring
+misc entry 'd60' (refs.bib): Invalid format '2020-123' of date field 'date' - ignoring
+misc entry 'd38' (refs.bib): Invalid format '2020/invalid?' of end date field 'date' - ignoring
+misc entry 'd61' (refs.bib): Invalid format '[2020,2021]' of date field 'date' - ignoring
+misc entry 'd32' (refs.bib): Invalid format '2020?%' of date field 'date' - ignoring
+misc entry 'd59' (refs.bib): Invalid format '2020-01-01T12:00' of date field 'date' - ignoring
+legacy month field 'spring' in entry 'legacy' is not an integer - this will probably not sort properly.
+misc entry 'd73' (refs.bib): Invalid format '2020/01/01' of date field 'date' - ignoring

@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bltx:entries xmlns:bltx="http://biblatex-biber.sourceforge.net/biblatexml">
+<bltx:entry id="scalar" entrytype="book"><bltx:title>Title &amp; Subtitle</bltx:title><bltx:subtitle>A &lt; B</bltx:subtitle><bltx:edition>2</bltx:edition><bltx:isbn>978-1</bltx:isbn><bltx:note>  Keep   spaces  </bltx:note><bltx:eprint type="arxiv" class="math">1234.5678</bltx:eprint><bltx:date>2001</bltx:date></bltx:entry>
+</bltx:entries>

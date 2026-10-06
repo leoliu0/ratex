@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bltx:entries xmlns:bltx="http://biblatex-biber.sourceforge.net/biblatexml">
+<bltx:entry id="annotations" entrytype="book"><bltx:title>Annotations</bltx:title><bltx:names type="author"><bltx:name ><bltx:namepart type="given">John</bltx:namepart><bltx:namepart type="family">Smith</bltx:namepart></bltx:name></bltx:names><bltx:annotation>Entry annotation</bltx:annotation><bltx:annotation field="author">field-tag</bltx:annotation><bltx:annotation field="author" item="1">item-tag</bltx:annotation><bltx:annotation field="author" item="1" part="given" literal="1">literal; with = sign</bltx:annotation><bltx:annotation field="title" name="alternate">other,tag</bltx:annotation></bltx:entry>
+</bltx:entries>

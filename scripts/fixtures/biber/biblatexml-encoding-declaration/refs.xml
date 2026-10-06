@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bltx:entries xmlns:bltx="http://biblatex-biber.sourceforge.net/biblatexml">
+<bltx:entry id="encoding" entrytype="book"><bltx:title>ASCII with UTF-8 declaration</bltx:title><bltx:note>TeX \"{o} remains raw</bltx:note></bltx:entry>
+</bltx:entries>

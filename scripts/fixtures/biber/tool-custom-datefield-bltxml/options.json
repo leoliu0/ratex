@@ -1,0 +1,5 @@
+{
+  "tool": true,
+  "configfile": "biber.conf",
+  "output_format": "biblatexml"
+}

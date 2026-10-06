@@ -4,8 +4,7 @@
 //! bytes: neither MIME/charset, Content-Disposition nor Content-Encoding changes
 //! the datasource format or decoding. Those belong to the selected input driver.
 //! Successful downloads are cached by the original, unescaped source name.
-use curl::easy::{Easy, HttpVersion, List};
-use std::{collections::BTreeMap, env, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, env, sync::Arc};
 use url::Url;
 #[path = "remote/protocols.rs"]
 mod protocols;
@@ -13,14 +12,22 @@ mod protocols;
 mod uri;
 #[path = "remote/http_status.rs"]
 mod http_status;
-#[path = "remote/response.rs"]
-mod response;
+#[path = "remote/net.rs"]
+mod net;
+#[path = "remote/tls.rs"]
+mod tls;
+#[path = "remote/http.rs"]
+mod http;
+#[path = "remote/ftp.rs"]
+mod ftp;
 
-const CA_ROOTS: &[u8] = include_bytes!("remote-ca.pem");
+/// The schemes with an LWP::Protocol implementor in the oracle's package.
+const LWP_SCHEMES: &[&str] = &["cpan", "data", "file", "ftp", "gopher", "http", "https", "loopback", "mailto", "news", "nntp", "nogo"];
 
 #[derive(Default)]
 pub(crate) struct Cache {
     sources: BTreeMap<String, Arc<[u8]>>,
+    ssl: Option<tls::SslEnv>,
 }
 
 impl Cache {
@@ -29,7 +36,9 @@ impl Cache {
     pub(crate) fn fetch(&mut self, source: &str, options: &BTreeMap<String, String>) -> Result<Option<Arc<[u8]>>, String> {
         if !is_remote(source) { return Ok(None); }
         if let Some(bytes) = self.sources.get(source) { return Ok(Some(Arc::clone(bytes))); }
-        let bytes: Arc<[u8]> = download(source, options)?.into();
+        let ssl = self.ssl.get_or_insert_with(tls::SslEnv::from_env);
+        if source.starts_with("https://") || source.starts_with("ftps://") { ssl.apply_biber(options); }
+        let bytes: Arc<[u8]> = download(source, ssl)?.into();
         self.sources.insert(source.to_owned(), Arc::clone(&bytes));
         Ok(Some(bytes))
     }
@@ -43,7 +52,7 @@ fn failure(source: &str, status: &str) -> String {
     format!("Could not fetch '{source}' (HTTP error: {status})")
 }
 
-fn download(source: &str, options: &BTreeMap<String, String>) -> Result<Vec<u8>, String> {
+fn download(source: &str, ssl: &tls::SslEnv) -> Result<Vec<u8>, String> {
     let mut target = escape_uri(source.trim_end());
     // LWP's original request gets a proxy slot only when a proxy is selected;
     // that slot is cloned (and retained) on subsequent redirects.
@@ -51,13 +60,14 @@ fn download(source: &str, options: &BTreeMap<String, String>) -> Result<Vec<u8>,
     for redirects in 0..=7 {
         let parsed = Url::parse(&target).map_err(|e| failure(source, &format!("400 {e}")))?;
         let scheme = parsed.scheme();
-        if scheme == "ftps" { return Err(failure(source, "501 Protocol scheme 'ftps' is not supported")); }
         if proxy.is_none() { proxy = environment_proxy(&parsed); }
-        if scheme == "data" {
-            if proxy.is_some() { return Err(failure(source, "400 You can not proxy with data")); }
-            return Ok(data_uri(&target));
-        }
-        match scheme {
+        // LWP::UserAgent::send_request: a proxy's scheme selects the protocol.
+        let protocol = proxy.as_deref().map_or_else(|| scheme.to_owned(), |proxy| uri::parts(proxy).scheme.unwrap_or_default().to_ascii_lowercase());
+        match protocol.as_str() {
+            "data" => {
+                if proxy.is_some() { return Err(failure(source, "400 You can not proxy with data")); }
+                return Ok(data_uri(&target));
+            }
             "nntp" | "news" => return protocols::nntp(source, &parsed, &target, proxy.as_deref()),
             "gopher" => return protocols::gopher(source, &parsed, &target, proxy.as_deref()),
             "loopback" => return Ok(protocols::loopback(&target)),
@@ -72,214 +82,30 @@ fn download(source: &str, options: &BTreeMap<String, String>) -> Result<Vec<u8>,
                 target = uri::absolute(path, "http://cpan.org/", false);
                 continue;
             }
-            _ => {}
-        }
-        if !matches!(scheme, "http" | "https" | "ftp") {
-            return Err(failure(source, &format!("501 Protocol scheme '{scheme}' is not supported")));
-        }
-        let mut easy = Easy::new();
-        let setup = (|| -> Result<(), curl::Error> {
-            let wire_url = if scheme == "ftp" && proxy.is_none() { ftp_url(&target) } else { std::borrow::Cow::Borrowed(target.as_str()) };
-            easy.url(&wire_url)?;
-            easy.path_as_is(true)?;
-            easy.get(true)?;
-            easy.useragent("Mozilla/5.0")?;
-            easy.http_version(HttpVersion::V11)?;
-            easy.http_content_decoding(false)?;
-            easy.connect_timeout(Duration::from_secs(180))?;
-            // LWP times out idle socket operations, not the entire download.
-            easy.low_speed_limit(1)?;
-            easy.low_speed_time(Duration::from_secs(180))?;
-            easy.noproxy("")?;
-            easy.proxy(proxy.as_deref().unwrap_or(""))?;
-            let mut headers = List::new();
-            headers.append("Zotero-Allowed-Request: 1")?;
-            headers.append("TE: deflate,gzip;q=0.3")?;
-            headers.append("Connection: TE, close")?;
-            headers.append("Accept:")?;
-            easy.http_headers(headers)?;
-            if scheme == "https" { configure_tls(&mut easy, options)?; }
-            if scheme == "ftp" { configure_ftp(&mut easy)?; }
-            if scheme == "ftp" && proxy.is_none() && parsed.username().is_empty() {
-                easy.username("anonymous")?;
-                easy.password("anonymous@")?;
-            } else if scheme == "ftp" && proxy.is_none() && parsed.password().is_none() && matches!(parsed.username(), "anonymous" | "ftp") {
-                easy.password("anonymous@")?;
+            // Only reachable as a proxy's scheme: Biber names and redirects are never file:.
+            "file" => return Err(failure(source, "400 You can not proxy through the filesystem")),
+            "nogo" => return Err(failure(source, &format!("500 Access to '{scheme}' URIs has been disabled"))),
+            "ftp" => {
+                if proxy.is_some() { return Err(failure(source, "400 You can not proxy through the ftp")); }
+                return ftp::get(&target).map_err(|status| failure(source, &status));
             }
-            Ok(())
-        })();
-        setup.map_err(|e| failure(source, &format!("500 {e}")))?;
-        let (response, transfer_result) = response::collect(&mut easy);
-        if let Err(error) = transfer_result {
-            if scheme == "ftp" && response.status.is_empty() {
-                if error.is_login_denied() {
-                    if let Some((_, message)) = &response.ftp_error { return Err(failure(source, &format!("401 {message}"))); }
-                }
-                if error.is_remote_access_denied() {
-                    if let Some(directory) = &response.ftp_cwd {
-                        return Err(failure(source, &format!("404 Can't chdir to {}", String::from_utf8_lossy(directory))));
-                    }
-                }
-                if error.code() == curl_sys::CURLE_REMOTE_FILE_NOT_FOUND {
-                    let file = ftp_filename(&target);
-                    easy.url(&ftp_directory(&target)).map_err(|e| failure(source, &format!("500 {e}")))?;
-                    let (directory, result) = response::collect(&mut easy);
-                    match result {
-                        Ok(()) => return Ok(normalize_listing(directory.bytes)),
-                        Err(e) if e.code() == curl_sys::CURLE_FTP_COULDNT_RETR_FILE => return Ok(Vec::new()),
-                        Err(e) if e.is_remote_access_denied() || e.code() == curl_sys::CURLE_REMOTE_FILE_NOT_FOUND => return Err(failure(source, &format!("404 File '{file}' not found"))),
-                        Err(e) => return Err(failure(source, &transport_error(&e, &easy, &parsed, proxy.as_deref()))),
-                    }
-                }
-            }
-            // LWP::Protocol::collect retains the original HTTP status and the
-            // bytes written before a body-read error (Client-Aborted/X-Died).
-            // Biber tests only is_success, including unclean TLS EOF and
-            // truncated Content-Length/chunks. Header/connection errors fail.
-            if response.status.is_empty() {
-                return Err(failure(source, &transport_error(&error, &easy, &parsed, proxy.as_deref())));
-            }
+            "http" | "https" => {}
+            _ => return Err(failure(source, &format!("501 Protocol scheme '{protocol}' is not supported"))),
         }
-        let code = easy.response_code().map_err(|e| failure(source, &format!("500 {e}")))?;
-        if (scheme == "ftp" && response.status.is_empty()) || (200..300).contains(&code) {
-            return Ok(if scheme == "ftp" && target.split('#').next().unwrap_or(&target).ends_with('/') { normalize_listing(response.bytes) } else { response.bytes });
-        }
-        if redirects < 7 && matches!(code, 301 | 302 | 303 | 307 | 308) {
-            let referral = response.location.as_deref().unwrap_or("");
-            let base = response.base.as_deref().map(|value| uri::absolute(value, &target, false));
-            let next = uri::absolute(referral, base.as_deref().unwrap_or(&target), true);
+        let response = http::get(&target, proxy.as_deref(), ssl).map_err(|status| failure(source, &status))?;
+        // LWP::Protocol::collect keeps the status and the bytes read before a
+        // body-read error (X-Died); Biber tests only is_success.
+        if (200..300).contains(&response.code) { return Ok(response.body); }
+        if redirects < 7 && matches!(response.code, 301 | 302 | 303 | 307 | 308) {
+            let referral = response.location.as_deref().map(escape_header_uri).unwrap_or_default();
+            let base = response.base.as_deref().map(|value| uri::absolute(&escape_header_uri(value), &target, false));
+            let next = uri::absolute(&referral, base.as_deref().unwrap_or(&target), true);
             // LWP explicitly disallows file redirects and leaves the 3xx status.
             if !uri::parts(&next).scheme.is_some_and(|scheme| scheme.eq_ignore_ascii_case("file")) { target = next; continue; }
         }
-        let status = if response.status.is_empty() { format!("{code} {}", http_status::reason(code)) } else { response.status };
-        return Err(failure(source, &status));
+        return Err(failure(source, &response.status));
     }
     unreachable!("the final redirect iteration always returns")
-}
-
-fn configure_ftp(easy: &mut Easy) -> Result<(), curl::Error> {
-    easy.ignore_content_length(true)?;
-    easy.verbose(true)?;
-    // Net::FTP defaults to PASV for IPv4. Libcurl still uses EPSV/EPRT where
-    // necessary for IPv6, even with these IPv4 extension preferences disabled.
-    for option in [curl_sys::CURLOPT_FTP_USE_EPSV, curl_sys::CURLOPT_FTP_USE_EPRT] {
-        // SAFETY: the handle is live, each option requires a C long, and no
-        // callback runs while changing the handle's configuration.
-        let code = unsafe { curl_sys::curl_easy_setopt(easy.raw(), option, 0 as std::os::raw::c_long) };
-        if code != curl_sys::CURLE_OK { return Err(curl::Error::new(code)); }
-    }
-    if env::var("FTP_PASSIVE").is_ok_and(|value| value.is_empty() || value == "0") {
-        // CURLOPT_FTPPORT copies this static NUL-terminated string. "-" chooses
-        // the control connection's local address, matching Net::FTP::port.
-        let code = unsafe { curl_sys::curl_easy_setopt(easy.raw(), curl_sys::CURLOPT_FTPPORT, b"-\0".as_ptr().cast::<std::os::raw::c_char>()) };
-        if code != curl_sys::CURLE_OK { return Err(curl::Error::new(code)); }
-    }
-    Ok(())
-}
-
-fn ftp_url(target: &str) -> std::borrow::Cow<'_, str> {
-    let url = target.split('#').next().unwrap_or(target);
-    let last = url.rfind('/').map_or(0, |index| index + 1);
-    let parameter_start = url[last..].find(';').map(|index| index + last);
-    let query = url.find('?');
-    if parameter_start.is_none() && query.is_none() { return std::borrow::Cow::Borrowed(target); }
-    let end = parameter_start.unwrap_or(url.len());
-    let mut result = String::with_capacity(end + 8);
-    if let Some(query) = query.filter(|&query| query < end) {
-        result.push_str(&url[..query]);
-        if uri::parts(url).path.is_empty() { result.push('/'); }
-        result.push_str("%3F"); result.push_str(&url[query + 1..end]);
-    } else { result.push_str(&url[..end]); }
-    if let Some(start) = parameter_start {
-        let transfer_type = url[start + 1..].split(';').filter_map(|parameter| {
-            let parameter = percent_decode(parameter.as_bytes());
-            parameter.strip_prefix(b"type=").map(|kind| kind.to_vec())
-        }).last();
-        // Only lowercase type=a selects ASCII in LWP; every other parameter
-        // selects binary. In particular type=d is not a directory request.
-        if transfer_type.as_deref() == Some(b"a") { result.push_str(";type=a"); }
-    }
-    std::borrow::Cow::Owned(result)
-}
-
-fn ftp_filename(target: &str) -> String {
-    let last = target.split('#').next().unwrap_or(target).rsplit('/').next().unwrap_or("");
-    String::from_utf8_lossy(&percent_decode(last.split(';').next().unwrap_or(last).as_bytes())).into_owned()
-}
-
-fn ftp_directory(target: &str) -> String {
-    let wire = ftp_url(target);
-    let wire = wire.split('#').next().unwrap_or(&wire);
-    let directory = wire.strip_suffix(";type=a").unwrap_or(wire);
-    format!("{directory}/")
-}
-
-fn normalize_listing(mut bytes: Vec<u8>) -> Vec<u8> {
-    let mut write = 0;
-    for read in 0..bytes.len() {
-        if bytes[read] == b'\r' && bytes.get(read + 1) == Some(&b'\n') { continue; }
-        bytes[write] = bytes[read]; write += 1;
-    }
-    bytes.truncate(write);
-    if bytes.last().is_some_and(|&b| b != b'\n') { bytes.push(b'\n'); }
-    bytes
-}
-
-fn transport_error(error: &curl::Error, easy: &Easy, url: &Url, proxy: Option<&str>) -> String {
-    let proxy_url = proxy.and_then(|value| Url::parse(value).ok());
-    let destination = if error.is_peer_failed_verification() { url } else { proxy_url.as_ref().unwrap_or(url) };
-    let host = destination.host_str().unwrap_or("");
-    let port = destination.port_or_known_default().unwrap_or(if destination.scheme() == "ftp" { 21 } else { 80 });
-    if error.is_couldnt_resolve_host() || error.is_couldnt_resolve_proxy() {
-        return if url.scheme() == "ftp" && proxy.is_none() { "500 Name or service not known".into() } else { format!("500 Can't connect to {host}:{port} (Name or service not known)") };
-    }
-    if error.is_couldnt_connect() {
-        let errno = easy.os_errno().unwrap_or(0);
-        let mut reason = std::io::Error::from_raw_os_error(errno).to_string();
-        if let Some(index) = reason.find(" (os error ") { reason.truncate(index); }
-        return if url.scheme() == "ftp" && proxy.is_none() { format!("500 {reason}") } else { format!("500 Can't connect to {host}:{port} ({reason})") };
-    }
-    if error.is_peer_failed_verification() {
-        let detail = error.to_string();
-        let reason = if detail.contains("certificate subject name") || detail.contains("no alternative certificate") {
-            "hostname verification failed"
-        } else { "certificate verify failed" };
-        return format!("500 Can't connect to {host}:{port} ({reason})");
-    }
-    if error.is_operation_timedout() { return "500 read timeout".into(); }
-    format!("500 {error}")
-}
-
-fn configure_tls(easy: &mut Easy, options: &BTreeMap<String, String>) -> Result<(), curl::Error> {
-    let noverify = options.contains_key("ssl_noverify_host") || options.contains_key("ssl-noverify-host");
-    let compatibility_ca = env::var_os("HTTPS_CA_FILE").is_some() || env::var_os("HTTPS_CA_DIR").is_some();
-    let verify_host = !noverify && match env::var("PERL_LWP_SSL_VERIFY_HOSTNAME") {
-        Ok(value) => !value.is_empty() && value != "0",
-        Err(_) => !compatibility_ca,
-    };
-    easy.ssl_verify_host(verify_host)?;
-    // IO::Socket::SSL verifies the chain even when hostname verification is off.
-    easy.ssl_verify_peer(true)?;
-    let perl_file = env::var_os("PERL_LWP_SSL_CA_FILE");
-    let perl_path = env::var_os("PERL_LWP_SSL_CA_PATH");
-    let nointernal = options.contains_key("ssl_nointernalca") || options.contains_key("ssl-nointernalca");
-    if perl_file.is_none() && perl_path.is_none() && !nointernal {
-        // Biber sets PERL_LWP_SSL_CA_FILE to this bundle before LWP reads
-        // HTTPS_CA_FILE/HTTPS_CA_DIR compatibility variables.
-        easy.ssl_cainfo_blob(CA_ROOTS)?;
-        if let Some(path) = env::var_os("HTTPS_CA_DIR") { easy.capath(std::path::Path::new(&path))?; }
-        else { easy.capath("")?; }
-    } else {
-        let fallback = ["/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt", "/etc/ssl/ca-bundle.pem"]
-            .into_iter().find(|path| std::path::Path::new(path).is_file());
-        let ca_file = perl_file.or_else(|| fallback.map(Into::into)).or_else(|| env::var_os("HTTPS_CA_FILE"));
-        let ca_path = perl_path.or_else(|| {
-            ["/etc/ssl/certs/", "/etc/pki/tls/"].into_iter().find(|path| std::path::Path::new(path).is_dir()).map(Into::into)
-        }).or_else(|| env::var_os("HTTPS_CA_DIR"));
-        if let Some(path) = ca_file { easy.cainfo(std::path::Path::new(&path))?; }
-        if let Some(path) = ca_path { easy.capath(std::path::Path::new(&path))?; }
-    }
-    Ok(())
 }
 
 fn environment_proxy(url: &Url) -> Option<String> {
@@ -298,8 +124,9 @@ fn environment_proxy(url: &Url) -> Option<String> {
             if host == domain || host.strip_suffix(domain).is_some_and(|prefix| prefix.ends_with('.')) { return None; }
         }
     }
-    // LWP does not interpret ALL_PROXY, wildcard domains, ports or CIDR blocks.
-    proxies.remove(url.scheme())
+    // LWP does not interpret ALL_PROXY, wildcard domains, ports or CIDR blocks,
+    // and env_proxy skips schemes without an LWP::Protocol implementor.
+    proxies.remove(url.scheme()).filter(|_| LWP_SCHEMES.contains(&url.scheme()))
 }
 
 /// URI 5.27 permits RFC2396 characters, preserves existing percent escapes and

@@ -14,9 +14,10 @@ regex = "1"
 fancy-regex = "0.19"
 sxd-document = "0.3.2"
 sxd-xpath = "0.4.2"
-curl = "0.4.49"
 url = "2.5.4"
-curl-sys = "0.4.90"
+# Remote datasources: pure-Rust TLS (ring provider, no native TLS library).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+flate2 = { workspace = true }
 
 [dev-dependencies]
 serde_json = "1"

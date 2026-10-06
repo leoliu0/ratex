@@ -324,6 +324,12 @@ order; only those are compared order-insensitively. The `biber` binary and the
   locale) on every platform, as the Linux oracle does; nothing asks libc or
   the OS. `test_biber.py` therefore pins `LC_ALL=C.UTF-8` for `expected.*`
   and `LC_ALL=C` for `expected-c.*`.
+- Remote datasources (`remote.rs`, `remote/`) port LWP::UserAgent 6.76,
+  LWP::Protocol::http(s), Net::HTTP and Net::FTP over std sockets, with rustls
+  (ring) for TLS: no curl or native TLS library. Status lines in `Could not
+  fetch` errors are LWP's, including its internal 500s; CA selection follows
+  Biber's `%ENV` edits, LWP's ssl_opts and IO::Socket::SSL's checks, with the
+  oracle's Mozilla::CA bundle (`remote-ca.pem`) built in.
 - Tests: `scripts/test_biber.py --biber BIN [--committed-bcf]` compares every
   fixture in `scripts/fixtures/biber/` (`--regen` re-records them with the
   oracle); `crates/tex-biber/tests/corpus.rs` runs the same corpus through the

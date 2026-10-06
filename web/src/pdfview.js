@@ -2,7 +2,7 @@
 import * as pdfjs from 'pdfjs-dist';
 
 export class PdfView {
-  constructor(container, { workerSrc, onInverseSearch }) {
+  constructor(container, { workerSrc, onInverseSearch, onRender }) {
     pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
     this.container = container;
     this.zoom = 1;
@@ -12,6 +12,7 @@ export class PdfView {
     this.bytes = null;
     this.generation = 0;
     this.onInverseSearch = onInverseSearch;
+    this.onRender = onRender ?? (() => {});
     container.addEventListener('dblclick', (event) => {
       const pageElement = event.target.closest('.pdf-page');
       if (!pageElement) return;
@@ -36,7 +37,8 @@ export class PdfView {
     if (this.fitWidth) {
       const first = await pdf.getPage(1);
       const width = first.getViewport({ scale: 1 }).width;
-      const available = this.container.clientWidth - 24 - 16;
+      const style = getComputedStyle(this.container);
+      const available = this.container.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
       if (available > 0) this.zoom = Math.min(4, Math.max(0.25, available / width));
     }
     const pages = document.createElement('div');
@@ -76,6 +78,7 @@ export class PdfView {
     this.pdf?.destroy();
     this.pdf = pdf;
     this.container.dataset.pages = String(pdf.numPages);
+    this.onRender();
   }
 
   clear() {
@@ -85,12 +88,32 @@ export class PdfView {
     this.bytes = null;
     this.container.replaceChildren();
     delete this.container.dataset.pages;
+    this.onRender();
   }
 
   async setZoom(zoom) {
     this.fitWidth = false;
     this.zoom = Math.min(4, Math.max(0.25, zoom));
     if (this.bytes) await this.show(this.bytes);
+    else this.onRender();
+  }
+
+  /** Fit pages to the pane's width again, now and after later resizes. */
+  async fit() {
+    this.fitWidth = true;
+    if (this.bytes) await this.show(this.bytes);
+    else this.onRender();
+  }
+
+  /** 1-based number of the page at the top third of the pane, or 0. */
+  currentPage() {
+    const mark = this.container.scrollTop + this.container.clientHeight / 3;
+    let current = 0;
+    for (const page of this.container.querySelectorAll('.pdf-page')) {
+      if (page.offsetTop > mark) break;
+      current = Number(page.dataset.page);
+    }
+    return current || (this.pdf ? 1 : 0);
   }
 
   /** Scroll to and outline a rectangle given in PDF points from the top-left. */

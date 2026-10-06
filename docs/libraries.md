@@ -161,6 +161,8 @@ IndexedDB, a CodeMirror 6 editor, pdf.js preview, SyncTeX in both directions,
 zip import/export, and the `lazy-assets` module in a Web Worker. Package chunks
 and the XeLaTeX format are downloaded when a document first needs them and are
 kept in the Cache API; a service worker keeps the page usable offline.
+The interface follows the system's light or dark theme until the reader picks
+one with the top-bar toggle, and remembers resized panes in `localStorage`.
 LuaLaTeX is not offered: luaotfload needs a writable cache directory, which
 the WebAssembly build lacks.
 

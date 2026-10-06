@@ -22,6 +22,28 @@ const extension = (path) => path.slice(path.lastIndexOf('.') + 1).toLowerCase();
 const isText = (path) => TEXT_EXTENSIONS.has(extension(path));
 const formatBytes = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.ceil(n / 1e3)} kB`);
 
+/** An icon from the sprite in index.html. */
+function icon(name, className = '') {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  if (className) svg.setAttribute('class', className);
+  const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+  use.setAttribute('href', `#i-${name}`);
+  svg.append(use);
+  return svg;
+}
+
+const FILE_ICONS = [
+  [['tex', 'ltx', 'dtx', 'ins'], 'file-tex', 'tex'],
+  [['bib', 'bst', 'bbx', 'cbx', 'lbx', 'dbx'], 'book', 'bib'],
+  [['png', 'jpg', 'jpeg', 'gif', 'svg', 'pdf', 'eps'], 'image', 'image'],
+  [['sty', 'cls', 'clo', 'def', 'fd', 'cfg', 'lua'], 'braces', 'code'],
+];
+function fileIcon(path) {
+  const ext = extension(path);
+  const [, name, kind] = FILE_ICONS.find(([exts]) => exts.includes(ext)) ?? [null, 'file', 'other'];
+  return icon(name, `ficon ${kind}`);
+}
+
 const state = {
   project: null,
   /** path -> {bytes, rev} */
@@ -55,6 +77,7 @@ function startWorker() {
     else entry.reject(Object.assign(new Error(data.error), { fatal: data.fatal }));
   };
   worker.onerror = (event) => setStatus(`Compiler worker failed: ${event.message}`);
+  setStatus('Loading the compiler…');
   workerReady = call({ type: 'init', config: { ...config } });
   workerReady.then((stats) => {
     window.texres.ready = true;
@@ -88,6 +111,7 @@ const editor = new Editor($('editor'), {
 
 const pdfView = new PdfView($('pdf'), {
   workerSrc: new URL(config.pdfWorker, config.base).href,
+  onRender: () => updatePdfToolbar(),
   onInverseSearch: (page, x, y) => {
     if (!state.sync) return;
     const target = inverseSearch(state.sync, page, x, y);
@@ -102,6 +126,41 @@ const pdfView = new PdfView($('pdf'), {
 
 function setStatus(text) {
   $('status').textContent = text;
+  $('status').title = text;
+}
+
+/** The result chip next to the Compile button. */
+function setCompileInfo(ok, text, detail) {
+  const info = $('compile-info');
+  info.hidden = false;
+  info.className = `compile-info ${ok ? 'ok' : 'failed'}`;
+  info.replaceChildren(icon(ok ? 'check' : 'x'), text);
+  info.title = detail;
+}
+
+function updatePdfToolbar() {
+  const pages = pdfView.pdf?.numPages ?? 0;
+  $('page-info').textContent = pages ? `Page ${pdfView.currentPage()} / ${pages}` : 'PDF';
+  $('zoom-level').textContent = `${Math.round(pdfView.zoom * 100)}%`;
+  $('zoom-fit').classList.toggle('active', pdfView.fitWidth);
+}
+
+/** Show `path` (or nothing) in the editor pane's header. */
+function showOpenPath(path) {
+  const element = $('open-path');
+  element.replaceChildren();
+  element.title = path ?? '';
+  $('source').classList.toggle('no-file', !path);
+  $('editor-empty').hidden = Boolean(path);
+  if (!path) return;
+  const dir = folderOf(path);
+  if (dir) {
+    const span = document.createElement('span');
+    span.className = 'dir';
+    span.textContent = dir;
+    element.append(span);
+  }
+  element.append(path.slice(dir.length));
 }
 
 // ------------------------------------------------------------- projects --
@@ -136,9 +195,12 @@ async function loadProject(id) {
   state.sync = null;
   editor.states.clear();
   editor.close();
+  showOpenPath(null);
+  $('compile-info').hidden = true;
   $('engine').value = project.engine;
   $('auto-compile').checked = project.autoCompile;
   $('epoch').value = project.epoch ?? '';
+  $('settings-button').classList.toggle('has-value', project.epoch != null);
   await refreshProjectList();
   renderTree();
   const first = state.files.has(project.main) ? project.main : [...state.files.keys()].find(isText);
@@ -266,7 +328,7 @@ function openFile(path) {
     caption.textContent = `${path} — ${formatBytes(file.bytes.length)}`;
     viewer.append(caption);
   }
-  $('open-path').textContent = path;
+  showOpenPath(path);
   renderTree();
 }
 
@@ -333,7 +395,7 @@ async function renameSelected() {
     if (state.project.main === source) await updateProject({ main: target });
   }
   state.selected = to;
-  if (state.open) $('open-path').textContent = state.open;
+  if (state.open) showOpenPath(state.open);
   await updateProject({});
   renderTree();
 }
@@ -353,7 +415,7 @@ async function deleteSelected() {
     await store.deleteFile(state.project.id, path);
     if (state.open === path) {
       state.open = null;
-      $('open-path').textContent = '';
+      showOpenPath(null);
       $('binary-view').hidden = true;
       $('editor').hidden = false;
     }
@@ -381,15 +443,24 @@ function renderTree() {
     }
     node.files.push(path);
   }
-  const list = (node, prefix) => {
+  const nameOf = (text) => {
+    const span = document.createElement('span');
+    span.className = 'name';
+    span.textContent = text;
+    return span;
+  };
+  const list = (node, prefix, depth) => {
     const ul = document.createElement('ul');
     for (const [name, child] of node.folders) {
       const path = prefix + name;
+      const collapsed = state.collapsed.has(path);
       const li = document.createElement('li');
       const row = document.createElement('div');
-      row.className = 'tree-row folder';
+      row.className = `tree-row folder${collapsed ? '' : ' expanded'}`;
       row.dataset.path = path;
-      row.textContent = `${state.collapsed.has(path) ? '▸' : '▾'} ${name}/`;
+      row.title = `${path}/`;
+      row.style.paddingLeft = `${6 + depth * 14}px`;
+      row.append(icon('chevron', 'twisty'), icon(collapsed ? 'folder' : 'folder-open', 'ficon folder'), nameOf(name));
       if (state.selected === path) row.classList.add('selected');
       row.onclick = () => {
         state.selected = path;
@@ -398,7 +469,7 @@ function renderTree() {
         renderTree();
       };
       li.append(row);
-      if (!state.collapsed.has(path)) li.append(list(child, `${path}/`));
+      if (!collapsed) li.append(list(child, `${path}/`, depth + 1));
       ul.append(li);
     }
     for (const path of node.files) {
@@ -406,8 +477,19 @@ function renderTree() {
       const row = document.createElement('div');
       row.className = 'tree-row file';
       row.dataset.path = path;
-      row.textContent = path.slice(prefix.length);
-      if (path === state.project.main) row.classList.add('main');
+      row.title = path;
+      row.style.paddingLeft = `${6 + depth * 14}px`;
+      const space = document.createElement('span');
+      space.className = 'twisty-space';
+      row.append(space, fileIcon(path), nameOf(path.slice(prefix.length)));
+      if (path === state.project.main) {
+        row.classList.add('main');
+        const tag = document.createElement('span');
+        tag.className = 'tag';
+        tag.textContent = 'main';
+        tag.title = 'Compiled file';
+        row.append(tag);
+      }
       if (path === state.open) row.classList.add('open');
       if (path === state.selected) row.classList.add('selected');
       row.onclick = () => openFile(path);
@@ -416,7 +498,14 @@ function renderTree() {
     }
     return ul;
   };
-  $('tree').replaceChildren(list(root, ''));
+  if (!state.files.size) {
+    const empty = document.createElement('p');
+    empty.className = 'tree-empty';
+    empty.textContent = 'No files. Create or upload one above.';
+    $('tree').replaceChildren(empty);
+    return;
+  }
+  $('tree').replaceChildren(list(root, '', 0));
 }
 
 // ------------------------------------------------------------------- zip --
@@ -480,7 +569,7 @@ async function compile() {
   }
   const entry = state.project.main;
   if (!state.files.has(entry)) {
-    setStatus(`Main file ${entry} does not exist; select a .tex file and choose “Set main”.`);
+    setStatus(`Main file ${entry} does not exist; select a .tex file and click the star (Set main file).`);
     return;
   }
   state.compiling = true;
@@ -520,8 +609,14 @@ async function compile() {
     if (result.bibtexRuns) runs.push(`BibTeX ×${result.bibtexRuns}`);
     if (result.biberRuns) runs.push(`Biber ×${result.biberRuns}`);
     const fetched = result.stats.network ? `, downloaded ${formatBytes(result.stats.network)}` : '';
-    setStatus(`${result.status === 0 ? 'Compiled' : 'Failed'} with ${result.engine} in `
-      + `${(elapsed / 1000).toFixed(1)} s (${runs.join(', ')}${fetched}).${missing}`);
+    const summary = `${result.status === 0 ? 'Compiled' : 'Failed'} with ${result.engine} in `
+      + `${(elapsed / 1000).toFixed(1)} s (${runs.join(', ')}${fetched}).${missing}`;
+    setStatus(summary);
+    const chip = [result.status === 0 ? `${(elapsed / 1000).toFixed(1)} s` : 'Failed'];
+    if (result.stats.network) chip.push(`${formatBytes(result.stats.network)} downloaded`);
+    setCompileInfo(result.status === 0, chip.join(' · '),
+      `${summary}\nFinished at ${new Date().toLocaleTimeString()}.`);
+    if (result.status !== 0 && diagnostics.length) showPanel('diagnostics');
     // The compiler keeps recently decoded chunks between builds, so one
     // build reports only what it newly read: keep the union as the hint.
     const hints = new Set([...(project.chunkHints ?? []), ...result.usedChunks]);
@@ -541,6 +636,7 @@ async function compile() {
     };
   } catch (error) {
     setStatus(`Compiler error: ${error.message.split('\n')[0]}`);
+    setCompileInfo(false, 'Error', error.message.split('\n')[0]);
     showDiagnostics([], error.message, '');
     if (error.fatal) {
       worker.terminate();
@@ -560,10 +656,19 @@ function showDiagnostics(items, raw, log) {
   for (const item of items) {
     const li = document.createElement('li');
     li.className = `diagnostic ${item.severity}`;
-    const where = item.path ? `${item.path}:${item.line}` : '';
-    li.textContent = `${item.severity}: ${item.message}${where ? ` — ${where}` : ''}`;
+    const message = document.createElement('span');
+    message.className = 'message';
+    message.textContent = item.message;
+    li.append(icon(item.severity === 'error' ? 'error' : 'warning', 'sev'), message);
+    if (item.path) {
+      const where = document.createElement('span');
+      where.className = 'where';
+      where.textContent = `${item.path}:${item.line}`;
+      li.append(where);
+    }
     if (item.path && state.files.has(item.path)) {
       li.classList.add('linked');
+      li.title = `Go to ${item.path}, line ${item.line}`;
       li.dataset.path = item.path;
       li.dataset.line = String(item.line);
       li.onclick = () => {
@@ -580,7 +685,13 @@ function showDiagnostics(items, raw, log) {
     list.append(li);
   }
   const errors = items.filter((i) => i.severity === 'error').length;
-  $('diagnostics-tab').textContent = `Problems (${errors} error${errors === 1 ? '' : 's'}, ${items.length - errors} warning${items.length - errors === 1 ? '' : 's'})`;
+  const warnings = items.length - errors;
+  $('error-count').textContent = String(errors);
+  $('error-count').title = `${errors} error${errors === 1 ? '' : 's'}`;
+  $('error-count').hidden = !errors;
+  $('warning-count').textContent = String(warnings);
+  $('warning-count').title = `${warnings} warning${warnings === 1 ? '' : 's'}`;
+  $('warning-count').hidden = !warnings;
   $('log').textContent = log;
 }
 
@@ -626,22 +737,156 @@ on('engine', 'change', (e) => updateProject({ engine: e.target.value }));
 on('auto-compile', 'change', (e) => updateProject({ autoCompile: e.target.checked }));
 on('epoch', 'change', (e) => {
   const value = e.target.value.trim();
-  return updateProject({ epoch: value === '' ? null : Math.max(0, Math.floor(Number(value))) });
+  const epoch = value === '' ? null : Math.max(0, Math.floor(Number(value)));
+  $('settings-button').classList.toggle('has-value', epoch !== null);
+  return updateProject({ epoch });
 });
 on('zoom-in', 'click', () => pdfView.setZoom(pdfView.zoom * 1.2));
 on('zoom-out', 'click', () => pdfView.setZoom(pdfView.zoom / 1.2));
+on('zoom-fit', 'click', () => pdfView.fit());
+let pageFrame = 0;
+$('pdf').addEventListener('scroll', () => {
+  cancelAnimationFrame(pageFrame);
+  pageFrame = requestAnimationFrame(updatePdfToolbar);
+}, { passive: true });
+// Keep "fit to width" fitted when the pane changes size.
+let fitTimer;
+let pdfWidth = $('pdf').clientWidth;
+new ResizeObserver(() => {
+  const width = $('pdf').clientWidth;
+  if (width === pdfWidth) return;
+  pdfWidth = width;
+  clearTimeout(fitTimer);
+  if (pdfView.fitWidth && pdfView.bytes) fitTimer = setTimeout(() => pdfView.fit(), 250);
+}).observe($('pdf'));
+
+// ----------------------------------------------------------------- panel --
+
+const LAYOUT_KEY = 'texres-online:layout';
+const layout = (() => {
+  try {
+    return JSON.parse(localStorage.getItem(LAYOUT_KEY)) ?? {};
+  } catch {
+    return {};
+  }
+})();
+function applyLayout() {
+  const style = document.documentElement.style;
+  const set = (name, value, unit) => (value ? style.setProperty(name, `${value}${unit}`) : style.removeProperty(name));
+  set('--files-w', layout.files, 'px');
+  set('--preview-w', layout.preview, '%');
+  set('--panel-h', layout.panel, 'px');
+  document.body.classList.toggle('panel-collapsed', Boolean(layout.collapsed));
+  $('panel-toggle').setAttribute('aria-expanded', String(!layout.collapsed));
+  $('panel-toggle').title = layout.collapsed ? 'Show panel' : 'Hide panel';
+}
+const saveLayout = () => localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout));
+const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
+
+function showPanel(id) {
+  for (const tab of document.querySelectorAll('[data-panel]')) {
+    tab.classList.toggle('active', tab.dataset.panel === id);
+    $(tab.dataset.panel).hidden = tab.dataset.panel !== id;
+  }
+  if (layout.collapsed) {
+    layout.collapsed = false;
+    applyLayout();
+    saveLayout();
+  }
+}
 for (const tab of document.querySelectorAll('[data-panel]')) {
-  tab.addEventListener('click', () => {
-    for (const other of document.querySelectorAll('[data-panel]')) {
-      other.classList.toggle('active', other === tab);
-      $(other.dataset.panel).hidden = other !== tab;
-    }
+  tab.addEventListener('click', () => showPanel(tab.dataset.panel));
+}
+$('panel-toggle').addEventListener('click', () => {
+  layout.collapsed = !layout.collapsed;
+  applyLayout();
+  saveLayout();
+});
+
+// Drag the 1px gutters to resize panes; double-click one to reset it.
+for (const gutter of document.querySelectorAll('.gutter')) {
+  const kind = gutter.dataset.resize;
+  gutter.addEventListener('pointerdown', (down) => {
+    if (kind === 'panel' && layout.collapsed) return;
+    down.preventDefault();
+    gutter.setPointerCapture(down.pointerId);
+    gutter.classList.add('dragging');
+    document.body.classList.add('resizing');
+    document.body.classList.toggle('rows', kind === 'panel');
+    const area = $('workspace').getBoundingClientRect();
+    const filesWidth = $('files').getBoundingClientRect().width;
+    const move = (event) => {
+      if (kind === 'files') {
+        layout.files = Math.round(clamp(event.clientX - area.left, 150, Math.min(420, area.width - 600)));
+      } else if (kind === 'preview') {
+        const max = area.width - filesWidth - 302;
+        layout.preview = Number((clamp(area.right - event.clientX, 280, max) / area.width * 100).toFixed(2));
+      } else {
+        layout.panel = Math.round(clamp(window.innerHeight - event.clientY, 90, window.innerHeight * 0.6));
+      }
+      applyLayout();
+    };
+    const up = () => {
+      gutter.removeEventListener('pointermove', move);
+      gutter.removeEventListener('pointerup', up);
+      gutter.removeEventListener('pointercancel', up);
+      gutter.classList.remove('dragging');
+      document.body.classList.remove('resizing', 'rows');
+      saveLayout();
+    };
+    gutter.addEventListener('pointermove', move);
+    gutter.addEventListener('pointerup', up);
+    gutter.addEventListener('pointercancel', up);
   });
+  gutter.addEventListener('dblclick', () => {
+    delete layout[kind];
+    applyLayout();
+    saveLayout();
+  });
+}
+applyLayout();
+
+// --------------------------------------------------------- settings, theme --
+
+function toggleSettings(open) {
+  $('settings').hidden = !open;
+  $('settings-button').setAttribute('aria-expanded', String(open));
+  if (open) $('epoch').focus();
+}
+$('settings-button').addEventListener('click', () => toggleSettings($('settings').hidden));
+document.addEventListener('pointerdown', (event) => {
+  if (!$('settings').hidden && !event.target.closest('.popover-anchor')) toggleSettings(false);
+});
+
+const THEME_KEY = 'texres-online:theme';
+const systemDark = matchMedia('(prefers-color-scheme: dark)');
+function setTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  const dark = theme === 'dark';
+  $('theme-toggle').firstElementChild.firstElementChild.setAttribute('href', dark ? '#i-sun' : '#i-moon');
+  $('theme-toggle').title = dark ? 'Switch to the light theme' : 'Switch to the dark theme';
+}
+setTheme(document.documentElement.dataset.theme);
+$('theme-toggle').addEventListener('click', () => {
+  const theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+  localStorage.setItem(THEME_KEY, theme);
+  setTheme(theme);
+});
+systemDark.addEventListener('change', () => {
+  if (!localStorage.getItem(THEME_KEY)) setTheme(systemDark.matches ? 'dark' : 'light');
+});
+
+if (/Mac|iPhone|iPad/.test(navigator.platform)) {
+  for (const key of document.querySelectorAll('[data-kbd]')) key.textContent = key.textContent.replace('Ctrl ', '⌘');
+  for (const element of document.querySelectorAll('[title*="Ctrl+"]')) element.title = element.title.replace('Ctrl+', '⌘');
 }
 window.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === 's') {
     e.preventDefault();
     compile();
+  } else if (e.key === 'Escape' && !$('settings').hidden) {
+    toggleSettings(false);
+    $('settings-button').focus();
   }
 });
 window.addEventListener('beforeunload', () => {

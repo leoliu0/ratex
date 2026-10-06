@@ -5,10 +5,60 @@ import {
   drawSelection, Decoration,
 } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
-import { StreamLanguage, syntaxHighlighting, defaultHighlightStyle, bracketMatching } from '@codemirror/language';
+import { StreamLanguage, syntaxHighlighting, HighlightStyle, bracketMatching } from '@codemirror/language';
 import { searchKeymap, highlightSelectionMatches } from '@codemirror/search';
 import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { stex } from '@codemirror/legacy-modes/mode/stex';
+import { tags } from '@lezer/highlight';
+
+// Colours come from the page's CSS variables, so one theme serves light and dark.
+const theme = EditorView.theme({
+  '&': { color: 'var(--ink)', backgroundColor: 'var(--surface)', fontSize: '13.5px' },
+  '&.cm-focused': { outline: 'none' },
+  '.cm-scroller': { fontFamily: 'var(--mono)', lineHeight: '1.6' },
+  '.cm-content': { padding: '10px 0 40vh', caretColor: 'var(--accent)' },
+  '.cm-line': { padding: '0 16px 0 6px' },
+  '.cm-gutters': { backgroundColor: 'var(--surface)', color: 'var(--ink-faint)', border: 'none' },
+  '.cm-lineNumbers .cm-gutterElement': { padding: '0 8px 0 14px', minWidth: '46px', opacity: '0.75' },
+  '.cm-activeLine': { backgroundColor: 'var(--hover)' },
+  '.cm-activeLineGutter': { backgroundColor: 'transparent', color: 'var(--ink)' },
+  '.cm-activeLineGutter.cm-gutterElement': { opacity: '1' },
+  '.cm-cursor, .cm-dropCursor': { borderLeft: '2px solid var(--accent)' },
+  '.cm-selectionBackground, &.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground':
+    { backgroundColor: 'var(--selection)' },
+  '.cm-selectionMatch': { backgroundColor: 'var(--warn-tint)' },
+  '&.cm-focused .cm-matchingBracket': { backgroundColor: 'var(--accent-tint)', outline: '1px solid var(--accent-line)' },
+  '&.cm-focused .cm-nonmatchingBracket': { backgroundColor: 'var(--danger-tint)' },
+  '.cm-searchMatch': { backgroundColor: 'var(--warn-tint)', outline: '1px solid var(--warn)' },
+  '.cm-searchMatch.cm-searchMatch-selected': { backgroundColor: 'var(--flash)' },
+  '.cm-flash': { backgroundColor: 'var(--flash)' },
+  '.cm-panels': { backgroundColor: 'var(--bg)', color: 'var(--ink)' },
+  '.cm-panels.cm-panels-top': { borderBottom: '1px solid var(--line)' },
+  '.cm-panels.cm-panels-bottom': { borderTop: '1px solid var(--line)' },
+  '.cm-panel.cm-search': { padding: '6px 10px', fontFamily: 'var(--sans)' },
+  '.cm-panel.cm-search input, .cm-panel.cm-search button, .cm-panel.cm-search label': { fontSize: '12px' },
+  '.cm-textfield': {
+    height: '26px', padding: '0 8px', border: '1px solid var(--line-strong)', borderRadius: '5px',
+    backgroundColor: 'var(--surface)', color: 'var(--ink)',
+  },
+  '.cm-button': {
+    height: '26px', padding: '0 9px', backgroundImage: 'none', backgroundColor: 'var(--surface)',
+    border: '1px solid var(--line-strong)', borderRadius: '5px', color: 'var(--ink-soft)',
+  },
+  '.cm-tooltip': { backgroundColor: 'var(--surface)', border: '1px solid var(--line-strong)', borderRadius: '6px' },
+});
+
+const highlight = HighlightStyle.define([
+  { tag: tags.tagName, color: 'var(--syn-command)' },
+  { tag: tags.keyword, color: 'var(--syn-keyword)' },
+  { tag: tags.atom, color: 'var(--syn-atom)' },
+  { tag: [tags.bracket, tags.punctuation], color: 'var(--syn-bracket)' },
+  { tag: tags.comment, color: 'var(--syn-comment)', fontStyle: 'italic' },
+  { tag: tags.number, color: 'var(--syn-number)' },
+  { tag: [tags.string, tags.special(tags.variableName)], color: 'var(--syn-string)' },
+  { tag: tags.standard(tags.variableName), color: 'var(--syn-keyword)' },
+  { tag: tags.invalid, color: 'var(--syn-error)' },
+]);
 
 const setFlash = StateEffect.define();
 const flashField = StateField.define({
@@ -41,7 +91,8 @@ export class Editor {
       closeBrackets(),
       highlightActiveLine(),
       highlightSelectionMatches(),
-      syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+      theme,
+      syntaxHighlighting(highlight),
       StreamLanguage.define(stex),
       EditorView.lineWrapping,
       flashField,

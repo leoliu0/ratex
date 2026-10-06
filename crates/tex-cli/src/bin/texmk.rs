@@ -18,6 +18,8 @@ mod embedded_bibtex;
 mod embedded_engine;
 #[path = "latexdiff.rs"]
 mod latexdiff;
+#[path = "../watch/mod.rs"]
+mod watch;
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
@@ -27,7 +29,7 @@ use std::hash::Hasher;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 const MAX_PASSES: u32 = 5;
 const CACHE_MAX_BYTES: u64 = 512 * 1024 * 1024;
@@ -81,6 +83,8 @@ struct Options {
     engine: Option<String>,
     /// Extra flags forwarded verbatim to engine (-interaction=..., -halt-on-error, ...).
     passthrough: Vec<String>,
+    /// `-pvc`/`--watch`/`-w`: rebuild whenever an input of the last build changes.
+    watch: bool,
 }
 
 /// Packages and classes which TeX Live compiles only with a Unicode engine
@@ -191,6 +195,8 @@ fn usage() {
   --optimize-pdf-size            spend more CPU minimizing converted PNG streams
   -c                             remove cached state; preserve the PDF
   -C                             remove cached state and an owned PDF
+  -pvc, --watch, -w              build, then rebuild whenever an input changes
+                                 (Ctrl-C stops; cannot be combined with -c/-C)
   -interaction=MODE             passed to the engine (default nonstopmode)
   -halt-on-error                passed to the engine
   --silent, -q                  suppress engine output (default)
@@ -210,6 +216,7 @@ fn parse_args(argv: &[String]) -> Result<Options, String> {
     let mut keep_intermediates = false;
     let mut keep_logs = false;
     let mut clean = CleanMode::None;
+    let mut watch = false;
     let mut engine: Option<String> = None;
     let mut passthrough: Vec<String> = Vec::new();
     let mut i = 1;
@@ -260,6 +267,7 @@ fn parse_args(argv: &[String]) -> Result<Options, String> {
             "--keep-logs" | "-keep-logs" => keep_logs = true,
             "-c" => clean = CleanMode::Aux,
             "-C" => clean = CleanMode::All,
+            "-pvc" | "--pvc" | "-watch" | "--watch" | "-w" => watch = true,
             "-interaction" | "--interaction" => {
                 let mode = take_value(&mut i, &inline_val)
                     .ok_or_else(|| "-interaction needs a value".to_string())?;
@@ -299,6 +307,9 @@ fn parse_args(argv: &[String]) -> Result<Options, String> {
         }
         i += 1;
     }
+    if watch && clean != CleanMode::None {
+        return Err("-pvc/--watch cannot be combined with -c or -C".to_string());
+    }
     match file {
         Some(file) => Ok(Options {
             file,
@@ -312,6 +323,7 @@ fn parse_args(argv: &[String]) -> Result<Options, String> {
             clean,
             engine,
             passthrough,
+            watch,
         }),
         None => Err("no input file".to_string()),
     }
@@ -2940,11 +2952,25 @@ fn run_bibtex(aux_stem: &Path, source_dir: &Path, silent: bool) -> i32 {
     }
 }
 
+/// epstopdf's name for the conversion of an EPS figure.
+fn eps_converted_path(eps: &Path) -> PathBuf {
+    let stem = eps.file_stem().unwrap_or_default().to_string_lossy();
+    eps.with_file_name(format!("{stem}-eps-converted-to.pdf"))
+}
+
+/// The EPS figures `convert_eps_figures` found and the PDFs it wrote.
+#[derive(Default)]
+struct EpsFigures {
+    sources: Vec<PathBuf>,
+    written: Vec<PathBuf>,
+}
+
 /// Convert EPS figures for pdfTeX's graphics rules (epstopdf's
 /// `-eps-converted-to.pdf` name, plus `<name>.pdf` when that does not exist).
 /// A conversion older than its EPS is redone; `<name>.pdf` is refreshed only
 /// while it is still a copy of the previous conversion, never a user file.
-fn convert_eps_figures(source_dir: &Path) {
+fn convert_eps_figures(source_dir: &Path) -> EpsFigures {
+    let mut figures = EpsFigures::default();
     let mut visited = HashSet::new();
     let mut dirs_to_visit = vec![source_dir.to_path_buf()];
     while let Some(dir) = dirs_to_visit.pop() {
@@ -2974,11 +3000,11 @@ fn convert_eps_figures(source_dir: &Path) {
             if !is_eps {
                 continue;
             }
+            figures.sources.push(path.clone());
             let Ok(eps_modified) = std::fs::metadata(&path).and_then(|meta| meta.modified()) else {
                 continue;
             };
-            let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-            let converted = path.with_file_name(format!("{stem}-eps-converted-to.pdf"));
+            let converted = eps_converted_path(&path);
             let direct_pdf = path.with_extension("pdf");
             let converted_current = std::fs::metadata(&converted)
                 .and_then(|meta| meta.modified())
@@ -2998,12 +3024,16 @@ fn convert_eps_figures(source_dir: &Path) {
             let Ok(out) = tex_ps::eps_to_pdf(&bytes) else {
                 continue;
             };
-            let _ = std::fs::write(&converted, &out.pdf_bytes);
-            if direct_is_previous_conversion {
-                let _ = std::fs::write(&direct_pdf, &out.pdf_bytes);
+            if std::fs::write(&converted, &out.pdf_bytes).is_ok() {
+                figures.written.push(converted);
+            }
+            if direct_is_previous_conversion && std::fs::write(&direct_pdf, &out.pdf_bytes).is_ok()
+            {
+                figures.written.push(direct_pdf);
             }
         }
     }
+    figures
 }
 
 fn real_main() -> i32 {
@@ -3016,6 +3046,15 @@ fn real_main() -> i32 {
             return 2;
         }
     };
+    if opt.watch {
+        return watch_main(&opt);
+    }
+    build(&opt, &mut BuildInfo::default())
+}
+
+/// One complete build of the document; the exit status of the driver.
+/// `info` receives what the watch loop needs to know about the build.
+fn build(opt: &Options, info: &mut BuildInfo) -> i32 {
     std::env::set_var(HERMETIC_ENV, "1");
     // Like latexmk (and editors such as LaTeX Workshop, whose %DOC% omits the
     // extension), accept the main file's name without `.tex`.
@@ -3035,7 +3074,8 @@ fn real_main() -> i32 {
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
-    convert_eps_figures(&source_dir);
+    let eps = convert_eps_figures(&source_dir);
+    let started = SystemTime::now();
     let target_engine = opt
         .engine
         .as_deref()
@@ -3354,6 +3394,20 @@ fn real_main() -> i32 {
         trusted_owned: &trusted_aux_owned,
         manifest_path: &manifest_path,
     };
+    if opt.watch {
+        info.inputs = Some(WatchInputs {
+            started,
+            source: source.clone(),
+            source_dir: source_dir.clone(),
+            aux_dir: aux_dir.clone(),
+            jobs_dir: jobs_dir.clone(),
+            job: job.clone(),
+            pdf_path: pdf_path.clone(),
+            synctex_path: synctex_path.clone(),
+            manifest_path: manifest_path.clone(),
+            eps,
+        });
+    }
     let engine = match engine_override
         .map(Ok)
         .unwrap_or_else(std::env::current_exe)
@@ -3810,6 +3864,7 @@ fn real_main() -> i32 {
     }
     let pages = pages_from_output(&last_output)
         .or_else(|| (!child_cache_hit).then(|| pdf_pages(&pdf_path)).flatten());
+    info.pages = pages;
     let mut bib_note = String::new();
     if bibtex_runs > 0 {
         bib_note.push_str(&format!(", {bibtex_runs} bibtex run(s)"));
@@ -3826,7 +3881,10 @@ fn real_main() -> i32 {
     } else {
         "OK"
     };
+    // Watch mode reports each build in its own status line.
+    let quiet_success = opt.watch && !last_pass_failed;
     match pages {
+        Some(_) | None if quiet_success && pdf_path.is_file() => {}
         Some(n) => eprintln!(
             "texmk: build {status}: {} ({} page{}, {passes} {executed_engine} pass(es){bib_note})",
             pdf_path.display(),
@@ -3881,6 +3939,228 @@ fn real_main() -> i32 {
         return 1;
     }
     0
+}
+
+/// What the watch loop learns from a build beyond its exit status.
+#[derive(Default)]
+struct BuildInfo {
+    /// Page count of the published PDF, when known.
+    pages: Option<u32>,
+    /// Set once the build has located its files; `None` when it failed
+    /// during setup, before reading anything.
+    inputs: Option<WatchInputs>,
+}
+
+/// The locations a build resolved, from which its dependencies are derived.
+struct WatchInputs {
+    /// Taken once the build's own preparation (EPS conversion) is done:
+    /// a dependency modified after this may have been read stale.
+    started: SystemTime,
+    source: PathBuf,
+    source_dir: PathBuf,
+    aux_dir: PathBuf,
+    /// Private cache root of every job; never a dependency.
+    jobs_dir: PathBuf,
+    job: String,
+    pdf_path: PathBuf,
+    synctex_path: PathBuf,
+    manifest_path: PathBuf,
+    /// EPS figures the driver converts for the engine.
+    eps: EpsFigures,
+}
+
+/// `.bib`/`.bst` files (BibTeX) and data sources (Biber) that exist on disk.
+fn bibliography_watch_files(
+    aux: &str,
+    bcf: &Path,
+    aux_dir: &Path,
+    source_dir: &Path,
+) -> Vec<PathBuf> {
+    let mut extra_roots = Vec::new();
+    for env in ["TEXMFHOME", "TEXMFLOCAL"] {
+        if let Ok(value) = std::env::var(env) {
+            extra_roots.extend(std::env::split_paths(&value).filter(|path| path.is_dir()));
+        }
+    }
+    let extra_refs: Vec<&Path> = extra_roots.iter().map(PathBuf::as_path).collect();
+    let kpse = tex_kpse::Kpse::with_roots(source_dir, &extra_refs);
+    let mut files: Vec<PathBuf> = aux_bibliography_dependencies(aux)
+        .into_iter()
+        .filter_map(|(name, format, extra_variable)| {
+            bibliography_dependency_path(&kpse, aux_dir, source_dir, name, format)
+                .or_else(|| extra_bibliography_dependency_path(name, format, extra_variable))
+        })
+        .collect();
+    if let Ok(bytes) = std::fs::read(bcf) {
+        if let Ok(names) = tex_biber::datasource_names(&String::from_utf8_lossy(&bytes)) {
+            files.extend(
+                names
+                    .into_iter()
+                    .filter_map(|name| biber_file(&kpse, &name, aux_dir, source_dir)),
+            );
+        }
+    }
+    files
+}
+
+/// Every path the last build read, or looked for and did not find: the main
+/// file and whatever the engine's recorder (`.fls`) lists as `INPUT`
+/// (`\input`/`\include` files, packages and classes, images, fonts) or
+/// `MISSING` (a file absent now would be read once it appears, so creating
+/// the file a failed build asked for triggers the next one), plus the
+/// bibliography sources its auxiliary files name and a project-supplied
+/// `<job>.bbl`. Excluded are the embedded archive, the private cache, and
+/// everything the build writes (per the recorder and the ownership
+/// manifest), so a build never triggers itself.
+///
+/// A build can stop before the engine rewrites the recorder; the paths
+/// watched until then stay watched.
+fn watch_dependencies(
+    inputs: &WatchInputs,
+    build_failed: bool,
+    previous: &watch::Tracker,
+) -> BTreeSet<PathBuf> {
+    let mut read = BTreeSet::from([inputs.source.clone()]);
+    let mut written = BTreeSet::from([inputs.pdf_path.clone(), inputs.synctex_path.clone()]);
+    let recorder = artifact_path(&inputs.aux_dir, &inputs.job, ".fls");
+    let recorder_current = std::fs::metadata(&recorder)
+        .and_then(|metadata| metadata.modified())
+        .is_ok_and(|modified| modified >= inputs.started);
+    if let Ok(Some(text)) = read_to_string_bounded(&recorder, MANIFEST_MAX_BYTES) {
+        let mut cwd = inputs.source_dir.clone();
+        for line in text.lines() {
+            if let Some(directory) = line.strip_prefix("PWD ") {
+                cwd = PathBuf::from(directory);
+            } else if let Some(path) = line.strip_prefix("INPUT ") {
+                read.insert(cwd.join(path));
+            } else if let Some(path) = line.strip_prefix("MISSING ") {
+                read.insert(cwd.join(path));
+            } else if let Some(path) = line.strip_prefix("OUTPUT ") {
+                written.insert(cwd.join(path));
+            }
+        }
+    }
+    let aux = read_aux_graph(
+        &artifact_path(&inputs.aux_dir, &inputs.job, ".aux"),
+        &inputs.aux_dir,
+        &inputs.source_dir,
+    );
+    read.extend(bibliography_watch_files(
+        &aux.combined,
+        &artifact_path(&inputs.aux_dir, &inputs.job, ".bcf"),
+        &inputs.aux_dir,
+        &inputs.source_dir,
+    ));
+    read.insert(inputs.source_dir.join(format!("{}.bbl", inputs.job)));
+    written.insert(artifact_path(&inputs.aux_dir, &inputs.job, ".bbl"));
+    written.insert(artifact_path(&inputs.aux_dir, &inputs.job, ".blg"));
+    if let Some(manifest) = read_manifest(&inputs.manifest_path) {
+        written.insert(manifest.pdf);
+        written.insert(manifest.synctex);
+        written.extend(manifest.exports.into_keys());
+        written.extend(manifest.aux_files.into_keys());
+    }
+    // The driver owns every conversion; it also rewrites `<name>.pdf` while that
+    // is still a copy of the previous conversion.
+    written.extend(inputs.eps.written.iter().cloned());
+    written.extend(inputs.eps.sources.iter().map(|eps| eps_converted_path(eps)));
+    // A path that does not exist is compared through its directory.
+    let resolve = |path: &Path| -> PathBuf {
+        std::fs::canonicalize(path).unwrap_or_else(|_| {
+            match (
+                path.parent().and_then(|parent| std::fs::canonicalize(parent).ok()),
+                path.file_name(),
+            ) {
+                (Some(parent), Some(name)) => parent.join(name),
+                _ => path.to_path_buf(),
+            }
+        })
+    };
+    let written: BTreeSet<PathBuf> = written.iter().map(|path| resolve(path)).collect();
+    let read: BTreeSet<PathBuf> = read
+        .iter()
+        .filter(|path| !tex_kpse::embedded_tree::is_embedded_path(&path.to_string_lossy()))
+        .map(|path| resolve(path))
+        .collect();
+    let mut watched: BTreeSet<PathBuf> = read
+        .iter()
+        .filter(|path| {
+            let watchable = path.is_file()
+                || (!path.exists() && path.parent().is_some_and(|parent| parent.is_dir()));
+            watchable && !path.starts_with(&inputs.jobs_dir) && !written.contains(*path)
+        })
+        .cloned()
+        .collect();
+    // The engine reads the PDF the driver converted from an EPS figure, so the
+    // figure itself is the dependency.
+    for eps in &inputs.eps.sources {
+        let converted = resolve(&eps_converted_path(eps));
+        if read.contains(&converted) || read.contains(&resolve(&eps.with_extension("pdf"))) {
+            watched.insert(resolve(eps));
+        }
+    }
+    if build_failed && !recorder_current {
+        watched.extend(previous.paths().map(Path::to_path_buf));
+    }
+    watched
+}
+
+/// `-pvc`: build, then rebuild whenever a dependency of the last build
+/// changes, until Ctrl-C. A failed rebuild reports its errors and keeps
+/// watching; only a build that fails before it can name any dependency (first
+/// build, bad options or missing main file) ends the run with its status.
+fn watch_main(opt: &Options) -> i32 {
+    watch::install_interrupt_handler();
+    let mut tracker = watch::Tracker::default();
+    let mut first_build = true;
+    loop {
+        let mut info = BuildInfo::default();
+        let timer = Instant::now();
+        let code = build(opt, &mut info);
+        let elapsed = timer.elapsed();
+        if watch::interrupted() {
+            return 0;
+        }
+        match &info.inputs {
+            Some(inputs) => {
+                let dependencies = watch_dependencies(inputs, code != 0, &tracker);
+                tracker.replace(dependencies, inputs.started);
+            }
+            None if first_build => return code,
+            None => {}
+        }
+        first_build = false;
+        let pages = match info.pages {
+            Some(1) => "1 page, ".to_string(),
+            Some(count) => format!("{count} pages, "),
+            None => String::new(),
+        };
+        eprintln!(
+            "texmk: [{}] build {} ({pages}{:.2} s)",
+            watch::clock(),
+            if code == 0 { "OK" } else { "FAILED" },
+            elapsed.as_secs_f64()
+        );
+        eprintln!(
+            "texmk: watching {} files (Ctrl-C to stop)",
+            tracker.present()
+        );
+        let Some(changed) = tracker.wait_for_change() else {
+            return 0;
+        };
+        let mut names: Vec<String> = changed
+            .iter()
+            .take(3)
+            .map(|path| {
+                path.file_name()
+                    .map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned())
+            })
+            .collect();
+        if changed.len() > 3 {
+            names.push(format!("{} more", changed.len() - 3));
+        }
+        eprintln!("texmk: [{}] changed: {}", watch::clock(), names.join(", "));
+    }
 }
 
 fn invoked_name() -> String {

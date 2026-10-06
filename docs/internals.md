@@ -179,6 +179,57 @@ to inject tools.
    and SyncTeX file are published atomically and the manifest is written;
    see [ARTIFACTS.md](../ARTIFACTS.md) for cache contents and cleanup.
 
+### Watch mode (`-pvc`, `--watch`, `-w`)
+
+`watch_main` runs the algorithm above as `build` in a loop: build, derive the
+dependency set, wait for a change, repeat. `-c`/`-C` are rejected with it.
+A build that fails after the driver located its files (TeX errors, a missing
+`\input`, a failed BibTeX run) prints its report and the loop keeps watching;
+a failure before that (unreadable options, missing main file on the first
+build) ends the run with the build's status. Ctrl-C sets a flag (`SIGINT`
+handler, or the console control handler on Windows); the loop finishes any
+running build, releases the job lock, and exits 0.
+
+- **Dependencies** (`watch_dependencies`) are read from data the driver
+  already keeps; nothing else tracks reads. The engine's `-recorder` file
+  (`<job>.fls`) supplies `INPUT` lines (`\input`/`\include` files, packages,
+  classes, images, and the font files from `FontLoader::dependency_files`)
+  and `MISSING` lines (the engine's failed lookups in project directories, an
+  extension of the format), so creating a file that a failed build asked for
+  triggers the next build. The `.bib`/`.bst` files named by the `.aux` graph
+  (or the `.bcf` data sources for Biber) and a project-supplied `<job>.bbl`
+  are added with the resolvers the bibliography signature uses. Dropped:
+  embedded-archive paths, anything under the private jobs directory, and every
+  file the build writes (`OUTPUT` lines, the ownership manifest's PDF,
+  SyncTeX, exports and auxiliary files), so a build never triggers itself.
+  The set is recomputed after every build. If a failed build left the
+  recorder untouched, the previous set is kept.
+- **Detection** (`src/watch/mod.rs`, pure Rust polling): every 250 ms each
+  tracked path's size, modification time and inode are compared with the
+  values recorded with its content hash. Only a mismatch, or a modification
+  time within 2 s of the recording (which a same-size rewrite could leave
+  unchanged), makes the scan re-hash the file, so a touch or an identical
+  save is no change. A change is pending until no tracked file has moved for
+  250 ms, then the baseline is re-recorded and, if any content really
+  differs, the build starts; atomic renames, truncate-and-write and
+  backup-and-rename saves therefore yield one build, and a file deleted and
+  recreated stays tracked. Polling avoids a platform backend (inotify,
+  FSEvents) and behaves the same on network and container filesystems.
+- **Changes during a build.** Files tracked before the build keep the
+  baseline recorded when it started, so an edit made while it ran is found by
+  the first scan afterwards and schedules exactly one more build however many
+  saves it took. A file the build discovered and that was modified after the
+  build's start (`WatchInputs::started`, taken after EPS conversion) may have
+  been read stale and is treated as changed.
+- **Output.** After each build: `texmk: [HH:MM:SS] build OK|FAILED (N pages,
+  S s)` and `texmk: watching N files (Ctrl-C to stop)` (existing files only);
+  after each detected change: `texmk: [HH:MM:SS] changed: FILE...`. The
+  driver's own `build OK` line is replaced by the status line; failure
+  messages are unchanged.
+- **Tests.** `crates/tex-cli/tests/watch.rs` drives the real binary and waits
+  on its status lines with bounded timeouts; the polling logic has unit tests
+  in `src/watch/mod.rs`.
+
 ## Resource resolution
 
 In hermetic mode (`TEX_RS_HERMETIC` set to anything but empty, `0`, or

@@ -1870,14 +1870,30 @@ fn parse_interaction(program: &str, value: &str) -> InteractionMode {
 }
 
 /// `-recorder`: a web2c-style `<job>.fls` listing the files this run read
-/// (`INPUT`) and wrote (`OUTPUT`). texmk claims ownership only of OUTPUT
-/// files, never of whatever else appears in a shared directory.
+/// (`INPUT`, including the font resources), the project paths it looked for
+/// and did not find (`MISSING`, an extension) and the files it wrote
+/// (`OUTPUT`). texmk claims ownership only of OUTPUT files, never of whatever
+/// else appears in a shared directory, and its watch mode treats INPUT and
+/// MISSING paths as the document's dependencies.
 fn write_recorder(engine: &Engine, aux_dir: &str, job: &str, log_path: &str) {
     use std::fmt::Write;
     let cwd = std::env::current_dir().unwrap_or_default();
     let mut text = format!("PWD {}\n", cwd.display());
-    for path in &engine.loaded_files {
-        let _ = writeln!(text, "INPUT {}", path.display());
+    let mut listed = std::collections::HashSet::new();
+    for path in engine
+        .loaded_files
+        .iter()
+        .chain(&engine.font_loader.dependency_files)
+    {
+        if listed.insert(path) {
+            let _ = writeln!(text, "INPUT {}", path.display());
+        }
+    }
+    let mut absent = std::collections::HashSet::new();
+    for path in &engine.missing_files {
+        if absent.insert(path) {
+            let _ = writeln!(text, "MISSING {}", path.display());
+        }
     }
     let fls_path = format!("{aux_dir}{job}.fls");
     for path in engine

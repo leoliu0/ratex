@@ -69,6 +69,7 @@ cargo build --release --locked --bin texres   # needs stable Rust (1.88+)
 texres paper.tex                         # engine picked from the preamble
 texres -xelatex paper.tex                # or -pdf, -lualatex
 texres -output-directory=build paper.tex # write output to build/
+texres -pvc paper.tex                    # rebuild whenever an input changes
 texres -c paper.tex                      # remove cached build files
 texres latexdiff old.tex new.tex diff.tex && texres diff.tex
 ```
@@ -77,6 +78,22 @@ Documents loading `fontspec`, `xeCJK`, `ctex`, `unicode-math` or `polyglossia`
 run as XeLaTeX automatically; everything else runs as pdfLaTeX.
 `texres --help` lists all options. Exit status: 0 converged, 1 build failed,
 2 usage error.
+
+**Watch mode:** `-pvc` (also `--watch`, `-w`) builds once, then rebuilds
+whenever a file the last build read changes: the main file, `\input` and
+`\include` files, `.bib` files, images, local packages and fonts. It combines
+with every build option except `-c`/`-C`. Saves that leave the content
+unchanged are ignored, and one editor save gives one rebuild. A failed
+rebuild prints its errors and keeps watching; Ctrl-C stops with status 0.
+
+```text
+$ texres -pvc paper.tex
+texmk: [14:02:11] build OK (3 pages, 1.42 s)
+texmk: watching 4 files (Ctrl-C to stop)
+texmk: [14:02:40] changed: intro.tex
+texmk: [14:02:41] build OK (3 pages, 0.36 s)
+texmk: watching 4 files (Ctrl-C to stop)
+```
 
 **Bibliographies:** `\bibliography` runs BibTeX. `biblatex` (default
 `backend=biber`) runs the built-in Biber, which writes the same `.bbl` as

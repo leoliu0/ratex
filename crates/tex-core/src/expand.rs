@@ -183,6 +183,36 @@ mod balanced_scan_tests {
     }
 }
 
+/// Which plain tokens (see `Engine::is_plain_raw_token`) `raw_token`'s fast
+/// path must leave to `raw_token_general` because of a running alignment.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AlignFilter {
+    /// No alignment delimiter can be intercepted.
+    None,
+    /// A row delimiter would end the current cell: only tokens that are
+    /// no row delimiter pass.
+    Delimiters,
+    /// Every token needs the general path.
+    All,
+}
+
+impl AlignFilter {
+    #[inline(always)]
+    fn passes(self, t: Token, eqtb: &crate::eqtb::Eqtb) -> bool {
+        Engine::is_plain_raw_token(t)
+            && match self {
+                AlignFilter::None => true,
+                AlignFilter::Delimiters => Self::no_row_delimiter(t, eqtb),
+                AlignFilter::All => false,
+            }
+    }
+
+    #[inline(never)]
+    fn no_row_delimiter(t: Token, eqtb: &crate::eqtb::Eqtb) -> bool {
+        crate::align::row_delimiter(t, eqtb).is_none()
+    }
+}
+
 /// A macro call ended before its arguments were complete (tex.web §396 and
 /// §398 abort the call); diagnostics have already been issued.
 struct ArgAbort;
@@ -246,32 +276,30 @@ impl Engine {
     /// fetch next raw token honoring pushback
     ///
     /// Out of line so that its many callers share one copy. The common case
-    /// is served by `raw_token_fast`, which never calls another function and
-    /// therefore runs without setting up a stack frame; everything else is
-    /// a tail call to `raw_token_general`.
+    /// (no alignment entry being scanned) is served by `raw_token_fast`,
+    /// which never calls another function and therefore runs without
+    /// setting up a stack frame; everything else is a tail call to
+    /// `raw_token_general`.
     #[inline(never)]
     pub fn raw_token(&mut self) -> Token {
-        match self.raw_token_fast() {
-            Some(t) => t,
-            None => self.raw_token_general(),
+        if self.align_state == crate::align::PH_IDLE && !self.diagnostic_sources_live {
+            if let Some(t) = self.raw_token_fast(AlignFilter::None) {
+                return t;
+            }
         }
+        self.raw_token_general()
     }
 
     /// The next token when it is a pushed-back token or a token of a token
-    /// list or macro replacement that `raw_token` returns exactly as stored,
-    /// no alignment is being scanned and no diagnostic source position or
-    /// Lua callback needs bookkeeping. Otherwise nothing is consumed and
-    /// `raw_token_general` has to fetch it.
+    /// list or macro replacement that `raw_token` returns exactly as stored
+    /// and that `filter` lets through, and no Lua callback needs
+    /// bookkeeping. Otherwise nothing is consumed and `raw_token_general`
+    /// has to fetch it. The caller checks that no diagnostic source
+    /// position is live.
     #[inline(always)]
-    fn raw_token_fast(&mut self) -> Option<Token> {
-        if self.align_state != crate::align::PH_IDLE
-            || self.align_macro_arg
-            || self.diagnostic_sources_live
-        {
-            return None;
-        }
+    fn raw_token_fast(&mut self, filter: AlignFilter) -> Option<Token> {
         let token = if let Some(&t) = self.pushed.last() {
-            if !Self::is_plain_raw_token(t)
+            if !filter.passes(t, &self.eqtb)
                 || self.scanner_status == ScannerStatus::Aligning
                 || self.lua_cb[crate::lua_callbacks::Cb::ShowErrorHook as usize] > 0
             {
@@ -281,6 +309,7 @@ impl Engine {
             self.pushed_read = t;
             t
         } else {
+            let eqtb = &self.eqtb;
             let (t, depth) = match self.input.stack.last_mut() {
                 Some(crate::input::Source::TokList {
                     toks,
@@ -288,18 +317,19 @@ impl Engine {
                     trace_depth,
                     ..
                 }) => match toks.get(*pos) {
-                    Some(&t) if Self::is_plain_raw_token(t) => {
+                    Some(&t) if filter.passes(t, eqtb) => {
                         *pos += 1;
                         (t, *trace_depth)
                     }
                     _ => return None,
                 },
-                Some(crate::input::Source::MacroFrame(frame)) => {
-                    match frame.next_token_if(Self::is_plain_raw_token) {
-                        Some(t) => (t, frame.trace_depth),
-                        None => return None,
+                Some(crate::input::Source::MacroFrame(frame)) => match frame.peek_token() {
+                    Some(t) if filter.passes(t, eqtb) => {
+                        frame.skip(1);
+                        (t, frame.trace_depth)
                     }
-                }
+                    _ => return None,
+                },
                 _ => return None,
             };
             self.unwind_macro_trace(depth);
@@ -311,6 +341,33 @@ impl Engine {
             _ => {}
         }
         Some(token)
+    }
+
+    /// Inside an alignment: which plain tokens `raw_token_general` would
+    /// return as stored, that is, which cannot end the current cell (see
+    /// `align_intercept_raw_token`) and are not the frozen end of a cell
+    /// met by a macro argument scan.
+    fn align_raw_filter(&self) -> AlignFilter {
+        if self.align_macro_arg && self.align_state & crate::align::PH_CLOSE != 0 {
+            AlignFilter::All
+        } else if self.align_delimiter_live() {
+            AlignFilter::Delimiters
+        } else {
+            AlignFilter::None
+        }
+    }
+
+    /// True when a row delimiter fetched now would end the current cell
+    /// (tex.web §342: the v template is inserted only when a `&` or `\cr`
+    /// arrives at align_state = 0 while the entry is being scanned).
+    #[inline]
+    pub(crate) fn align_delimiter_live(&self) -> bool {
+        self.align_state != crate::align::PH_IDLE
+            && !self.in_expanded_scan
+            && self.scanner_status == ScannerStatus::Aligning
+            && self.align_phase() == crate::align::PH_CONTENT
+            && self.align_state & crate::align::PH_CLOSE == 0
+            && !self.align_delimiter_hidden()
     }
 
     /// Tokens `raw_token` returns exactly as they are stored: control
@@ -327,6 +384,16 @@ impl Engine {
 
     #[inline(never)]
     fn raw_token_general(&mut self) -> Token {
+        // Inside an alignment entry, tokens that cannot end the cell take
+        // the fast path too.
+        if self.align_state != crate::align::PH_IDLE && !self.diagnostic_sources_live {
+            let filter = self.align_raw_filter();
+            if filter != AlignFilter::All {
+                if let Some(t) = self.raw_token_fast(filter) {
+                    return t;
+                }
+            }
+        }
         // tex.web @7335/@7492: a brace fetched from a real input source
         // adjusts the alignment brace depth. Tokens returned from the
         // pushback stack were counted at their original fetch (tex.web
@@ -4040,10 +4107,14 @@ impl Engine {
         out: &mut Vec<Token>,
         room: usize,
     ) -> bool {
-        // Inside an alignment, raw_token() may end the cell at a delimiter.
-        if self.align_state != crate::align::PH_IDLE {
-            return false;
-        }
+        // Inside an alignment, raw_token() may end the cell at a row
+        // delimiter, and the frozen end of a cell aborts the argument.
+        let align_live = self.align_state != crate::align::PH_IDLE && {
+            if self.align_state & crate::align::PH_CLOSE != 0 {
+                return false;
+            }
+            self.align_delimiter_live()
+        };
         let partoken = Token::from_cs(self.partoken_id());
         let outer = self.eqtb.has_outer_macros();
         let Some((segment, trace_depth)) = self.token_list_front() else {
@@ -4059,6 +4130,7 @@ impl Engine {
                 || (t.is_cs() && self.cs.is_active(t.cs_id()))
                 || self.delim_eq(t, first)
                 || (outer && self.is_outer_macro_token(t))
+                || (align_live && crate::align::row_delimiter(t, &self.eqtb).is_some())
             {
                 break;
             }

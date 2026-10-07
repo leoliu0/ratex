@@ -158,6 +158,15 @@ pub(crate) const PH_CONTENT: i32 = 2; // cell content phase
 const PH_OMIT: i32 = 4; // template omitted for the current cell
 pub(crate) const PH_CLOSE: i32 = 8; // close stream pushed; sentinel not yet seen
 
+/// A token that ends an alignment entry (see `Engine::row_delimiter`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum RowDelimiter {
+    /// `tab_mark`: `&` or a control sequence \let to one.
+    Tab,
+    /// `car_ret`: `\cr` or `\crcr`.
+    Cr(Prim),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub(crate) enum AlignCloseReason {
     #[default]
@@ -208,6 +217,23 @@ pub(crate) struct AlignView<'a> {
     pub(crate) rows: &'a [Vec<Cell>],
     pub(crate) row_adjust: &'a [Vec<Node>],
     pub(crate) cur_row: &'a [Cell],
+}
+
+/// tex.web §342: whether `t` is a row delimiter, a `tab_mark` (`&` or a
+/// control sequence \let to one) or a `car_ret` (`\cr`, `\crcr`).
+#[inline]
+pub(crate) fn row_delimiter(t: Token, eqtb: &crate::eqtb::Eqtb) -> Option<RowDelimiter> {
+    if t.is_char() {
+        return (t.cc() == 4).then_some(RowDelimiter::Tab);
+    }
+    if !t.is_cs() {
+        return None;
+    }
+    match eqtb.resolve(t.cs_id()) {
+        Some(Equiv::CharTok(raw)) if Token(*raw).cc() == 4 => Some(RowDelimiter::Tab),
+        Some(Equiv::Prim(p @ (Prim::Cr | Prim::CrCr))) => Some(RowDelimiter::Cr(*p)),
+        _ => None,
+    }
 }
 
 impl Engine {
@@ -278,36 +304,24 @@ impl Engine {
         {
             return false;
         }
-        let is_tab = if t.is_char() && t.cc() == 4 {
-            true
-        } else if let Some(id) = t.is_cs().then(|| t.cs_id()) {
-            matches!(self.eqtb.resolve(id), Some(crate::eqtb::Equiv::CharTok(raw)) if Token(*raw).cc() == 4)
-        } else {
-            false
-        };
-        if is_tab {
-            if self.align_delimiter_hidden() {
-                return false;
-            }
-            self.align_tab();
-            return true;
-        }
-        let Some(id) = t.is_cs().then(|| t.cs_id()) else {
+        let Some(delimiter) = row_delimiter(t, &self.eqtb) else {
             return false;
-        };
-        let prim = match self.eqtb.resolve(id) {
-            Some(Equiv::Prim(p @ (Prim::Cr | Prim::CrCr))) => *p,
-            _ => return false,
         };
         if self.align_delimiter_hidden() {
             return false;
         }
-        self.cur_tok = t;
-        self.cur_cs = Some(id);
-        self.cur_prim = Some(prim);
-        self.align_cr();
+        match delimiter {
+            RowDelimiter::Tab => self.align_tab(),
+            RowDelimiter::Cr(prim) => {
+                self.cur_tok = t;
+                self.cur_cs = Some(t.cs_id());
+                self.cur_prim = Some(prim);
+                self.align_cr();
+            }
+        }
         true
     }
+
     /// true when an outer alignment state is saved for this engine (we are
     /// the inner \halign of a nesting)
     fn align_has_save(&self) -> bool {

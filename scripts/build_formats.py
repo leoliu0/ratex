@@ -5,7 +5,8 @@ Each format is produced the way users do it: the single `texres` binary,
 invoked under the engine's name, runs `<engine> -ini <engine>.ini` in an empty
 directory with hermetic resource lookup (embedded packages only) and a fixed
 `SOURCE_DATE_EPOCH`, so the dump is a pure function of the sources. The raw
-dump is recompressed with `zstd -19` and written next to the other assets.
+dump is recompressed with `zstd -19` in 1 MiB frames that the engine decodes
+in parallel (see `compress_frames`) and written next to the other assets.
 
 Usage:
   scripts/build_formats.py [--binary PATH] [--engine pdflatex|xelatex|lualatex ...]
@@ -46,6 +47,11 @@ EXTRA_ARGS = {
 }
 DEFAULT_EPOCH = "1700000000"
 ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+# A zstd skippable frame holding the frame index of a format that is stored
+# as independently decodable frames (tex_core::format::compress_format_frames).
+SKIPPABLE_INDEX_MAGIC = b"\x5e\x2a\x4d\x18"
+FRAME_INDEX_TAG = b"TeXresFI"
+FORMAT_FRAME_BYTES = 1 << 20
 
 
 def sha256(data: bytes) -> str:
@@ -58,6 +64,21 @@ def zstd(args, data: bytes) -> bytes:
         sys.exit("build_formats: the `zstd` command line tool is required")
     return subprocess.run([exe, "-q", *args], input=data, check=True,
                           stdout=subprocess.PIPE).stdout
+
+
+def compress_frames(raw: bytes) -> bytes:
+    """`raw` as texres stores a compressed format: a skippable frame with
+    the compressed and decompressed size of every frame, then one `zstd -19`
+    frame per FORMAT_FRAME_BYTES, which the engine decodes in parallel. Any
+    zstd decoder reads the whole as `raw`."""
+    frames = [(zstd(["-19", "-c"], raw[i:i + FORMAT_FRAME_BYTES]),
+               len(raw[i:i + FORMAT_FRAME_BYTES]))
+              for i in range(0, len(raw), FORMAT_FRAME_BYTES)]
+    index = FRAME_INDEX_TAG + len(frames).to_bytes(4, "little") + b"".join(
+        len(frame).to_bytes(4, "little") + size.to_bytes(4, "little")
+        for frame, size in frames)
+    return (SKIPPABLE_INDEX_MAGIC + len(index).to_bytes(4, "little") + index
+            + b"".join(frame for frame, _ in frames))
 
 
 def dump_format(binary: Path, engine: str, epoch: str, work: Path) -> bytes:
@@ -87,7 +108,8 @@ def dump_format(binary: Path, engine: str, epoch: str, work: Path) -> bytes:
     data = fmt.read_bytes()
     # `-ini` writes a quickly compressed dump; the asset is the same
     # payload recompressed at the highest ratio.
-    return zstd(["-d", "-c"], data) if data.startswith(ZSTD_MAGIC) else data
+    compressed = data.startswith(ZSTD_MAGIC) or data.startswith(SKIPPABLE_INDEX_MAGIC)
+    return zstd(["-d", "-c"], data) if compressed else data
 
 
 def main() -> None:
@@ -119,7 +141,7 @@ def main() -> None:
                    if args.keep else tempfile.TemporaryDirectory(prefix=prefix))
         with workdir as scratch:
             first = dump_format(binary, engine, args.epoch, Path(scratch) / "a")
-            compressed = zstd(["-19", "-c"], first)
+            compressed = compress_frames(first)
             print(f"{engine}: {len(first)} bytes -> {len(compressed)} "
                   f"zstd, sha256 {sha256(first)[:16]}")
             if not args.check:

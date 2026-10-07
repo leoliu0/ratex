@@ -40,6 +40,8 @@ REPO = Path(__file__).resolve().parent.parent
 BINARIES = ["texres"]
 
 ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+# texres writes compressed formats behind a skippable frame (its frame index).
+SKIPPABLE_INDEX_MAGIC = b"\x5e\x2a\x4d\x18"
 # A normal format expands to roughly 8 MiB. Keep explicit distribution
 # overrides bounded so a mislabeled archive cannot exhaust the packaging host.
 MAX_DECOMPRESSED_FORMAT_BYTES = 128 << 20
@@ -179,7 +181,7 @@ def validate_format_file(explicit: str) -> Path:
             return False
         with path.open("rb") as source:
             data = source.read(12)
-        if data[:4] == ZSTD_MAGIC:
+        if data[:4] in (ZSTD_MAGIC, SKIPPABLE_INDEX_MAGIC):
             data = decode_zstd_file(path)
         if len(data) < 12 or data[:8] != b"RUSTEXFM":
             return False

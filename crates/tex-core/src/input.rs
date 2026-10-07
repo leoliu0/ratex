@@ -271,6 +271,26 @@ impl MacroFrame {
         }
     }
 
+    /// Deliver the next token of the current segment when `accept` takes it.
+    /// Nothing is consumed at a segment boundary or for a refused token.
+    #[inline(always)]
+    pub(crate) fn next_token_if(&mut self, accept: impl FnOnce(Token) -> bool) -> Option<Token> {
+        if self.pos >= self.end {
+            return None;
+        }
+        let index = self.pos as usize;
+        let token = if self.in_arg {
+            self.args.toks[index]
+        } else {
+            self.body[index]
+        };
+        if !accept(token) {
+            return None;
+        }
+        self.pos += 1;
+        Some(token)
+    }
+
     /// The undelivered rest of the current body or argument segment.
     #[inline]
     pub(crate) fn segment(&self) -> &[Token] {

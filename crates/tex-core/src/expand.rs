@@ -345,11 +345,49 @@ impl Engine {
     /// fast path too, without the frame of `raw_token_general`.
     #[inline(never)]
     fn raw_token_aligning(&mut self) -> Token {
-        let filter = self.align_raw_filter();
-        if let Some(t) = self.raw_token_fast(filter) {
+        if let Some(t) = self.raw_token_fast(self.align_raw_filter()) {
             return t;
         }
+        // Finishing a list (the u part of a template) changes the phase,
+        // and with it the filter.
+        if self.advance_to_list_token() {
+            if let Some(t) = self.raw_token_fast(self.align_raw_filter()) {
+                return t;
+            }
+        }
         self.raw_token_general()
+    }
+
+    /// Without pushback, move the macro frame on top past its finished
+    /// segment and pop finished token lists, as `raw_token_general`'s fetch
+    /// loop does, until a list with a token left is on top. False when a
+    /// token is pushed back or the top is no token list (a file, or nothing):
+    /// `raw_token_general` reads those.
+    #[inline(always)]
+    fn advance_to_list_token(&mut self) -> bool {
+        use crate::input::Source;
+        if !self.pushed.is_empty() {
+            return false;
+        }
+        loop {
+            let depth = match self.input.stack.last_mut() {
+                Some(Source::MacroFrame(frame)) => {
+                    if frame.advance_segment() {
+                        return true;
+                    }
+                    frame.trace_depth
+                }
+                Some(Source::TokList { pos, end, trace_depth, .. }) => {
+                    if *pos < *end {
+                        return true;
+                    }
+                    *trace_depth
+                }
+                _ => return false,
+            };
+            self.unwind_macro_trace(depth);
+            self.end_token_list();
+        }
     }
 
     /// The next token when it is a pushed-back token or a token of a token

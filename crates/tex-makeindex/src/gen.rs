@@ -1,365 +1,491 @@
-//! Writing the formatted index.
+//! Writing the formatted index: makeindex's `genind.c`.
 
-use crate::page::Page;
-use crate::scan::{Entry, Range};
-use crate::sort::{group_of, Group};
+use crate::locale::Locale;
+use crate::scan::{Entry, ALPHA, DOT_MAX, DUPLICATE, FIELD_MAX, SYMBOL};
 use crate::style::Style;
+use crate::Transcript;
 
-pub(crate) struct Output {
-    pub(crate) bytes: Vec<u8>,
-    pub(crate) lines: usize,
-    pub(crate) warnings: usize,
-}
-
-/// Formatting parameters that do not come from the style file.
+/// Settings of one `gen_ind` run that do not come from the style.
 pub(crate) struct Layout<'a> {
     pub(crate) style: &'a Style,
-    pub(crate) no_ranges: bool,
-    pub(crate) start_page: Option<&'a [u8]>,
+    /// `-r` not given.
+    pub(crate) merge_page: bool,
+    pub(crate) german_sort: bool,
+    pub(crate) thai_sort: bool,
+    /// `-p`: the page to start at (already resolved for `even`/`odd`/`any`).
+    pub(crate) start_page: Option<Vec<u8>>,
     pub(crate) input_names: &'a [String],
     pub(crate) output_name: &'a str,
+    /// The environment's `LC_CTYPE`, used for the letters of new groups.
+    pub(crate) locale: Option<&'a Locale>,
 }
 
-struct Writer<'a> {
-    bytes: Vec<u8>,
-    /// Columns used on the current output line.
-    column: usize,
-    lines: usize,
-    warnings: usize,
+/// `TOLOWER`/`TOUPPER` in the "C" locale.
+fn c_lower(byte: u8) -> u8 {
+    byte.to_ascii_lowercase()
+}
+
+fn c_upper(byte: u8) -> u8 {
+    byte.to_ascii_uppercase()
+}
+
+struct Gen<'a, 'l> {
     layout: &'a Layout<'a>,
-    log: &'a mut dyn FnMut(String),
+    style: &'a Style,
+    entries: &'a [Entry],
+    log: &'l mut Transcript,
+    out: Vec<u8>,
+    curr: Option<usize>,
+    prev: Option<usize>,
+    begin: usize,
+    the_end: usize,
+    range_ptr: usize,
+    level: usize,
+    prev_level: usize,
+    /// The current entry's encapsulator without its range operator.
+    encap: &'a [u8],
+    prev_encap: Option<&'a [u8]>,
+    in_range: bool,
+    encap_range: bool,
+    buff: Vec<u8>,
+    /// The output line under construction.
+    line: Vec<u8>,
+    /// Output lines so far (`ind_lc`).
+    lc: usize,
+    /// Warnings (`ind_ec`).
+    ec: usize,
+    indent: usize,
 }
 
-impl Writer<'_> {
-    fn push(&mut self, text: &[u8]) {
-        match text.iter().rposition(|&byte| byte == b'\n') {
-            Some(last) => {
-                self.lines += text.iter().filter(|&&byte| byte == b'\n').count();
-                self.column = text.len() - last - 1;
-            }
-            None => self.column += text.len(),
+/// `page_diff`: the distance between the last fields of two pages of the
+/// same shape, -1 otherwise.
+fn page_diff(a: &Entry, b: &Entry) -> i32 {
+    if a.npg.len() != b.npg.len() {
+        return -1;
+    }
+    let count = a.npg.len();
+    if count == 0 || a.npg[..count - 1] != b.npg[..count - 1] {
+        return if count == 0 { 0 } else { -1 };
+    }
+    b.npg[count - 1].wrapping_sub(a.npg[count - 1])
+}
+
+impl Gen<'_, '_> {
+    fn entry(&self, index: usize) -> &Entry {
+        &self.entries[index]
+    }
+
+    fn curr(&self) -> &Entry {
+        &self.entries[self.curr.expect("an entry is current")]
+    }
+
+    fn prev(&self) -> &Entry {
+        &self.entries[self.prev.or(self.curr).expect("an entry was seen")]
+    }
+
+    fn put(&mut self, text: &[u8]) {
+        self.out.extend_from_slice(text);
+    }
+
+    fn putln(&mut self, text: &[u8]) {
+        self.out.extend_from_slice(text);
+        self.out.push(b'\n');
+        self.lc += 1;
+    }
+
+    fn warn(&mut self, message: &[u8]) {
+        let (file, line) = {
+            let curr = self.curr();
+            (curr.file, curr.lc)
+        };
+        let name = self.layout.input_names.get(file).map_or("", String::as_str);
+        self.log.error_line();
+        self.log.ilg(
+            format!(
+                "## Warning (input = {name}, line = {line}; output = {}, line = {}):\n   -- ",
+                self.layout.output_name,
+                self.lc + 1
+            )
+            .as_bytes(),
+        );
+        self.log.ilg(message);
+        self.ec += 1;
+    }
+
+    /// `SAVE`.
+    fn save(&mut self) {
+        let curr = self.curr.expect("an entry is current");
+        self.begin = curr;
+        self.the_end = curr;
+        self.prev_encap = Some(self.encap);
+    }
+
+    fn run(&mut self) {
+        let style = self.style;
+        self.log.message(format!("Generating output file {}...", self.layout.output_name).as_bytes());
+        self.put(&style.preamble);
+        self.lc += style.prelen;
+        if let Some(page) = &self.layout.start_page {
+            self.put(&style.setpage_prefix);
+            self.put(page);
+            self.put(&style.setpage_suffix);
+            self.lc += style.setpagelen;
         }
-        self.bytes.extend_from_slice(text);
-    }
-
-    fn warn(&mut self, entry: &Entry, message: &str) {
-        self.warnings += 1;
-        let name = self.layout.input_names.get(entry.file).map_or("", String::as_str);
-        (self.log)(format!(
-            "## Warning (input = {name}, line = {}; output = {}, line = {}):\n   -- {message}\n",
-            entry.line,
-            self.layout.output_name,
-            self.lines + 1
-        ));
-    }
-}
-
-fn wrap_encap(style: &Style, encap: &[u8], text: &[u8]) -> Vec<u8> {
-    if encap.is_empty() {
-        return text.to_vec();
-    }
-    let mut out = Vec::new();
-    out.extend_from_slice(&style.encap_prefix);
-    out.extend_from_slice(encap);
-    out.extend_from_slice(&style.encap_infix);
-    out.extend_from_slice(text);
-    out.extend_from_slice(&style.encap_suffix);
-    out
-}
-
-fn join(parts: &[&[u8]]) -> Vec<u8> {
-    parts.concat()
-}
-
-/// A stretch of pages printed as one unit.
-struct Segment<'e> {
-    start: &'e Entry,
-    end: &'e Entry,
-    encap: &'e [u8],
-    /// Written with explicit range operators.
-    explicit: bool,
-    /// Single pages merged into this segment.
-    pages: usize,
-}
-
-fn explicit_segment<'e>(start: &'e Entry, end: &'e Entry, encap: &'e [u8]) -> Segment<'e> {
-    if std::ptr::eq(start, end) {
-        // A range operator without a second page is an ordinary page.
-        return single(start, encap);
-    }
-    Segment { start, end, encap, explicit: true, pages: 0 }
-}
-
-fn single<'e>(entry: &'e Entry, encap: &'e [u8]) -> Segment<'e> {
-    Segment { start: entry, end: entry, encap, explicit: false, pages: 1 }
-}
-
-/// Renders the page list of one index item as printable tokens.
-fn page_tokens(writer: &mut Writer, entries: &[&Entry]) -> Vec<Vec<u8>> {
-    let style = writer.layout.style;
-    let count = entries.len();
-    for pair in entries.windows(2) {
-        if pair[0].page.compare(&pair[1].page).is_eq() && pair[0].encap != pair[1].encap {
-            writer.warn(pair[1], "Conflicting entries: multiple encaps for the same page under same key.");
-        }
-    }
-    let open_mark = char::from(style.range_open);
-    let close_mark = char::from(style.range_close);
-
-    // Explicit ranges first: each becomes one segment.
-    let mut segments: Vec<Segment> = Vec::new();
-    let mut at = 0;
-    while at < count {
-        let entry = entries[at];
-        match entry.range {
-            Range::Open => {
-                let mut start = at;
-                // Pages are checked against the latest opener, which an extra
-                // opening operator replaces without changing the printed start.
-                let mut anchor = at;
-                let mut last = at;
-                let mut closed = false;
-                let mut next = at + 1;
-                while next < count {
-                    let inner = entries[next];
-                    if inner.range == Range::Open {
-                        writer.warn(inner, &format!("Extra range opening operator {open_mark}."));
-                        anchor = next;
-                        next += 1;
-                        continue;
-                    }
-                    if let Some(problem) = range_problem(&entries[anchor].page, &inner.page) {
-                        // The range so far ends; the offending page begins a new one.
-                        writer.warn(inner, problem);
-                        segments.push(explicit_segment(entries[start], entries[last], &entries[start].encap));
-                        start = next;
-                        anchor = next;
-                        last = next;
-                        next += 1;
-                        if inner.range == Range::Close {
-                            closed = true;
-                            break;
-                        }
-                        continue;
-                    }
-                    match inner.range {
-                        Range::Close => {
-                            if !inner.encap.is_empty() && inner.encap != entries[start].encap {
-                                writer.warn(
-                                    inner,
-                                    &format!(
-                                        "Range closing operator has an inconsistent encapsulator {}.",
-                                        String::from_utf8_lossy(&inner.encap)
-                                    ),
-                                );
-                            }
-                            last = next;
-                            closed = true;
-                            next += 1;
-                            break;
-                        }
-                        Range::Open => unreachable!("handled above"),
-                        Range::None => {
-                            if !inner.encap.is_empty() && inner.encap != entries[start].encap {
-                                // A differently emphasized page stays a page of its own.
-                                writer.warn(
-                                    inner,
-                                    &format!(
-                                        "Inconsistent page encapsulator {} within range.",
-                                        String::from_utf8_lossy(&inner.encap)
-                                    ),
-                                );
-                                segments.push(single(inner, &inner.encap));
-                            }
-                            last = next;
-                        }
-                    }
-                    next += 1;
-                }
-                if !closed {
-                    writer.warn(entry, &format!("Unmatched range opening operator {open_mark}."));
-                }
-                segments.push(explicit_segment(entries[start], entries[last], &entries[start].encap));
-                at = next;
-            }
-            Range::Close => {
-                writer.warn(entry, &format!("Unmatched range closing operator {close_mark}."));
-                segments.push(single(entry, &entry.encap));
-                at += 1;
-            }
-            Range::None => {
-                segments.push(single(entry, &entry.encap));
-                at += 1;
+        self.log.idx_dc = 0;
+        for n in 0..self.entries.len() {
+            if self.entries[n].ty != DUPLICATE {
+                self.make_entry(n);
+                self.log.dot(DOT_MAX);
             }
         }
+        if self.curr.is_some() {
+            if self.in_range {
+                self.curr = Some(self.range_ptr);
+                let message = [&b"Unmatched range opening operator "[..], &[style.range_open], b".\n"].concat();
+                self.warn(&message);
+            }
+            self.prev = self.curr;
+            self.flush_line(true);
+        }
+        self.put(&style.delim_t);
+        self.put(&style.postamble);
+        let lines = self.lc + style.postlen;
+        let plural = if self.ec == 1 { "warning" } else { "warnings" };
+        self.log.message(format!("done ({lines} lines written, {} {plural}).\n", self.ec).as_bytes());
     }
 
-    // Consecutive segments with the same encapsulator form one run.
-    let mut runs: Vec<Segment> = Vec::new();
-    for segment in segments {
-        if let Some(run) = runs.last_mut() {
-            let same_page = run.end.page.compare(&segment.start.page).is_eq();
-            let follows = !writer.layout.no_ranges
-                && run.end.page.precedes_consecutively(&segment.start.page);
-            if run.encap == segment.encap && (same_page || follows) {
-                run.end = segment.end;
-                run.explicit |= segment.explicit;
-                run.pages += segment.pages;
-                continue;
+    fn make_entry(&mut self, n: usize) {
+        let style = self.style;
+        let first = self.curr.is_none();
+        self.prev = self.curr;
+        self.curr = Some(n);
+        let entries = self.entries;
+        let encap: &[u8] = &entries[n].encap;
+        let lead = encap.first().copied().unwrap_or(0);
+        self.encap = if lead == style.range_open || lead == style.range_close { &encap[1..] } else { encap };
+
+        if first {
+            self.prev_level = 0;
+            self.level = 0;
+            // The first group letter is converted in the "C" locale.
+            let letter = self.entries[n].sf[0].first().copied().unwrap_or(0);
+            self.put_header(letter, false);
+            self.make_item(&[]);
+        } else {
+            self.prev_level = self.level;
+            let (curr, prev) = (self.curr(), self.prev());
+            let level = (0..FIELD_MAX)
+                .find(|&level| curr.sf[level] != prev.sf[level] || curr.af[level] != prev.af[level])
+                .unwrap_or(FIELD_MAX);
+            self.level = level;
+            if level < FIELD_MAX {
+                self.new_entry();
+            } else if !(lead == style.range_open && self.in_range) {
+                self.old_entry();
             }
         }
-        runs.push(segment);
-    }
 
-    runs.iter()
-        .map(|run| {
-            let first = &run.start.page.text;
-            let last = &run.end.page.text;
-            let covered = run.start.page.pages_until(&run.end.page);
-            let text = if first == last {
-                first.clone()
+        let prev_encap = self.prev_encap.unwrap_or_default();
+        if lead == style.range_open {
+            if self.in_range {
+                let message = [&b"Extra range opening operator "[..], &[style.range_open], b".\n"].concat();
+                self.warn(&message);
             } else {
-                match covered {
-                    Some(2) if !style.suffix_2p.is_empty() => join(&[first, &style.suffix_2p]),
-                    Some(2) if !run.explicit => join(&[first, &style.delim_n, last]),
-                    Some(3) if !style.suffix_3p.is_empty() => join(&[first, &style.suffix_3p]),
-                    Some(1..=3) => join(&[first, &style.delim_r, last]),
-                    _ if !style.suffix_mp.is_empty() => join(&[first, &style.suffix_mp]),
-                    _ => join(&[first, &style.delim_r, last]),
-                }
-            };
-            wrap_encap(style, run.encap, &text)
-        })
-        .collect()
-}
-
-fn range_problem(first: &Page, last: &Page) -> Option<&'static str> {
-    if first.fields.len() != last.fields.len()
-        || first.fields.iter().zip(&last.fields).any(|(a, b)| a.kind != b.kind)
-    {
-        return Some("Illegal range formation: starting & ending pages are of different types.");
-    }
-    let leading = first.fields.len() - 1;
-    if first.fields[..leading] != last.fields[..leading] {
-        return Some("Illegal range formation: starting & ending pages cross chap/sec breaks.");
-    }
-    None
-}
-
-/// An item: consecutive entries with identical keys.
-fn same_item(a: &Entry, b: &Entry) -> bool {
-    a.levels == b.levels && (0..a.levels).all(|l| a.sf[l] == b.sf[l] && a.af[l] == b.af[l])
-}
-
-/// Number of leading levels where the two items print identically.
-fn common_levels(prev: &Entry, current: &Entry) -> usize {
-    let limit = prev.levels.min(current.levels);
-    (0..limit)
-        .take_while(|&l| prev.sf[l] == current.sf[l] && prev.af[l] == current.af[l])
-        .count()
-}
-
-pub(crate) fn generate(
-    entries: &[Entry],
-    layout: &Layout,
-    log: &mut dyn FnMut(String),
-) -> Output {
-    let style = layout.style;
-    let mut writer = Writer { bytes: Vec::new(), column: 0, lines: 0, warnings: 0, layout, log };
-    writer.push(&style.preamble);
-    if let Some(page) = layout.start_page {
-        writer.push(&style.setpage_prefix);
-        writer.push(page);
-        writer.push(&style.setpage_suffix);
-    }
-    let mut previous: Option<(&Entry, usize)> = None; // first entry of the previous item, its entry count
-    let mut previous_group: Option<Group> = None;
-    let mut start = 0;
-    while start < entries.len() {
-        let mut end = start + 1;
-        while end < entries.len() && same_item(&entries[start], &entries[end]) {
-            end += 1;
-        }
-        let item: Vec<&Entry> = entries[start..end].iter().collect();
-        let head = item[0];
-        start = end;
-
-        let group = group_of(&head.sf[0]);
-        if previous_group != Some(group) {
-            if previous_group.is_some() {
-                writer.push(&style.group_skip);
+                self.in_range = true;
+                self.range_ptr = n;
             }
-            if style.headings_flag != 0 {
-                let positive = style.headings_flag > 0;
-                let text: Vec<u8> = match group {
-                    Group::Symbols if positive => style.symhead_positive.clone(),
-                    Group::Symbols => style.symhead_negative.clone(),
-                    Group::Numbers if positive => style.numhead_positive.clone(),
-                    Group::Numbers => style.numhead_negative.clone(),
-                    Group::Byte(byte) if byte.is_ascii_lowercase() && positive => {
-                        vec![byte.to_ascii_uppercase()]
-                    }
-                    Group::Byte(byte) => vec![byte],
+        } else if lead == style.range_close {
+            if self.in_range {
+                self.in_range = false;
+                let closing = &encap[1..];
+                if !closing.is_empty() && prev_encap != closing {
+                    let message =
+                        [&b"Range closing operator has an inconsistent encapsulator "[..], closing, b".\n"].concat();
+                    self.warn(&message);
+                }
+            } else {
+                let message = [&b"Unmatched range closing operator "[..], &[style.range_close], b".\n"].concat();
+                self.warn(&message);
+            }
+        } else if !encap.is_empty() && encap != prev_encap && self.in_range {
+            let message = [&b"Inconsistent page encapsulator "[..], encap, b" within range.\n"].concat();
+            self.warn(&message);
+        }
+    }
+
+    /// `make_item`: starts the output line of a new item, printing the
+    /// lines of any parent levels that are new as well.
+    fn make_item(&mut self, term: &[u8]) {
+        let style = self.style;
+        let curr = self.curr.expect("an entry is current");
+        let level = self.level;
+        let entries = self.entries;
+        let text = |entry: usize, level: usize| -> &[u8] {
+            let entry = &entries[entry];
+            if entry.af[level].is_empty() { &entry.sf[level] } else { &entry.af[level] }
+        };
+        let (item, lines) = if level > self.prev_level {
+            (&style.item_u[level], style.ilen_u[level])
+        } else {
+            (&style.item_r[level], style.ilen_r[level])
+        };
+        self.line = [term, item, text(curr, level)].concat();
+        self.lc += lines;
+        let mut i = level + 1;
+        while i < FIELD_MAX && !entries[curr].sf[i].is_empty() {
+            let line = std::mem::take(&mut self.line);
+            self.put(&line);
+            self.line = [&style.item_x[i][..], text(curr, i)].concat();
+            self.lc += style.ilen_x[i];
+            self.level = i;
+            i += 1;
+        }
+        self.indent = 0;
+        self.line.extend_from_slice(&style.delim_p[self.level]);
+        self.save();
+    }
+
+    /// `first_letter`: the byte that decides the group of a key.
+    fn first_letter(&self, term: &[u8]) -> u8 {
+        let at = |index: usize| term.get(index).copied().unwrap_or(0);
+        if self.layout.thai_sort {
+            // Thai leading vowels (TIS-620) do not count.
+            return if matches!(at(0), 0xe0..=0xe4) || at(0) == 0 { at(1) } else { at(0) };
+        }
+        match self.layout.locale {
+            Some(locale) => locale.to_lower(at(0)),
+            None => c_lower(at(0)),
+        }
+    }
+
+    fn new_entry(&mut self) {
+        let style = self.style;
+        if self.in_range {
+            let current = self.curr;
+            self.curr = Some(self.range_ptr);
+            let message = [&b"Unmatched range opening operator "[..], &[style.range_open], b".\n"].concat();
+            self.warn(&message);
+            self.in_range = false;
+            self.curr = current;
+        }
+        self.flush_line(true);
+
+        let (curr, prev) = (self.curr(), self.prev());
+        let mut letter = None;
+        let new_group = (curr.group != ALPHA && curr.group != prev.group && prev.group == SYMBOL)
+            || (curr.group == ALPHA && {
+                let first = self.first_letter(&curr.sf[0]);
+                letter = Some(first);
+                first != self.first_letter(&prev.sf[0])
+            })
+            || (self.layout.german_sort && curr.group != ALPHA && prev.group == ALPHA);
+        if new_group {
+            self.put(&style.delim_t);
+            self.put(&style.group_skip);
+            self.lc += style.skiplen;
+            self.put_header(letter.unwrap_or(0xff), true);
+            self.make_item(&[]);
+        } else {
+            self.make_item(&style.delim_t);
+        }
+    }
+
+    fn old_entry(&mut self) {
+        let style = self.style;
+        let curr_index = self.curr.expect("an entry is current");
+        let diff = page_diff(self.entry(self.the_end), self.entry(curr_index));
+        let same_type = self.prev().ty == self.curr().ty;
+        let same_encap = self.prev_encap == Some(self.encap);
+        if same_type
+            && diff != -1
+            && ((diff == 0 && same_encap) || (self.layout.merge_page && diff == 1 && same_encap) || self.in_range)
+        {
+            self.the_end = curr_index;
+            let curr = self.curr();
+            let lead = curr.encap.first().copied().unwrap_or(0);
+            if self.in_range
+                && lead != 0
+                && lead != style.range_close
+                && self.prev_encap != Some(curr.encap.as_slice())
+            {
+                self.buff = [&style.encap_prefix[..], &curr.encap, &style.encap_infix, &curr.lpg, &style.encap_suffix]
+                    .concat();
+                self.wrap_line(false);
+            }
+            if self.in_range {
+                self.encap_range = true;
+            }
+        } else {
+            self.flush_line(false);
+            if diff == 0 && same_type {
+                self.warn(b"Conflicting entries: multiple encaps for the same page under same key.\n");
+            } else if self.in_range && !same_type {
+                self.warn(b"Illegal range formation: starting & ending pages are of different types.\n");
+            } else if self.in_range && diff == -1 {
+                self.warn(b"Illegal range formation: starting & ending pages cross chap/sec breaks.\n");
+            }
+            self.save();
+        }
+    }
+
+    /// `put_header`: the group heading. `in_locale` tells whether the letter
+    /// is converted under the environment's `LC_CTYPE`.
+    fn put_header(&mut self, letter: u8, in_locale: bool) {
+        let style = self.style;
+        if style.headings_flag == 0 {
+            return;
+        }
+        self.put(&style.heading_prefix);
+        self.lc += style.headprelen;
+        let positive = style.headings_flag > 0;
+        match self.curr().group {
+            SYMBOL => {
+                let text = if positive { &style.symhead_positive } else { &style.symhead_negative };
+                self.put(text);
+            }
+            ALPHA => {
+                let locale = if in_locale { self.layout.locale } else { None };
+                let byte = match (locale, positive) {
+                    (Some(locale), true) => locale.to_upper(letter),
+                    (Some(locale), false) => locale.to_lower(letter),
+                    (None, true) => c_upper(letter),
+                    (None, false) => c_lower(letter),
                 };
-                writer.push(&style.heading_prefix);
-                writer.push(&text);
-                writer.push(&style.heading_suffix);
+                self.put(&[byte]);
             }
-            previous_group = Some(group);
+            _ => {
+                let text = if positive { &style.numhead_positive } else { &style.numhead_negative };
+                self.put(text);
+            }
         }
-
-        let common = previous.map_or(0, |(prev, _)| common_levels(prev, head));
-        for level in common..head.levels {
-            let last_level = level + 1 == head.levels;
-            let prefix = if level == 0 {
-                &style.item_0
-            } else if level > common {
-                // The line before this one is the parent, printed without pages.
-                if level == 1 { &style.item_x1 } else { &style.item_x2 }
-            } else {
-                match previous {
-                    Some((prev, count)) if prev.levels == level => {
-                        if count == 1 {
-                            if level == 1 { &style.item_01 } else { &style.item_12 }
-                        } else if level == 1 {
-                            &style.item_1
-                        } else {
-                            &style.item_2
-                        }
-                    }
-                    _ => {
-                        if level == 1 { &style.item_1 } else { &style.item_2 }
-                    }
-                }
-            };
-            writer.push(prefix);
-            writer.push(if head.af[level].is_empty() { &head.sf[level] } else { &head.af[level] });
-            if !last_level {
-                continue;
-            }
-            let delimiter = match level {
-                0 => &style.delim_0,
-                1 => &style.delim_1,
-                _ => &style.delim_2,
-            };
-            writer.push(delimiter);
-            let tokens = page_tokens(&mut writer, &item);
-            for (index, token) in tokens.iter().enumerate() {
-                if index > 0 {
-                    writer.push(&style.delim_n);
-                }
-                if writer.column + token.len() >= style.line_max {
-                    writer.push(b"\n");
-                    writer.push(&style.indent_space);
-                    // An indented line counts as `indent_length` columns wide.
-                    writer.column = style.indent_length + 1;
-                }
-                writer.push(token);
-            }
-            writer.push(&style.delim_t);
-        }
-        previous = Some((head, item.len()));
+        self.put(&style.heading_suffix);
+        self.lc += style.headsuflen;
     }
-    writer.push(&style.postamble);
-    Output { bytes: writer.bytes, lines: writer.lines, warnings: writer.warnings }
+
+    /// `flush_line`: prints the pages collected since `begin`.
+    fn flush_line(&mut self, print: bool) {
+        let style = self.style;
+        let entries = self.entries;
+        let prev = self.prev.or(self.curr).expect("an entry was seen");
+        let (begin, the_end, prev) = (&entries[self.begin], &entries[self.the_end], &entries[prev]);
+        if page_diff(begin, the_end) != 0 {
+            let threshold = if style.suffix_2p.is_empty() { 1 } else { 0 };
+            if self.encap_range || page_diff(begin, prev) > threshold {
+                let diff = page_diff(begin, the_end);
+                self.buff = if diff == 1 && !style.suffix_2p.is_empty() {
+                    [&begin.lpg[..], &style.suffix_2p].concat()
+                } else if diff == 2 && !style.suffix_3p.is_empty() {
+                    [&begin.lpg[..], &style.suffix_3p].concat()
+                } else if diff >= 2 && !style.suffix_mp.is_empty() {
+                    [&begin.lpg[..], &style.suffix_mp].concat()
+                } else {
+                    [&begin.lpg[..], &style.delim_r, &the_end.lpg].concat()
+                };
+                self.encap_range = false;
+            } else {
+                self.buff = [&begin.lpg[..], &style.delim_n, &the_end.lpg].concat();
+            }
+        } else {
+            self.encap_range = false;
+            self.buff.clear();
+            self.buff.extend_from_slice(&begin.lpg);
+        }
+        if let Some(prev_encap) = self.prev_encap.filter(|encap| !encap.is_empty()) {
+            self.buff =
+                [&style.encap_prefix[..], prev_encap, &style.encap_infix, &self.buff, &style.encap_suffix].concat();
+        }
+        self.wrap_line(print);
+    }
+
+    fn wrap_line(&mut self, print: bool) {
+        let style = self.style;
+        let length = self.line.len() + self.buff.len() + self.indent;
+        let too_long = length as i64 > i64::from(style.line_max);
+        let indent = usize::try_from(style.indent_length).unwrap_or(0);
+        if print {
+            let line = std::mem::take(&mut self.line);
+            if too_long {
+                self.putln(&line);
+                self.put(&style.indent_space);
+                self.indent = indent;
+            } else {
+                self.put(&line);
+            }
+            self.line = line;
+            let buff = std::mem::take(&mut self.buff);
+            self.put(&buff);
+            self.buff = buff;
+        } else if too_long {
+            let line = std::mem::take(&mut self.line);
+            self.putln(&line);
+            self.line = [&style.indent_space[..], &self.buff, &style.delim_n].concat();
+            self.indent = indent;
+        } else {
+            self.buff.extend_from_slice(&style.delim_n);
+            self.line.extend_from_slice(&self.buff);
+        }
+    }
+}
+
+/// Output of `gen_ind`.
+pub(crate) struct Output {
+    pub(crate) bytes: Vec<u8>,
+}
+
+/// `gen_ind`: writes the sorted `entries`.
+pub(crate) fn generate(entries: &[Entry], layout: &Layout, log: &mut Transcript) -> Output {
+    let mut gen = Gen {
+        layout,
+        style: layout.style,
+        entries,
+        log,
+        out: Vec::new(),
+        curr: None,
+        prev: None,
+        begin: 0,
+        the_end: 0,
+        range_ptr: 0,
+        level: 0,
+        prev_level: 0,
+        encap: &[],
+        prev_encap: None,
+        in_range: false,
+        encap_range: false,
+        buff: Vec::new(),
+        line: Vec::new(),
+        lc: 0,
+        ec: 0,
+        indent: 0,
+    };
+    gen.run();
+    Output { bytes: gen.out }
+}
+
+/// `insert_page` for `-p even`/`odd`/`any`: the page after `last`, made
+/// even or odd as asked.
+pub(crate) fn next_page(last: &[u8], even_odd: i32) -> Vec<u8> {
+    let mut page = last.to_vec();
+    if page.is_empty() {
+        return page;
+    }
+    let j = page.len() - 1;
+    // The trailing run of digits.
+    let mut i = j;
+    while i > 0 && page[i].is_ascii_digit() {
+        i -= 1;
+    }
+    if !page[i].is_ascii_digit() {
+        i += 1;
+    }
+    let digits = page.get(i..).unwrap_or(&[]);
+    let mut value = digits.iter().fold(0i32, |value, &digit| {
+        value.wrapping_mul(10).wrapping_add(i32::from(digit)).wrapping_sub(48)
+    });
+    value = value.wrapping_add(1);
+    if (even_odd == 1 && value % 2 == 0) || (even_odd == 2 && value % 2 == 1) {
+        value += 1;
+    }
+    page.truncate(i.min(page.len()));
+    page.extend_from_slice(value.to_string().as_bytes());
+    page
 }

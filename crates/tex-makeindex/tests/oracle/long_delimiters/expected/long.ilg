@@ -1,0 +1,10 @@
+This is makeindex, version 2.18 [TeX Live 2026] (kpathsea + Thai support).
+Scanning style file ./long.ist....................done (20 attributes redefined, 0 ignored).
+Scanning input file long.idx....done (57 entries accepted, 0 rejected).
+Sorting entries....done (296 comparisons).
+Generating output file long.ind....
+## Warning (input = long.idx, line = 32; output = long.ind, line = 20):
+   -- Conflicting entries: multiple encaps for the same page under same key.
+done (47 lines written, 1 warning).
+Output written in long.ind.
+Transcript written in long.ilg.

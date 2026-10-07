@@ -1,84 +1,104 @@
-//! Outputs of TeX Live's `makeindex` 2.18 (generated with `makeindex -q`) for
-//! a few inputs; the port must reproduce them byte for byte.
+//! Outputs of TeX Live's `makeindex` 2.18 for a set of inputs; the port must
+//! reproduce the `.ind` and `.ilg` files (and the exit status) byte for byte.
+//!
+//! Each directory under `tests/oracle/` holds the input files, `args` (the
+//! command line) and, under `expected/`, what `/usr/bin/makeindex` wrote when
+//! run with those arguments in a copy of the directory, plus `status`. The
+//! transcript's first line names the program and is compared without it.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
-use tex_makeindex::Host;
+const BANNER: &[u8] = b"This is makeindex, version 2.18 [TeX Live 2026] (TeXres).\n";
+const TL_BANNER: &[u8] = b"This is makeindex, version 2.18 [TeX Live 2026] (kpathsea + Thai support).\n";
 
-struct MemoryHost {
-    files: RefCell<HashMap<String, Vec<u8>>>,
+fn replace(text: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len());
+    let mut at = 0;
+    while at < text.len() {
+        if text[at..].starts_with(from) {
+            out.extend_from_slice(to);
+            at += from.len();
+        } else {
+            out.push(text[at]);
+            at += 1;
+        }
+    }
+    out
 }
 
-impl Host for MemoryHost {
-    fn read(&self, path: &str) -> std::io::Result<Vec<u8>> {
-        self.files
-            .borrow()
-            .get(path)
-            .cloned()
-            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
+fn check(case: &str) {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/oracle").join(case);
+    let work: PathBuf = std::env::temp_dir().join(format!("texres-makeindex-oracle-{}-{case}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+    for entry in std::fs::read_dir(&source).unwrap() {
+        let entry = entry.unwrap();
+        if entry.file_type().unwrap().is_file() && entry.file_name() != "args" {
+            std::fs::copy(entry.path(), work.join(entry.file_name())).unwrap();
+        }
     }
-    fn write(&self, path: &str, bytes: &[u8]) -> std::io::Result<()> {
-        self.files.borrow_mut().insert(path.to_string(), bytes.to_vec());
-        Ok(())
-    }
-    fn exists(&self, path: &str) -> bool {
-        self.files.borrow().contains_key(path)
-    }
-    fn find_style(&self, name: &str) -> Option<(String, Vec<u8>)> {
-        self.files.borrow().get(name).map(|bytes| (name.to_string(), bytes.clone()))
-    }
-    fn read_stdin(&self) -> std::io::Result<Vec<u8>> {
-        Ok(Vec::new())
-    }
-}
-
-fn check(name: &str) {
-    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/");
-    let read = |file: String| std::fs::read(format!("{dir}{file}")).unwrap();
-    let host = MemoryHost { files: RefCell::new(HashMap::new()) };
-    host.write(&format!("{name}.idx"), &read(format!("{name}.idx"))).unwrap();
-    if let Ok(style) = std::fs::read(format!("{dir}{name}.ist")) {
-        host.write(&format!("{name}.ist"), &style).unwrap();
-    }
-    let mut args: Vec<String> = String::from_utf8(read(format!("{name}.args")))
+    let args: Vec<String> = std::fs::read_to_string(source.join("args"))
         .unwrap()
         .split_whitespace()
         .map(str::to_string)
         .collect();
-    args.insert(0, "-q".to_string());
-    args.push(format!("{name}.idx"));
-    assert_eq!(tex_makeindex::run_cli(&args, &host), 0);
-    let produced = host.files.borrow().get(&format!("{name}.ind")).cloned().unwrap();
-    let expected = read(format!("{name}.ind"));
-    assert_eq!(
-        String::from_utf8_lossy(&produced),
-        String::from_utf8_lossy(&expected),
-        "{name}"
-    );
+    let no_tree = |_: &str| None;
+    let host = tex_makeindex::DirHost { work_dir: &work, output_dir: None, tree: &no_tree, stdin: false };
+    let status = tex_makeindex::run_cli(&args, &host);
+
+    let expected = source.join("expected");
+    let expected_status: i32 = std::fs::read_to_string(expected.join("status")).unwrap().trim().parse().unwrap();
+    assert_eq!(status, expected_status, "{case}: exit status");
+    for entry in std::fs::read_dir(&expected).unwrap() {
+        let name = entry.unwrap().file_name();
+        if name == "status" {
+            continue;
+        }
+        let want = replace(&std::fs::read(expected.join(&name)).unwrap(), TL_BANNER, BANNER);
+        let got = std::fs::read(work.join(&name)).unwrap_or_else(|_| panic!("{case}: {name:?} not written"));
+        assert_eq!(
+            String::from_utf8_lossy(&got),
+            String::from_utf8_lossy(&want),
+            "{case}: {name:?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&work);
 }
 
-#[test]
-fn headings_sublevels_sort_keys_ranges_and_page_types() {
-    check("basic");
+macro_rules! oracle_cases {
+    ($($name:ident),* $(,)?) => {
+        $(
+            #[test]
+            fn $name() {
+                check(stringify!($name));
+            }
+        )*
+    };
 }
 
-#[test]
-fn letter_ordering_and_blank_compression() {
-    check("letter");
-}
-
-#[test]
-fn no_implicit_ranges() {
-    check("noranges");
-}
-
-#[test]
-fn long_page_lists_wrap() {
-    check("wrap");
-}
-
-#[test]
-fn style_file_headings_items_delimiters_and_suffixes() {
-    check("styled");
-}
+oracle_cases!(
+    basic,
+    letter,
+    noranges,
+    wrap,
+    styled,
+    long_delimiters,
+    start_page,
+    start_page_odd,
+    start_page_no_log_page,
+    german,
+    utf8_keys,
+    page_types,
+    precedence,
+    style_keywords,
+    style_errors,
+    input_errors,
+    range_warnings,
+    mst_style,
+    multiple_files,
+    transcript_name,
+    too_many_fields,
+    letter_ordering_trailing_blank,
+    compress_blanks,
+    duplicates,
+);

@@ -270,6 +270,15 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
         if allow <= 0 {
             return (None, Some(refusal(allow).to_string()));
         }
+        let output_dir = crate::lua_bridge::with_engine(|e| {
+            e.aux_dir.clone().or_else(|| (!e.out_dir.is_empty()).then(|| std::path::PathBuf::from(&e.out_dir)))
+        })
+        .ok()
+        .flatten();
+        if let Some(code) = crate::lua_sys_kpse::run_internal(&run, output_dir.as_deref()) {
+            // A wait status: the exit code in the second byte.
+            return (Some(i64::from(code & 0xff) << 8), None);
+        }
         let status = Command::new("/bin/sh").arg("-c").arg(os_str(run.as_bytes())).status();
         match status {
             Ok(status) => {

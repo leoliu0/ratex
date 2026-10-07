@@ -1,0 +1,23 @@
+\indexentry{ok}{1}
+junk
+\foo{a}{1}
+\indexentry{a}
+\indexentry{a}{1} trailing
+\indexentry{a}x{1}
+\indexentry{a}{1 2}
+\indexentry{a}{}
+\indexentry{a!b!c!d}{1}
+\indexentry{!a}{1}
+\indexentry{a@}{1}
+\indexentry{a|b|c}{1}
+\indexentry{a@b@c}{1}
+\indexentry{x}{1a}
+\indexentry{x}{ixq}
+\indexentry{x}{*}
+\indexentry{unclosed
+\indexentry{a}{12
+   \indexentry  {spaced} {  9  }
+\indexentry{a"}b}{3}
+\indexentry{a\"}{4}
+\indexentry{{nested}}{5}
+\indexentry{last}{6}

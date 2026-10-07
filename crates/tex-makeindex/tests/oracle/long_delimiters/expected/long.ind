@@ -1,0 +1,48 @@
+\begin{theindex}
+
+\item\leavevmode\hbox{} alpha \dotfill\ 
+			1\nobreakdash--\nolinebreak4,\enspace 
+			7\,f.,\enspace 10\,ff.,\enspace 
+			20\,f.,\enspace 30,\enspace 
+			40,\enspace 50,\enspace 
+			60\nobreakdash--\nolinebreak64,\enspace 
+			70,\enspace 80,\enspace 
+			90\relax.
+
+  \indexspace
+
+\item\leavevmode\hbox{} beta
+  \subitem[x] sub \dotfill\ 5\,f.\relax.
+      \subsubitem deep \dotfill\ 9\,ff.\relax.
+
+  \indexspace
+
+\item\leavevmode\hbox{} delta \dotfill\ 4,\enspace 
+			\IndexEncapsulator{textbf}{4\,ff.}%
+\relax.
+
+  \indexspace
+
+\item\leavevmode\hbox{} epsilon \dotfill\ 100\,f.\relax.
+
+  \indexspace
+
+\item\leavevmode\hbox{} gamma \dotfill\ 
+			3\nobreakdash--\nolinebreak9,\enspace 
+			12\,f.\relax.
+
+  \indexspace
+
+\item\leavevmode\hbox{} zeta \dotfill\ 1,\enspace 
+			4,\enspace 7,\enspace 
+			10,\enspace 13,\enspace 
+			16,\enspace 19,\enspace 
+			22,\enspace 25,\enspace 
+			28,\enspace 31,\enspace 
+			34,\enspace 37,\enspace 
+			40,\enspace 43,\enspace 
+			46,\enspace 49,\enspace 
+			52,\enspace 55,\enspace 
+			58\relax.
+
+\end{theindex}

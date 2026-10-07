@@ -394,6 +394,9 @@ pub fn validate_pdfa_catalog(catalog_str: &str) -> Result<(), String> {
 
 // ---------------------------------------------------------------- serializer
 
+/// Highest object number the writer hands out or accepts.
+const MAX_PDF_OBJECTS: usize = 250_000;
+
 struct PdfBuilder {
     packable: Vec<bool>,
     objs: Vec<Option<Vec<u8>>>, // index n-1 holds object n
@@ -412,19 +415,19 @@ impl PdfBuilder {
     }
 
     fn alloc(&mut self) -> usize {
-        if self.objs.len() >= crate::engine::MAX_PAGE_LIST {
+        if self.objs.len() >= MAX_PDF_OBJECTS {
             return self.objs.len().max(1);
         }
         loop {
             self.objs.push(None);
-            if !self.claimed.contains(&self.objs.len()) || self.objs.len() >= crate::engine::MAX_PAGE_LIST {
+            if !self.claimed.contains(&self.objs.len()) || self.objs.len() >= MAX_PDF_OBJECTS {
                 return self.objs.len();
             }
         }
     }
 
     fn set(&mut self, num: usize, body: String) {
-        if num == 0 || num > crate::engine::MAX_PAGE_LIST {
+        if num == 0 || num > MAX_PDF_OBJECTS {
             return;
         }
         if self.objs.len() < num {
@@ -436,7 +439,7 @@ impl PdfBuilder {
     }
 
     fn set_bytes(&mut self, num: usize, body: Vec<u8>) {
-        if num == 0 || num > crate::engine::MAX_PAGE_LIST {
+        if num == 0 || num > MAX_PDF_OBJECTS {
             return;
         }
         if self.objs.len() < num {
@@ -448,7 +451,7 @@ impl PdfBuilder {
     }
 
     fn set_stream(&mut self, num: usize, dict_extra: &str, data: &[u8], compress: bool) {
-        if num == 0 || num > crate::engine::MAX_PAGE_LIST {
+        if num == 0 || num > MAX_PDF_OBJECTS {
             return;
         }
         if self.objs.len() < num {
@@ -459,7 +462,7 @@ impl PdfBuilder {
     }
 
     fn set_encoded_stream(&mut self, num: usize, dict_extra: &str, data: &[u8], compress: bool) {
-        if num == 0 || num > crate::engine::MAX_PAGE_LIST {
+        if num == 0 || num > MAX_PDF_OBJECTS {
             return;
         }
         if self.objs.len() < num {
@@ -1306,7 +1309,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
     // Engine-reserved numbers (\pdfpageref pages, \pdffontobjnum fonts,
     // unused reservations) stay below the writer's own objects.
     let reserved = usize::try_from(doc.reserved_objects).unwrap_or(0);
-    if reserved > b.objs.len() && reserved <= crate::engine::MAX_PAGE_LIST {
+    if reserved > b.objs.len() && reserved <= MAX_PDF_OBJECTS {
         b.objs.resize(reserved, None);
         b.packable.resize(reserved, false);
     }

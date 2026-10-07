@@ -176,9 +176,14 @@ pub struct CsTable {
 
 impl CsTable {
     pub fn new() -> Self {
+        Self::with_capacity(0)
+    }
+
+    /// An empty table with room for `names` names.
+    pub fn with_capacity(names: usize) -> Self {
         CsTable {
-            names: Vec::new(),
-            map: Default::default(),
+            names: Vec::with_capacity(names),
+            map: std::collections::HashMap::with_capacity_and_hasher(names, Default::default()),
             capacity_exceeded: false,
             active_ids: Box::new([NO_ACTIVE_ID; 256]),
             active_names: Vec::new(),

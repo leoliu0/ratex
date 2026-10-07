@@ -1,0 +1,18 @@
+% comment line
+foo "bar"
+preamble \x
+level 'ab'
+actual ''
+quote
+'\\'
+escape '\\'
+line_max -5
+indent_length -2
+headings_flag x
+delim_0 "a" % trailing
+page_precedence "rnn"
+encap
+%x
+'+'
+POSTAMBLE "\n\\end{theindex}\n"
+keyword

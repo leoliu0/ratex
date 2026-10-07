@@ -1,0 +1,15 @@
+\begin{theindex}
+
+  \item a, 1, \textbf{1}, 2, \emph{2}
+
+  \indexspace
+
+  \item B, 4
+  \item b, 3, 4
+
+  \indexspace
+
+  \item c, 1
+  \item C, 1
+
+\end{theindex}

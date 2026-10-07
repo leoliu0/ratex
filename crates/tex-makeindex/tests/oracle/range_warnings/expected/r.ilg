@@ -1,0 +1,33 @@
+This is makeindex, version 2.18 [TeX Live 2026] (kpathsea + Thai support).
+Scanning input file r.idx....done (27 entries accepted, 0 rejected).
+Sorting entries....done (111 comparisons).
+Generating output file r.ind....
+## Warning (input = r.idx, line = 3; output = r.ind, line = 3):
+   -- Inconsistent page encapsulator textbf within range.
+
+## Warning (input = r.idx, line = 5; output = r.ind, line = 7):
+   -- Unmatched range closing operator ).
+
+## Warning (input = r.idx, line = 7; output = r.ind, line = 11):
+   -- Extra range opening operator (.
+
+## Warning (input = r.idx, line = 10; output = r.ind, line = 15):
+   -- Illegal range formation: starting & ending pages are of different types.
+
+## Warning (input = r.idx, line = 12; output = r.ind, line = 19):
+   -- Illegal range formation: starting & ending pages cross chap/sec breaks.
+
+## Warning (input = r.idx, line = 14; output = r.ind, line = 23):
+   -- Range closing operator has an inconsistent encapsulator emph.
+
+## Warning (input = r.idx, line = 19; output = r.ind, line = 31):
+   -- Unmatched range opening operator (.
+
+## Warning (input = r.idx, line = 21; output = r.ind, line = 39):
+   -- Conflicting entries: multiple encaps for the same page under same key.
+
+## Warning (input = r.idx, line = 25; output = r.ind, line = 47):
+   -- Conflicting entries: multiple encaps for the same page under same key.
+done (49 lines written, 9 warnings).
+Output written in r.ind.
+Transcript written in r.ilg.

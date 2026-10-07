@@ -1,0 +1,44 @@
+keyword "\\entry"
+arg_open '<'
+arg_close '>'
+range_open '['
+range_close ']'
+level '>'
+actual '='
+encap '/'
+quote '~'
+escape '\\'
+page_compositor ":"
+page_precedence "rnaRA"
+preamble "\\begin{myindex}\n"
+postamble "\n\\end{myindex}\n"
+setpage_prefix "\n\\pg{"
+setpage_suffix "}\n"
+group_skip "\n\\gap\n"
+headings_flag -1
+heading_prefix "\\hd{"
+heading_suffix "}\n"
+symhead_positive "SYM"
+symhead_negative "sym"
+numhead_positive "NUM"
+numhead_negative "num"
+item_0 "\n\\i0 "
+item_1 "\n\\i1 "
+item_2 "\n\\i2 "
+item_01 "\n\\i01 "
+item_x1 "\n\\ix1 "
+item_12 "\n\\i12 "
+item_x2 "\n\\ix2 "
+delim_0 " :0: "
+delim_1 " :1: "
+delim_2 " :2: "
+delim_n " ;n; "
+delim_r " -r- "
+delim_t " .t."
+encap_prefix "<<"
+encap_infix "|"
+encap_suffix ">>"
+line_max 60
+indent_space "    "
+indent_length 4
+Preamble "\\begin{theindex}\n"

@@ -41,6 +41,7 @@ import io
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import struct
@@ -2159,6 +2160,132 @@ SUPPLEMENT_PACKAGES = {
         "map_files": [],
     },
 }
+# TeX Live's hyphenation support as its collection-lang* collections install
+# it: hyph-utf8 (encoding conversions, luatex-hyphen.lua), hyphen-base (the
+# language.us* heads of the generated configuration files), ukrhyph (the 8-bit
+# Ukrainian patterns loadhyph-uk.tex inputs under pdfTeX) and every package
+# with an `execute AddHyphen`. Values: (TeX Live revision, catalogue license,
+# archive sha256, archive size). Members the main archive already holds at
+# the same path are byte-identical and skipped.
+HYPHENATION_PINS = {
+    "hyph-utf8": (79618, "mit", "bb7ddfa4129050cd5d446ecad5bf033c9be3ee2a5614e0035c344a0323f6d344", 16008),
+    "hyphen-base": (78076, "lppl", "fe8136043cf4f3a9b2750066e031fee12e0a2d15724aa484abd0b4ca1fbf6f8b", 22644),
+    "ukrhyph": (79618, "lppl1", "a09831d43c83b06f57d37038f96f6459e695c45d4638dd58a267a64e878155e7", 39096),
+    "hyphen-arabic": (74115, "lppl", "c356a1bf482003e07e4c4eb06845474470e72fcda1222daf7f87a2f80ed6b38c", 720),
+    "hyphen-farsi": (74115, "lppl", "f6c944a5ad26f9536742c801f33356d6a1d5aaa978ee53cd7b96ddbd8d97278a", 740),
+    "hyphen-chinese": (78069, "lppl", "e0c60d93c408b3f80ee1eaed33e84475de61ecf29a3225655d609d3edd8353a6", 3224),
+    "hyphen-belarusian": (78069, "lppl", "db3de23f3211d4850fb362632cad4964ef38aac284d20a2d05a0572c3398780c", 11972),
+    "hyphen-bulgarian": (78069, "lppl", "aef72d8e7c604834cf08b3330744d4b07cc6d8a90891f4a743ac8e365ed13a60", 28228),
+    "hyphen-churchslavonic": (78069, "lppl", "8cafbbcb73cbfc01350f7a15daf488879171e325ef4588490a731d631270f82e", 31556),
+    "hyphen-kazakh": (78069, "lppl", "984b356501d42d7789b013d0953d6407ef6aea0ce1f8350d3c14145523e52b8c", 4972),
+    "hyphen-mongolian": (78069, "lppl", "5f5444918dc76cbd374b60e48f56f17b3cc2139256d418cb131dd15dbe45e511", 10476),
+    "hyphen-russian": (78069, "lppl", "0886909c81731d7a51636f831fac58ff19317d2f1f81a87953090bb13aef9a8a", 34300),
+    "hyphen-serbian": (78069, "gpl", "f55789b5f4829a5f3e032087b7f3ec1aae94ef98e5d2182b16acfb674857ed22", 25360),
+    "hyphen-ukrainian": (78069, "lppl", "b214aea47e659359cbd8abbb83647747cd0f9a9d4accc38a6e8e47e9f9711530", 18720),
+    "hyphen-czech": (78069, "lppl", "4fbb69046377ce47a3ca5ba76a4c4d18405ba7e88c52d85d3c334b825ee92c9b", 15760),
+    "hyphen-slovak": (78069, "lppl", "315b2acf3226c653bea1bf8f6ade661083eca326db0597b75214d1a480b20ed0", 10824),
+    "hyphen-english": (78069, "lppl", "cb22c0c51786d47aff5cef7dc6d0a47ab291d6da88c21ac6a9929f4409a456ab", 41348),
+    "hyphen-albanian": (78069, "lppl", "3b98d0de99a1504f8278c2aa66bebb9c28553224bcf8af3b709e5cb086013679", 3364),
+    "hyphen-croatian": (78069, "lppl1.3", "10a04b6615509dfbc06d61ee540f07acdd883b3e98d27f92272465cd41f9a5fb", 5568),
+    "hyphen-danish": (79618, "lppl1.3", "80a460a696e6794a285358f5c59ed3e5f74ea041cde00b7c8d3130ab751df0d8", 5748),
+    "hyphen-dutch": (79618, "lppl1", "2ded1602ae66c64235744ad72db659601026de79ed7e08e1cd8f1e6763fde630", 37984),
+    "hyphen-estonian": (78069, "lppl", "c1ccf8dfc934ea708ef9ceea6b255d7acee5754f0f698e42672ebc44fb1ee319", 14584),
+    "hyphen-finnish": (78069, "pd", "edb4c8b9b7872f023bef4fb793d51a5926dd2268287c2d0e7f668679db575c5a", 4668),
+    "hyphen-friulan": (78069, "lppl", "0fea355457ddb570fd4300a02b5025cac73776de482110bfca477fd5b3c6ab9b", 3788),
+    "hyphen-hungarian": (78069, "gpl", "d309b4b6d3f2b5d8940dbea1d9137ab3b405ead29e9b9fb41304f44f79f2d1bb", 285360),
+    "hyphen-icelandic": (79618, "lppl1.2", "e1811dadceab064bba9d4a150fe5411741019970142f7dd6f53ef15eb0f40e4a", 19496),
+    "hyphen-irish": (78069, "lppl", "48814c1d7e7f62df211fe23118210d3966e74984326b56108df894b2e107da54", 30400),
+    "hyphen-kurmanji": (78069, "lppl", "e7214892af8467c869b67c7ddc960e7e512ed35140efa40e6c07c969369dda4b", 2700),
+    "hyphen-latin": (79618, "lppl1", "86a7c4156d7ff06791c841bbc794732536d445eacb783742e6728eed5d16f04c", 102028),
+    "hyphen-latvian": (78069, "lppl", "190c304cd3a51d7aae91ffc9cd9e315e57bcabc579aa5590b0988952c1c2ab99", 52448),
+    "hyphen-lithuanian": (78069, "lppl", "aab9889806e94f9900e20f7ef0443f7e5cb6b6639f70fed5e7fc79d6bd78de97", 7424),
+    "hyphen-macedonian": (78069, "lppl", "f3655157a277e2127b5f124045c982492c517d703b8b3162c85a9e8bca23cea2", 5532),
+    "hyphen-norwegian": (78069, "lppl", "f0bfac073fae3a7d192e28560882481e07758b77a9834272fc52b1c5eaa59431", 96224),
+    "hyphen-occitan": (78069, "lppl", "ebe25efa007bbdeddc595b592e85f020549c24639825d3593dc4b64ca541b6a8", 3304),
+    "hyphen-piedmontese": (78069, "lppl", "8369684dedd43e690247e27312d1881f15562696edf09f0baa2761409a8d9325", 3336),
+    "hyphen-romanian": (78069, "lppl", "d754e02a910f1bb64b627ffe8e803edf3cbcbadca7d483a1194b3e12931d3804", 4340),
+    "hyphen-romansh": (78069, "lppl", "6b686f607e0c55a14c7150c3f8786760411e943e2b6437cafb62aeef63be16e2", 4236),
+    "hyphen-slovenian": (78069, "lppl", "c200321919ad5a6690804d602f73d871b839d5cbd3cea20c73ec6442f1360667", 6200),
+    "hyphen-swedish": (78069, "lppl", "6773d972a0c3c67209482d44ea9e04db728153a09196f9a4ad3987661da1e0a6", 18240),
+    "hyphen-turkish": (78069, "other-free", "ab777d12d352d9dd75c2beb9167f21e4c3870f9413d08236342771474e03af68", 3868),
+    "hyphen-uppersorbian": (78069, "lppl", "71f5bb491c3e936387b5a067497b5697354f33dbc6c386098cd33a8aa9a93daf", 5504),
+    "hyphen-welsh": (78069, "lppl", "1cce9635790a3c17aa9f0bff3e0f2ff0313c46ea34f7c779320b2eb95103c9f5", 19988),
+    "hyphen-basque": (78069, "other-free", "7af159568c7135034573a7280eb92680b28e1c8c4b22410b07322f2352b688c5", 3220),
+    "hyphen-french": (78069, "lppl", "57100a3a7072b37a23de7efef01f0b089655ab10ec43b4d84aafcbd5ad690bd3", 11432),
+    "dehyph-exptl": (79618, "mit lppl1.3", "ffdcf44d13d6455812c41ccf620ce093b5ac00ea380be6f9ceaf29247f3f4970", 134308),
+    "hyphen-german": (78069, "lppl", "2bbfc00f6362b8ff525f902c1b5de47bbbb8cba8840a2ccfaf6591daa748ab12", 229712),
+    "hyphen-ancientgreek": (78069, "lppl", "14340cb7c98969d33e7f2b6d0b88a75f166f899d735fdb98c8ae610ffe17ebd4", 38280),
+    "hyphen-greek": (78069, "other-free", "c9853da8a044e4d3edbc2b03e0943604076cf369e5be90478e9cc718ef929999", 13296),
+    "hyphen-italian": (78069, "lgpl", "6efa7bf159b8bf3297404527716edd84a7032220644edfcd46c62fc9ff07c466", 3508),
+    "hyphen-afrikaans": (78069, "lppl", "43ee2d58424311b268fc69cce837376bdd2247dee00ecb06ddc1d331988d4727", 37008),
+    "hyphen-armenian": (78069, "lppl", "b14cfa809054b12e1501f53706e5ebb9e8d3e566248bf38c2abc6c126f10acec", 2620),
+    "hyphen-coptic": (78069, "lppl", "85810dc53f90de4af96d89c1fa11b84a0b2fbc709c05f52a0cf1d04960c65452", 6148),
+    "hyphen-esperanto": (78069, "lppl", "f58ae460bb944545b05ed10d6529e0382b04d74816f1ba5c7b5a385b9c877e16", 10668),
+    "hyphen-ethiopic": (78069, "lppl", "839731689a8bb8af7ac2c5126d7f3cfb004d69bf77a5d400428844251e857867", 4460),
+    "hyphen-georgian": (78069, "lppl", "94d5c9475969171d9920a25d4ecc5417d6eb9c69792f5540e0d6b0ac5b8c8efa", 11040),
+    "hyphen-hebrew": (74032, "lppl", "773bfae22baf211a5985e669aa93c3503ca9f43768bf82fe32b050eebb4aa50b", 720),
+    "hyphen-indic": (78069, "lppl", "6292d9acd3acb829216c55cdeeff449c5e9a2408ae2d729ee908c20e3a1be210", 5172),
+    "hyphen-indonesian": (78069, "lppl", "cc11c4cf7b567fa9efee20fb58848b75be0f18f54c8093f46092a2ef5a4ea146", 2412),
+    "hyphen-interlingua": (78069, "lppl", "599ea6de171629099ddc5c238865b90a9985445055195402e49536b5c359cf84", 2880),
+    "hyphen-sanskrit": (78069, "lppl", "1dfec14ef68848d13d027bf16d35266e485f96deba8465f821904a34818dc783", 3596),
+    "hyphen-thai": (78069, "lppl", "ba365d1acd79a0574ac76850ec7f2fd5ffe0d4d37dd22a846add0326e413d1cc", 33716),
+    "hyphen-turkmen": (78069, "lppl", "7cb65fbd4d185eeeda11d71b2235b1b67cff54d0dae79de470d385ec086d3209", 6284),
+    "hyphen-vietnamese": (74032, "lppl", "bb552e50a88ed639f4c86326cb01a3adf1685093e85cd12af2cddfdfb17c6de8", 712),
+    "hyphen-polish": (78069, "knuth", "128b68a22215ffc5066a58af9bd3f8fe792412bfd4b5d5203583266048ad8a1e", 12500),
+    "hyphen-portuguese": (78069, "lppl", "68031bec21717fe36f442b2af3fa168aa6bfb4c35f981c9e167b276c497e448e", 3772),
+    "hyphen-catalan": (78069, "lppl", "f45d9535088ff7549ddd48624c661701fd8c87cad8c41e3a836c54de12515577", 5048),
+    "hyphen-galician": (78069, "lppl", "6496a76d5d589c353ce6ec90a45a4f91e96c8bfd858f8c75b74b5e1347b87ccf", 10372),
+    "hyphen-spanish": (78069, "mit", "ba1c9340f186573770ad28a513bb4aaa334b7bee50f5f902544f381fb058d835", 16428),
+}
+# The AddHyphen packages of each collection-lang* collection. The installed
+# language.dat, language.def and language.dat.lua concatenate the collections
+# alphabetically and each collection's packages in dependency order, which
+# fixes the \language numbers the formats assign (polish is 86).
+HYPHENATION_COLLECTIONS = [
+    ("collection-langarabic", ["hyphen-arabic", "hyphen-farsi"]),
+    ("collection-langchinese", ["hyphen-chinese"]),
+    ("collection-langcyrillic", [
+        "hyphen-belarusian", "hyphen-bulgarian", "hyphen-churchslavonic", "hyphen-kazakh",
+        "hyphen-mongolian", "hyphen-russian", "hyphen-serbian", "hyphen-ukrainian",
+    ]),
+    ("collection-langczechslovak", ["hyphen-czech", "hyphen-slovak"]),
+    ("collection-langenglish", ["hyphen-english"]),
+    ("collection-langeuropean", [
+        "hyphen-albanian", "hyphen-croatian", "hyphen-danish", "hyphen-dutch", "hyphen-estonian",
+        "hyphen-finnish", "hyphen-friulan", "hyphen-hungarian", "hyphen-icelandic", "hyphen-irish",
+        "hyphen-kurmanji", "hyphen-latin", "hyphen-latvian", "hyphen-lithuanian",
+        "hyphen-macedonian", "hyphen-norwegian", "hyphen-occitan", "hyphen-piedmontese",
+        "hyphen-romanian", "hyphen-romansh", "hyphen-slovenian", "hyphen-swedish",
+        "hyphen-turkish", "hyphen-uppersorbian", "hyphen-welsh",
+    ]),
+    ("collection-langfrench", ["hyphen-basque", "hyphen-french"]),
+    ("collection-langgerman", ["dehyph-exptl", "hyphen-german"]),
+    ("collection-langgreek", ["hyphen-ancientgreek", "hyphen-greek"]),
+    ("collection-langitalian", ["hyphen-italian"]),
+    ("collection-langother", [
+        "hyphen-afrikaans", "hyphen-armenian", "hyphen-coptic", "hyphen-esperanto",
+        "hyphen-ethiopic", "hyphen-georgian", "hyphen-hebrew", "hyphen-indic", "hyphen-indonesian",
+        "hyphen-interlingua", "hyphen-sanskrit", "hyphen-thai", "hyphen-turkmen",
+        "hyphen-vietnamese",
+    ]),
+    ("collection-langpolish", ["hyphen-polish"]),
+    ("collection-langportuguese", ["hyphen-portuguese"]),
+    ("collection-langspanish", ["hyphen-catalan", "hyphen-galician", "hyphen-spanish"]),
+]
+for _pkg, (_rev, _license, _sha, _size) in HYPHENATION_PINS.items():
+    SUPPLEMENT_PACKAGES[_pkg] = {
+        "version": f"TeX Live r{_rev}",
+        "revision": _rev,
+        "license": _license,
+        "upstream_url": f"https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/{_pkg}.tar.xz",
+        "upstream_sha256": _sha,
+        "upstream_size_bytes": _size,
+        # hyph-utf8's tex/luatex/hyph-utf8/etex.src is the LuaTeX plain-format
+        # variant, which would shadow tex/plain/etex/etex.src by basename
+        "select": [("tex/generic", None)]
+        + ([("tex/luatex/hyph-utf8", (".lua",))] if _pkg == "hyph-utf8" else []),
+        "map_files": [],
+    }
 # Supplement-wide license notice (legal directory name, shipped path).
 SUPPLEMENT_EXTRA_NOTICES = [
     ("NOTICES-FONTS-XETEX.txt", "doc/fonts/NOTICES-FONTS-XETEX.txt"),
@@ -2860,58 +2987,87 @@ LANGUAGE_DAT_ENTRIES = [
     ("pinyin", "loadhyph-zh-latn-pinyin.tex", []),
 ]
 
-# Unicode text-pattern loaders and typesetting minima from their upstream
-# hyph-utf8 headers (the same resources named by LANGUAGE_DAT_ENTRIES).
-LANGUAGE_LUA_PATTERNS = {
-    "loadhyph-en-gb.tex": ("en-gb", 2, 3),
-    "loadhyph-en-us.tex": ("en-us", 2, 3),
-    "loadhyph-eu.tex": ("eu", 2, 2),
-    "loadhyph-fr.tex": ("fr", 2, 2),
-    "loadhyph-de-1901.tex": ("de-1901", 2, 2),
-    "loadhyph-de-1996.tex": ("de-1996", 2, 2),
-    "loadhyph-de-ch-1901.tex": ("de-ch-1901", 2, 2),
-    "loadhyph-el-polyton.tex": ("el-polyton", 1, 1),
-    "loadhyph-el-monoton.tex": ("el-monoton", 1, 1),
-    "loadhyph-grc.tex": ("grc", 1, 1),
-    "loadhyph-es.tex": ("es", 2, 2),
-    "loadhyph-pt.tex": ("pt", 2, 3),
-    "loadhyph-ru.tex": ("ru", 2, 2),
-}
-
-
-def language_dat_lua(available_basenames):
-    """Describe only physically bundled Unicode patterns; other loaders dump
-    their patterns at format generation, as in TeX Live's language.dat.lua."""
-    lines = ["-- Deterministically generated LuaTeX hyphenation configuration", "return {"]
+def tl_add_hyphen_entries(pkg, arc_path):
+    """The `execute AddHyphen` entries of a package's tlpobj, parsed as
+    TeXLive::TLUtils::parse_AddHyphen_line does."""
+    with tarfile.open(arc_path, "r:xz") as tar:
+        tlpobj = tar.extractfile(f"tlpkg/tlpobj/{pkg}.tlpobj").read().decode()
     entries = []
-    for lang, loader, aliases in LANGUAGE_DAT_ENTRIES:
-        synonyms = "{" + ", ".join(json.dumps(a) for a in aliases) + "}"
-        fields = [f"loader={json.dumps(loader)}", f"synonyms={synonyms}"]
-        if lang == "english":
-            fields.extend(['special="language0"', "lefthyphenmin=2", "righthyphenmin=3"])
-        elif loader in LANGUAGE_LUA_PATTERNS:
-            code, left, right = LANGUAGE_LUA_PATTERNS[loader]
-            patterns = f"hyph-{code}.pat.txt"
-            if patterns not in available_basenames:
-                raise RuntimeError(f"Missing Unicode hyphenation patterns: {patterns}")
-            exceptions = f"hyph-{code}.hyp.txt"
-            if exceptions not in available_basenames:
-                exceptions = ""
-            fields.extend([
-                f"lefthyphenmin={left}", f"righthyphenmin={right}",
-                f"patterns={json.dumps(patterns)}", f"hyphenation={json.dumps(exceptions)}",
-            ])
-        else:
+    for line in tlpobj.splitlines():
+        if not line.startswith("execute AddHyphen"):
             continue
-        lines.append(f"  [{json.dumps(lang)}]={{" + ", ".join(fields) + "},")
-        entries.append(lang)
-    lines.append("}")
-    content = ("\n".join(lines) + "\n").encode()
-    return content, {
-        "output_file": "tex/generic/config/language.dat.lua",
-        "sha256": hashlib.sha256(content).hexdigest(),
-        "size_bytes": len(content),
-        "languages": entries,
+        entry = {"synonyms": [], "databases": ["dat", "def", "lua"]}
+        for word in shlex.split(line[len("execute AddHyphen"):]):
+            key, _, value = word.partition("=")
+            entry[key] = value.split(",") if key in ("synonyms", "databases") else value
+        entries.append(entry)
+    return entries
+
+
+def hyphenation_config_lines(db, entry):
+    """TeXLive::TLPOBJ::make_{dat,def,lua}_lines for one AddHyphen entry."""
+    name, file = entry["name"], entry["file"]
+    lhm, rhm = entry["lefthyphenmin"], entry["righthyphenmin"]
+    if db == "dat":
+        return [f"{name} {file}\n"] + [f"={s}\n" for s in entry["synonyms"]]
+    if db == "def":
+        return [f"\\addlanguage{{{n}}}{{{file}}}{{}}{{{lhm}}}{{{rhm}}}\n"
+                for n in [name] + entry["synonyms"]]
+    synonyms = ", ".join(f"'{s}'" for s in entry["synonyms"])
+    lines = [f"['{name}'] = {{", f"\tloader = '{file}',", f"\tlefthyphenmin = {lhm},",
+             f"\trighthyphenmin = {rhm},", f"\tsynonyms = {{ {synonyms} }},"]
+    for key, field in (("file_patterns", "patterns"), ("file_exceptions", "hyphenation"),
+                       ("luaspecial", "special")):
+        if key in entry:
+            lines.append(f"\t{field} = '{entry[key]}',")
+    lines.append("},")
+    return [f"\t{line}\n" for line in lines]
+
+
+def hyphenation_configs(cache_dir, available_basenames):
+    """tex/generic/config/language.{dat,def,dat.lua} as tlmgr generates them
+    (TeXLive::TLUtils::create_language_*): hyphen-base's language.us* head and
+    the AddHyphen lines of every HYPHENATION_COLLECTIONS package in order.
+    Every loader must be bundled: no language silently falls back."""
+    with tarfile.open(os.path.join(cache_dir, "hyphen-base.tar.xz"), "r:xz") as tar:
+        heads = {db: tar.extractfile(f"tex/generic/config/language.us{ext}").read().decode()
+                 for db, ext in (("dat", ""), ("def", ".def"), ("lua", ".lua"))}
+    body = {"dat": [], "def": [], "lua": []}
+    languages = []
+    for _, packages in HYPHENATION_COLLECTIONS:
+        for pkg in packages:
+            entries = tl_add_hyphen_entries(pkg, os.path.join(cache_dir, f"{pkg}.tar.xz"))
+            if not entries:
+                raise RuntimeError(f"REJECTED: {pkg} declares no AddHyphen entry")
+            for entry in entries:
+                if entry["file"] not in available_basenames:
+                    raise RuntimeError(f"REJECTED: loader {entry['file']} of {entry['name']} is not bundled")
+                languages.append(entry["name"])
+            for db, cc in (("dat", "%"), ("def", "%"), ("lua", "--")):
+                first = True
+                for entry in entries:
+                    if db not in entry["databases"]:
+                        continue
+                    if first:
+                        body[db].append(f"{cc} from {pkg}:\n")
+                        first = False
+                    if entry.get("comment"):
+                        body[db].append(f"{cc} {entry['comment']}\n")
+                    body[db].extend(hyphenation_config_lines(db, entry))
+    generated = "Generated by scripts/bundle_packages.py from TeX Live's AddHyphen entries\n"
+    contents = {
+        "tex/generic/config/language.dat": f"% {generated}" + heads["dat"] + "".join(body["dat"]),
+        # language.def keeps its first line, which etex.src checks
+        "tex/generic/config/language.def": heads["def"] + "".join(body["def"])
+        + "%%% No changes may be made beyond this point.\n\n"
+        + "\\uselanguage {USenglish}             %%% This MUST be the last line of the file.\n",
+        "tex/generic/config/language.dat.lua": f"-- {generated}" + heads["lua"] + "".join(body["lua"]) + "}\n",
+    }
+    contents = {rel: text.encode() for rel, text in contents.items()}
+    return contents, {
+        "files": {rel: {"sha256": hashlib.sha256(data).hexdigest(), "size_bytes": len(data)}
+                  for rel, data in contents.items()},
+        "languages": languages,
     }
 
 LOADER_DEPENDENCY_CLOSURE = {
@@ -2946,6 +3102,7 @@ def generate_language_dat(combined_dir):
     Deterministically generates tex/generic/config/language.dat.
     Validates complete physical presence of every declared loader and secondary
     dependency in combined_dir. Strict verification: no silent English fallback.
+    The supplement's TeX Live configuration (`hyphenation_configs`) shadows it.
     """
     print("  Validating hyphenation resource closure and generating tex/generic/config/language.dat...")
     available_basenames = set()
@@ -2984,12 +3141,6 @@ def generate_language_dat(combined_dir):
         f.write(content)
     os.utime(target_full, (FIXED_MTIME, FIXED_MTIME))
 
-    lua_content, lua_provenance = language_dat_lua(available_basenames)
-    lua_target = os.path.join(combined_dir, lua_provenance["output_file"])
-    with open(lua_target, "wb") as f:
-        f.write(lua_content)
-    os.utime(lua_target, (FIXED_MTIME, FIXED_MTIME))
-
     fhash = sha256_file(target_full)
     fsz = os.path.getsize(target_full)
     print(f"  Generated {target_rel}: {len(LANGUAGE_DAT_ENTRIES)} languages, {fsz} bytes, sha256={fhash[:16]}...")
@@ -2998,7 +3149,6 @@ def generate_language_dat(combined_dir):
         "sha256": fhash,
         "size_bytes": fsz,
         "total_languages": len(LANGUAGE_DAT_ENTRIES),
-        "lua": lua_provenance,
         "validated_loaders": sorted(LOADER_DEPENDENCY_CLOSURE.keys()),
         "entries": [
             {"language": lang, "loader": loader, "synonyms": aliases}
@@ -3763,8 +3913,8 @@ def build_supplement(assets_dir, lock_file_path, cache_dir, legal_dir):
     # Consolidate pdftex.map: main records stay byte-identical; the declared
     # roots contribute records for still-unmapped TFMs whose files exist.
     available = set(main_by_basename) | {os.path.basename(r) for r in added}
-    lua_content, lua_provenance = language_dat_lua(available)
-    added[lua_provenance["output_file"]] = lua_content
+    hyphenation_files, hyphenation_provenance = hyphenation_configs(cache_dir, available)
+    added.update(hyphenation_files)
     main_map = main_contents[PDFTEX_MAP_REL].decode()
     header = [line for line in main_map.splitlines(keepends=True) if line.startswith("%")]
     map_lines = {}
@@ -3824,7 +3974,7 @@ def build_supplement(assets_dir, lock_file_path, cache_dir, legal_dir):
         "packages": package_records,
         "mf_pk": mf_pk_record,
         "notices": notice_records,
-        "hyphenation_config": lua_provenance,
+        "hyphenation_config": hyphenation_provenance,
         "map_roots": {
             "output_map": PDFTEX_MAP_REL,
             "total_entries": len(map_lines),

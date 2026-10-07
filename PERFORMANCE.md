@@ -276,7 +276,14 @@ them to 2.1G and 25M. Output is byte-identical.
 
 ## Runtime design relevant to speed
 
-- The LaTeX formats are embedded zstd-compressed and loaded at startup.
+- The LaTeX formats are embedded zstd-compressed and loaded at startup. A
+  format is stored as independent 1 MiB zstd frames behind a skippable frame
+  that indexes them (`scripts/build_formats.py`, and `-ini` dumps alike), so
+  that up to four threads decode it at once: with a single frame, decoding
+  took about half of the format load (roughly 40 of 80 ms for XeLaTeX).
+- Inside an alignment entry, tokens that cannot end the entry (anything but
+  `&`, a control sequence \let to it, `\cr` or `\crcr` at brace depth zero)
+  take the same fast token fetch and bulk argument scans as outside one.
 - TeX support files come from an embedded zstd-compressed package archive
   (`crates/tex-kpse`); no TeX installation is scanned.
 - The default font map (`pdftex.map`) is parsed only on first use.

@@ -1,181 +1,369 @@
-//! The ordering of index entries.
+//! The ordering of index entries: makeindex's `sortid.c` and `qsort.c`.
 
-use std::cmp::Ordering;
+use crate::locale::Locale;
+use crate::scan::{group_type, Entry, DUPLICATE, FIELD_MAX, SYMBOL};
 
-use crate::scan::Entry;
+/// One progress dot per this many comparisons.
+pub(crate) const CMP_MAX: usize = 1500;
 
-/// How sort keys are compared.
-#[derive(Clone, Copy)]
-pub(crate) struct Collation {
-    /// `-l`: blanks do not take part in the comparison.
+/// How keys compare.
+pub(crate) struct Collation<'l> {
+    /// `-l`: blanks do not count.
     pub(crate) letter_ordering: bool,
-    /// `-g`: quote + letter spells an umlaut.
-    pub(crate) german: bool,
-    pub(crate) quote: u8,
+    /// `-g`: German ordering.
+    pub(crate) german_sort: bool,
+    /// `-L`/`-T`: the environment's collation (`strcoll`).
+    pub(crate) locale: Option<&'l Locale>,
+    pub(crate) range_open: u8,
+    pub(crate) range_close: u8,
 }
 
-/// Classes of the first byte of a key. Symbols (including keys that start
-/// with a digit but are not numbers) come first, then numbers, then bytes up
-/// to and including the blank, then letters, then 8-bit bytes.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct Rank(u8, u8);
-
-fn rank(key: &[u8]) -> Rank {
-    let Some(&first) = key.first() else {
-        return Rank(0, 0);
-    };
-    if key.iter().all(u8::is_ascii_digit) {
-        return Rank(1, 0);
-    }
-    match first {
-        b if b.is_ascii_digit() => Rank(0, 2),
-        b if b.is_ascii_alphabetic() => Rank(3, b.to_ascii_lowercase()),
-        b if b <= b' ' || b == 0x7f => Rank(2, b),
-        b if b >= 0x80 => Rank(4, b),
-        _ => Rank(0, 1),
-    }
+/// `TOLOWER` in the "C" locale.
+fn to_lower(byte: u8) -> i32 {
+    i32::from(byte.to_ascii_lowercase())
 }
 
-/// The group an entry belongs to in the output.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Group {
-    Symbols,
-    Numbers,
-    /// A letter (lower case), a control byte or blank, or an 8-bit byte.
-    Byte(u8),
+fn at(text: &[u8], index: usize) -> u8 {
+    text.get(index).copied().unwrap_or(0)
 }
 
-pub(crate) fn group_of(key: &[u8]) -> Group {
-    match rank(key) {
-        Rank(0, _) => Group::Symbols,
-        Rank(1, _) => Group::Numbers,
-        Rank(_, byte) => Group::Byte(byte),
-    }
+/// A string in a zeroed buffer of `cap` bytes.
+#[derive(Clone, Copy)]
+pub(crate) struct Buffer<'a> {
+    pub(crate) text: &'a [u8],
+    pub(crate) cap: usize,
 }
 
-fn compare_digits(a: &[u8], b: &[u8]) -> Ordering {
-    let strip = |digits: &[u8]| -> usize { digits.iter().take_while(|&&d| d == b'0').count() };
-    let (a, b) = (&a[strip(a)..], &b[strip(b)..]);
-    a.len().cmp(&b.len()).then_with(|| a.cmp(b))
-}
-
-fn compare_text(a: &[u8], b: &[u8], fold: bool, letter_ordering: bool) -> Ordering {
-    let (mut i, mut j) = (0usize, 0usize);
-    loop {
-        if letter_ordering {
-            if a.get(i) == Some(&b' ') {
-                i += 1;
-            }
-            if b.get(j) == Some(&b' ') {
-                j += 1;
-            }
+impl Buffer<'_> {
+    /// The byte at `index`, also past the terminator. `compare_string` with
+    /// `-l` can step over the terminator of both strings and read beyond
+    /// the buffer, into what glibc's malloc left there: in a reused small
+    /// chunk the first bytes hold a heap pointer (non-zero in the low five
+    /// bytes), the rest are zero.
+    fn at(&self, index: usize) -> u8 {
+        match self.text.get(index) {
+            Some(&byte) => byte,
+            None if index < self.cap || index >= 5 => 0,
+            None => 0x55,
         }
-        match (a.get(i), b.get(j)) {
-            (None, None) => break,
-            (None, Some(_)) => return Ordering::Less,
-            (Some(_), None) => return Ordering::Greater,
-            (Some(&x), Some(&y)) => {
-                let (x, y) = if fold { (x.to_ascii_lowercase(), y.to_ascii_lowercase()) } else { (x, y) };
-                if x != y {
-                    return x.cmp(&y);
+    }
+}
+
+/// `strcmp`, with bytes compared unsigned.
+fn strcmp(a: &[u8], b: &[u8]) -> i32 {
+    let mut index = 0;
+    loop {
+        let (x, y) = (at(a, index), at(b, index));
+        if x != y || x == 0 {
+            return i32::from(x) - i32::from(y);
+        }
+        index += 1;
+    }
+}
+
+impl Collation<'_> {
+    fn strcoll(&self, a: &[u8], b: &[u8]) -> i32 {
+        match self.locale {
+            Some(locale) => locale.strcoll(a, b),
+            None => strcmp(a, b),
+        }
+    }
+
+    /// `compare_one`: two sort keys or two printed texts.
+    fn compare_one(&self, x: Buffer, y: Buffer) -> i32 {
+        let (bx, by) = (x, y);
+        let (x, y) = (x.text, y.text);
+        match (x.is_empty(), y.is_empty()) {
+            (true, true) => return 0,
+            (true, false) => return -1,
+            (false, true) => return 1,
+            _ => {}
+        }
+        let m = group_type(x);
+        let n = group_type(y);
+        if m >= 0 && n >= 0 {
+            return m.wrapping_sub(n);
+        }
+        if m >= 0 {
+            return if self.german_sort || n == SYMBOL { 1 } else { -1 };
+        }
+        if n >= 0 {
+            return if self.german_sort || m == SYMBOL { -1 } else { 1 };
+        }
+        if m == SYMBOL && n == SYMBOL {
+            return self.check_mixsym(x, y);
+        }
+        if m == SYMBOL {
+            return -1;
+        }
+        if n == SYMBOL {
+            return 1;
+        }
+        self.compare_string(bx, by)
+    }
+
+    /// `check_mixsym`: keys starting with a digit follow other symbols.
+    fn check_mixsym(&self, x: &[u8], y: &[u8]) -> i32 {
+        let m = at(x, 0).is_ascii_digit();
+        let n = at(y, 0).is_ascii_digit();
+        if m && !n {
+            return 1;
+        }
+        if !m && n {
+            return -1;
+        }
+        self.strcoll(x, y)
+    }
+
+    /// `compare_string`: case-insensitive first, then exact.
+    pub(crate) fn compare_string(&self, x: Buffer, y: Buffer) -> i32 {
+        let (a, b) = (x.text, y.text);
+        if self.locale.is_some() {
+            return self.strcoll(a, b);
+        }
+        let (mut i, mut j) = (0usize, 0usize);
+        while x.at(i) != 0 || y.at(j) != 0 {
+            if x.at(i) == 0 {
+                return -1;
+            }
+            if y.at(j) == 0 {
+                return 1;
+            }
+            if self.letter_ordering {
+                if x.at(i) == b' ' {
+                    i += 1;
+                }
+                if y.at(j) == b' ' {
+                    j += 1;
                 }
             }
+            let (al, bl) = (to_lower(x.at(i)), to_lower(y.at(j)));
+            if al != bl {
+                return al - bl;
+            }
+            i += 1;
+            j += 1;
         }
-        i += 1;
-        j += 1;
+        if self.german_sort { new_strcmp_german(a, b) } else { strcmp(a, b) }
     }
-    a.cmp(b)
+
+    fn is_range(&self, encap: &[u8]) -> bool {
+        let first = at(encap, 0);
+        first == self.range_open || first == self.range_close
+    }
+
+    /// `compare`: keys level by level, then pages. Marks the second of two
+    /// identical entries `DUPLICATE`.
+    pub(crate) fn compare(&self, entries: &mut [Entry], a: usize, b: usize) -> i32 {
+        for level in 0..FIELD_MAX {
+            let (x, y) = (&entries[a], &entries[b]);
+            let dif = self.compare_one(
+                Buffer { text: &x.sf[level], cap: x.sf_cap[level] },
+                Buffer { text: &y.sf[level], cap: y.sf_cap[level] },
+            );
+            if dif != 0 {
+                return dif;
+            }
+            let dif = self.compare_one(
+                Buffer { text: &x.af[level], cap: x.af_cap[level] },
+                Buffer { text: &y.af[level], cap: y.af_cap[level] },
+            );
+            if dif != 0 {
+                return dif;
+            }
+        }
+        self.compare_page(entries, a, b)
+    }
+
+    /// `compare_page`.
+    fn compare_page(&self, entries: &mut [Entry], a: usize, b: usize) -> i32 {
+        let (x, y) = (&entries[a], &entries[b]);
+        let (count_a, count_b) = (x.npg.len(), y.npg.len());
+        let mut m = 0i32;
+        let mut i = 0usize;
+        while i < count_a && i < count_b {
+            m = x.npg[i].wrapping_sub(y.npg[i]);
+            if m != 0 {
+                break;
+            }
+            i += 1;
+        }
+        if m != 0 {
+            return m;
+        }
+        if i == count_a && i == count_b {
+            // Identical pages: the input order decides between range
+            // operators (so that a range ending and one starting on the same
+            // page stay apart), the encapsulator between other entries.
+            if self.is_range(&x.encap) && self.is_range(&y.encap) {
+                m = x.lc.wrapping_sub(y.lc);
+            } else if x.encap == y.encap {
+                if x.ty != DUPLICATE && y.ty != DUPLICATE {
+                    entries[b].ty = DUPLICATE;
+                }
+            } else if self.is_range(&x.encap) || self.is_range(&y.encap) {
+                m = x.lc.wrapping_sub(y.lc);
+            } else {
+                m = self.compare_string(
+                    Buffer { text: &x.encap, cap: x.encap_cap },
+                    Buffer { text: &y.encap, cap: y.encap_cap },
+                );
+            }
+        } else if i == count_a && i < count_b {
+            m = -1;
+        } else if i < count_a && i == count_b {
+            m = 1;
+        }
+        m
+    }
 }
 
-fn german_form(key: &[u8], quote: u8) -> Vec<u8> {
-    let mut out = Vec::with_capacity(key.len());
-    let mut at = 0;
-    while at < key.len() {
-        if key[at] == quote {
-            match key.get(at + 1) {
-                Some(b'a') => out.extend_from_slice(b"ae"),
-                Some(b'o') => out.extend_from_slice(b"oe"),
-                Some(b'u') => out.extend_from_slice(b"ue"),
-                Some(b's') => out.extend_from_slice(b"ss"),
-                Some(b'A') => out.extend_from_slice(b"Ae"),
-                Some(b'O') => out.extend_from_slice(b"Oe"),
-                Some(b'U') => out.extend_from_slice(b"Ue"),
-                Some(&other) => out.push(other),
-                None => {}
+/// `new_strcmp(..., GERMAN)`: of two keys that differ only in case, the one
+/// with the upper-case letter comes second.
+fn new_strcmp_german(a: &[u8], b: &[u8]) -> i32 {
+    let mut index = 0;
+    while at(a, index) == at(b, index) {
+        if at(a, index) == 0 {
+            return 0;
+        }
+        index += 1;
+    }
+    if at(a, index).is_ascii_uppercase() { 1 } else { -1 }
+}
+
+/// `qqsort`: Nelson Beebe's quicksort, whose exact sequence of comparisons
+/// decides which of two identical entries is dropped and how many
+/// comparisons the transcript reports. `cmp` receives two elements of `keys`.
+pub(crate) fn qqsort(keys: &mut [usize], cmp: &mut dyn FnMut(usize, usize) -> i32) {
+    const THRESH: isize = 4;
+    let n = keys.len() as isize;
+    if n <= 1 {
+        return;
+    }
+    let max = n;
+    let hi = if n >= THRESH {
+        qst(keys, 0, max, cmp);
+        THRESH
+    } else {
+        max
+    };
+    let k = |index: isize| index as usize;
+    // The smallest of the first THRESH elements becomes a sentinel.
+    let mut j = 0;
+    let mut lo = 0;
+    loop {
+        lo += 1;
+        if lo >= hi {
+            break;
+        }
+        if cmp(keys[k(j)], keys[k(lo)]) > 0 {
+            j = lo;
+        }
+    }
+    if j != 0 {
+        keys.swap(0, k(j));
+    }
+    // Insertion sort.
+    let mut min = 0;
+    loop {
+        min += 1;
+        if min >= max {
+            break;
+        }
+        let mut hi = min;
+        loop {
+            hi -= 1;
+            if hi < 0 || cmp(keys[k(hi)], keys[k(min)]) <= 0 {
+                break;
             }
-            at += 2;
+        }
+        hi += 1;
+        if hi != min {
+            keys[k(hi)..=k(min)].rotate_right(1);
+        }
+    }
+}
+
+/// `qst`: partitions `keys[base..max]` until the pieces are below the
+/// insertion threshold.
+fn qst(keys: &mut [usize], mut base: isize, mut max: isize, cmp: &mut dyn FnMut(usize, usize) -> i32) {
+    const THRESH: isize = 4;
+    const MTHRESH: isize = 6;
+    let k = |index: isize| index as usize;
+    let mut lo = max - base;
+    loop {
+        let mut mid = base + (lo >> 1);
+        let mut i = mid;
+        if lo >= MTHRESH {
+            let jj = base;
+            let mut j = if cmp(keys[k(jj)], keys[k(i)]) > 0 { jj } else { i };
+            let tmp = max - 1;
+            if cmp(keys[k(j)], keys[k(tmp)]) > 0 {
+                j = if j == jj { i } else { jj };
+                if cmp(keys[k(j)], keys[k(tmp)]) < 0 {
+                    j = tmp;
+                }
+            }
+            if j != i {
+                keys.swap(k(i), k(j));
+            }
+        }
+        i = base;
+        let mut j = max - 1;
+        loop {
+            while i < mid && cmp(keys[k(i)], keys[k(mid)]) <= 0 {
+                i += 1;
+            }
+            let mut target = None;
+            while j > mid {
+                if cmp(keys[k(mid)], keys[k(j)]) <= 0 {
+                    j -= 1;
+                    continue;
+                }
+                let after = i + 1;
+                let jj = j;
+                if i == mid {
+                    mid = j;
+                } else {
+                    j -= 1;
+                }
+                target = Some((jj, after));
+                break;
+            }
+            let (jj, after) = match target {
+                Some(found) => found,
+                None => {
+                    if i == mid {
+                        break;
+                    }
+                    let jj = mid;
+                    mid = i;
+                    j -= 1;
+                    (jj, i)
+                }
+            };
+            keys.swap(k(i), k(jj));
+            i = after;
+        }
+        let j = mid;
+        let i = mid + 1;
+        let left = j - base;
+        let right = max - i;
+        if left <= right {
+            if left >= THRESH {
+                qst(keys, base, j, cmp);
+            }
+            base = i;
+            lo = right;
         } else {
-            out.push(key[at]);
-            at += 1;
-        }
-    }
-    out
-}
-
-pub(crate) fn compare_keys(a: &[u8], b: &[u8], collation: &Collation) -> Ordering {
-    if collation.german {
-        let (a, b) = (german_form(a, collation.quote), german_form(b, collation.quote));
-        return compare_plain(&a, &b, collation);
-    }
-    compare_plain(a, b, collation)
-}
-
-fn compare_plain(a: &[u8], b: &[u8], collation: &Collation) -> Ordering {
-    let (rank_a, rank_b) = (rank(a), rank(b));
-    if rank_a != rank_b {
-        return rank_a.cmp(&rank_b);
-    }
-    match rank_a.0 {
-        1 => compare_digits(a, b),
-        0 => compare_text(a, b, false, collation.letter_ordering),
-        _ => compare_text(a, b, true, collation.letter_ordering),
-    }
-}
-
-/// Orders two entries by key at each level, then by page. Entries that tie
-/// keep their input order (the sort is stable).
-pub(crate) fn compare_entries(a: &Entry, b: &Entry, collation: &Collation) -> Ordering {
-    compare_item_keys(a, b, collation).then_with(|| a.page.compare(&b.page))
-}
-
-/// Among entries of one page, those that do not open or close a range are
-/// ordered by encapsulator; the others keep their places.
-pub(crate) fn order_same_page(entries: &mut [Entry], collation: &Collation) {
-    let mut start = 0;
-    while start < entries.len() {
-        let mut end = start + 1;
-        while end < entries.len()
-            && compare_entries(&entries[start], &entries[end], collation) == Ordering::Equal
-        {
-            end += 1;
-        }
-        if end - start > 1 {
-            let positions: Vec<usize> = (start..end)
-                .filter(|&index| entries[index].range == crate::scan::Range::None)
-                .collect();
-            let mut plain: Vec<Entry> = positions.iter().map(|&index| entries[index].clone()).collect();
-            plain.sort_by(|a, b| a.encap.cmp(&b.encap));
-            for (position, entry) in positions.into_iter().zip(plain) {
-                entries[position] = entry;
+            if right >= THRESH {
+                qst(keys, i, max, cmp);
             }
+            max = j;
+            lo = left;
         }
-        start = end;
-    }
-}
-
-pub(crate) fn compare_item_keys(a: &Entry, b: &Entry, collation: &Collation) -> Ordering {
-    for level in 0..3 {
-        match (level < a.levels, level < b.levels) {
-            (false, false) => break,
-            (false, true) => return Ordering::Less,
-            (true, false) => return Ordering::Greater,
-            (true, true) => {}
-        }
-        let ordering = compare_keys(&a.sf[level], &b.sf[level], collation)
-            .then_with(|| compare_keys(&a.af[level], &b.af[level], collation));
-        if ordering != Ordering::Equal {
-            return ordering;
+        if lo < THRESH {
+            break;
         }
     }
-    Ordering::Equal
 }

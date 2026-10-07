@@ -1,0 +1,40 @@
+\begin{theindex}
+\hd{sym}
+
+\i0 $ :0: 1 .t.
+\gap
+\hd{num}
+
+\i0 3 :0: 4 .t.
+\i0 12 :0: 2 .t.
+\gap
+\hd{a}
+
+\i0 Apple :0: 6 .t.
+\i0 Apple :0: 1 .t.
+\i0 apple :0: 5 .t.
+\gap
+\hd{b}
+
+\i0 B>c :0: 7 .t.
+\gap
+\hd{c}
+
+\i0 C :0: <<textbf|9>> .t.
+\gap
+\hd{d}
+
+\i0 D :0: 1:1 -r- 1:4 .t.
+\gap
+\hd{e}
+
+\i0 E :0: <<emph|10 -r- 12>> .t.
+\gap
+\hd{x}
+
+\i0 x :0: 3 .t.
+\gap
+\hd{z}
+
+\i0 Zed :0: iv -r- vi .t.
+\end{myindex}

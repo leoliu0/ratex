@@ -1445,7 +1445,12 @@ impl Engine {
                     *byte = tcx.xchr[usize::from(*byte)];
                 }
             }
-            let outcome = match crate::lua_sys_kpse::run_system(&external, out_dir.as_deref()) {
+            let code = crate::lua_sys_kpse::run_system(&external, out_dir.as_deref());
+            if code > 0 {
+                self.observations_before_shell_escape
+                    .get_or_insert((self.loaded_file_digests.len(), self.loaded_file_sizes.len()));
+            }
+            let outcome = match code {
                 -1 => "quotation error in system command",
                 0 => "disabled (restricted)",
                 1 => "executed",

@@ -1427,6 +1427,8 @@ impl Engine {
         match kind {
             0 => {
                 self.mode = Mode::RestrictedHorizontal;
+                // tex.web §1083: the new horizontal list starts at space_factor 1000
+                self.space_factor = 1000;
                 let toks = (*self.eqtb.tok_params
                     [crate::prim::ToksParam::EveryHBox.idx() as usize])
                     .clone();

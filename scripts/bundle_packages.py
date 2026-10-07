@@ -1789,6 +1789,19 @@ SUPPLEMENT_PACKAGES = {
         # tlpobj: `execute addMap newpx.map`
         "map_files": ["fonts/map/dvips/newpx/newpx.map"],
     },
+    # The main archive holds rsfso's metrics, map and macros (rsfso.map is a
+    # SUPPLEMENT_MAP_ROOTS root); the virtual fonts rsfso{5,7,10}.vf, which
+    # slant the rsfs outlines through the rrsfso* base fonts, complete it.
+    "rsfso": {
+        "version": "1.03",
+        "revision": 79618,
+        "license": "LPPL-1.3",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/rsfso.tar.xz",
+        "upstream_sha256": "020dceed71a12c218a39f00031b625914f95df8a0936e7ee033a5d8499b06007",
+        "upstream_size_bytes": 3796,
+        "select": [("fonts/vf/public/rsfso", None)],
+        "map_files": [],
+    },
     "lua-uni-algos": {
         "version": "0.5",
         "revision": 76195,

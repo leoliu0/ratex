@@ -1692,3 +1692,21 @@ fn math_paragraph_recovery_replays_the_actual_primitive_alias() {
         e.term
     );
 }
+
+/// pdftex -ini (tex.web §1083): an `\hbox` starts its horizontal list at
+/// space factor 1000 whatever the enclosing list's factor was, so a leading
+/// space inside it is an ordinary interword space; the enclosing factor
+/// returns when the box ends.
+#[test]
+fn hbox_starts_at_space_factor_1000() {
+    let e = run_lenient(
+        r"\catcode`\#=6 \font\tenrm=cmr10 \tenrm \sfcode`A=2000
+\setbox1\hbox{A\setbox2\hbox{\message{[IN \the\spacefactor]}}\message{[OUT \the\spacefactor]}}
+\setbox1\hbox{A\setbox2\hbox{ B}\message{[W \the\wd2]}}
+\setbox1\hbox{\hbox{A}\message{[AFTER \the\spacefactor]}}
+\end",
+    );
+    for expected in ["[IN 1000]", "[OUT 2000]", "[W 10.41669pt]", "[AFTER 1000]"] {
+        assert!(e.term.contains(expected), "{expected}: {}", e.term);
+    }
+}

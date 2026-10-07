@@ -529,6 +529,17 @@ impl FontLoader {
         Ok(rc)
     }
 
+    /// The `SlantFont` and `ExtendFont` of the font's map entry in thousandths
+    /// (`fm_slant`, `fm_extend`), found the way `program_for_font` finds the
+    /// entry.
+    pub fn map_transform_millis(&mut self, font: &crate::tfm::Font) -> (i32, i32) {
+        self.ensure_map();
+        self.map
+            .get(&font.tfm_name)
+            .or_else(|| font.map_fontname.as_ref().and_then(|m| self.map.get(m)))
+            .map_or((0, 0), |entry| (entry.slant_millis(), entry.extend_millis()))
+    }
+
     /// Resolve the actual font program for any Font (native or classic mapped).
     /// Records lookup dependencies; missing required outlines are errors.
     pub fn program_for_font(

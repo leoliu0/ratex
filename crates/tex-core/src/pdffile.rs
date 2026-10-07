@@ -153,6 +153,8 @@ pub fn make_embed_font(
         t1_preset: [0; crate::pdf_fonts::INT_KEYS_NUM],
         t1_keys: keys,
         init_order: 0,
+        t1_slant: 0,
+        t1_extend: 0,
         desc_obj: 0,
         pdftex: None,
         xe: None,
@@ -1348,7 +1350,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
     let font_keys: Vec<_> = doc
         .fonts
         .iter()
-        .map(|font| font_file_key(font, T1Transform::default()))
+        .map(|font| font_file_key(font, T1Transform { slant: font.t1_slant, extend: font.t1_extend }))
         .collect();
     // xdvipdfmx (`pdf_font_load_type1`) embeds a TFM font's Type 1 program as a Type1C CFF of
     // its own, one per font; a program it cannot read is a fatal error there.
@@ -2097,7 +2099,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             );
         } else {
             let prepared = prepared_files.get(key);
-            let fallback_name = type1_font_name(f, T1Transform::default());
+            let fallback_name = type1_font_name(f, key.4);
             let pdf_name = prepared.map_or(fallback_name.as_str(), |font| font.pdf_name.as_str());
             if let Some(pdftex) = &f.pdftex {
                 // writefont.c write_fontdictionary

@@ -7,7 +7,8 @@
 //! libraries report such interactions here (`tex_lua::HostAccess`) and the
 //! `lfs`/`kpse` bridges call the methods below directly. Every interaction
 //! is either recorded as a dependency of the build (files, missing files,
-//! directory listings, existing directories, environment variables) or, when it cannot be
+//! directory listings, existing directories, symbolic link targets,
+//! environment variables) or, when it cannot be
 //! represented, clears `dependency_tracking_complete`, so the build is simply
 //! not cached.
 //!
@@ -34,6 +35,7 @@ pub(crate) struct Seen {
     present_directories: HashSet<PathBuf>,
     missing_directories: HashSet<PathBuf>,
     listed_directories: HashSet<PathBuf>,
+    links: HashSet<PathBuf>,
 }
 
 /// Insert `path` into `set`; true when it was not there yet.
@@ -174,6 +176,27 @@ impl Engine {
     fn lua_dep_missing_directory(&mut self, path: &Path) {
         if first_sight(&mut self.lua_deps_seen.missing_directories, path) {
             self.font_loader.dependency_missing_directories.push(path.to_path_buf());
+        }
+    }
+
+    /// A script read the target of the symbolic link `path` (`lfs.readlink`,
+    /// `lfs.symlinkattributes`): `target`, or `None` when `path` is no link.
+    /// luaotfload's `realpath` does this for every link on the way to a font
+    /// directory, such as macOS's `/var` -> `private/var` below `$TMPDIR`.
+    pub(crate) fn lua_dep_link(&mut self, path: &Path, target: Option<&Path>) {
+        if trace_enabled() {
+            eprintln!("lua-dep: readlink {} -> {target:?}", path.display());
+        }
+        if ignored(path) {
+            return;
+        }
+        match target {
+            Some(target) => {
+                if first_sight(&mut self.lua_deps_seen.links, path) {
+                    self.font_loader.dependency_links.push((path.to_path_buf(), target.to_path_buf()));
+                }
+            }
+            None => self.lua_untracked("lfs.readlink of a path that is no symbolic link"),
         }
     }
 

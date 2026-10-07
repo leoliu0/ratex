@@ -873,6 +873,13 @@ fn check_depcache(
             }
             continue;
         }
+        if let Some(rest) = line.strip_prefix("LINK\t") {
+            let (path, target) = rest.split_once('\t')?;
+            if std::fs::read_link(decode_record_path(path)?).ok()? != decode_record_path(target)? {
+                return None;
+            }
+            continue;
+        }
         if let Some(rest) = line.strip_prefix("ENV\t") {
             let (name, value) = rest.split_once('\t')?;
             let name = decode_record_path(name)?.into_os_string();
@@ -1113,6 +1120,8 @@ struct DepcacheInputs<'a> {
     missing: &'a [std::path::PathBuf],
     missing_directories: &'a [std::path::PathBuf],
     present_directories: &'a [std::path::PathBuf],
+    /// Symbolic links whose target a Lua script read, with that target.
+    links: &'a [(std::path::PathBuf, std::path::PathBuf)],
     environment: &'a [(String, Option<std::ffi::OsString>)],
     outputs_missing_at_start: &'a [std::path::PathBuf],
     published_outputs: Option<&'a TexmkPublishedOutputs>,
@@ -1413,6 +1422,23 @@ fn write_depcache(cache_path: &std::path::Path, inputs: DepcacheInputs<'_>) {
             return;
         }
     }
+    let links: std::collections::BTreeMap<std::path::PathBuf, &std::path::Path> = inputs
+        .links
+        .iter()
+        .map(|(path, target)| (anchored_path(path), target.as_path()))
+        .collect();
+    let link_unchanged = |path: &std::path::Path, target: &std::path::Path| {
+        std::fs::read_link(path).ok().as_deref() == Some(target)
+    };
+    for (path, target) in &links {
+        if !link_unchanged(path, target) {
+            return;
+        }
+        let _ = writeln!(out, "LINK\t{}\t{}", encode_record_path(path), encode_record_path(target));
+        if out.len() as u64 > DEPCACHE_RECORD_MAX_BYTES {
+            return;
+        }
+    }
     let environment: std::collections::BTreeMap<&str, &Option<std::ffi::OsString>> = inputs
         .environment
         .iter()
@@ -1497,6 +1523,7 @@ fn write_depcache(cache_path: &std::path::Path, inputs: DepcacheInputs<'_>) {
     }) && missing_file_paths.iter().all(|path| !path.is_file())
         && missing_directory_paths.iter().all(|path| !path.is_dir())
         && present_directories.iter().all(|path| path.is_dir())
+        && links.iter().all(|(path, target)| link_unchanged(path, target))
         && mod_dates
             .iter()
             .all(|(path, date)| tex_core::expand::disk_file_mod_date(path).as_deref() == Some(*date));
@@ -3255,6 +3282,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
                     missing: &eng.missing_files,
                     missing_directories: &eng.font_loader.dependency_missing_directories,
                     present_directories: &eng.font_loader.dependency_present_directories,
+                    links: &eng.font_loader.dependency_links,
                     environment: &eng.font_loader.dependency_environment,
                     outputs_missing_at_start: &outputs_missing_at_start,
                     published_outputs: published_outputs.as_ref(),
@@ -3544,6 +3572,7 @@ mod startup_tests {
                 missing: &[],
                 missing_directories: &[],
                 present_directories: &[],
+                links: &[],
                 environment: &[],
                 outputs_missing_at_start: &[],
                 published_outputs: None,
@@ -3571,6 +3600,7 @@ mod startup_tests {
                 missing: &[],
                 missing_directories: &[],
                 present_directories: &[],
+                links: &[],
                 environment: &[],
                 outputs_missing_at_start: &[],
                 published_outputs: None,

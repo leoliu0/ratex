@@ -119,6 +119,8 @@ pub struct FontLoader {
     pub dependency_missing_directories: Vec<std::path::PathBuf>,
     /// Directories whose existence a Lua script depended on.
     pub dependency_present_directories: Vec<std::path::PathBuf>,
+    /// Symbolic links whose target a Lua script read, with that target.
+    pub dependency_links: Vec<(std::path::PathBuf, std::path::PathBuf)>,
     /// Environment variables a Lua script read, with their values (`None`: unset).
     pub dependency_environment: Vec<(String, Option<std::ffi::OsString>)>,
     /// False when an I/O error prevented a complete dependency snapshot.
@@ -163,6 +165,7 @@ impl FontLoader {
             dependency_missing_files: Vec::new(),
             dependency_missing_directories: Vec::new(),
             dependency_present_directories: Vec::new(),
+            dependency_links: Vec::new(),
             dependency_environment: Vec::new(),
             dependency_tracking_complete: true,
         }

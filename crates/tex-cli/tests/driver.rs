@@ -1119,6 +1119,75 @@ fn lua_lookup_of_a_private_aux_file_keeps_lualatex_rebuilds_cached() {
     );
 }
 
+/// A Lua script that reads the target of a symbolic link depends on that
+/// target. luaotfload's `realpath` reads every link on the way to a font
+/// directory while it builds the names database, such as macOS's `/var`
+/// below `$TMPDIR`; that first build must still be cached. Pointing the link
+/// elsewhere builds the document again. The link lies in a subdirectory, so
+/// replacing it leaves the directories the build lists unchanged.
+#[test]
+fn lua_readlink_target_is_a_dependency_of_the_cached_build() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let fixture = Fixture(std::env::temp_dir().join(format!(
+        "texmk-lua-readlink-{}-{nonce}",
+        std::process::id()
+    )));
+    std::fs::create_dir_all(fixture.0.join("links")).unwrap();
+    std::fs::create_dir_all(fixture.0.join("first")).unwrap();
+    std::fs::create_dir_all(fixture.0.join("second")).unwrap();
+    let link = fixture.0.join("links/target");
+    std::os::unix::fs::symlink("../first", &link).unwrap();
+    std::fs::write(
+        fixture.0.join("main.tex"),
+        concat!(
+            "\\documentclass{article}\n",
+            "\\begin{document}\n",
+            "Target \\directlua{tex.print(lfs.readlink('links/target') or 'none')}.\n",
+            "\\end{document}\n"
+        ),
+    )
+    .unwrap();
+    let build = || {
+        let output = support::bundled_fonts_only(
+            Command::new(env!("CARGO_BIN_EXE_texres"))
+                .args(["-lualatex", "main.tex"])
+                .current_dir(&fixture.0)
+                .env("TEX_RS_CACHE_DIR", fixture.0.join("cache"))
+                .env("SOURCE_DATE_EPOCH", "1700000000")
+                .env("FORCE_SOURCE_DATE", "1"),
+            &fixture.0,
+        )
+        .output()
+        .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    build();
+    let private_log = find_file(&fixture.0.join("cache/texmk/jobs"), "main.log").unwrap();
+    std::fs::write(&private_log, "readlink cache sentinel").unwrap();
+    build();
+    assert_eq!(
+        std::fs::read_to_string(&private_log).unwrap(),
+        "readlink cache sentinel",
+        "a document whose link is unchanged ran the engine again"
+    );
+    std::fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink("../second", &link).unwrap();
+    build();
+    assert_ne!(
+        std::fs::read_to_string(&private_log).unwrap(),
+        "readlink cache sentinel",
+        "a link pointed elsewhere was answered from the cache"
+    );
+}
+
 #[test]
 fn redefined_at_input_observes_created_aux_before_texmk_converges() {
     let nonce = std::time::SystemTime::now()

@@ -213,8 +213,10 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
         }
     });
     sys_reg!(lua, s, "lfs_readlink", |path: LuaString| -> Tri<LuaBytes> {
-        let _ = crate::lua_bridge::with_engine(|e| e.lua_untracked("lfs.readlink"));
-        match fs::read_link(path_of(&bytes_of(&path))) {
+        let p = path_of(&bytes_of(&path));
+        let result = fs::read_link(&p);
+        let _ = crate::lua_bridge::with_engine(|e| e.lua_dep_link(&p, result.as_deref().ok()));
+        match result {
             Ok(target) => (Some(LuaBytes(path_bytes(&target))), None, None),
             Err(e) => failure(&e, None),
         }

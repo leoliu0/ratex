@@ -78,9 +78,9 @@ fetches to test for a row delimiter; TeX gets that from `cur_cmd`.
 
 - Binary: `scripts/build_pgo.sh` at commit `69c9ca4`, a profile-guided build
   with fat LTO in one codegen unit. The release workflow ships this build for
-  Linux x86_64 and macOS. Windows, linux-aarch64 and `cargo install` get the
-  plain release build, which is slower and is not measured here (see
-  "Profile-guided build").
+  Linux x86_64 and macOS arm64. Windows, linux-aarch64, macOS x86_64 and
+  `cargo install` get the plain release build, which is slower and is not
+  measured here (see "Profile-guided build").
 - Each document is built once with both tools first. The two PDFs must have
   the same page count and the same `pdftotext -layout` text after whitespace
   is removed; otherwise the document is not timed. All 100 passed. The PDFs

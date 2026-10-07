@@ -114,7 +114,7 @@ TeX Live is left alone.
 TeXres 0.7.3 was measured against TeX Live 2026 (`latexmk`) on 100 documents:
 70 generated and 30 public papers, books and slide decks. pdfLaTeX, XeLaTeX
 and LuaLaTeX are all included. The binary is the profile-guided build that
-the Linux x86_64 and macOS releases ship. The machine is one Linux
+the Linux x86_64 and macOS arm64 releases ship. The machine is one Linux
 workstation (64-core Threadripper PRO). Each cell is the median of 5 runs.
 Both tools run every pass and the bibliography tool, and the PDFs were
 checked to have the same pages and text.

@@ -1555,24 +1555,24 @@ impl Engine {
                     };
                     let llf_short = if last_line_fit.is_some() { shortfall } else { 0 };
 
+                    // line_number(r) >= easy_line (the l == easy_line
+                    // class is never flushed separately, so it joins the
+                    // merged class). Rust's `line` is 0-based
+                    // (line_number = line + 1), hence a.line + 1 >=
+                    // easy_line. With easy_line = 0 (no parshape/hang/
+                    // looseness) EVERY predecessor shares one class per
+                    // fitness, so equal-demerit chains of different line
+                    // counts compete and the last-scanned (longest,
+                    // newest-inserted) wins under §25307's <= replace.
+                    let line_class = if a.line + 1 >= easy_line {
+                        easy_line + 1
+                    } else {
+                        a.line
+                    };
                     if b <= threshold {
                         let d = a.demerits
                             + demerits(params, b, penalty)
                             + fitness_demerits(params, &a, btype, fit, cand == n);
-                        // line_number(r) >= easy_line (the l == easy_line
-                        // class is never flushed separately, so it joins the
-                        // merged class). Rust's `line` is 0-based
-                        // (line_number = line + 1), hence a.line + 1 >=
-                        // easy_line. With easy_line = 0 (no parshape/hang/
-                        // looseness) EVERY predecessor shares one class per
-                        // fitness, so equal-demerit chains of different line
-                        // counts compete and the last-scanned (longest,
-                        // newest-inserted) wins under §25307's <= replace.
-                        let line_class = if a.line + 1 >= easy_line {
-                            easy_line + 1
-                        } else {
-                            a.line
-                        };
                         let key = (line_class, fit);
                         match champions.get(&key) {
                             // tex.web §25307: replace when d <=
@@ -1589,8 +1589,12 @@ impl Engine {
                     let hopeless = b > INF_BAD;
                     if hopeless || forced {
                         if final_pass && champions.is_empty() && is_only {
+                            // tex.web §854 artificial_demerits: the break is
+                            // recorded with zero line demerits in the
+                            // fitness class its badness gives (an overfull
+                            // line is tight_fit, §851)
                             champions.insert(
-                                (a.line + 1, DECENT),
+                                (line_class, fit),
                                 (a.demerits, a.clone(), 0, llf_short, llf_g),
                             );
                         }

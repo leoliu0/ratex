@@ -33247,9 +33247,9 @@
   },
   "supplement_archive": {
     "name": "packages-supplement.tar.zst",
-    "sha256": "b4736caa095aba270e864b02412ed9ebf4c176624745d9a74cf951c18353c9b1",
-    "size_bytes": 35639022,
-    "total_members": 752,
+    "sha256": "7195e10716ddfd309a206bb85fc231086ec97ea1f668cab2509cc132ab6a5d34",
+    "size_bytes": 39192257,
+    "total_members": 787,
     "precedence": "read before the main archive; its members shadow same-named main members",
     "packages": {
       "beamer": {
@@ -33850,6 +33850,57 @@
           "doc/fonts/libertinus-fonts/README.md": "d5c80604724e154aeaeef68ad31e4943aefd316e04340bc21ee142e3dc2bd222"
         }
       },
+      "cm-unicode": {
+        "version": "0.7.0",
+        "revision": 58661,
+        "license": "OFL-1.1",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/cm-unicode.tar.xz",
+        "upstream_sha256": "d4d050c5613fc47b2722cf2232c2f91b6e08875fc65c72069a151101d4e5ac2d",
+        "upstream_size_bytes": 14122248,
+        "map_files": [],
+        "description": "Computer Modern Unicode OpenType fonts",
+        "source_obligations": "SIL Open Font License 1.1. Unmodified; no separate source obligations.",
+        "file_count": 33,
+        "files": {
+          "fonts/opentype/public/cm-unicode/cmunbbx.otf": "68db6b8f4e73baf957057ddc1316f0e1fff9cf3ecb081a2c1a8917633cd386cf",
+          "fonts/opentype/public/cm-unicode/cmunbi.otf": "690cc3c1511a98e79f5bde8a58868405160da1b7d99f3482324c6a915b496b02",
+          "fonts/opentype/public/cm-unicode/cmunbl.otf": "d3d9fb4b92a14aff9a7a7ae85ac38c73262f4672f2026cabc89f81d865f96dfd",
+          "fonts/opentype/public/cm-unicode/cmunbmo.otf": "0bf5b10613096a07236dfc6fd4fae2932e138c1f740f3de006c2a079af285bfa",
+          "fonts/opentype/public/cm-unicode/cmunbmr.otf": "923dba8ac37ef2216735a7cb2cd4d191cb6d52d60723ffb86ccf011c769d20d4",
+          "fonts/opentype/public/cm-unicode/cmunbso.otf": "768c7f5d8fad1081864dbeca86058863fd7875befd57ae5605efcfa68c35339b",
+          "fonts/opentype/public/cm-unicode/cmunbsr.otf": "14a5a0f2ae9dae931f52e49ea113c80c5312e304dcf7dce47ba589958eb02962",
+          "fonts/opentype/public/cm-unicode/cmunbtl.otf": "7f3f8705440ccea2a598ac7a405746e6b3f6b0776bf31d1221f4dfd729b2320a",
+          "fonts/opentype/public/cm-unicode/cmunbto.otf": "9a289c286403644fb0f22ea162a68159087decbf98376194c11d111381d9d37f",
+          "fonts/opentype/public/cm-unicode/cmunbx.otf": "e956d496776533b0ca1b6e1acaeac896b81b81b908667cbf49840048ed16bd0c",
+          "fonts/opentype/public/cm-unicode/cmunbxo.otf": "538464d0d29a6224db0259059524977fea2896d737fd2be5ff79f33b3e9ba918",
+          "fonts/opentype/public/cm-unicode/cmunci.otf": "609d62bbcd2de264cf697e8400e65d117cbe3b5683dce0054a965f699af5ee9a",
+          "fonts/opentype/public/cm-unicode/cmunit.otf": "140bf950cbf4addac395367990117c8e6f327526fef64bf1512928744cde0289",
+          "fonts/opentype/public/cm-unicode/cmunobi.otf": "830bd7a1c648646e861e1a4c09364dabc8ed064ceb62d38d1b416c8cba4162d7",
+          "fonts/opentype/public/cm-unicode/cmunobx.otf": "6b357327eff7a7a23dd8cf19eb3276934ed161e6bb474227adc8870be8453629",
+          "fonts/opentype/public/cm-unicode/cmunorm.otf": "92b15cfaae91b28fcd1680da907ff880cb7eee68d19e695e9dd37a9a4c088e79",
+          "fonts/opentype/public/cm-unicode/cmunoti.otf": "40524a36ee516444e5774fd5dcf1bdbef92f9bc34cde1fc5dbf85ef2a26204c4",
+          "fonts/opentype/public/cm-unicode/cmunrb.otf": "70790d82f1fc3724c921410cef33ac0d9e4a895870704c3d7dc74d92576993c4",
+          "fonts/opentype/public/cm-unicode/cmunrm.otf": "5089693f81ed5b83435be7167bf2f93c2608ce92fb3a7e13f6be238a733c38f2",
+          "fonts/opentype/public/cm-unicode/cmunsi.otf": "73dfa3be33c4a93abe44753f2d622b1eade86a43eb5a76331095e928b329c34f",
+          "fonts/opentype/public/cm-unicode/cmunsl.otf": "976d4906bc40308ade25b44d6ee784cba03bf830a2a16b1e274a985fa88bd23f",
+          "fonts/opentype/public/cm-unicode/cmunso.otf": "b14e795c2592381e899b79e9a97f6147062e173cc10a172b91e08d225bde7b10",
+          "fonts/opentype/public/cm-unicode/cmunss.otf": "a0e41b8611156eed280c3a730ddcf03c35090fb03efc9413bbe2b1e2915de95b",
+          "fonts/opentype/public/cm-unicode/cmunssdc.otf": "d6a15af6b3bc5c79b5504a218d2ae9a196beb9d01c223b56a1837d913dd614ec",
+          "fonts/opentype/public/cm-unicode/cmunst.otf": "dd1f5672829e2ab8bcceb5240dd2015bb68b5325aaac9348e0de9ef8007b2acb",
+          "fonts/opentype/public/cm-unicode/cmunsx.otf": "5d3a5b51898be3279b28734ac135dc89f4971dc7be1215981eff3fa9f66300da",
+          "fonts/opentype/public/cm-unicode/cmuntb.otf": "51cafc61d575ca03cdae46fbcb455b90b8d16c1e73745e4eae1efeefcc877dc0",
+          "fonts/opentype/public/cm-unicode/cmunti.otf": "fc38ce9ea06e49bda118a8be9f053791d043a547c248ae30c9e4fad956de3267",
+          "fonts/opentype/public/cm-unicode/cmuntt.otf": "f4302554e94621459f33526dca714e7f9d537128b37556741568ae7115b252b5",
+          "fonts/opentype/public/cm-unicode/cmuntx.otf": "de9a8ff2a27fa20e3520ebb4aea4099824a484f3f386cf7d9c8c3e826155e5d6",
+          "fonts/opentype/public/cm-unicode/cmunui.otf": "f55937a5606422998eedfc7816e0853b0e89e0bc584fd2c2c35f5f7bae363afb",
+          "fonts/opentype/public/cm-unicode/cmunvi.otf": "a9e0eab17c70ca59df98f1d2c8dba65f7f7e4156f5a175cecee378900eaa1e37",
+          "fonts/opentype/public/cm-unicode/cmunvt.otf": "2c2251d70a4f21525c84caf4a4aa7d06d754ede332b925a9cb8287277d36188e"
+        },
+        "notices": {
+          "doc/fonts/cm-unicode/OFL.txt": "73273dffdefe2e5f1e138084d4a4b65b1c50df2ab0179f78484f31beefe30d84",
+          "doc/fonts/cm-unicode/README": "c3a9f35adf33497b9a3b3c53fb17a5b15eaa992590699a8fe15162914a54bad0"
+        }
+      },
       "xetex": {
         "version": "TeX Live 2026",
         "revision": 80015,
@@ -34438,7 +34489,7 @@
       }
     },
     "notices": {
-      "doc/fonts/NOTICES-FONTS-XETEX.txt": "fe2e67b4b4c0ee02c3a6b6893900d651cffe83b6ed28450930b37168ca42aa06"
+      "doc/fonts/NOTICES-FONTS-XETEX.txt": "5f129dbf9fc76485c8ae4ea7fd495805f82f8e3784c83619208de46e862795d1"
     },
     "hyphenation_config": {
       "output_file": "tex/generic/config/language.dat.lua",

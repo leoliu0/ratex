@@ -218,8 +218,24 @@ jobs:
 
       # Only texres ships (scripts/package_dist.py BINARIES); the tests below build
       # the rest of the workspace in the test profile.
+      # Linux x86_64 and macOS ship the profile-guided build that PERFORMANCE.md
+      # measures (scripts/build_pgo.sh: instrumented build, training run over
+      # scripts/bench/corpus, optimized rebuild with identical output).
+      # Windows keeps the plain release build (the script is
+      # bash-only and its training run is untested there); linux-aarch64 below
+      # builds inside the Bookworm image, whose root-owned rustup home cannot
+      # take the llvm-tools component as the runner user.
+      - name: Build profile-guided release binary
+        if: matrix.platform != 'windows' && matrix.label != 'linux-aarch64'
+        shell: bash
+        run: |
+          rustup component add llvm-tools
+          scripts/build_pgo.sh target/release/texres
+          rm -rf target/pgo
+          target/release/texres --version
+
       - name: Build release binary
-        if: matrix.label != 'linux-aarch64'
+        if: matrix.platform == 'windows'
         run: cargo build --release --locked --bin texres
 
       - name: Build native ARM64 release binary (Debian 12 / glibc 2.36)

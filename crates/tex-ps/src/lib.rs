@@ -14,6 +14,11 @@ pub use interp::PsError;
 pub use lexer::{extract_bounding_box, extract_ps_payload};
 pub use types::EpsBoundingBox;
 
+/// `/Producer` of the converted PDFs. Ghostscript, which TeX Live's
+/// epstopdf runs, embeds the standard fonts; this converter only names
+/// them, and a PDF inclusion that finds this producer embeds them instead.
+pub const EPS_PDF_PRODUCER: &str = "TeXres EPS converter";
+
 /// Output of an EPS to PDF conversion.
 #[derive(Clone, Debug)]
 pub struct EpsPdfOutput {

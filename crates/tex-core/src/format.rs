@@ -32,7 +32,7 @@ use crate::tfm::{CharInfo, ExtRecipe, Font, LigStep};
 use crate::token::{CsTable, Token};
 
 const MAGIC: &[u8; 8] = b"RUSTEXFM";
-const VERSION: u16 = 25;
+const VERSION: u16 = 26;
 /// A production format is currently about 8 MiB decoded. Keep corrupt or
 /// unrelated external files from turning format probing into an unbounded
 /// allocation while leaving ample room for future format growth.
@@ -920,6 +920,7 @@ fn write_font(w: &mut W, f: &Font) {
         w.i32(c.italic);
         w.u8(c.tag);
         w.u8(c.remainder);
+        w.u8(u8::from(c.exists));
     }
     w.u32(f.lig_kern.len() as u32);
     for l in &f.lig_kern {
@@ -1696,6 +1697,7 @@ fn read_font(r: &mut R) -> io::Result<Font> {
             italic: r.i32()?,
             tag: r.u8()?,
             remainder: r.u8()?,
+            exists: r.u8()? != 0,
         });
     }
     let n = r.count()?;
@@ -1912,6 +1914,7 @@ mod tests {
                     italic: 3,
                     tag: 1,
                     remainder: 7,
+                    exists: true,
                 },
                 CharInfo {
                     width: -5,
@@ -1920,6 +1923,7 @@ mod tests {
                     italic: 0,
                     tag: 0,
                     remainder: 0,
+                    exists: false,
                 },
             ],
             bc: 0,

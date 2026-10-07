@@ -249,6 +249,115 @@ fn included_pdf_page_is_written_like_pdftex_write_epdf() {
     assert!(resources.get(b"Font").is_err());
 }
 
+/// epdf.c creates the shared descriptor of an included font's program while
+/// the page with the image is shipped out; the document's own fonts reach
+/// `do_pdf_font` only at the end of the job, find it and preset nothing from
+/// their TFM. pdfTeX's descriptor for cmr10 (used in the document on the page
+/// before the image) takes Ascent/Descent/CapHeight from the FontBBox, has
+/// no /XHeight and the included font's /StemV.
+#[test]
+fn included_font_descriptor_is_not_preset_by_an_earlier_document_font() {
+    let dir = fixture_dir("fontdesc");
+    let mut inner = run(&dir, r"\pdfoutput=1 \font\x=cmr10 \shipout\hbox{\x Hello x}\end");
+    assert_eq!(inner.error_count, 0, "{}", inner.term);
+    let inner_pdf = tex_core::driver::finish_pdf(&mut inner, false).expect("PDF finalization");
+    std::fs::write(dir.join("inc.pdf"), inner_pdf).unwrap();
+    let mut e = run(
+        &dir,
+        r"\pdfoutput=1 \font\x=cmr10 \shipout\hbox{\x Hello}
+\pdfximage{inc.pdf}\shipout\hbox{\pdfrefximage\pdflastximage}\end",
+    );
+    assert_eq!(e.error_count, 0, "{}", e.term);
+    let doc = finish(&mut e);
+    let descriptors: Vec<&lopdf::Dictionary> = doc
+        .objects
+        .values()
+        .filter_map(|o| o.as_dict().ok().filter(|d| d.has_type(b"FontDescriptor")))
+        .collect();
+    assert_eq!(descriptors.len(), 1, "one descriptor shared by both fonts");
+    let descriptor = descriptors[0];
+    let int = |key: &[u8]| descriptor.get(key).unwrap().as_i64().unwrap();
+    assert_eq!(
+        [b"Ascent".as_slice(), b"CapHeight", b"Descent", b"ItalicAngle", b"StemV"].map(int),
+        [750, 750, -250, 0, 69]
+    );
+    assert!(descriptor.get(b"XHeight").is_err(), "no TFM preset");
+}
+
+/// pdftoepdf.cc copies a standard font that has no program as it is
+/// (TeX Live's pdffonts lists R's ZapfDingbats/Helvetica as not embedded).
+/// The EPS converter's figures are the exception: TeX Live's epstopdf runs
+/// Ghostscript, which embeds the standard fonts.
+#[test]
+fn included_standard_fonts_stay_unembedded_except_in_converted_eps() {
+    let dir = fixture_dir("base14");
+    let content = b"BT /F1 10 Tf 5 5 Td (A) Tj ET";
+    let stream = [format!("<< /Length {} >>\nstream\n", content.len()).as_bytes(), content, b"\nendstream"].concat();
+    let plain = pdf_file(
+        "1.4",
+        &[
+            b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 50 50] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+            &stream,
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        ],
+        "",
+    );
+    std::fs::write(dir.join("plain.pdf"), plain).unwrap();
+    let eps = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 50 50\n/Helvetica findfont 10 scalefont setfont 5 5 moveto (A) show\n";
+    let converted = tex_ps::eps_to_pdf(eps).expect("EPS conversion").pdf_bytes;
+    std::fs::write(dir.join("conv.pdf"), converted).unwrap();
+    let mut e = run(
+        &dir,
+        r"\pdfoutput=1 \pdfximage{plain.pdf}\shipout\hbox{\pdfrefximage\pdflastximage}
+\pdfximage{conv.pdf}\shipout\hbox{\pdfrefximage\pdflastximage}\end",
+    );
+    assert_eq!(e.error_count, 0, "{}", e.term);
+    let doc = finish(&mut e);
+    let helvetica: Vec<&lopdf::Dictionary> = doc
+        .objects
+        .values()
+        .filter_map(|o| o.as_dict().ok().filter(|d| d.has_type(b"Font")))
+        .filter(|d| d.get(b"BaseFont").and_then(lopdf::Object::as_name).is_ok_and(|n| n == b"Helvetica"))
+        .collect();
+    assert_eq!(helvetica.len(), 2);
+    let embedded = helvetica.iter().filter(|d| d.has(b"FontDescriptor")).count();
+    assert_eq!(embedded, 1, "only the converted EPS embeds its standard font");
+}
+
+/// pdftoepdf.cc `copyObject` writes a font descriptor as the file has it:
+/// a CMEX10 copied from an included pdfTeX figure keeps /Descent -2960.
+#[test]
+fn copied_font_descriptors_keep_their_metrics() {
+    let dir = fixture_dir("copied-descriptor");
+    let content = b"BT /F1 10 Tf 5 5 Td (A) Tj ET";
+    let stream = [format!("<< /Length {} >>\nstream\n", content.len()).as_bytes(), content, b"\nendstream"].concat();
+    let fig = pdf_file(
+        "1.4",
+        &[
+            b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 50 50] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+            &stream,
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /ABCDEF+NotMapped /FontDescriptor 6 0 R >>",
+            b"<< /Type /FontDescriptor /FontName /ABCDEF+NotMapped /Flags 4 /FontBBox [-55 -2991 1485 803] /Ascent 772 /CapHeight 686 /Descent -2960 /ItalicAngle 0 /StemV 47 >>",
+        ],
+        "",
+    );
+    std::fs::write(dir.join("fig.pdf"), fig).unwrap();
+    let mut e = run(&dir, r"\pdfoutput=1 \pdfximage{fig.pdf}\shipout\hbox{\pdfrefximage\pdflastximage}\end");
+    assert_eq!(e.error_count, 0, "{}", e.term);
+    let doc = finish(&mut e);
+    let descriptor = doc
+        .objects
+        .values()
+        .find_map(|o| o.as_dict().ok().filter(|d| d.has_type(b"FontDescriptor")))
+        .expect("copied descriptor");
+    let int = |key: &[u8]| descriptor.get(key).unwrap().as_i64().unwrap();
+    assert_eq!([int(b"Ascent"), int(b"Descent")], [772, -2960]);
+}
+
 #[test]
 fn pdf_inclusion_parameters_select_boxes_and_version_checks_like_pdftex() {
     let dir = fixture_dir("pagebox");

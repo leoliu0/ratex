@@ -127,6 +127,8 @@ pub(crate) fn generate_pdf(
     for img in images {
         object(&mut pdf, image_dict(img).as_bytes(), Some(&img.data));
     }
+    object(&mut pdf, format!("<< /Producer ({}) >>", crate::EPS_PDF_PRODUCER).as_bytes(), None);
+    let info = offsets.len();
 
     let xref = pdf.len();
     let count = offsets.len() + 1;
@@ -134,6 +136,8 @@ pub(crate) fn generate_pdf(
     for off in &offsets {
         pdf.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
     }
-    pdf.extend_from_slice(format!("trailer\n<< /Size {count} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes());
+    pdf.extend_from_slice(
+        format!("trailer\n<< /Size {count} /Root 1 0 R /Info {info} 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes(),
+    );
     pdf
 }

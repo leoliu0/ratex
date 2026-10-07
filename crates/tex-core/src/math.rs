@@ -179,6 +179,10 @@ pub(crate) fn finish_math_group(mut inner: NodeList, flatten: i32, attr: crate::
                 }
                 return n;
             }
+            // tex.web §1186: the lone ord noad may have a box nucleus
+            // (`{\raise1pt\hbox{}}`, amsmath's \smash); the group becomes that
+            // sub_box, so a shifted box is not repacked by a sub_mlist hpack
+            Some(Node::Box { .. }) if bit(CL_ORD) => return inner.pop().unwrap(),
             _ => {}
         }
     }
@@ -936,24 +940,20 @@ impl Engine {
         }
         let hlist = inline_hlist.unwrap();
         match self.mode {
-            // tex.web §22461 (finish math in text): the converted nodes are
-            // SPLICED into the current hlist between math-on/math-off nodes
-            // carrying \mathsurround — justification stretches into the
-            // formula and lines may break inside it (never inside a box)
-            Mode::Horizontal => {
-                self.cur_list.push(Node::MathKern(ms, 1, formula_attr));
-                self.cur_list.extend(hlist);
-                self.cur_list.push(Node::MathKern(ms, 2, formula_attr));
-                self.space_factor = 1000;
-            }
             Mode::Vertical | Mode::InternalVertical => {
                 let hbox = hpack(hlist, None, HBOX, &self.eqtb).node;
                 self.vlist_append(hbox);
             }
+            // tex.web §1196 (finish math in text): the converted nodes are
+            // SPLICED into the current hlist between math-on/math-off nodes
+            // carrying \mathsurround — justification stretches into the
+            // formula and lines may break inside it (never inside a box) —
+            // and the space factor is 1000 in either horizontal mode
             _ => {
                 self.cur_list.push(Node::MathKern(ms, 1, formula_attr));
                 self.cur_list.extend(hlist);
                 self.cur_list.push(Node::MathKern(ms, 2, formula_attr));
+                self.space_factor = 1000;
             }
         }
     }
@@ -2014,13 +2014,13 @@ impl Engine {
         if xe_char {
             crate::xemath_prims::xe_char_field(&mut field);
         }
-        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
-            // texmath.c scan_math stores only the family and character of
-            // an unbraced math character field, not its original noad class.
-            if let [Node::MathChar { fam, class, .. }] = field.as_mut_slice() {
-                if *fam != crate::boxes::NO_FAM {
-                    *class = CL_ORD;
-                }
+        // tex.web §1151 scan_math (texmath.c alike) stores only the family
+        // and character of an unbraced math character field, not its noad
+        // class: `\mathop\mathchar"303A` is an op noad with a math_char
+        // nucleus, centered on the axis by make_op
+        if let [Node::MathChar { fam, class, .. }] = field.as_mut_slice() {
+            if *fam != crate::boxes::NO_FAM {
+                *class = CL_ORD;
             }
         }
         field
@@ -2161,9 +2161,10 @@ impl Engine {
     pub fn do_math_class(&mut self, class: u8) {
         self.show.scan_owner = Some(ScanKind::Class(class));
         let field = self.scan_math_group_or_token();
-        // tex.web math_comp: an empty field (`\mathord{}`) is an empty
-        // sub_mlist, which converts to an empty hbox like `{}` -- it takes
-        // the multi-node group form below with only the class marker
+        // tex.web §1151/§1186: `\mathopen{}` is a noad of the class whose
+        // nucleus is an empty sub-mlist (an empty hbox that still takes part
+        // in inter-atom spacing); only a non-empty group reaches the
+        // single-node shortcuts below.
         let node = if field.len() == 1 {
             match field.into_iter().next().unwrap() {
                 Node::MathChar {
@@ -2212,7 +2213,7 @@ impl Engine {
                 }
             }
         } else {
-            // multi-node group atom. tex.web: `\mathop{...}` (and the other
+            // empty or multi-node group atom. tex.web: `\mathop{...}` (and the other
             // math_comp prims) tail_append a FRESH noad whose type is the
             // class and whose subtype is `normal` — scripts then take the
             // make_op promotion rule `(subtype=normal) and (cur_style<
@@ -3628,7 +3629,7 @@ impl Engine {
             if let Some(ci) = f.chars.get(c as usize) {
                 if ci.tag == TAG_LIST {
                     let next = ci.remainder;
-                    if next != c && f.exists_char(next) {
+                    if next != c && f.char_present(next) {
                         c = next;
                     }
                 }

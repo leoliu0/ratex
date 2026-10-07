@@ -3692,17 +3692,7 @@ mod structural_state_tests {
         font_with_hole.tfm_name = "holes".into();
         font_with_hole.bc = 0;
         font_with_hole.ec = 2;
-        font_with_hole.chars = vec![
-            CharInfo {
-                width: 0,
-                height: 0,
-                depth: 0,
-                italic: 0,
-                tag: 0,
-                remainder: 0,
-            };
-            3
-        ];
+        font_with_hole.chars = vec![CharInfo::MISSING; 3];
         engine.eqtb.fonts.push(std::rc::Rc::new(font_with_hole));
         engine.eqtb.cur_font_val = 1;
 

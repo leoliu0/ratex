@@ -483,9 +483,16 @@ pub struct Engine {
     /// Unlike end-of-job metadata, these remain correct if TeX rewrites the
     /// same auxiliary or included file later in the pass.
     pub loaded_file_digests: Vec<(std::path::PathBuf, u64, u64)>,
+    /// Lengths of `loaded_file_digests` and `loaded_file_sizes` when this run
+    /// first executed a `\write18` command. Files such a command creates and
+    /// deletes again (minted's `latexminted config`/`cleanconfig`) are its
+    /// output, not state the run started from.
+    pub observations_before_shell_escape: Option<(usize, usize)>,
     /// File sizes observed by `\\pdffilesize`/`\\filesize`. These preserve
     /// the value used during expansion without paying to read file contents.
     pub loaded_file_sizes: Vec<(std::path::PathBuf, u64)>,
+    /// `\pdffilemoddate` results, for the result cache to revalidate.
+    pub loaded_file_mod_dates: Vec<(std::path::PathBuf, String)>,
     /// Disk paths whose absence affected a file lookup. Dependency caches
     /// must invalidate when one of these paths later appears.
     pub missing_files: Vec<std::path::PathBuf>,
@@ -1246,7 +1253,9 @@ impl Engine {
             read_readers: Vec::new(),
             loaded_files: Vec::new(),
             loaded_file_digests: Vec::new(),
+            observations_before_shell_escape: None,
             loaded_file_sizes: Vec::new(),
+            loaded_file_mod_dates: Vec::new(),
             missing_files: Vec::new(),
             written_files: Vec::new(),
             out_dir: String::new(),

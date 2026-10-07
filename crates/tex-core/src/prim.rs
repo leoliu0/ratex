@@ -1368,11 +1368,13 @@ impl PrimSet {
 }
 
 const _: () = assert!((Prim::XeTeXPdfPageCount.tag() as usize) < 512);
-// `repr(u16)` must not grow the hot engine and eqtb fields that hold a Prim.
+// `repr(u16)` must not grow the hot engine and eqtb fields that hold a Prim:
+// an Equiv stays one tag word plus one pointer-sized payload (16 bytes on
+// 64-bit targets, 8 on 32-bit ones such as wasm32).
 const _: () = assert!(std::mem::size_of::<Prim>() == 4);
 const _: () = assert!(std::mem::size_of::<Option<Prim>>() == 4);
-const _: () = assert!(std::mem::size_of::<crate::eqtb::Equiv>() == 16);
-const _: () = assert!(std::mem::size_of::<Option<crate::eqtb::Equiv>>() == 16);
+const _: () = assert!(std::mem::size_of::<crate::eqtb::Equiv>() == 2 * std::mem::size_of::<usize>());
+const _: () = assert!(std::mem::size_of::<Option<crate::eqtb::Equiv>>() == 2 * std::mem::size_of::<usize>());
 
 /// Stable wire codes for the format dump (`crate::format`). Unit variants
 /// take 0..0x0fff in declaration order — exhaustiveness is compiler-checked

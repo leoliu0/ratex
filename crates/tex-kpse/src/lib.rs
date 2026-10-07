@@ -378,6 +378,7 @@ fn read_package_entry(index: usize) -> Option<Vec<u8>> {
 
 /// Threads decoding one large member at once (as for formats, each new
 /// thread's malloc arena counts against the engine's address-space limit).
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_MEMBER_DECODE_THREADS: usize = 4;
 
 /// A member of `length` bytes stored as the consecutive chunks from

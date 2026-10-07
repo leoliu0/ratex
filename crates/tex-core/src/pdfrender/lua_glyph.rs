@@ -10,17 +10,13 @@ use super::*;
 use crate::lua_font::{LuaFont, LuaPdfKind, VfCommand};
 use crate::tfm::round_xn_over_d as round_xn;
 
-/// The text a glyph stands for in the ToUnicode CMap (luatex
-/// `write_cid_tounicode`): the `tounicode` string when the font asks for
-/// it, the character code otherwise.
+/// The text a glyph stands for in the page's text runs: the `tounicode`
+/// string when the font asks for it, the character code otherwise. (The
+/// PDF's /ToUnicode CMap is settled when the fonts are written, see
+/// `Engine::lua_cid_tounicode`.)
 fn glyph_text(lf: &LuaFont, tounicode: Option<&[u8]>, c: u32) -> String {
     if lf.tounicode != 0 {
-        let Some(hex) = tounicode else { return String::new() };
-        let units: Vec<u16> = hex
-            .chunks(4)
-            .filter_map(|chunk| u16::from_str_radix(std::str::from_utf8(chunk).ok()?, 16).ok())
-            .collect();
-        String::from_utf16_lossy(&units)
+        tounicode.map(crate::lua_font::tounicode_text).unwrap_or_default()
     } else {
         char::from_u32(c).map(String::from).unwrap_or_default()
     }
@@ -135,7 +131,8 @@ impl RenderCtx<'_> {
             tag: None,
             span: None,
         });
-        let (binding, code) = self.eng.pdf_doc.get_or_alloc_native_code(fid as usize, gid, &text);
+        self.eng.lua_fonts.marked_chars.entry(fid).or_default().insert(c);
+        let (binding, code) = self.eng.pdf_doc.get_or_alloc_native_code(fid as usize, gid);
         let ratio = ex;
         self.begin_lua_cid_string(x, y, fid, binding, ratio);
         use std::fmt::Write;

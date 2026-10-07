@@ -317,6 +317,15 @@ fn write_stream_number(n: i32) -> u16 {
 
 impl Engine {
     pub fn record_loaded_bytes(&mut self, path: &std::path::Path, bytes: &[u8]) {
+        // A file this run already wrote through `\openout` (beamer's `.vrb`,
+        // `filecontents`-style scratch files) holds what the run itself put
+        // there, not state from outside: the result cache must not record
+        // each of its successive contents as an input. The caller still lists
+        // the path among the loaded files, so the record keeps its final
+        // content, which the next run starts from.
+        if self.written_before(path) {
+            return;
+        }
         let mut h1: u64 = 0xcbf2_9ce4_8422_2325;
         let mut h2: u64 = 0x9e37_79b9_7f4a_7c15;
         for (index, byte) in bytes.iter().enumerate() {
@@ -326,6 +335,21 @@ impl Engine {
         }
         self.loaded_file_digests
             .push((path.to_path_buf(), bytes.len() as u64, h1 ^ h2));
+    }
+
+    /// Whether this run opened `path` for writing through `\openout` before
+    /// now. Spellings are compared after anchoring them to the working
+    /// directory, without resolving symlinks.
+    pub(crate) fn written_before(&self, path: &std::path::Path) -> bool {
+        if self.written_files.is_empty() {
+            return false;
+        }
+        let Ok(path) = std::path::absolute(path) else {
+            return false;
+        };
+        self.written_files
+            .iter()
+            .any(|written| std::path::absolute(written).is_ok_and(|written| written == path))
     }
 
     fn scanner_diagnostic_state(&self) -> ScannerDiagnosticState {
@@ -1421,7 +1445,12 @@ impl Engine {
                     *byte = tcx.xchr[usize::from(*byte)];
                 }
             }
-            let outcome = match crate::lua_sys_kpse::run_system(&external, out_dir.as_deref()) {
+            let code = crate::lua_sys_kpse::run_system(&external, out_dir.as_deref());
+            if code > 0 {
+                self.observations_before_shell_escape
+                    .get_or_insert((self.loaded_file_digests.len(), self.loaded_file_sizes.len()));
+            }
+            let outcome = match code {
                 -1 => "quotation error in system command",
                 0 => "disabled (restricted)",
                 1 => "executed",

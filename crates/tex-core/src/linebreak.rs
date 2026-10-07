@@ -137,16 +137,9 @@ fn last_line_badness(
     }
 }
 
-fn char_protrusion_width(
-    eqtb: &crate::eqtb::Eqtb,
-    protrude_chars: i32,
-    f: FontId,
-    c: u8,
-    left: bool,
-) -> i32 {
-    if protrude_chars <= 0 {
-        return 0;
-    }
+/// pdftex.web `char_pw`: the protrusion of a character or ligature node,
+/// its \lpcode/\rpcode in thousandths of the font's quad.
+fn char_protrusion_width(eqtb: &crate::eqtb::Eqtb, f: FontId, c: u8, left: bool) -> i32 {
     let code = match eqtb.expand.get(f as usize) {
         Some(ex) => {
             if left {
@@ -160,48 +153,128 @@ fn char_protrusion_width(
     if code == 0 {
         return 0;
     }
-    let base = if protrude_chars > 1 {
-        eqtb.fonts
-            .get(f as usize)
-            .map(|font| font.quad())
-            .unwrap_or(0)
-    } else {
-        let fonts = crate::boxes::eqtb_fonts(eqtb);
-        fonts.char_width(f, c)
-    };
-    if base == 0 {
-        return 0;
-    }
-    crate::tfm::round_xn_over_d(base, code, 1000)
+    let quad = eqtb.fonts.get(f as usize).map_or(0, |font| font.quad());
+    crate::tfm::round_xn_over_d(quad, code, 1000)
 }
 
-fn find_protchar_left(slice: &[Node], eqtb: &crate::eqtb::Eqtb, protrude_chars: i32) -> i32 {
-    if protrude_chars < 2 {
-        return 0;
+/// pdftex.web `cp_skipable`: the nodes the protrusion searches pass over.
+fn pdftex_cp_skipable(n: &Node) -> bool {
+    match n {
+        Node::Ins { .. } | Node::Mark { .. } | Node::Adj(..) | Node::VAdjust(..)
+        | Node::PreAdjust(..) | Node::Penalty(..) => true,
+        Node::Whatsit(w, _) => !matches!(w, WhatIt::PdfRefXImage { .. } | WhatIt::PdfRefXForm { .. }),
+        Node::Disc(dc) => {
+            dc.pre_break.is_empty() && dc.post_break.is_empty() && dc.no_break.is_empty() && dc.replace_count == 0
+        }
+        Node::MathKern(w, crate::boxes::MATH_ON.., _) => *w == 0,
+        // a normal (font) kern always; explicit and accent kerns when empty
+        Node::Kern(..) => true,
+        Node::ExplicitKern(w, _) | Node::AccentKern(w, _) | Node::ItalicKern(w, _) | Node::SpaceAdjKern(w, _) => {
+            *w == 0
+        }
+        Node::Glue(g, _) => g.is_zero_glue(),
+        Node::Box { kind, w: 0, h: 0, d: 0, list, .. } => *kind == crate::boxes::HBOX && list.is_empty(),
+        _ => false,
     }
-    for n in slice {
-        match n {
-            Node::Char { font, c, .. } | Node::Ligature { font, c, .. } => {
-                return char_protrusion_width(eqtb, protrude_chars, *font, *c, true);
+}
+
+fn nonempty_hlist(n: &Node) -> Option<&NodeList> {
+    match n {
+        Node::Box { kind, list, .. } if *kind == crate::boxes::HBOX && !list.is_empty() => Some(list),
+        _ => None,
+    }
+}
+
+/// pdftex.web `find_protchar_left` after its prelude: the first node that
+/// is not `cp_skipable`, descending into nonempty hlists.
+fn pdftex_left_walk(nodes: &[Node]) -> Option<&Node> {
+    for n in nodes {
+        if let Some(list) = nonempty_hlist(n) {
+            if let Some(found) = pdftex_left_walk(list) {
+                return Some(found);
             }
-            Node::Glue(_, _)
-            | Node::Penalty(_, _)
-            | Node::Kern(_, _)
-            | Node::ExplicitKern(_, _)
-            // pdftex cp_skipable: only a zero-width accent kern is skipped
-            | Node::AccentKern(0, _) | Node::ItalicKern(0, _) | Node::SpaceAdjKern(0, _)
-            | Node::Whatsit(_, _) => {}
-            Node::Box {
-                w: 0,
-                h: 0,
-                d: 0,
-                list,
-                ..
-            } if list.is_empty() => {}
-            _ => return 0,
+        } else if !pdftex_cp_skipable(n) {
+            return Some(n);
         }
     }
-    0
+    None
+}
+
+/// pdftex.web `find_protchar_left(l, d)` for the list `nodes` (`l` its
+/// first node): an empty zero-size hbox at the start (`\parindent=0pt`)
+/// is passed, else with `d` the discardables a line break would prune.
+fn pdftex_protchar_left(nodes: &[Node], d: bool) -> Option<&Node> {
+    let mut start = 0;
+    let empty_box = |n: &Node| matches!(n, Node::Box { kind, w: 0, h: 0, d: 0, list, .. } if *kind == crate::boxes::HBOX && list.is_empty());
+    if nodes.len() > 1 && empty_box(&nodes[0]) {
+        start = 1;
+    } else if d {
+        // tex.web `non_discardable`: type < math_node
+        while start + 1 < nodes.len()
+            && matches!(
+                nodes[start],
+                Node::MathKern(..) | Node::Glue(..) | Node::Leaders { .. } | Node::Penalty(..)
+                    | Node::Kern(..) | Node::ExplicitKern(..) | Node::AccentKern(..)
+                    | Node::ItalicKern(..) | Node::SpaceAdjKern(..) | Node::MarginKern { .. }
+            )
+        {
+            start += 1;
+        }
+    }
+    pdftex_left_walk(nodes.get(start..)?)
+}
+
+/// pdftex.web `find_protchar_right(l, r)` over `nodes` (`r` its last
+/// node): the last node that is not `cp_skipable`, descending into
+/// nonempty hlists. With `no_break_text`, a discretionary's no-break text
+/// stands for the replaced nodes that follow it in pdfTeX's list.
+fn pdftex_protchar_right(nodes: &[Node], no_break_text: bool) -> Option<&Node> {
+    for n in nodes.iter().rev() {
+        if let Some(list) = nonempty_hlist(n) {
+            if let Some(found) = pdftex_protchar_right(list, no_break_text) {
+                return Some(found);
+            }
+            continue;
+        }
+        if let (true, Node::Disc(dc)) = (no_break_text, n) {
+            if let Some(found) = pdftex_protchar_right(&dc.no_break, true) {
+                return Some(found);
+            }
+        }
+        if !pdftex_cp_skipable(n) {
+            return Some(n);
+        }
+    }
+    None
+}
+
+/// pdftex.web `char_pw` of the node a search ended on: only a character
+/// or ligature protrudes.
+fn pdftex_char_pw(eqtb: &crate::eqtb::Eqtb, n: Option<&Node>, left: bool) -> Option<(i32, FontId, u8, crate::boxes::Attr)> {
+    match n? {
+        Node::Char { font, c, attr } | Node::Ligature { font, c, attr, .. } => {
+            let w = char_protrusion_width(eqtb, *font, *c, left);
+            (w != 0).then_some((w, *font, *c, *attr))
+        }
+        _ => None,
+    }
+}
+
+/// pdftex.web `total_pw` left half: the protrusion at the start of a line
+/// whose break node is `list[at]` (`is_disc`: a discretionary break).
+fn pdftex_break_left_pw(eqtb: &crate::eqtb::Eqtb, list: &[Node], at: usize, is_disc: bool) -> i32 {
+    let start = match list.get(at) {
+        Some(Node::Disc(dc)) if is_disc => {
+            if !dc.post_break.is_empty() {
+                return pdftex_char_pw(eqtb, dc.post_break.first(), true).map_or(0, |p| p.0);
+            }
+            at + 1 + dc.replace_count
+        }
+        _ => at,
+    };
+    list.get(start..)
+        .and_then(|nodes| pdftex_char_pw(eqtb, pdftex_protchar_left(nodes, true), true))
+        .map_or(0, |p| p.0)
 }
 
 /// xetex.web `cp_skipable` and `find_protchar_left/right`: descend into
@@ -1246,8 +1319,11 @@ impl Engine {
             } else {
                 0
             }
+        } else if protrude_chars > 1 {
+            // pdftex.web total_pw: the first line starts at first_p
+            pdftex_break_left_pw(&self.eqtb, list, 0, false)
         } else {
-            find_protchar_left(list, &self.eqtb, protrude_chars)
+            0
         };
         // luatex `local_par` nodes: the state in force at each candidate
         // (`internal_left_box_width` etc. when `try_break` is called)
@@ -1363,49 +1439,16 @@ impl Engine {
                         } else {
                             0
                         }
-                    } else if protrude_chars > 0 && cand < n {
-                        if $is_disc {
-                            if let Some(Node::Disc(dc)) = list.get(cand) {
-                                dc.pre_break
-                                    .iter()
-                                    .rev()
-                                    .chain(list[..cand].iter().rev())
-                                    .find_map(|n| match n {
-                                        Node::Char { font, c, .. } | Node::Ligature { font, c, .. } => {
-                                            Some(char_protrusion_width(
-                                                &self.eqtb,
-                                                protrude_chars,
-                                                *font,
-                                                *c,
-                                                false,
-                                            ))
-                                        }
-                                        _ => None,
-                                    })
-                                    .unwrap_or(0)
-                            } else {
-                                0
-                            }
-                        } else if cand > 0 {
-                            list[..cand]
-                                .iter()
-                                .rev()
-                                .find_map(|n| match n {
-                                    Node::Char { font, c, .. } | Node::Ligature { font, c, .. } => {
-                                        Some(char_protrusion_width(
-                                            &self.eqtb,
-                                            protrude_chars,
-                                            *font,
-                                            *c,
-                                            false,
-                                        ))
-                                    }
-                                    _ => None,
-                                })
-                                .unwrap_or(0)
-                        } else {
-                            0
-                        }
+                    } else if protrude_chars > 1 && cand < n {
+                        // pdftex.web total_pw: a discretionary break with a
+                        // pre-break text protrudes that text's last node,
+                        // else the search runs back from the node before
+                        // the break to the line's starting break node
+                        let edge = match list.get(cand) {
+                            Some(Node::Disc(dc)) if $is_disc && !dc.pre_break.is_empty() => dc.pre_break.last(),
+                            _ => list.get(a.pos.min(cand)..cand).and_then(|nodes| pdftex_protchar_right(nodes, false)),
+                        };
+                        pdftex_char_pw(&self.eqtb, edge, false).map_or(0, |p| p.0)
                     } else {
                         0
                     };
@@ -1675,11 +1718,8 @@ impl Engine {
                         } else {
                             0
                         }
-                    } else if protrude_chars >= 2 {
-                        let start_idx = after_prune(cand);
-                        list.get(start_idx..)
-                            .map(|slice| find_protchar_left(slice, &self.eqtb, protrude_chars))
-                            .unwrap_or(0)
+                    } else if protrude_chars > 1 {
+                        pdftex_break_left_pw(&self.eqtb, list, cand, $is_disc)
                     } else {
                         0
                     };
@@ -2181,57 +2221,28 @@ impl Engine {
                     }
                 }
             } else if protrude_chars > 0 {
-                let left_cand = seg.iter().find_map(|n| match n {
-                    Node::Char { font, c, attr } | Node::Ligature { font, c, attr, .. } => Some((*font, *c, *attr)),
-                    Node::Glue(_, _)
-                    | Node::Penalty(_, _)
-                    | Node::Kern(_, _)
-                    | Node::ExplicitKern(_, _)
-                    | Node::AccentKern(0, _) | Node::ItalicKern(0, _) | Node::SpaceAdjKern(0, _)
-                    | Node::Whatsit(_, _) => None,
-                    // pdftex cp_skipable: zero-width math nodes; only the
-                    // TeXXeT \beginM..\endR kinds are skipped here
-                    Node::MathKern(0, crate::boxes::BEGIN_M.., _) => None,
-                    Node::Box {
-                        w: 0,
-                        h: 0,
-                        d: 0,
-                        list,
-                        ..
-                    } if list.is_empty() => None,
-                    _ => Some((0, 0, crate::boxes::Attr::NONE)),
-                });
-                if let Some((f, c, lattr)) = left_cand {
-                    if c != 0 {
-                        let pw = char_protrusion_width(&self.eqtb, protrude_chars, f, c, true);
-                        if pw != 0 {
-                            seg.insert(
-                                0,
-                                Node::MarginKern {
-                                    side: 0,
-                                    width: -pw,
-                                    font: f,
-                                    c: u32::from(c),
-                                    ex: 0, attr: lattr,
-                                },
-                            );
-                        }
+                // pdftex.web post_line_break: the right kern follows the
+                // node before the break node (before \parfillskip on the
+                // final line, before the emptied discretionary), unless the
+                // line ends with a transplanted pre-break text, whose last
+                // node then protrudes directly
+                let ins = if (last && matches!(seg.last(), Some(Node::Glue(..))))
+                    || (broke_at_disc && !protrusion_pre_break)
+                {
+                    seg.len().saturating_sub(1)
+                } else {
+                    seg.len()
+                };
+                if right_box.is_none() {
+                    let edge = if protrusion_pre_break { seg.last() } else { pdftex_protchar_right(&seg[..ins], true) };
+                    if let Some((pw, font, c, attr)) = pdftex_char_pw(&self.eqtb, edge, false) {
+                        seg.insert(ins, Node::MarginKern { side: 1, width: -pw, font, c: u32::from(c), ex: 0, attr });
                     }
                 }
-                if let Some((f, c, rattr)) = seg.iter().rev().filter(|_| right_box.is_none()).find_map(|n| match n {
-                    Node::Char { font, c, attr } | Node::Ligature { font, c, attr, .. } => Some((*font, *c, *attr)),
-                    _ => None,
-                }) {
-                    let pw = char_protrusion_width(&self.eqtb, protrude_chars, f, c, false);
-                    if pw != 0 {
-                        seg.push(Node::MarginKern {
-                            side: 1,
-                            width: -pw,
-                            font: f,
-                            c: u32::from(c),
-                            ex: 0, attr: rattr,
-                        });
-                    }
+                // <Put the \leftskip glue at the left...>: discardables are
+                // gone, so the search starts at the line's first node
+                if let Some((pw, font, c, attr)) = pdftex_char_pw(&self.eqtb, pdftex_protchar_left(&seg, false), true) {
+                    seg.insert(0, Node::MarginKern { side: 0, width: -pw, font, c: u32::from(c), ex: 0, attr });
                 }
             }
             seg.extend(break_math);

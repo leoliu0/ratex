@@ -482,6 +482,7 @@ impl Engine {
             // etex.ch init_math: x = \predisplaydirection, j = LR_box
             let mut lr_direction = 0;
             let mut lr_box = None;
+            let (display_l, display_s);
             if self.mode == Mode::Horizontal {
                 // the interrupted paragraph's LR_save is keyed by its depth
                 let lr_key = self.saved_lists.len();
@@ -526,8 +527,8 @@ impl Engine {
                 } else {
                     (hsize, 0)
                 };
-                self.pre_display_l = l;
-                self.pre_display_s = s;
+                display_l = l;
+                display_s = s;
                 self.pre_display_size = if was_empty {
                     -0x3FFF_FFFF
                 } else {
@@ -554,8 +555,8 @@ impl Engine {
                     self.prev_depth = 0;
                 }
                 self.pre_display_size = -0x3FFF_FFFF;
-                self.pre_display_l = self.eqtb.dim_params[DimParam::HSize.idx() as usize] as i64;
-                self.pre_display_s = 0;
+                display_l = self.eqtb.dim_params[DimParam::HSize.idx() as usize] as i64;
+                display_s = 0;
             }
             // tex.web push_math: the display math group level (exit_math /
             // \\endgroup pop it; dropping this push leaves one pop too many
@@ -576,12 +577,12 @@ impl Engine {
                 .assign_int_param(IntParam::PreDisplayDirection, lr_direction, false);
             self.eqtb.assign_dim_param(
                 crate::prim::DimParam::DisplayWidth,
-                self.pre_display_l as i32,
+                display_l as i32,
                 false,
             );
             self.eqtb.assign_dim_param(
                 crate::prim::DimParam::DisplayIndent,
-                self.pre_display_s as i32,
+                display_s as i32,
                 false,
             );
             let outer_mode = self.mode;
@@ -867,6 +868,9 @@ impl Engine {
                 g(crate::prim::GlueParam::LineSkip),
                 self.eqtb.dim_params[crate::prim::DimParam::LineSkipLimit.idx() as usize],
                 i(crate::prim::IntParam::PreDisplayDirection),
+                self.eqtb.dim_params[DimParam::DisplayWidth.idx() as usize],
+                self.eqtb.dim_params[DimParam::DisplayIndent.idx() as usize],
+                self.eqtb.dim_params[DimParam::PreDisplaySize.idx() as usize],
             ))
         } else {
             None
@@ -974,6 +978,9 @@ impl Engine {
             crate::boxes::Glue,
             i32,
             i32,
+            i32,
+            i32,
+            i32,
         ),
         outer_mode: Mode,
     ) {
@@ -1044,10 +1051,12 @@ impl Engine {
                 self.resume_after_display();
                 return;
             }
-            // tex.web §22504 (finish displayed math): z = \displaywidth,
-            // s = \displayindent, b = the formula at natural width
-            let z = self.pre_display_l;
-            let s = self.pre_display_s;
+            // tex.web §1199 (finish displayed math): z = \displaywidth,
+            // s = \displayindent as the display left them (read before
+            // unsave, so assignments inside the formula count), b = the
+            // formula at natural width
+            let z = i64::from(regs.10);
+            let s = i64::from(regs.11);
             // tex.web after_math converts the equation number (when there is one)
             // before the formula itself
             let tag_hlist = tag.as_ref().map(|(tl, _)| self.run_mlist_to_hlist(tl, 2, false));
@@ -1136,12 +1145,14 @@ impl Engine {
                 }
             }
             // tex.web §22563: normal skips iff `(d+s<=pre_display_size) or l`
-            // (l = \leqno). The sentinel -max_dimen (head=tail: `\noindent$$`
+            // (l = \leqno), \predisplaysize as the display left it. The
+            // sentinel -max_dimen (head=tail: `\noindent$$`
             // or a display following a display, §1148) therefore selects the
             // SHORT skips — raw comparison reproduces this, exactly as the
             // oracle shows (t6: consecutive $$ get \abovedisplayshortskip).
             // etex.ch: `if pre_display_direction<0 then s:=-s-z`
             let s_clear = if x < 0 { -s - z } else { s };
+            let pds = i64::from(regs.12);
             let is_short = if self.is_luamath()
                 && self.eqtb.int_params[IntParam::MathEqDirMode.idx() as usize] > 0
             {
@@ -1149,9 +1160,9 @@ impl Engine {
                 // direction of the text
                 let reversed = x < 0;
                 let near = a.is_some() && ((!reversed && leqno) || (reversed && !leqno));
-                !(s_clear + d <= self.pre_display_size || near)
+                !(s_clear + d <= pds || near)
             } else {
-                !leqno && (s_clear + d > self.pre_display_size)
+                !leqno && (s_clear + d > pds)
             };
             let (above, below) = if is_short {
                 (regs.2.clone(), regs.3.clone())
@@ -2240,36 +2251,47 @@ impl Engine {
         self.append_mlist_node(node);
     }
 
-    /// Knuth \\overline / \\underline: scan a math field, pack it, and
-    /// put a default-rule bar above (or below) with 3 default_rule_thickness
-    /// clearance (tex.web make_over / make_under).
+    /// Knuth \\overline / \\underline: scan a math field; the bar is built
+    /// when the noad is converted ([`Self::make_over_under`]), in the style
+    /// the enclosing mlist assigns it there (a fraction denominator, a
+    /// script, ...), not the style current while scanning.
     pub fn do_overline(&mut self, under: bool) {
         self.show.scan_owner = Some(if under { ScanKind::Under } else { ScanKind::Over });
         let group = self.scan_math_group_or_token();
-        // tex.web make_over uses cramped_style; make_under keeps cur_style.
-        let g = gstyle_of(self.cur_math_style()) | u8::from(!under);
-        let body = self.mlist_to_hlist_pen(&group, g, self.mode == Mode::Horizontal);
-        let packed = hpack(body, None, HBOX, &self.eqtb).node;
-        let (w, body_h, _) = box_dims(&packed);
+        self.append_mlist_node(Node::Overline {
+            body: group,
+            under,
+            fam: crate::boxes::NO_FAM,
+            attr: self.eqtb.cur_attr,
+        });
+    }
+
+    /// tex.web make_over (§734) / make_under (§735): the nucleus as a clean
+    /// box (cramped for \\overline) with a default-rule bar above or below
+    /// it at 3 default_rule_thickness clearance.
+    fn make_over_under(&mut self, body: &[Node], under: bool, style: GStyle, attr: crate::boxes::Attr) -> Node {
+        let g = if under { style } else { style | 1 };
+        let packed = self.clean_math_box(body, g);
+        let body_h = box_dims(&packed).1;
         let rt = self.default_rule_thickness(g);
         let kern = 3 * rt;
         let rule = Node::Rule {
-            // a running rule: the bar is as wide as the vlist (xetex.web
-            // overbar -- `new_rule` keeps its null width)
-            width: if self.engine_kind == crate::engine::EngineKind::XeTeX { crate::build::RULE_FILL } else { w },
+            // tex.web fraction_rule: a running rule, as wide as the vlist
+            // (wider once a script's \scriptspace is added to it)
+            width: crate::build::RULE_FILL,
             height: rt,
-            depth: 0, subtype: crate::boxes::RULE_NORMAL, index: 0, attr: self.eqtb.cur_attr,
+            depth: 0, subtype: crate::boxes::RULE_NORMAL, index: 0, attr,
         };
         let mut vlist = Vec::new();
         if under {
             vlist.push(packed);
-            vlist.push(Node::Kern(kern, self.eqtb.cur_attr));
+            vlist.push(Node::Kern(kern, attr));
             vlist.push(rule);
         } else {
             // tex.web overbar: an extra rule-thickness kern above the rule.
-            vlist.push(Node::Kern(rt, self.eqtb.cur_attr));
+            vlist.push(Node::Kern(rt, attr));
             vlist.push(rule);
-            vlist.push(Node::Kern(kern, self.eqtb.cur_attr));
+            vlist.push(Node::Kern(kern, attr));
             vlist.push(packed);
         }
         let mut vb = vpack(vlist, None, VBOX, &self.eqtb).node;
@@ -2282,12 +2304,7 @@ impl Engine {
                 *d = (extent - body_h as i64) as i32;
             }
         }
-        self.append_mlist_node(Node::Overline {
-            body: group,
-            under,
-            fam: crate::boxes::NO_FAM,
-            packed: Box::new(vb), attr: self.eqtb.cur_attr,
-        });
+        vb
     }
 
     /// tex.web scan_delimiter (§1160, r=false): after the next non-blank
@@ -3573,7 +3590,7 @@ impl Engine {
                 vec![b]
             }
             Node::Box { .. } => vec![n.clone()],
-            Node::Overline { packed, .. } => vec![(**packed).clone()],
+            Node::Overline { body, under, attr, .. } => vec![self.make_over_under(body, *under, style, *attr)],
             other => vec![other.clone()],
         }
     }
@@ -4265,8 +4282,8 @@ impl Engine {
                 num_c,
                 Node::Kern((su - nd) - (axis + dr), self.eqtb.cur_attr),
                 Node::Rule {
-                    // xetex.web fraction_rule: a running-width rule
-                    width: if xe_mode { crate::build::RULE_FILL } else { w },
+                    // tex.web fraction_rule: a running-width rule
+                    width: crate::build::RULE_FILL,
                     height: r,
                     depth: 0, subtype: crate::boxes::RULE_NORMAL, index: 0, attr: self.eqtb.cur_attr,
                 },
@@ -5156,7 +5173,8 @@ mod tests {
             approx(*k1, 1.23732, "num->rule kern");
             approx(*k2, 0.88731, "rule->den kern");
             approx(*height, RT * 10.0, "rule thickness");
-            approx(*width, 4.33765, "rule width = box width");
+            // tex.web fraction_rule: a running width (pdftex shows `x*`)
+            assert_eq!(*width, crate::build::RULE_FILL, "rule width is running");
         } else {
             panic!("fraction middle: {:?}", vlist);
         }

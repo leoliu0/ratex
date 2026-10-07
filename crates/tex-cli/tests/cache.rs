@@ -43,7 +43,10 @@ impl Job {
             .unwrap()
     }
     fn successful_compile(&self) {
-        let out = self.compile();
+        self.successful_compile_with(&[]);
+    }
+    fn successful_compile_with(&self, args: &[&str]) {
+        let out = self.compile_with(args);
         assert!(
             out.status.success(),
             "{}\n{}",
@@ -1327,6 +1330,144 @@ fn input_rewritten_after_read_cannot_seed_a_false_cache_hit() {
         std::fs::read_to_string(job.0.join("main.log")).unwrap(),
         "stable cache sentinel",
         "unchanged bytes and their recorded stamp should become a cache hit"
+    );
+}
+
+/// beamer writes each fragile frame to `\jobname.vrb` and reads it back, so
+/// one run reads several contents of the same file, all its own output.
+/// Reading or sizing a file after this run wrote it is no dependency: an
+/// unchanged rebuild is a cache hit, as latexmk does nothing.
+#[test]
+fn files_read_back_after_this_run_wrote_them_do_not_block_cache_hits() {
+    let job = Job::new();
+    std::fs::write(
+        job.0.join("main.tex"),
+        r"\documentclass{article}
+\newwrite\scratch
+\def\frame#1{\immediate\openout\scratch=\jobname.vrb
+\immediate\write\scratch{#1}\immediate\closeout\scratch
+\IfFileExists{\jobname.vrb}{\input{\jobname.vrb} (\pdffilesize{\jobname.vrb} bytes)\par}{}}
+\begin{document}
+\frame{First frame.}
+\frame{A longer second frame.}
+\end{document}",
+    )
+    .unwrap();
+    job.successful_compile();
+    job.successful_compile();
+    std::fs::write(job.0.join("main.log"), "cache sentinel").unwrap();
+    job.successful_compile();
+    assert_eq!(
+        std::fs::read_to_string(job.0.join("main.log")).unwrap(),
+        "cache sentinel",
+        "an unchanged rebuild re-ran the engine"
+    );
+
+    // A file read before this run rewrites it is still an input.
+    let source = std::fs::read_to_string(job.0.join("main.tex")).unwrap();
+    std::fs::write(
+        job.0.join("main.tex"),
+        source.replace(r"\begin{document}", r"\begin{document}\input{\jobname.vrb}"),
+    )
+    .unwrap();
+    job.successful_compile();
+    job.successful_compile();
+    std::fs::write(job.0.join("main.log"), "stable sentinel").unwrap();
+    job.successful_compile();
+    assert_eq!(
+        std::fs::read_to_string(job.0.join("main.log")).unwrap(),
+        "stable sentinel",
+        "the converged rebuild re-ran the engine"
+    );
+    std::fs::write(job.0.join("main.vrb"), "Changed outside the run.\n").unwrap();
+    job.successful_compile();
+    assert_ne!(
+        std::fs::read_to_string(job.0.join("main.log")).unwrap(),
+        "stable sentinel",
+        "a file read before the run rewrote it was not tracked"
+    );
+}
+
+/// minted 3 runs `latexminted config`, which writes a file TeX reads, and
+/// `latexminted cleanconfig`, which deletes it again. The file is the run's
+/// own output: an unchanged rebuild is a cache hit (latexmk does nothing),
+/// while a file of that name present before the build is a change.
+#[cfg(unix)]
+#[test]
+fn files_shell_commands_create_and_remove_do_not_block_cache_hits() {
+    let job = Job::new();
+    std::fs::write(
+        job.0.join("main.tex"),
+        r"\documentclass{article}
+\begin{document}
+\immediate\write18{printf 'Made by a command.' > \jobname.tmp}
+\IfFileExists{\jobname.tmp}{\input{\jobname.tmp}}{}
+\immediate\write18{rm \jobname.tmp}
+\end{document}",
+    )
+    .unwrap();
+    job.successful_compile_with(&["-shell-escape"]);
+    job.successful_compile_with(&["-shell-escape"]);
+    assert!(!job.0.join("main.tmp").exists());
+    // pdfTeX logs `runsystem(<command>)...executed.` for each command.
+    let log = std::fs::read_to_string(job.0.join("main.log")).unwrap();
+    assert_eq!(log.matches(")...executed.").count(), 2, "{log}");
+    std::fs::write(job.0.join("main.log"), "cache sentinel").unwrap();
+    job.successful_compile_with(&["-shell-escape"]);
+    assert_eq!(
+        std::fs::read_to_string(job.0.join("main.log")).unwrap(),
+        "cache sentinel",
+        "an unchanged rebuild re-ran the engine"
+    );
+    std::fs::write(job.0.join("main.tmp"), "Left behind.").unwrap();
+    job.successful_compile_with(&["-shell-escape"]);
+    assert_ne!(
+        std::fs::read_to_string(job.0.join("main.log")).unwrap(),
+        "cache sentinel",
+        "a file the record holds absent appeared without a rebuild"
+    );
+}
+
+/// epstopdf compares `\pdffilemoddate` of a figure and its conversion. The
+/// cache revalidates the reported date: an unchanged rebuild is a hit, and a
+/// touched file (same bytes) changes the date TeX would print.
+#[test]
+fn file_mod_dates_are_revalidated_instead_of_disabling_the_cache() {
+    let job = Job::new();
+    let figure = job.0.join("figure.eps");
+    std::fs::write(&figure, "%!PS-Adobe-3.0 EPSF-3.0\n").unwrap();
+    let set_mtime = |seconds: u64| {
+        std::fs::File::options()
+            .write(true)
+            .open(&figure)
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds))
+            .unwrap();
+    };
+    set_mtime(1_600_000_000);
+    std::fs::write(
+        job.0.join("main.tex"),
+        r"\documentclass{article}
+\begin{document}
+Modified \pdffilemoddate{figure.eps}.
+\end{document}",
+    )
+    .unwrap();
+    job.successful_compile();
+    job.successful_compile();
+    std::fs::write(job.0.join("main.log"), "cache sentinel").unwrap();
+    job.successful_compile();
+    assert_eq!(
+        std::fs::read_to_string(job.0.join("main.log")).unwrap(),
+        "cache sentinel",
+        "an unchanged rebuild re-ran the engine"
+    );
+    set_mtime(1_650_000_000);
+    job.successful_compile();
+    assert_ne!(
+        std::fs::read_to_string(job.0.join("main.log")).unwrap(),
+        "cache sentinel",
+        "a new modification date was served from the cache"
     );
 }
 

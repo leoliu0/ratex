@@ -2248,7 +2248,11 @@ impl Engine {
                             .filter(|metadata| metadata.is_file())
                             .map(|metadata| {
                                 let size = metadata.len();
-                                self.loaded_file_sizes.push((path, size));
+                                // Like a read (`record_loaded_bytes`), the size
+                                // of a file this run wrote is its own output.
+                                if !self.written_before(&path) {
+                                    self.loaded_file_sizes.push((path, size));
+                                }
                                 size
                             })
                     }
@@ -2396,16 +2400,16 @@ impl Engine {
                 };
                 let date = match self.find_input_file(&name) {
                     Some(crate::io::FoundInputFile::Path(path)) => {
-                        // The result cache tracks contents and sizes, not
-                        // timestamps or the host time zone.
-                        self.font_loader.dependency_tracking_complete = false;
-                        tex_kpse::fs::metadata(&path)
-                            .ok()
-                            .filter(|metadata| metadata.is_file())
-                            .and_then(|metadata| metadata.modified().ok())
-                            .map(|modified| {
-                                pdf_file_mod_date(Some(crate::clock::system_time_epoch(modified)))
-                            })
+                        let date = disk_file_mod_date(&path);
+                        // The result cache revalidates the date it reports.
+                        // A file this run wrote has the time of the run.
+                        match &date {
+                            Some(date) if !self.written_before(&path) => {
+                                self.loaded_file_mod_dates.push((path, date.clone()))
+                            }
+                            _ => self.font_loader.dependency_tracking_complete = false,
+                        }
+                        date
                     }
                     Some(crate::io::FoundInputFile::Bytes(_)) => Some(pdf_file_mod_date(None)),
                     None => None,
@@ -4336,6 +4340,18 @@ fn pdf_file_mod_date(modified: Option<i64>) -> String {
         ),
         None => crate::clock::pdf_date(0, true),
     }
+}
+
+/// `\pdffilemoddate` of a file on disk; `None` unless it is a regular file
+/// with a modification time. The result cache revalidates its records of
+/// the primitive with this.
+pub fn disk_file_mod_date(path: &std::path::Path) -> Option<String> {
+    let modified = tex_kpse::fs::metadata(path)
+        .ok()
+        .filter(|metadata| metadata.is_file())?
+        .modified()
+        .ok()?;
+    Some(pdf_file_mod_date(Some(crate::clock::system_time_epoch(modified))))
 }
 
 fn posix_regex_error_detail(error: &posix_regex::compile::Error) -> String {

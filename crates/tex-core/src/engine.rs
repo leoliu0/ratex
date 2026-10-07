@@ -483,9 +483,16 @@ pub struct Engine {
     /// Unlike end-of-job metadata, these remain correct if TeX rewrites the
     /// same auxiliary or included file later in the pass.
     pub loaded_file_digests: Vec<(std::path::PathBuf, u64, u64)>,
+    /// Lengths of `loaded_file_digests` and `loaded_file_sizes` when this run
+    /// first executed a `\write18` command. Files such a command creates and
+    /// deletes again (minted's `latexminted config`/`cleanconfig`) are its
+    /// output, not state the run started from.
+    pub observations_before_shell_escape: Option<(usize, usize)>,
     /// File sizes observed by `\\pdffilesize`/`\\filesize`. These preserve
     /// the value used during expansion without paying to read file contents.
     pub loaded_file_sizes: Vec<(std::path::PathBuf, u64)>,
+    /// `\pdffilemoddate` results, for the result cache to revalidate.
+    pub loaded_file_mod_dates: Vec<(std::path::PathBuf, String)>,
     /// Disk paths whose absence affected a file lookup. Dependency caches
     /// must invalidate when one of these paths later appears.
     pub missing_files: Vec<std::path::PathBuf>,
@@ -640,12 +647,9 @@ pub struct Engine {
     pub(crate) pdf_creation_date: Option<String>,
     pub current_macro: crate::token::CsId,
     pub math_style_stack: Vec<crate::boxes::MathStyle>,
-    /// tex.web §1181 (init_math): \\predisplaysize, \\displaywidth and
-    /// \\displayindent are computed at display entry from the final line of
-    /// the interrupted paragraph and consumed by finish_display.
+    /// tex.web §1146 (init_math): \\predisplaysize as computed at display
+    /// entry from the final line of the interrupted paragraph.
     pub pre_display_size: i64,
-    pub pre_display_l: i64,
-    pub pre_display_s: i64,
     /// tex.web keeps the interrupted paragraph's final line in just_box so
     /// finish_display can measure \predisplaysize AFTER the page builder has
     /// consumed the contributions. We clone the last broken line here at
@@ -1246,7 +1250,9 @@ impl Engine {
             read_readers: Vec::new(),
             loaded_files: Vec::new(),
             loaded_file_digests: Vec::new(),
+            observations_before_shell_escape: None,
             loaded_file_sizes: Vec::new(),
+            loaded_file_mod_dates: Vec::new(),
             missing_files: Vec::new(),
             written_files: Vec::new(),
             out_dir: String::new(),
@@ -1321,7 +1327,6 @@ impl Engine {
             reported_missing_math_atoms: crate::FxHashSet::default(),
             xe_math: Default::default(),
             pre_display_size: -0x3FFF_FFFF,
-            pre_display_l: 0,
             last_par_line: None,
             next_par_widow: None,
             lr_save: Vec::new(),
@@ -1330,7 +1335,6 @@ impl Engine {
             pending_display_formula: None,
             eqno_leqno: None,
             math_group_marks: Vec::new(),
-            pre_display_s: 0,
             current_macro: 0,
             math_style_stack: Vec::new(),
             scanner_status: ScannerStatus::Normal,

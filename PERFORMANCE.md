@@ -195,6 +195,36 @@ minutes is TeXres building the LuaLaTeX font database.
 The `ffi-release` profile used for `libtex` inherits `release` but sets
 `panic = "unwind"` (see [docs/libraries.md](docs/libraries.md)).
 
+### Profile-guided build
+
+`scripts/build_pgo.sh` builds `target/release/texres` with profile-guided
+optimization: an instrumented build, a training run over the benchmark corpus
+(`scripts/bench/corpus`, all engines), then a rebuild using the merged
+profile. It needs `llvm-profdata` of the LLVM that `rustc` uses (`rustup
+component add llvm-tools` or the distribution's `llvm` package) and takes
+about three times a normal build. No profile is stored in the repository.
+
+Why it matters: the engine is a token interpreter whose hot paths run through
+a dozen large functions (`get_token_inner`, `expand_macro_with_args`,
+`do_def_scanning`, `expand_prim_inner`, ...), about 100 KiB of code touched
+per second of TikZ/pgfplots input. Without a profile the compiler cannot tell
+hot from cold blocks, and the processor spends its time fetching instructions:
+one pdfLaTeX pass over the `tikz_pgfplots` aux files of a converged TeX Live
+build (`perf stat`, user space) measured
+
+| | instructions | cycles (lowest of 3) | L1 instruction-cache misses | wall (7 runs, median) |
+| --- | ---: | ---: | ---: | ---: |
+| `/usr/bin/pdflatex` | 58.6 G | 21.9 G | 0.05 G | 8.31 s |
+| TeXres 0.7.2 | 72.2 G | 39.7 G | 3.8 G | 14.81 s |
+| TeXres, source changes only | 66.6 G | 28.7 G | 1.8 G | 11.74 s |
+| TeXres, `build_pgo.sh` | 57.1 G | 21.0 G | 1.0 G | 8.46 s |
+
+The machine was loaded by other jobs during these runs (load average above
+80, hence the slow absolute times and the noisy cycle counts); the four tools alternated, so the ratios hold: 1.78x,
+1.41x and 1.02x of TeX Live. The profile was taken without
+`tikz_pgfplots` in a second check and gave the same cycles, so the gain does not
+come from training on the document that is measured.
+
 ## Runtime design relevant to speed
 
 - The LaTeX formats are embedded zstd-compressed and loaded at startup.

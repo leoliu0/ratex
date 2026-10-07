@@ -75,6 +75,33 @@ fn init_script_callbacks_survive_format_load() {
     assert!(!stdout.contains("This is LuaTeX"), "the start_run callback replaces the banner: {stdout}");
 }
 
+/// llualib.c dumps the bytecode registers into the format, including ones
+/// a `pre_dump` callback sets (expl3's `register_luadata` stores the
+/// Unicode data there). `luatex -ini` + `luatex -fmt` (LuaTeX 1.24.0)
+/// prints `BC=dumped,direct,nil`.
+#[test]
+fn bytecode_registers_survive_dump() {
+    let d = Dir::new("bytecode");
+    d.write(
+        "bc.tex",
+        concat!(
+            "\\catcode`\\{=1 \\catcode`\\}=2 \\catcode`\\#=6\n",
+            "\\directlua{lua.bytecode[8] = function() return 'direct' end\n",
+            "callback.register('pre_dump', function() lua.bytecode[7] = load('return \"dumped\"') end)}\n",
+            "\\dump\n",
+        ),
+    );
+    let out = d.lualatex(&["-ini", "-jobname=bcf", "bc.tex"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    d.write(
+        "use.tex",
+        "\\directlua{texio.write_nl('BC=' .. lua.bytecode[7]() .. ',' .. lua.bytecode[8]() .. ',' .. tostring(lua.bytecode[9]))}\\end\n",
+    );
+    let out = d.lualatex(&["-fmt=bcf", "-interaction=nonstopmode", "use.tex"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("BC=dumped,direct,nil"), "{stdout}{}", String::from_utf8_lossy(&out.stderr));
+}
+
 /// A `find_format_file` that gives nothing usable (nil, false, "", a name
 /// that is no file, a number) ends the run with luatex's message; `&NAME`
 /// asks twice.

@@ -490,6 +490,37 @@ fn ctex_documents_run_under_xetex_with_the_bundled_fandol_fonts() {
 }
 
 #[test]
+fn polyglossia_greek_runs_under_xetex_with_the_bundled_cm_unicode_fonts() {
+    // TeX Live 2026 xelatex finds the cm-unicode files that polyglossia
+    // documents name, embeds CMUSerif-Roman, CMUSerif-Bold and CMUSansSerif,
+    // and extracts as "Η αποδοτική κατανομή. Τέλος Effect".
+    let s = session(
+        r"\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{cmunrm.otf}[BoldFont=cmunbx.otf]
+\setsansfont{cmunss.otf}
+\usepackage{polyglossia}
+\setmainlanguage{greek}
+\newfontfamily\greekfont{cmunrm.otf}[BoldFont=cmunbx.otf]
+\begin{document}
+Η αποδοτική κατανομή. \textbf{Τέλος} \textsf{Effect}
+\end{document}",
+    );
+    let r = s.compile("main.tex");
+    assert_eq!(r.status, Status::Success, "{}\n{}", r.diagnostics, r.log);
+    assert_eq!(r.selected_engine, EngineKind::XeTeX);
+    let mut pdf = lopdf::Document::load_mem(&r.pdf).unwrap();
+    let fonts = embedded_font_names(&pdf);
+    for name in ["CMUSerif-Roman", "CMUSerif-Bold", "CMUSansSerif"] {
+        assert!(fonts.iter().any(|f| f == name), "{name}: {fonts:?}");
+    }
+    let text = native_text(&mut pdf);
+    for word in ["αποδοτική", "Τέλος", "Effect"] {
+        assert!(text.contains(word), "{word}: {text}");
+    }
+}
+
+#[test]
 fn luatex_engine_compilation_succeeds() {
     let s = session(HELLO);
     let mut request = CompileRequest::new("main.tex");

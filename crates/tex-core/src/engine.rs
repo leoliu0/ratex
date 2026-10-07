@@ -647,12 +647,9 @@ pub struct Engine {
     pub(crate) pdf_creation_date: Option<String>,
     pub current_macro: crate::token::CsId,
     pub math_style_stack: Vec<crate::boxes::MathStyle>,
-    /// tex.web §1181 (init_math): \\predisplaysize, \\displaywidth and
-    /// \\displayindent are computed at display entry from the final line of
-    /// the interrupted paragraph and consumed by finish_display.
+    /// tex.web §1146 (init_math): \\predisplaysize as computed at display
+    /// entry from the final line of the interrupted paragraph.
     pub pre_display_size: i64,
-    pub pre_display_l: i64,
-    pub pre_display_s: i64,
     /// tex.web keeps the interrupted paragraph's final line in just_box so
     /// finish_display can measure \predisplaysize AFTER the page builder has
     /// consumed the contributions. We clone the last broken line here at
@@ -1330,7 +1327,6 @@ impl Engine {
             reported_missing_math_atoms: crate::FxHashSet::default(),
             xe_math: Default::default(),
             pre_display_size: -0x3FFF_FFFF,
-            pre_display_l: 0,
             last_par_line: None,
             next_par_widow: None,
             lr_save: Vec::new(),
@@ -1339,7 +1335,6 @@ impl Engine {
             pending_display_formula: None,
             eqno_leqno: None,
             math_group_marks: Vec::new(),
-            pre_display_s: 0,
             current_macro: 0,
             math_style_stack: Vec::new(),
             scanner_status: ScannerStatus::Normal,

@@ -579,7 +579,7 @@ impl Engine {
                     SUB_UNDER | SUB_OVER => {
                         let body = self.export_math_field(f[0]);
                         let fam = if (0..255).contains(&f[3]) { f[3] as u8 } else { crate::boxes::NO_FAM };
-                        let node = Node::Overline { body, under: sub == SUB_UNDER, fam, packed: Box::new(Node::Empty), attr: crate::boxes::Attr::NONE };
+                        let node = Node::Overline { body, under: sub == SUB_UNDER, fam, attr: crate::boxes::Attr::NONE };
                         if has_sup || has_sub {
                             out.push(Self::with_scripts(vec![node], sup, subs, has_sup, has_sub));
                         } else {

@@ -826,6 +826,88 @@ fn shell_tool_dir() -> PathBuf {
     std::env::split_paths(&path).find(|dir| has_kpsewhich(dir)).unwrap_or(own)
 }
 
+/// A program the engine runs in-process for `\write18` and `os.execute`
+/// instead of through the shell (TeXres's own makeindex, which TeX Live
+/// would find on `PATH`). It receives the words of the command line and
+/// the job's output directory, and returns the exit status, or `None` for a
+/// command it does not provide.
+pub type InternalCommand = fn(&[String], Option<&Path>) -> Option<i32>;
+
+static INTERNAL_COMMAND: std::sync::OnceLock<InternalCommand> = std::sync::OnceLock::new();
+
+/// Installs the in-process programs (once per process).
+pub fn set_internal_command(command: InternalCommand) {
+    let _ = INTERNAL_COMMAND.set(command);
+}
+
+/// The words of a command line that needs nothing of the shell but word
+/// splitting and quoting (blanks separate words; `'...'`, `"..."` and `\`
+/// quote); `None` for anything else (pipes, redirections, expansions...).
+fn simple_words(command: &str) -> Option<Vec<String>> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut in_word = false;
+    let mut chars = command.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            ' ' | '\t' => {
+                if in_word {
+                    words.push(std::mem::take(&mut word));
+                    in_word = false;
+                }
+            }
+            '\'' => {
+                in_word = true;
+                loop {
+                    match chars.next()? {
+                        '\'' => break,
+                        c => word.push(c),
+                    }
+                }
+            }
+            '"' => {
+                in_word = true;
+                loop {
+                    match chars.next()? {
+                        '"' => break,
+                        '\\' => match chars.next()? {
+                            c @ ('$' | '`' | '"' | '\\') => word.push(c),
+                            '\n' => {}
+                            c => {
+                                word.push('\\');
+                                word.push(c);
+                            }
+                        },
+                        '$' | '`' => return None,
+                        c => word.push(c),
+                    }
+                }
+            }
+            '\\' => {
+                in_word = true;
+                word.push(chars.next()?);
+            }
+            '|' | '&' | ';' | '<' | '>' | '(' | ')' | '$' | '`' | '*' | '?' | '[' | ']' | '{' | '}' | '~'
+            | '#' | '!' | '=' | '\n' | '\r' => return None,
+            c => {
+                in_word = true;
+                word.push(c);
+            }
+        }
+    }
+    if in_word {
+        words.push(word);
+    }
+    (!words.is_empty()).then_some(words)
+}
+
+/// Runs an allowed command line in-process when it names an internal
+/// program; `None` when the shell must run it.
+pub(crate) fn run_internal(command: &str, output_dir: Option<&Path>) -> Option<i32> {
+    let internal = INTERNAL_COMMAND.get()?;
+    internal(&simple_words(command)?, output_dir)
+}
+
 /// web2c's `runsystem` for `\write18`: the code that stands for what
 /// happened (-1 bad quoting, 0 refused, 1 ran, 2 ran the safely quoted
 /// command), with the command run by `/bin/sh -c` in the current directory.
@@ -838,6 +920,9 @@ pub(crate) fn run_system(cmd: &[u8], output_dir: Option<&std::path::Path>) -> i3
         ShellEscape::Enabled => (1, text.into_owned()),
         ShellEscape::Restricted => shell_cmd_is_allowed(&text, &allowed_commands()),
     };
+    if allow > 0 && run_internal(&run, output_dir).is_some() {
+        return allow;
+    }
     if allow > 0 {
         let run: std::borrow::Cow<'_, [u8]> =
             if allow == 1 { std::borrow::Cow::Borrowed(cmd) } else { std::borrow::Cow::Owned(run.into_bytes()) };
@@ -1022,4 +1107,21 @@ pub(crate) fn set_allowed_commands(list: &str) {
 /// A numeric `texmf.cnf` parameter.
 pub(crate) fn cnf_number(name: &str) -> i64 {
     var_value("luatex", name).and_then(|v| v.parse().ok()).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::simple_words;
+
+    #[test]
+    fn internal_commands_need_only_word_splitting() {
+        let words = |command: &str| simple_words(command).map(|words| words.join("|"));
+        // `shell_cmd_is_allowed` quotes every argument.
+        assert_eq!(words("makeindex '-s' 'my style.ist' 'doc.idx'").as_deref(), Some("makeindex|-s|my style.ist|doc.idx"));
+        assert_eq!(words("makeindex  doc.idx ").as_deref(), Some("makeindex|doc.idx"));
+        assert_eq!(words(r#"makeindex "a\"b" c\ d"#).as_deref(), Some(r#"makeindex|a"b|c d"#));
+        for shell in ["makeindex a.idx > log", "makeindex a.idx; rm x", "makeindex $HOME/a", "makeindex *.idx", "A=1 makeindex", "makeindex 'a"] {
+            assert_eq!(words(shell), None, "{shell}");
+        }
+    }
 }

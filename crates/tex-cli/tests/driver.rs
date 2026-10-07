@@ -2680,8 +2680,8 @@ fn copied_texres_generates_indexes_with_embedded_makeindex() {
     support::copy_executable(
         std::path::Path::new(env!("CARGO_BIN_EXE_texres")), &executable,
     );
-    // makeidx (latexmk's `makeindex -o main.ind main.idx`) and imakeidx (the
-    // command it announces) both need the index built from the first pass.
+    // makeidx (latexmk's `makeindex -o main.ind main.idx`) and imakeidx (which
+    // runs makeindex itself through `\write18`) both need the index.
     fixture.write("plain.tex", concat!(
         "\\documentclass{article}\n\\usepackage{makeidx}\\makeindex\n",
         "\\begin{document}Zebra\\index{zebra}\\index{Apple!red}\\index{Apple}\n",
@@ -2721,4 +2721,54 @@ fn copied_texres_generates_indexes_with_embedded_makeindex() {
     assert!(output.status.success());
     let x = std::fs::read_to_string(fixture.0.join("x.ind")).unwrap();
     assert!(x.contains("\\item a, 1") && x.contains("\\item b, 2"), "{x}");
+}
+
+#[test]
+fn imakeidx_runs_the_embedded_makeindex_with_its_options_for_each_index() {
+    let fixture = Fixture(std::env::temp_dir().join(format!(
+        "texres-imakeidx-{}", std::process::id()
+    )));
+    std::fs::create_dir_all(&fixture.0).unwrap();
+    let executable = fixture.0.join("texres");
+    support::copy_executable(
+        std::path::Path::new(env!("CARGO_BIN_EXE_texres")), &executable,
+    );
+    // TeX Live: imakeidx runs `makeindex -s headings.ist doc.idx` and
+    // `makeindex names.idx` under the restricted shell escape; latexmk's own
+    // unstyled run on doc.idx is superseded by imakeidx's in the last pass.
+    fixture.write("headings.ist", concat!(
+        "headings_flag 1\nheading_prefix \"\\n\\\\item\\\\textbf{\"\n",
+        "heading_suffix \"}\"\ndelim_0 \" \\\\dotfill\\\\ \"\n",
+    ));
+    fixture.write("doc.tex", concat!(
+        "\\documentclass{article}\n\\usepackage{imakeidx}\n",
+        "\\makeindex[options=-s headings.ist]\n",
+        "\\makeindex[name=names,title=Index of Names,columns=1]\n",
+        "\\begin{document}\n",
+        "Zebra\\index{zebra}\\index{Apple!red}\\index{apple}\\index[names]{Turing, Alan}\n",
+        "\\index{2nd}\\index{$\\alpha$@alpha}\\index[names]{Knuth, Donald}\n",
+        "\\newpage Apple\\index{Apple|textbf}\\index[names]{Knuth, Donald}\n",
+        "\\printindex\n\\printindex[names]\n\\end{document}\n",
+    ));
+    let output = Command::new(&executable)
+        .arg("doc.tex").current_dir(&fixture.0).env_clear()
+        .env("HOME", fixture.0.join("home"))
+        .env("TEX_RS_CACHE_DIR", fixture.0.join("cache"))
+        .env("SOURCE_DATE_EPOCH", "1700000000")
+        .output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    let pdf = lopdf::Document::load(fixture.0.join("doc.pdf")).unwrap();
+    let pages: Vec<u32> = pdf.get_pages().keys().copied().collect();
+    assert_eq!(pages.len(), 4, "{stderr}");
+    let text = pdf.extract_text(&pages).unwrap();
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    for expected in ["Symbols", "Index of Names", "Knuth, Donald, 1, 2", "Turing, Alan, 1"] {
+        assert!(text.contains(expected), "{expected}: {text}");
+    }
+    let jobs = fixture.0.join("cache/texmk/jobs");
+    let ind = std::fs::read_to_string(find_file(&jobs, "doc.ind").unwrap()).unwrap();
+    assert!(ind.contains("\\item\\textbf{A}\n  \\item Apple \\dotfill\\ \\textbf{2}"), "{ind}");
+    let names = std::fs::read_to_string(find_file(&jobs, "names.ind").unwrap()).unwrap();
+    assert!(names.contains("\\item Knuth, Donald, 1, 2\n\n  \\indexspace\n\n  \\item Turing, Alan, 1"), "{names}");
 }

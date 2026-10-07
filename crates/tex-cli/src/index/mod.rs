@@ -1,11 +1,11 @@
-//! Index generation for the build driver: finds the `.idx` files a pass
-//! wrote, works out the makeindex command that processes each (the one
-//! imakeidx announces in the transcript, or latexmk's `makeindex -o X.ind
-//! X.idx`) and runs the embedded makeindex on it.
+//! Index generation for the build driver, as latexmk does it: every index
+//! file a pass announces with `Writing index file X.idx` is processed by
+//! `makeindex -o X.ind X.idx` (the embedded port), run in the directory that
+//! holds the index.
 
 use std::path::{Path, PathBuf};
 
-use tex_kpse::fs::PathExt;
+pub mod tree;
 
 /// Width at which the engine wraps transcript lines (`max_print_line`).
 const LOG_LINE_WIDTH: usize = 79;
@@ -13,258 +13,142 @@ const LOG_LINE_WIDTH: usize = 79;
 /// One makeindex invocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Job {
-    /// Input index, in the auxiliary directory.
+    /// Input index.
     pub idx: PathBuf,
     /// Formatted index the engine reads back.
     pub ind: PathBuf,
-    /// Style file name as the command names it.
-    pub style: Option<String>,
-    /// The options that govern the run, without file names.
+    /// The command line, with names relative to the index's directory.
     pub options: tex_makeindex::Options,
 }
 
-/// File system and style lookup for the embedded makeindex.
-pub struct Host<'a> {
-    /// Directory of the main source; styles live next to it.
-    pub source_dir: &'a Path,
-    pub aux_dir: &'a Path,
-}
-
-impl Host<'_> {
-    fn style_file(&self, name: &str) -> Option<(PathBuf, Vec<u8>)> {
-        let with_extension = if name.ends_with(".ist") { name.to_string() } else { format!("{name}.ist") };
-        let mut candidates = Vec::new();
-        for directory in [self.source_dir, self.aux_dir] {
-            candidates.push(directory.join(name));
-            candidates.push(directory.join(&with_extension));
-        }
-        if Path::new(name).is_absolute() {
-            candidates.insert(0, PathBuf::from(name));
-        }
-        for candidate in candidates {
-            if candidate.tex_is_file() {
-                if let Ok(bytes) = tex_kpse::fs::read(&candidate) {
-                    return Some((candidate, bytes));
-                }
-            }
-        }
-        let kpse = tex_kpse::Kpse::with_roots(self.source_dir, &[]);
-        for file in [name, with_extension.as_str()] {
-            if let Some(path) = kpse.find_any(file).filter(|path| path.tex_is_file()) {
-                if let Ok(bytes) = tex_kpse::fs::read(&path) {
-                    return Some((path, bytes));
-                }
-            }
-        }
-        tex_kpse::get_embedded_package(&with_extension)
-            .map(|bytes| (PathBuf::from(&with_extension), bytes))
+impl Job {
+    fn directory(&self) -> &Path {
+        self.idx.parent().unwrap_or(Path::new("."))
     }
 }
 
-impl tex_makeindex::Host for Host<'_> {
-    fn read(&self, path: &str) -> std::io::Result<Vec<u8>> {
-        tex_kpse::fs::read(path)
-    }
-
-    fn write(&self, path: &str, bytes: &[u8]) -> std::io::Result<()> {
-        tex_kpse::fs::write(path, bytes)
-    }
-
-    fn exists(&self, path: &str) -> bool {
-        Path::new(path).tex_is_file()
-    }
-
-    fn find_style(&self, name: &str) -> Option<(String, Vec<u8>)> {
-        self.style_file(name).map(|(path, bytes)| (path.to_string_lossy().into_owned(), bytes))
-    }
-
-    fn read_stdin(&self) -> std::io::Result<Vec<u8>> {
-        Ok(Vec::new())
-    }
+/// The host a job runs with: the index's directory as working directory
+/// for its files, the source directory (and the TeX tree) for style files.
+pub fn with_host<T>(job: &Job, source_dir: &Path, run: impl FnOnce(&tex_makeindex::DirHost) -> T) -> T {
+    let tree = |name: &str| tree::style(source_dir, name);
+    let host = tex_makeindex::DirHost {
+        work_dir: source_dir,
+        output_dir: Some(job.directory()),
+        tree: &tree,
+        stdin: false,
+    };
+    run(&host)
 }
 
-/// Splits a command line the way a shell would for the simple cases imakeidx
-/// produces: blanks separate words and double quotes group.
-fn split_command(text: &str) -> Vec<String> {
-    let mut words = Vec::new();
-    let mut current = String::new();
-    let mut in_word = false;
-    let mut quoted = false;
-    for character in text.chars() {
-        match character {
-            '"' => {
-                quoted = !quoted;
-                in_word = true;
-            }
-            c if c.is_whitespace() && !quoted => {
-                if in_word {
-                    words.push(std::mem::take(&mut current));
-                    in_word = false;
-                }
-            }
-            c => {
-                current.push(c);
-                in_word = true;
-            }
+/// The index files a pass announced, in order of first mention: latexmk's
+/// patterns for makeidx/multind/imakeidx and index.sty, with transcript
+/// lines the engine wrapped joined again. Only `.idx` files have a rule.
+fn announced_indexes(log: &str) -> Vec<String> {
+    let mut logical: Vec<String> = Vec::new();
+    let mut continued = false;
+    for line in log.lines() {
+        match logical.last_mut() {
+            Some(last) if continued => last.push_str(line),
+            _ => logical.push(line.to_string()),
         }
+        continued = line.len() == LOG_LINE_WIDTH || line.chars().count() == LOG_LINE_WIDTH;
     }
-    if in_word {
-        words.push(current);
-    }
-    words
-}
-
-/// The commands imakeidx asks to have run, from its "Remember to run ...
-/// after calling `command'" warnings in the transcript.
-fn announced_commands(log: &str) -> Vec<String> {
-    let lines: Vec<&str> = log.lines().collect();
-    let mut commands = Vec::new();
-    let mut at = 0;
-    while at < lines.len() {
-        if !lines[at].starts_with("Package imakeidx Warning: Remember to run") {
-            at += 1;
-            continue;
-        }
-        at += 1;
-        // The command is quoted `like this'; the engine may wrap it anywhere.
-        let mut text = String::new();
-        let mut started = false;
-        while at < lines.len() {
-            let line = lines[at];
-            let (body, wrapped_from_previous) = match line.strip_prefix("(imakeidx)") {
-                Some(rest) => (rest.trim_start(), false),
-                None => (line, true),
-            };
-            if !started && !body.contains('`') {
-                if wrapped_from_previous {
-                    break;
-                }
-                at += 1;
+    let mut found: Vec<String> = Vec::new();
+    for line in &logical {
+        let name = if let Some(name) = line.strip_prefix("Writing index file ") {
+            name
+        } else if let Some(name) = line.strip_prefix("index.sty> Writing index file ") {
+            name
+        } else if let Some(rest) = line.strip_prefix("Package ") {
+            let Some((package, rest)) = rest.split_once(' ') else { continue };
+            let Some(rest) = rest.strip_prefix("Info: Writing index file ") else { continue };
+            let Some((name, _)) = rest.split_once(" on input line") else { continue };
+            if package.is_empty() {
                 continue;
             }
-            let mut piece = body;
-            if !started {
-                piece = &piece[piece.find('`').map_or(0, |index| index + 1)..];
-                started = true;
-            }
-            if let Some(end) = piece.find('\'') {
-                text.push_str(&piece[..end]);
-                commands.push(text);
-                at += 1;
-                break;
-            }
-            text.push_str(piece);
-            // A physical line that fills the width continues on the next one
-            // without a break in the text; a shorter one ended at a blank.
-            if lines[at].len() < LOG_LINE_WIDTH {
-                text.push(' ');
-            }
-            at += 1;
-        }
-    }
-    commands
-}
-
-/// Reads the makeindex options out of an announced command; `None` when the
-/// command is not a makeindex call this driver can run.
-fn parse_command(words: &[String]) -> Option<(tex_makeindex::Options, String)> {
-    let (program, rest) = words.split_first()?;
-    let name = Path::new(program).file_stem()?.to_string_lossy().to_ascii_lowercase();
-    if name != "makeindex" {
-        return None;
-    }
-    let options = tex_makeindex::parse_args(rest).ok()?;
-    let input = options.inputs.first()?.clone();
-    Some((options, input))
-}
-
-/// The `.idx` files an engine pass wrote into `aux_dir` (from its recorder
-/// file), in order of first appearance.
-fn written_indexes(fls: &str, aux_dir: &Path, cwd: &Path) -> Vec<PathBuf> {
-    let mut found: Vec<PathBuf> = Vec::new();
-    for line in fls.lines() {
-        let Some(path) = line.strip_prefix("OUTPUT ") else { continue };
-        let path = cwd.join(path);
-        if path.extension().and_then(|extension| extension.to_str()) != Some("idx") {
+            name
+        } else {
             continue;
-        }
-        if path.parent() == Some(aux_dir) && !found.contains(&path) {
-            found.push(path);
+        };
+        let name = name.trim_end().to_string();
+        if name.ends_with(".idx") && !found.contains(&name) {
+            found.push(name);
         }
     }
     found
 }
 
-/// Makeindex jobs for the indexes a pass wrote. Each follows latexmk's
-/// `makeindex -o X.ind X.idx` unless imakeidx announced a command for it.
-pub fn plan(fls: &str, log: &str, aux_dir: &Path, cwd: &Path) -> Vec<Job> {
-    let announced: Vec<(tex_makeindex::Options, String)> = announced_commands(log)
-        .iter()
-        .filter_map(|command| parse_command(&split_command(command)))
-        .collect();
+/// Makeindex jobs for the indexes a pass announced in its transcript `log`.
+pub fn plan(log: &str, aux_dir: &Path) -> Vec<Job> {
     let mut jobs = Vec::new();
-    for idx in written_indexes(fls, aux_dir, cwd) {
-        let file = idx.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-        let mut options = announced
-            .iter()
-            .find(|(options, input)| {
-                input == &file || options.inputs.first().is_some_and(|name| Path::new(name).file_name().is_some_and(|n| n.to_string_lossy() == file))
-            })
-            .map(|(options, _)| options.clone())
-            .unwrap_or_default();
-        let style = options.style.clone();
-        let ind = match &options.output {
-            Some(name) => aux_dir.join(name),
-            None => idx.with_extension("ind"),
+    for name in announced_indexes(log) {
+        let idx = aux_dir.join(&name);
+        if !idx.is_file() {
+            continue;
+        }
+        let ind = idx.with_extension("ind");
+        let file_name = |path: &Path| path.file_name().map(|name| name.to_string_lossy().into_owned());
+        let (Some(idx_name), Some(ind_name)) = (file_name(&idx), file_name(&ind)) else { continue };
+        let options = tex_makeindex::Options {
+            quiet: true,
+            output: Some(ind_name),
+            inputs: vec![idx_name],
+            ..Default::default()
         };
-        options.quiet = true;
-        options.inputs = vec![idx.to_string_lossy().into_owned()];
-        options.output = Some(ind.to_string_lossy().into_owned());
-        options.log = Some(
-            match &options.log {
-                Some(name) => aux_dir.join(name),
-                None => idx.with_extension("ilg"),
-            }
-            .to_string_lossy()
-            .into_owned(),
-        );
-        jobs.push(Job { idx, ind, style, options });
+        jobs.push(Job { idx, ind, options });
     }
     jobs
 }
 
-/// Everything the output of a job depends on (options, input, style), as
-/// bytes to be hashed.
-pub fn signature_input(job: &Job, host: &Host) -> Vec<u8> {
+/// Everything the output of a job depends on (input, style), as bytes to
+/// be hashed.
+pub fn signature_input(job: &Job, source_dir: &Path) -> Vec<u8> {
     let mut text = Vec::new();
-    text.extend_from_slice(b"makeindex-embedded-1\n");
-    let options = &job.options;
-    for (name, set) in [
-        ("l", options.letter_ordering),
-        ("c", options.compress_blanks),
-        ("r", options.no_ranges),
-        ("g", options.german),
-    ] {
-        text.extend_from_slice(format!("{name}={set}\n").as_bytes());
-    }
-    text.extend_from_slice(format!("p={:?}\n", options.start_page).as_bytes());
-    text.extend_from_slice(format!("idx={}\n", job.idx.file_name().unwrap_or_default().to_string_lossy()).as_bytes());
-    text.extend_from_slice(format!("ind={}\n", job.ind.file_name().unwrap_or_default().to_string_lossy()).as_bytes());
-    if let Some(style) = &job.style {
-        text.extend_from_slice(format!("style={style}\n").as_bytes());
-        if let Some((_, bytes)) = host.style_file(style) {
-            text.extend_from_slice(&bytes);
+    text.extend_from_slice(b"makeindex-embedded-2\n");
+    text.extend_from_slice(format!("{:?}\n", job.options).as_bytes());
+    // makeindex applies `X.mst` by itself to a lone `X.idx`.
+    let mst = job.idx.with_extension("mst");
+    let mst_name = mst.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    with_host(job, source_dir, |host| {
+        use tex_makeindex::Host;
+        if host.exists(&mst_name) {
+            if let Some((path, bytes)) = host.find_style(&mst_name) {
+                text.extend_from_slice(format!("style={path}\n").as_bytes());
+                text.extend_from_slice(&bytes);
+            }
         }
-    }
+    });
     text.push(0);
     text.extend_from_slice(&tex_kpse::fs::read(&job.idx).unwrap_or_default());
     text
 }
 
 /// Runs a job; an error is makeindex's exit status.
-pub fn run(job: &Job, host: &Host) -> Result<(), i32> {
-    match tex_makeindex::run(&job.options, host) {
+pub fn run(job: &Job, source_dir: &Path) -> Result<(), i32> {
+    match with_host(job, source_dir, |host| tex_makeindex::run(&job.options, host)) {
         0 => Ok(()),
         status => Err(status),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn indexes_are_the_ones_latexmk_recognizes() {
+        let log = concat!(
+            "Writing index file main.idx\n",
+            "Writing index file names.idx \n",
+            "Package index Info: Writing index file main.adx on input line 7.\n",
+            "Package index Info: Writing index file topics.idx on input line 8.\n",
+            "index.sty> Writing index file old.idx\n",
+            "Started index file main\n",
+            "Writing index file main.idx\n",
+        );
+        assert_eq!(announced_indexes(log), ["main.idx", "names.idx", "topics.idx", "old.idx"]);
+        let long = format!("Writing index file {}.idx", "x".repeat(70));
+        let (head, tail) = long.split_at(LOG_LINE_WIDTH);
+        assert_eq!(announced_indexes(&format!("{head}\n{tail}\n")), [long["Writing index file ".len()..].to_string()]);
     }
 }

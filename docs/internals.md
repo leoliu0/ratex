@@ -117,8 +117,9 @@ only as links to `texres` (or `texmk`). Releases ship only `texres`.
      `TEX_SUITE_PROGRAM_NAME`, default `pdflatex`);
   2. a first argument `latexdiff`;
   3. the invoked file name: `pdflatex`, `xelatex`, `lualatex` run one engine
-     pass, `bibtex`/`tex-bibtex` run BibTeX, `latexdiff` runs the diff, and
-     anything else (`texres`, `texmk`, `latexmk`) runs the build driver.
+     pass, `bibtex`/`tex-bibtex` run BibTeX, `makeindex` runs makeindex,
+     `latexdiff` runs the diff, and anything else (`texres`, `texmk`,
+     `latexmk`) runs the build driver.
 
   Engine and BibTeX personalities started this way set `TEX_RS_HERMETIC=1`,
   so they resolve TeX files only from the embedded archive (see below).
@@ -170,6 +171,13 @@ to inject tools.
    project-supplied `<job>.bbl` is adopted instead of running BibTeX; if
    BibTeX fails and the project has a `.bbl`, that file is used. After a
    successful BibTeX run another pass follows.
+   Then, as latexmk does, makeindex (`makeindex -o X.ind X.idx`, run in the
+   auxiliary directory) processes each `.idx` file the pass announced with
+   `Writing index file X.idx` (makeidx, multind, imakeidx, index.sty), unless
+   its input and `X.mst` style are those of the run that wrote the existing
+   `X.ind`. An `X.ind` rewritten since by imakeidx (which runs makeindex
+   itself through `\write18`, with its `options=`) is left alone, so the next
+   pass reads imakeidx's output as in TeX Live.
 6. The build is stable when the auxiliary snapshot did not change during the
    pass, or on a first pass that started from existing auxiliary state when
    there are no pending signals and the only auxiliary files are `.aux` files containing nothing but inert lines
@@ -319,6 +327,33 @@ user's `HOME`:
   other test threads fork, and executing it before they `exec` fails with
   ETXTBSY ("Text file busy").
 
+## makeindex (`crates/tex-makeindex`)
+
+A line-by-line port of TeX Live's makeindex 2.18: `scan.rs` (`scanid.c`),
+`style.rs` (`scanst.c`), `sort.rs` (`sortid.c` and Nelson Beebe's `qsort.c`,
+whose comparison order decides which of two identical entries is dropped and
+the comparison count in the transcript) and `gen.rs` (`genind.c`).
+`tex_makeindex::run_cli(args, host)` is the entry point; `DirHost` maps
+relative names to a job's directories and finds style files as kpathsea does
+(`./name`, then the TeX tree).
+
+- Ground truth is `/usr/bin/makeindex`: the `.ind`, the `.ilg` and the exit
+  status match byte for byte. The `.ilg` banner names TeXres.
+- Options: `-c -g -i -l -L -q -r -T -o -p -s -t`; `-p even|odd|any` reads
+  the page from `X.log`; a lone `X.idx` takes `X.mst` as its style; `-L` and
+  `-T` collate with the environment's locale.
+- Undefined behaviour of the C code that TeX Live's binary shows is
+  reproduced where it is deterministic: a page number with more than ten
+  fields overwrites the `level`, `actual` and `encap` characters, `-l`
+  comparisons may read past keys that end in a blank, and an unterminated
+  style string reports the remains of the previous one.
+- Tests: `crates/tex-makeindex/tests/oracle.rs` runs every directory under
+  `tests/oracle/` (inputs and `args`) against `expected/` (the files
+  `/usr/bin/makeindex` wrote when run with `args` in a copy of the directory,
+  and `status`). To add a case, create the directory, run TeX Live's
+  makeindex in a copy, keep the new files in `expected/`, and list the case
+  in `oracle_cases!`.
+
 ## BibTeX (`crates/tex-bibtex`)
 
 One engine, a module-by-module port of `bibtex.web` 0.99e plus TeX Live's
@@ -451,7 +486,9 @@ Shell escape (`\write18`) follows web2c: restricted by default (only the
 `shell_escape_commands` list, such as `latexminted` for `minted`, run; they are
 found on `PATH` and started with `/bin/sh -c` in the working directory with
 `TEXMF_OUTPUT_DIRECTORY` set to the auxiliary or output directory and
-`SELFAUTOLOC` to the directory of a `kpsewhich`), `-shell-escape` allows any
+`SELFAUTOLOC` to the directory of a `kpsewhich`; `makeindex` commands that
+need no shell features run the embedded makeindex in-process instead, on the
+job's files in that directory), `-shell-escape` allows any
 command and `-no-shell-escape` none. pdfLaTeX has no native fonts: loading
 `fontspec` there fails with fontspec's own engine error, as in TeX Live.
 `-lualatex` runs the LuaTeX-compatible mode with the embedded LuaLaTeX format

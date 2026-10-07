@@ -485,26 +485,6 @@ pub(crate) fn xe_push_key(out: &mut Vec<u8>, c: u32) {
     }
 }
 
-/// Inverse of [`xe_push_key`] over a whole key: the characters it encodes.
-fn xe_key_chars(key: &[u8]) -> impl Iterator<Item = u32> + '_ {
-    let mut i = 0;
-    std::iter::from_fn(move || {
-        let b = *key.get(i)?;
-        let (len, init) = match b {
-            0..=0x7F => (1, u32::from(b)),
-            0xC0..=0xDF => (2, u32::from(b & 0x1F)),
-            0xE0..=0xEF => (3, u32::from(b & 0x0F)),
-            _ => (4, u32::from(b & 0x07)),
-        };
-        let mut c = init;
-        for k in 1..len {
-            c = (c << 6) | u32::from(key.get(i + k).copied().unwrap_or(0x80) & 0x3F);
-        }
-        i += len;
-        Some(c)
-    })
-}
-
 impl Trie {
     /// xetex.web `new_patterns` §960 "Insert a new pattern into the linked
     /// trie": `hc` holds the pattern's characters (0 = word boundary) and
@@ -625,17 +605,29 @@ impl Trie {
     /// character any pattern of this language contains (at least 256, TeX's
     /// initial value).
     pub(crate) fn xe_max_pattern_char(&self) -> u32 {
+        // Depth-first over the nodes, decoding the generalized UTF-8 key
+        // bytes of the path on the way down: `rem` continuation bytes of the
+        // character in `accum` are still to come (a node inside a character
+        // counts it with the missing bits zero, never more than the whole
+        // character its descendants complete).
         let mut max = 256u32;
-        let mut stack: Vec<(u32, Vec<u8>)> = vec![(0, Vec::new())];
-        while let Some((node, key)) = stack.pop() {
-            if let Some(c) = xe_key_chars(&key).max() {
-                max = max.max(c);
-            }
+        let mut stack: Vec<(u32, u32, u32)> = vec![(0, 0, 0)];
+        while let Some((node, accum, rem)) = stack.pop() {
+            max = max.max(accum << (6 * rem));
             let mut child = self.nodes[node as usize].child;
             while child != NO_LINK {
-                let mut next_key = key.clone();
-                next_key.push(self.nodes[child as usize].byte);
-                stack.push((child, next_key));
+                let b = u32::from(self.nodes[child as usize].byte);
+                let next = if rem > 0 {
+                    ((accum << 6) | (b & 0x3F), rem - 1)
+                } else {
+                    match b {
+                        0..=0x7F => (b, 0),
+                        0xC0..=0xDF => (b & 0x1F, 1),
+                        0xE0..=0xEF => (b & 0x0F, 2),
+                        _ => (b & 0x07, 3),
+                    }
+                };
+                stack.push((child, next.0, next.1));
                 child = self.nodes[child as usize].sibling;
             }
         }
@@ -927,5 +919,18 @@ mod tests {
         let mut trie = Trie::new();
         trie.load_hyphen_bytes(b"\\patterns{ab1cd % a9bcd is not a pattern\n}");
         assert_eq!(trie.hyphenate(b"abcd", 1, 1), vec![2]);
+    }
+
+    #[test]
+    fn largest_pattern_character_of_multibyte_keys() {
+        let mut trie = Trie::new();
+        assert_eq!(trie.xe_max_pattern_char(), 256);
+        trie.xe_insert_pattern(&[u32::from(b'a'), 0xE9], &[0, 1, 0]);
+        assert_eq!(trie.xe_max_pattern_char(), 256);
+        trie.xe_insert_pattern(&[0x4E2D, u32::from(b'b')], &[0, 1, 0]);
+        trie.xe_insert_pattern(&[0x4E00, 0x3B1], &[1, 0, 0]);
+        assert_eq!(trie.xe_max_pattern_char(), 0x4E2D);
+        trie.xe_insert_pattern(&[0, 0x1F600], &[0, 0, 1]);
+        assert_eq!(trie.xe_max_pattern_char(), 0x1F600);
     }
 }

@@ -44,9 +44,17 @@ mkdir -p "$work/raw" "$work/run"
 # dynamic export of symbols for Lua C modules), so the profile flags go in as
 # one more target-specific flag list, which cargo concatenates with them.
 # --target keeps build scripts and proc macros out of the instrumentation.
+# Both builds link with fat LTO in one codegen unit, so the optimizer sees the
+# whole interpreter at once when it inlines and lays out the profiled code
+# (about 4% fewer cycles than thin LTO, see PERFORMANCE.md). The settings must
+# be the same in both builds: they enter cargo's symbol hashes, and a profile
+# recorded under other symbol names would silently go unused. The plain
+# release profile keeps thin LTO, which needs far less memory and time.
 build() { # build <target-dir> <rustc flag>
     cargo build --release --locked -p tex-cli --bin texres \
         --target "$triple" --target-dir "$1" \
+        --config 'profile.release.lto="fat"' \
+        --config 'profile.release.codegen-units=1' \
         --config "target.$triple.rustflags=['$2']"
 }
 

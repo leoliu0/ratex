@@ -244,7 +244,7 @@ impl Engine {
     }
 
     /// fetch next raw token honoring pushback
-    #[inline(always)]
+    #[inline(never)]
     pub fn raw_token(&mut self) -> Token {
         // tex.web @7335/@7492: a brace fetched from a real input source
         // adjusts the alignment brace depth. Tokens returned from the

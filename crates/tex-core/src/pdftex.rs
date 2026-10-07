@@ -850,11 +850,6 @@ impl Default for PdfBackend {
 }
 
 impl PdfBackend {
-    /// Number of font objects created so far.
-    pub(crate) fn initialized_fonts(&self) -> usize {
-        self.font_reps.len()
-    }
-
     /// Creation order of the font object of owner `f` (`pdf_create_obj`).
     pub(crate) fn init_order(&self, f: u16) -> usize {
         self.font_reps.iter().position(|&k| k == f).unwrap_or(usize::MAX)

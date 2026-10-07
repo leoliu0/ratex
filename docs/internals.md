@@ -26,7 +26,7 @@ Typesetting algorithms are documented in the module comments of
 | `pdffile.rs`, `pdf_fonts.rs` | PDF serialization, Type 1 parsing and embedding |
 | `pdftex.rs`, `pdfrender.rs` | pdfTeX backend state: resource names (`/F`, `/Fm`, `/Im` and the `\pdfuniqueresname` tag), form shipping on first paint, query primitives, Info/trailer inputs |
 | `writet1.rs` | writet1.c port: Type 1 FontFile cleartext/`/Encoding`/eexec/Subrs rewrite, `/Length1-3` |
-| `pdf_images.rs`, `pdf_encodings.rs` | pdftoepdf port: one shared `PdfSource` per included file; with `\pdfinclusioncopyfonts=0` Type 1/Type1C fonts the font map knows are replaced by the map's program (xpdf base-encoding tables) |
+| `pdf_images.rs`, `pdf_encodings.rs` | pdftoepdf port: one shared `PdfSource` per included file; with `\pdfinclusioncopyfonts=0` Type 1/Type1C fonts the font map knows are replaced by the map's program (xpdf base-encoding tables) and their descriptor is never preset from a TFM; every other object is copied as it is, unembedded standard fonts included — only the EPS converter's PDFs (`tex_ps::EPS_PDF_PRODUCER`) get the standard-font programs Ghostscript would embed |
 | `pdfrender/dpx.rs`, `pdfrender/dpx_text.rs` | XeTeX's xdvipdfmx-compatible PDF driver: separate cached DVI and reader positions, text matrices and glyph runs; raw TFM metric words use the driver's `sqxfw` rounding for annotation bounds |
 | `dpx_font.rs`, `dpx_cff.rs`, `dpx_tt.rs`, `dpx_t1.rs` | xdvipdfmx native font objects, Unicode CMaps, TrueType/CFF subsetting and TFM Type 1 → Type1C conversion |
 | `diagnostics.rs` | structured diagnostics and their output bounds |

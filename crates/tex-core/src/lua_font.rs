@@ -599,7 +599,7 @@ impl Engine {
                 low = low.min(code as usize);
                 high = high.max(code as usize);
                 if font.chars.len() <= code as usize {
-                    font.chars.resize(code as usize + 1, crate::tfm::CharInfo { width: 0, height: 0, depth: 0, italic: 0, tag: 0, remainder: 0 });
+                    font.chars.resize(code as usize + 1, crate::tfm::CharInfo::MISSING);
                 }
                 font.chars[code as usize] = crate::tfm::CharInfo {
                     width: ci.width,
@@ -608,6 +608,7 @@ impl Engine {
                     italic: ci.italic,
                     tag: 0,
                     remainder: 0,
+                    exists: true,
                 };
             }
         }

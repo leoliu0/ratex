@@ -15,6 +15,17 @@ pub struct CharInfo {
     pub italic: i32,
     pub tag: u8,
     pub remainder: u8,
+    /// tex.web `char_exists` (§554): the TFM width index is nonzero. A
+    /// character may exist with all-zero metrics (xy-pic's arrow-tip fonts
+    /// map every slot to a zero width-table entry), so dimensions cannot
+    /// stand in for this.
+    pub exists: bool,
+}
+
+impl CharInfo {
+    /// An empty slot (below `bc`, or width index 0).
+    pub const MISSING: CharInfo =
+        CharInfo { width: 0, height: 0, depth: 0, italic: 0, tag: 0, remainder: 0, exists: false };
 }
 
 #[derive(Clone, Debug)]
@@ -96,19 +107,10 @@ impl Font {
     pub fn exists_char(&self, c: u8) -> bool {
         c >= self.bc && c <= self.ec
     }
-    /// pdfTeX `is_valid_char`: in range AND present in the TFM (tex.web
-    /// §15148: `char_exists` tests the width byte > 0; our parser leaves
-    /// absent slots as all-zero `CharInfo`).
+    /// pdfTeX `is_valid_char` / tex.web `char_exists`: in range AND present
+    /// in the TFM (nonzero width index).
     pub fn char_present(&self, c: u8) -> bool {
-        self.exists_char(c)
-            && self.chars.get(c as usize).map_or(false, |ci| {
-                ci.width != 0
-                    || ci.height != 0
-                    || ci.depth != 0
-                    || ci.italic != 0
-                    || ci.tag != 0
-                    || ci.remainder != 0
-            })
+        self.exists_char(c) && self.chars.get(c as usize).is_some_and(|ci| ci.exists)
     }
     /// param(i) with 1-based i (param(1)=slant ...)
     pub fn param(&self, i: usize) -> i32 {
@@ -293,16 +295,7 @@ pub fn parse_tfm(data: &[u8], tfm_name: &str, at_size: i32) -> Result<Font, Stri
     let italics: Vec<i32> = (0..ni).map(|k| rd_fix(ital_off + k * 4)).collect();
 
     let mut chars = Vec::with_capacity(bc as usize + nchars);
-    for _ in 0..bc {
-        chars.push(CharInfo {
-            width: 0,
-            height: 0,
-            depth: 0,
-            italic: 0,
-            tag: 0,
-            remainder: 0,
-        });
-    }
+    chars.resize(bc as usize, CharInfo::MISSING);
     for i in 0..nchars {
         let o = char_info_off + i * 4;
         let b0 = data[o];
@@ -340,6 +333,7 @@ pub fn parse_tfm(data: &[u8], tfm_name: &str, at_size: i32) -> Result<Font, Stri
             italic: it,
             tag,
             remainder: rem,
+            exists: wi != 0,
         });
     }
 

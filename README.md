@@ -111,24 +111,26 @@ TeX Live is left alone.
 
 ## Speed
 
-Median wall time over 7 runs on one Linux machine (64-core Threadripper PRO),
-TeXres 0.7.2 against TeX Live 2026 (`latexmk`). A cold build starts with an
-empty TeXres cache and a clean directory for `latexmk`; both run every pass
-and the bibliography tool. The documents are in the repository.
+TeXres 0.7.2 was measured against TeX Live 2026 (`latexmk`) on 100 documents:
+70 generated and 30 public papers, books and slide decks. pdfLaTeX, XeLaTeX
+and LuaLaTeX are all included. The binary is the profile-guided build that
+the Linux x86_64 and macOS releases ship. The machine is one Linux
+workstation (64-core Threadripper PRO). Each cell is the median of 5 runs.
+Both tools run every pass and the bibliography tool, and the PDFs were
+checked to have the same pages and text.
 
-| Document | Cold build, TeXres / TeX Live | One-line edit, TeXres / TeX Live |
-| --- | ---: | ---: |
-| 113-page thesis, BibTeX | 3.04 s / 3.57 s | 0.77 s / 0.79 s |
-| 12-page article, natbib | 1.04 s / 1.76 s | 0.27 s / 0.45 s |
-| 12-page article, biblatex | 4.79 s / 5.77 s | 1.34 s / 1.38 s |
-| 82-page Beamer deck | 7.88 s / 4.45 s | 4.07 s / 2.30 s |
-| 9-page TikZ and pgfplots figures | 24.7 s / 14.9 s | 8.25 s / 5.01 s |
-| 7-page LuaLaTeX | 52.5 s / 4.23 s | 1.72 s / 1.47 s |
+| Scenario | TeXres faster | Median TeXres / TeX Live | Closest document |
+| --- | ---: | ---: | --- |
+| Cold build | 100 of 100 | 0.60 | 0.98, siunitx tables (3.54 s / 3.63 s) |
+| No-change rebuild | 100 of 100 | 0.13 | 0.26, 193-page book (0.030 s / 0.114 s) |
+| One-line edit | 100 of 100 | 0.57 | 0.98, 193-page book (6.62 s / 6.77 s) |
 
-TeXres is faster on most pdfLaTeX and XeLaTeX documents, and an unchanged
-rebuild takes about 10 ms. It is about 1.7 times slower on Beamer and
-TikZ/pgfplots, and the first LuaLaTeX build of each document takes about 50
-seconds. Method, all scenarios, hardware and a script to rerun it:
+On most documents TeXres needs a little over half of TeX Live's time, but on
+the slowest two it is only 2-4% ahead. Both cold builds started with the
+machine's font database already built. On a new machine the first LuaLaTeX
+build scans the fonts for both tools, which takes about a minute either way.
+TeXres also writes SyncTeX by default, and that cost is included. Method,
+per-group numbers and a script to rerun it are in
 [PERFORMANCE.md](PERFORMANCE.md).
 
 ## Editor setup

@@ -305,8 +305,37 @@ impl Engine {
                         vertical: nf.vertical,
                         used: self.pdf_doc.xe_use.get(&fid).cloned().unwrap_or_default(),
                     }),
+                    type3: None,
                 });
                 remap.insert(crate::pdfout::FontBinding::remapped(0).resource_key(fid), cur_idx);
+                continue;
+            }
+            if self.pdf_font_is_pk(fid) {
+                // writefont.c `dopdffont` -> writet3.c `writepk`
+                let chars = self.pdf_doc.font_chars.get(&(fid as usize)).copied().unwrap_or([0; 4]);
+                let scale = self.pk_scale(fid).ok_or("PK font without metrics")?;
+                let dpi = scale.dpi();
+                let file = format!("{}.{dpi}pk", font.tfm_name);
+                let data = self
+                    .font_loader
+                    .read_dependency(&file, tex_kpse::Format::Pk)
+                    .ok_or_else(|| format!("pdfTeX error: Font {} at {dpi} not found", font.tfm_name))?;
+                let pk = crate::writet3::read_pk(&data).map_err(|error| format!("pdfTeX error: {error} (file {file})"))?;
+                let mut type3 = crate::writet3::build_type3(
+                    &pk,
+                    &scale,
+                    &|c| i64::from(font.char_width(c)),
+                    &chars,
+                    (font.bc, font.ec),
+                );
+                type3.name = u32::from(fid);
+                type3.font_attr = self.font_loader.pdf_font_attrs.get(&fid).cloned().unwrap_or_default();
+                let mut embedded = crate::pdffile::make_embed_font(font.tfm_name.clone(), None, None, Vec::new(), chars);
+                embedded.type3 = Some(type3);
+                embedded.obj_font = self.pdf_backend.font_objs.get(&fid).copied().unwrap_or(0);
+                embedded.init_order = self.pdf_backend.init_order(fid);
+                remap.insert(crate::pdfout::FontBinding::RAW.resource_key(fid), self.pdf_doc.fonts.len());
+                self.pdf_doc.fonts.push(embedded);
                 continue;
             }
             let prog = self.font_loader.program_for_font(&font)?;
@@ -607,6 +636,7 @@ impl Engine {
                                 desc_obj: 0,
                                 pdftex: None,
                                 xe: None,
+                                type3: None,
                             };
                             self.pdf_doc.fonts.push(ef);
                             remap.insert(
@@ -754,6 +784,7 @@ impl Engine {
                                 desc_obj: 0,
                                 pdftex: None,
                                 xe: None,
+                                type3: None,
                             };
                             let document_index = self.pdf_doc.fonts.len();
                             self.pdf_doc.fonts.push(embedded);
@@ -838,6 +869,11 @@ pub(crate) struct PdfBackend {
     /// `\pdfglyphtounicode` entries (tounicode.c `glyph_unicode_tree`),
     /// dumped with the format.
     pub(crate) glyph_unicode: crate::pdf_fonts::GlyphUnicodeTable,
+    /// pdftex.web `fixed_pk_resolution`, fixed by `init_pdf_output`.
+    pub(crate) pk_resolution: i32,
+    /// mapfile.c `isscalable(f)` negated: the fonts written from PK
+    /// bitmaps as Type 3 fonts (no map entry), decided on first use.
+    pub(crate) pk_fonts: crate::FxHashMap<u16, bool>,
 }
 
 impl Default for PdfBackend {
@@ -852,6 +888,8 @@ impl Default for PdfBackend {
             last_ximage_colordepth: 0,
             space_font_name: DEFAULT_SPACE_FONT.to_string(),
             glyph_unicode: Default::default(),
+            pk_resolution: 0,
+            pk_fonts: Default::default(),
         }
     }
 }
@@ -905,6 +943,13 @@ impl Engine {
         if std::mem::replace(&mut self.pdf_backend.output_initialized, true) {
             return;
         }
+        // `pdf_pk_resolution := pk_dpi` (texmf.cnf's unset pk_dpi is 72)
+        // when neither the format nor the user set it
+        let pk_resolution = crate::prim::IntParam::PdfPkResolution.idx() as usize;
+        if self.eqtb.int_params[pk_resolution] == 0 {
+            self.eqtb.int_params[pk_resolution] = 72;
+        }
+        self.pdf_backend.pk_resolution = self.eqtb.int_params[pk_resolution].clamp(72, 8000);
         if self.pdf_int(crate::prim::IntParam::PdfUniqueResname) <= 0
             || !self.pdf_doc.resname_prefix.is_empty()
         {
@@ -992,6 +1037,44 @@ impl Engine {
         );
     }
 
+    /// mapfile.c `isscalable(f)` negated, for pdfTeX: font `f` is written
+    /// from PK bitmaps because no map entry names it (writefont.c
+    /// `dopdffont` calls `writet3`). Decided once per font, like
+    /// `pdffontmap[f]`.
+    pub(crate) fn pdf_font_is_pk(&mut self, f: u16) -> bool {
+        if self.engine_kind != crate::engine::EngineKind::PdfTeX {
+            return false;
+        }
+        if let Some(&pk) = self.pdf_backend.pk_fonts.get(&f) {
+            return pk;
+        }
+        let pk = self.eqtb.fonts.get(usize::from(f)).is_some_and(|font| {
+            font.at_size > 0
+                && font.native.is_none()
+                && font.lua.is_none()
+                && font.type1_path.is_none()
+                && !self.font_loader.vf_fonts.contains_key(&(font.tfm_name.clone(), font.at_size))
+                && {
+                    self.font_loader.ensure_map();
+                    self.font_loader.map.get(&font.tfm_name).is_none()
+                }
+        });
+        self.pdf_backend.pk_fonts.insert(f, pk);
+        pk
+    }
+
+    /// The PK geometry of font `f` (writet3.c): its `pdf_font_size`,
+    /// design size, `fixed_pk_resolution` and `fixed_decimal_digits`.
+    pub(crate) fn pk_scale(&self, f: u16) -> Option<crate::writet3::PkScale> {
+        let font = self.eqtb.fonts.get(usize::from(f))?;
+        Some(crate::writet3::PkScale {
+            font_size: crate::pdfrender::pdf_font_size(font.at_size),
+            design_size: i64::from(font.dsize),
+            resolution: self.pdf_backend.pk_resolution.max(72),
+            decimal_digits: self.pdf_fixed.map_or(3, |fixed| fixed.decimal_digits),
+        })
+    }
+
     /// pdftex.web `pdf_init_font` / `pdf_use_font`: give font `f` its PDF
     /// font resource, shared with an earlier initialized font of the same
     /// TFM (or of its expansion base), and return that owner `ff`.
@@ -1015,6 +1098,9 @@ impl Engine {
             .map_or(0, |x| x.blink);
         let ff = if blink != 0 {
             self.pdf_init_font(blink)
+        } else if self.pdf_font_is_pk(f) {
+            // `isscalable(f)` fails: every size has its own Type 3 font
+            f
         } else {
             let fonts = &self.eqtb.fonts;
             let font = fonts.get(f as usize);

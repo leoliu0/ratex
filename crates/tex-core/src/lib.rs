@@ -122,6 +122,7 @@ pub mod tex_bytes;
 mod tex_print;
 pub mod token;
 mod writet1;
+pub mod writet3;
 
 pub use engine::Engine;
 pub use pdffile::PdfEncryptConfig;

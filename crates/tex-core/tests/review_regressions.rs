@@ -1415,6 +1415,45 @@ fn display_error_recovery_preserves_following_paragraphs() {
     }
 }
 
+/// tex.web §1196: a formula ends with space factor 1000 in restricted
+/// horizontal mode too, so the space after it gets no extra space.
+/// pdftex -ini: [A1000][W22.38199pt].
+#[test]
+fn inline_math_resets_the_space_factor_inside_boxes() {
+    let e = run_lenient(&format!(
+        r"{PROBE_SETUP}
+\sfcode`\.=3000
+\setbox0\hbox{{x.$x$\message{{[A\the\spacefactor]}} y}}\message{{[W\the\wd0]}}
+\end"
+    ));
+    assert_eq!(e.error_count, 0, "{}", e.log);
+    let values = message_values(&e);
+    for want in ["[A1000]", "[W22.38199pt]"] {
+        assert!(values.contains(want), "{want} missing: {}", e.term);
+    }
+}
+
+/// tex.web §1151 scan_math: an unbraced math character field keeps only
+/// its family and character, so `\mathop\mathchar"303A` is centered on the
+/// axis by make_op while the braced rel noad is not, and a `\sum` script
+/// is set as an ord. pdftex -ini: [A4.65277pt,0.0pt][B4.30554pt,0.0pt]
+/// [C11.0765pt,0.0pt].
+#[test]
+fn unbraced_math_fields_drop_the_character_class() {
+    let e = run_lenient(&format!(
+        r#"{PROBE_SETUP}\catcode`\^=7
+\setbox0\hbox{{$\mathop\mathchar"303A$}}\message{{[A\the\ht0,\the\dp0]}}
+\setbox0\hbox{{$\mathop{{\mathchar"303A}}$}}\message{{[B\the\ht0,\the\dp0]}}
+\setbox0\hbox{{$x^\mathchar"1350$}}\message{{[C\the\ht0,\the\dp0]}}
+\end"#
+    ));
+    assert_eq!(e.error_count, 0, "{}", e.log);
+    let values = message_values(&e);
+    for want in ["[A4.65277pt,0.0pt]", "[B4.30554pt,0.0pt]", "[C11.0765pt,0.0pt]"] {
+        assert!(values.contains(want), "{want} missing: {}", e.term);
+    }
+}
+
 /// tex.web §1160 scan_delimiter: a token that is not a letter/other with a
 /// nonnegative \delcode (or `\delimiter`) gives `Missing delimiter (. inserted)`
 /// and is read again, for \left, \middle, \right and every ...withdelims.
@@ -1708,5 +1747,95 @@ fn hbox_starts_at_space_factor_1000() {
     );
     for expected in ["[IN 1000]", "[OUT 2000]", "[W 10.41669pt]", "[AFTER 1000]"] {
         assert!(e.term.contains(expected), "{expected}: {}", e.term);
+    }
+}
+
+/// tex.web `char_exists` (§554) tests the TFM width index, not the metrics:
+/// xy-pic's arrow-tip font xyatip10 maps every character to a zero width
+/// entry, and pdftex (TeX Live 2026) sets `\x\char47 \char15` as two
+/// character nodes in a 0pt box. lasy10 has width index 0 at code 5, inside
+/// its 1..61 range, so `\iffontchar` is false there.
+#[test]
+fn zero_metric_characters_exist_and_width_index_zero_slots_do_not() {
+    let e = engine(
+        r"\font\x=xyatip10 \setbox0\hbox{\x\char47 \char15}
+\font\l=lasy10
+\message{[X47 \iffontchar\x47 Y\else N\fi]}
+\message{[L5 \iffontchar\l5 Y\else N\fi]}
+\message{[L1 \iffontchar\l1 Y\else N\fi]}
+\end",
+    );
+    let chars: Vec<u8> = match e.eqtb.boxed[0].as_ref() {
+        Some(tex_core::boxes::Node::Box { w: 0, list, .. }) => list
+            .iter()
+            .filter_map(|n| match n {
+                tex_core::boxes::Node::Char { c, .. } => Some(*c),
+                _ => None,
+            })
+            .collect(),
+        other => panic!("box0: {other:?}"),
+    };
+    assert_eq!(chars, [47, 15], "{}", e.term);
+    let values = message_values(&e);
+    for expected in ["[X47Y]", "[L5N]", "[L1Y]"] {
+        assert!(values.contains(expected), "{expected}: {}", e.term);
+    }
+}
+
+/// pdftex -ini (TeX Live 2026, main_memory = 5000000): a single paragraph of
+/// 300 000 characters (more nodes than the old fixed 250 000-node list
+/// bound) breaks into 3334 lines without exceeding TeX's capacity.
+#[test]
+fn long_paragraph_fits_in_main_memory() {
+    // The resident-set guard measures the whole test process, which the
+    // tests running alongside share; only TeX's own capacity is tested here.
+    std::env::set_var("TEX_MEM_LIMIT_MIB", "0");
+    let e = engine(
+        r"\font\f=cmr10 \f \hsize=400pt \pretolerance=10000
+\def\w{abcdefghi }
+\count1=0
+\def\loop{\w\advance\count1 by1 \ifnum\count1<30000 \expandafter\loop\fi}
+\loop\par
+\message{[LINES \the\prevgraf]}
+\end",
+    );
+    assert!(e.term.contains("[LINES 3334]"), "{}", e.term);
+}
+
+/// pdftex -ini (TeX Live 2026): macro arguments and expansions inside
+/// alignment entries end the entry only at a row delimiter met at brace
+/// depth zero (tex.web §342); `&` hidden in braces, `\let` to `&`, `\cr`
+/// in a macro body and delimited arguments around them behave as in TeX.
+#[test]
+fn alignment_entries_end_only_at_visible_row_delimiters() {
+    let e = engine(
+        r"\catcode`\&=4
+\font\f=cmr10 \f
+\let\amp=&
+\count1=0
+\def\upto#1.{\message{<#1>}}
+\def\pick#1#2{\message{(#2)}}
+\def\twocells{x&y}
+\def\threecells{a\amp b\amp c}
+\def\row{p&q\cr}
+\def\inner#1;#2;{#1#2}
+\setbox0\vbox{\halign{\global\advance\count1 by1 #&&\global\advance\count1 by1 [#]\cr
+\upto {u\amp v}.\pick a{b&c}&\twocells\cr
+\threecells\cr
+\row\row
+\inner A&;B&;C\cr
+\upto w x y z.&\upto{\cr}.\cr}}
+\message{[CELLS \the\count1, WD \the\wd0]}
+\end",
+    );
+    let flat = e.term.replace('\n', "");
+    for expected in [
+        r"<u\amp v>",
+        "(b&c)",
+        "<w x y z>",
+        r"<\cr >",
+        "[CELLS 15, WD 32.91675pt]",
+    ] {
+        assert!(flat.contains(expected), "{expected}: {}", e.term);
     }
 }

@@ -219,7 +219,10 @@ impl Engine {
     /// tex.web ex_space (control space `\ `): append_normal_space — plain
     /// interword glue of the current font (or \spaceskip as-is when set),
     /// WITHOUT space-factor scaling of stretch/shrink and without
-    /// \fontdimen7 extra space. \spacefactor is left unchanged.
+    /// \fontdimen7 extra space. \spacefactor is left unchanged. Math mode
+    /// takes the same `goto append_normal_space` (tex.web §1045), so the
+    /// glue lands on the math list built from the same \spaceskip/current
+    /// \fontdimen values as in horizontal mode.
     pub fn ex_space(&mut self) {
         self.flush_native_text();
         self.end_char_chain();
@@ -235,41 +238,44 @@ impl Engine {
         }
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => {
-                let ss = self.eqtb.glue_params[GlueParam::SpaceSkip.idx() as usize];
-                let g = if !ss.is_zero() {
-                    ss.param(glue_subtype::SPACE_SKIP)
-                } else {
-                    let f = self.eqtb.cur_font_val;
-                    let fp = self.eqtb.font_params.get(f as usize);
-                    let fd = |i: usize| -> Option<i32> { fp.and_then(|v| v.get(i).copied()) };
-                    match self.eqtb.fonts.get(f as usize) {
-                        Some(font) => Glue::spec(
-                            fd(1).unwrap_or_else(|| font.space()),
-                            fd(2).unwrap_or_else(|| font.space_stretch()),
-                            0,
-                            fd(3).unwrap_or_else(|| font.space_shrink()),
-                            0,
-                        ),
-                        None => Glue::zero(),
-                    }
-                };
-                let mut g = g;
-                if self.engine_kind == crate::engine::EngineKind::LuaTeX {
-                    g.subtype = glue_subtype::SPACE_SKIP;
-                }
+                let g = self.normal_space_glue();
                 self.cur_list.push(Node::Glue(g, self.eqtb.cur_attr));
             }
             Mode::Math | Mode::DisplayMath => {
-                // tex.web mmode+ex_space: goto append_normal_space — a plain
-                // space glue lands on the math list.
-                let f = self.eqtb.cur_font_val;
-                if let Some(font) = self.eqtb.fonts.get(f as usize) {
-                    let g = Glue::spec(font.space(), font.space_stretch(), 0, font.space_shrink(), 0);
-                    self.append_mlist_node(Node::Glue(g, self.eqtb.cur_attr));
-                }
+                let g = self.normal_space_glue();
+                self.append_mlist_node(Node::Glue(g, self.eqtb.cur_attr));
             }
             Mode::Vertical | Mode::InternalVertical => {}
         }
+    }
+
+    /// tex.web append_normal_space (§1041): \spaceskip as a parameter glue
+    /// when nonzero, else the current font's space glue read from the
+    /// mutable \fontdimen overlay (TeX's `font_glue`, which a \fontdimen2-4
+    /// assignment resets).
+    fn normal_space_glue(&self) -> Glue {
+        let ss = self.eqtb.glue_params[GlueParam::SpaceSkip.idx() as usize];
+        let mut g = if !ss.is_zero() {
+            ss.param(glue_subtype::SPACE_SKIP)
+        } else {
+            let f = self.eqtb.cur_font_val;
+            let fp = self.eqtb.font_params.get(f as usize);
+            let fd = |i: usize| -> Option<i32> { fp.and_then(|v| v.get(i).copied()) };
+            match self.eqtb.fonts.get(f as usize) {
+                Some(font) => Glue::spec(
+                    fd(1).unwrap_or_else(|| font.space()),
+                    fd(2).unwrap_or_else(|| font.space_stretch()),
+                    0,
+                    fd(3).unwrap_or_else(|| font.space_shrink()),
+                    0,
+                ),
+                None => Glue::zero(),
+            }
+        };
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            g.subtype = glue_subtype::SPACE_SKIP;
+        }
+        g
     }
 
     /// Whether the current font is a Lua font (its characters become
@@ -3686,17 +3692,7 @@ mod structural_state_tests {
         font_with_hole.tfm_name = "holes".into();
         font_with_hole.bc = 0;
         font_with_hole.ec = 2;
-        font_with_hole.chars = vec![
-            CharInfo {
-                width: 0,
-                height: 0,
-                depth: 0,
-                italic: 0,
-                tag: 0,
-                remainder: 0,
-            };
-            3
-        ];
+        font_with_hole.chars = vec![CharInfo::MISSING; 3];
         engine.eqtb.fonts.push(std::rc::Rc::new(font_with_hole));
         engine.eqtb.cur_font_val = 1;
 

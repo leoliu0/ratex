@@ -108,6 +108,7 @@ local wanted = {
   ['lmroman10-regular.otf'] = true, ['lmroman10-bold.otf'] = true,
   ['lmroman10-italic.otf'] = true, ['lmroman10-bolditalic.otf'] = true,
   ['lmmono10-regular.otf'] = true, ['FandolSong-Regular.otf'] = true,
+  ['cmunrm.otf'] = true, ['cmunss.otf'] = true,
 }
 local found = {}
 for _, dir in ipairs(file.splitpath(kpse.expand_path(kpse.show_path('opentype fonts')))) do
@@ -129,6 +130,7 @@ end
 for _, name in ipairs({
   'lmroman10-regular.otf', 'lmroman10-bold.otf', 'lmroman10-italic.otf',
   'lmroman10-bolditalic.otf', 'lmmono10-regular.otf', 'FandolSong-Regular.otf',
+  'cmunrm.otf', 'cmunss.otf',
 }) do
   P(name, (assert(found[name], 'undiscovered font: ' .. name)))
 end
@@ -140,6 +142,8 @@ end
         "lmroman10-bolditalic.otf | LM Roman 10 | LMRoman10-BoldItalic | LMRoman10-BoldItalic",
         "lmmono10-regular.otf | LM Mono 10 | LMMono10-Regular | LMMono10-Regular",
         "FandolSong-Regular.otf | FandolSong | FandolSong-Regular | FandolSong",
+        "cmunrm.otf | CMU Serif | CMUSerif-Roman | CMU Serif Roman",
+        "cmunss.otf | CMU Sans Serif | CMUSansSerif | CMU Sans Serif",
     ]);
 }
 

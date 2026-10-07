@@ -927,6 +927,14 @@ fn check_depcache(
             }
             continue;
         }
+        if let Some(rest) = line.strip_prefix("MODDATE\t") {
+            let (path, date) = rest.split_once('\t')?;
+            let path = decode_record_path(path)?;
+            if tex_core::expand::disk_file_mod_date(&path).as_deref() != Some(date) {
+                return None;
+            }
+            continue;
+        }
         let rest = line.strip_prefix("FILE\t")?;
         let (path, stamp, hash) = parse_stamped_entry(rest)?;
         if !dependency_identity_matches(&path, stamp, hash, &cache_meta) {
@@ -1093,7 +1101,13 @@ struct DepcacheInputs<'a> {
     deps: &'a [std::path::PathBuf],
     directories: &'a [(std::path::PathBuf, u64)],
     reads: &'a [(std::path::PathBuf, u64, u64)],
+    /// The `reads` TeX made after the run first executed a shell command.
+    reads_after_shell_escape: std::ops::Range<usize>,
     sizes: &'a [(std::path::PathBuf, u64)],
+    /// The `sizes` TeX observed after the run first executed a shell command.
+    sizes_after_shell_escape: std::ops::Range<usize>,
+    /// `\pdffilemoddate` results the run expanded.
+    mod_dates: &'a [(std::path::PathBuf, String)],
     missing: &'a [std::path::PathBuf],
     missing_directories: &'a [std::path::PathBuf],
     present_directories: &'a [std::path::PathBuf],
@@ -1101,6 +1115,40 @@ struct DepcacheInputs<'a> {
     outputs_missing_at_start: &'a [std::path::PathBuf],
     published_outputs: Option<&'a TexmkPublishedOutputs>,
     aux_start: &'a [(std::path::PathBuf, u64, u64)],
+}
+
+/// Files first observed (read or sized) after a `\write18` command ran and
+/// gone again at the end of the run: the run's own commands created and
+/// removed them (minted's `latexminted config` and `cleanconfig`). The next
+/// run starts without them as this one ended; like latexmk, which compares a
+/// vanished input with its state after the run, the record keeps their
+/// absence rather than the contents the command produced.
+fn vanished_shell_outputs(
+    inputs: &DepcacheInputs<'_>,
+) -> std::collections::BTreeSet<std::path::PathBuf> {
+    let reads = inputs.reads_after_shell_escape.clone();
+    let sizes = inputs.sizes_after_shell_escape.clone();
+    let (Some(reads_after), Some(sizes_after)) =
+        (inputs.reads.get(reads.clone()), inputs.sizes.get(sizes.clone()))
+    else {
+        return Default::default();
+    };
+    if reads_after.is_empty() && sizes_after.is_empty() {
+        return Default::default();
+    }
+    let observed_otherwise: std::collections::BTreeSet<_> = inputs.reads[..reads.start]
+        .iter()
+        .chain(&inputs.reads[reads.end..])
+        .map(|(path, _, _)| anchored_path(path))
+        .chain(inputs.sizes[..sizes.start].iter().map(|(path, _)| anchored_path(path)))
+        .collect();
+    reads_after
+        .iter()
+        .map(|(path, _, _)| path)
+        .chain(sizes_after.iter().map(|(path, _)| path))
+        .map(|path| anchored_path(path))
+        .filter(|path| !observed_otherwise.contains(path) && std::fs::symlink_metadata(path).is_err())
+        .collect()
 }
 
 fn write_depcache(cache_path: &std::path::Path, inputs: DepcacheInputs<'_>) {
@@ -1156,7 +1204,11 @@ fn write_depcache(cache_path: &std::path::Path, inputs: DepcacheInputs<'_>) {
             }
         }
     }
+    let vanished_shell_outputs = vanished_shell_outputs(&inputs);
     for (path, (size, hash)) in &read_identities {
+        if vanished_shell_outputs.contains(path) {
+            continue;
+        }
         let Some((stamp, digest)) = stable_content_identity(path) else {
             return;
         };
@@ -1184,6 +1236,9 @@ fn write_depcache(cache_path: &std::path::Path, inputs: DepcacheInputs<'_>) {
     }
     let mut recorded_sizes = Vec::with_capacity(size_identities.len());
     for (path, size) in &size_identities {
+        if vanished_shell_outputs.contains(path) {
+            continue;
+        }
         if std::fs::metadata(path)
             .ok()
             .filter(|metadata| metadata.is_file())
@@ -1197,6 +1252,28 @@ fn write_depcache(cache_path: &std::path::Path, inputs: DepcacheInputs<'_>) {
             return;
         }
         recorded_sizes.push((path.clone(), *size));
+    }
+    let mut mod_dates = std::collections::BTreeMap::new();
+    for (path, date) in inputs.mod_dates {
+        match mod_dates.entry(anchored_path(path)) {
+            Entry::Vacant(entry) => {
+                entry.insert(date.as_str());
+            }
+            Entry::Occupied(entry) => {
+                if *entry.get() != date {
+                    return;
+                }
+            }
+        }
+    }
+    for (path, date) in &mod_dates {
+        if tex_core::expand::disk_file_mod_date(path).as_deref() != Some(*date) {
+            return;
+        }
+        let _ = writeln!(out, "MODDATE\t{}\t{date}", encode_record_path(path));
+        if out.len() as u64 > DEPCACHE_RECORD_MAX_BYTES {
+            return;
+        }
     }
     let mut unique: BTreeSet<std::path::PathBuf> =
         inputs.deps.iter().map(|path| anchored_path(path)).collect();
@@ -1218,6 +1295,7 @@ fn write_depcache(cache_path: &std::path::Path, inputs: DepcacheInputs<'_>) {
         .missing
         .iter()
         .map(|path| anchored_path(path))
+        .chain(vanished_shell_outputs)
         .collect();
     let missing_directories: BTreeSet<std::path::PathBuf> = inputs
         .missing_directories
@@ -1416,7 +1494,10 @@ fn write_depcache(cache_path: &std::path::Path, inputs: DepcacheInputs<'_>) {
             == Some(*stamp)
     }) && missing_file_paths.iter().all(|path| !path.is_file())
         && missing_directory_paths.iter().all(|path| !path.is_dir())
-        && present_directories.iter().all(|path| path.is_dir());
+        && present_directories.iter().all(|path| path.is_dir())
+        && mod_dates
+            .iter()
+            .all(|(path, date)| tex_core::expand::disk_file_mod_date(path).as_deref() == Some(*date));
     if written.is_ok() && inputs_unchanged {
         let _ = replace_file(&temporary, cache_path);
     }
@@ -3125,6 +3206,14 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             && eng.font_loader.dependency_tracking_complete
             && aux_state_is_unchanged(&aux_start)
         {
+            let (reads_after_shell_escape, sizes_after_shell_escape) = eng
+                .observations_before_shell_escape
+                .map_or((0..0, 0..0), |(reads, sizes)| {
+                    (
+                        reads..eng.loaded_file_digests.len(),
+                        sizes..eng.loaded_file_sizes.len(),
+                    )
+                });
             eng.loaded_files
                 .extend(eng.font_loader.dependency_files.iter().cloned());
             eng.loaded_file_digests
@@ -3142,7 +3231,10 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
                     deps: &eng.loaded_files,
                     directories: &eng.font_loader.dependency_directories,
                     reads: &eng.loaded_file_digests,
+                    reads_after_shell_escape,
                     sizes: &eng.loaded_file_sizes,
+                    sizes_after_shell_escape,
+                    mod_dates: &eng.loaded_file_mod_dates,
                     missing: &eng.missing_files,
                     missing_directories: &eng.font_loader.dependency_missing_directories,
                     present_directories: &eng.font_loader.dependency_present_directories,
@@ -3428,7 +3520,10 @@ mod startup_tests {
                 deps: &[],
                 directories: &[],
                 reads: &[],
+                reads_after_shell_escape: 0..0,
                 sizes: &stale_observation,
+                sizes_after_shell_escape: 0..0,
+                mod_dates: &[],
                 missing: &[],
                 missing_directories: &[],
                 present_directories: &[],
@@ -3452,7 +3547,10 @@ mod startup_tests {
                 deps: &[],
                 directories: &[],
                 reads: &[],
+                reads_after_shell_escape: 0..0,
                 sizes: &stable_observation,
+                sizes_after_shell_escape: 0..0,
+                mod_dates: &[],
                 missing: &[],
                 missing_directories: &[],
                 present_directories: &[],

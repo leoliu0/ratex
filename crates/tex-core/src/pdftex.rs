@@ -243,6 +243,8 @@ impl Engine {
             crate::FxHashMap::default();
         let mut raw_group_index: crate::FxHashMap<String, usize> = crate::FxHashMap::default();
         let mut raw_group_members: Vec<(u16, String)> = Vec::new();
+        // Lua CID fonts: glyph texts of each shared font dictionary's owner
+        let mut cid_texts: crate::FxHashMap<u16, crate::FxHashMap<u16, String>> = crate::FxHashMap::default();
         for &fid in &used {
             let Some(font) = self.eqtb.fonts.get(fid as usize).cloned() else {
                 continue;
@@ -529,6 +531,12 @@ impl Engine {
                     if is_native {
                         let ascent = (f64::from(face.ascender()) * scale).round();
                         let descent = (f64::from(face.descender()) * scale).round();
+                        let master = self.pdf_backend.font_ff.get(&fid).copied().unwrap_or(fid);
+                        if !cid_texts.contains_key(&master) {
+                            let texts = self.lua_cid_tounicode(master);
+                            cid_texts.insert(master, texts);
+                        }
+                        let texts = &cid_texts[&master];
                         let bindings = self
                             .pdf_doc
                             .native_bindings
@@ -539,15 +547,14 @@ impl Engine {
                         for (b_idx, binding) in bindings.iter().enumerate() {
                             let cur_idx = self.pdf_doc.fonts.len();
                             let mut used_gids = std::collections::BTreeSet::new();
-                            let mut native_cids = Vec::new();
                             let mut to_unicode_2byte = Vec::new();
-                            for &(code, gid, ref txt) in &binding.entries {
+                            for &(code, gid) in &binding.entries {
                                 used_gids.insert(gid);
-                                native_cids.push((code, gid, txt.clone()));
-                                if !txt.is_empty() {
-                                    to_unicode_2byte.push((code, txt.clone()));
+                                if let Some(text) = texts.get(&gid).filter(|text| !text.is_empty()) {
+                                    to_unicode_2byte.push((code, text.clone()));
                                 }
                             }
+                            let native_cids = binding.entries.clone();
                             let ef = crate::pdfout::EmbedFont {
                                 obj_font: 0,
                                 base_font: base_font.clone(),
@@ -850,11 +857,6 @@ impl Default for PdfBackend {
 }
 
 impl PdfBackend {
-    /// Number of font objects created so far.
-    pub(crate) fn initialized_fonts(&self) -> usize {
-        self.font_reps.len()
-    }
-
     /// Creation order of the font object of owner `f` (`pdf_create_obj`).
     pub(crate) fn init_order(&self, f: u16) -> usize {
         self.font_reps.iter().position(|&k| k == f).unwrap_or(usize::MAX)
@@ -1014,13 +1016,16 @@ impl Engine {
         let ff = if blink != 0 {
             self.pdf_init_font(blink)
         } else {
-            let name = self.eqtb.fonts.get(f as usize).map(|font| font.tfm_name.clone());
             let fonts = &self.eqtb.fonts;
+            let font = fonts.get(f as usize);
             self.pdf_backend
                 .font_reps
                 .iter()
                 .copied()
-                .find(|&k| fonts.get(k as usize).map(|font| &font.tfm_name) == name.as_ref())
+                .find(|&k| {
+                    font.zip(fonts.get(k as usize))
+                        .is_some_and(|(font, other)| fonts_shareable(font, other))
+                })
                 .unwrap_or(f)
         };
         if ff == f {
@@ -1206,6 +1211,24 @@ impl Engine {
         self.eqtb.hyphen_char[k] = self.eqtb.hyphen_char[f];
         self.eqtb.skew_char[k] = self.eqtb.skew_char[f];
         self.eqtb.assign(u, crate::eqtb::Equiv::FontRef(k as u16), global);
+    }
+}
+
+/// Whether font `f` shares the PDF font dictionary of the initialized font
+/// `k`: pdfTeX's same TFM, and luatex pdffont.c `font_shareable`, under which
+/// fonts with a CID registry or two-byte encoding (the OpenType fonts that
+/// Lua defines) share by the same `filename` and `fullname`.
+fn fonts_shareable(f: &crate::tfm::Font, k: &crate::tfm::Font) -> bool {
+    let wide = |font: &crate::tfm::Font| {
+        font.lua.as_ref().is_some_and(|lf| lf.cidinfo.is_some() || lf.encodingbytes == 2)
+    };
+    if !wide(f) && !wide(k) {
+        return f.tfm_name == k.tfm_name;
+    }
+    let same = |a: &Option<Vec<u8>>, b: &Option<Vec<u8>>| a.is_some() && a == b;
+    match (&f.lua, &k.lua) {
+        (Some(a), Some(b)) => same(&a.filename, &b.filename) && same(&a.fullname, &b.fullname),
+        _ => false,
     }
 }
 

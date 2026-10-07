@@ -103,6 +103,48 @@ fn tex_print_family_follows_luatex_line_rules() {
     assert_eq!(shown(&e), expected, "term: {}", e.term);
 }
 
+/// textoken.c `str_toks` decodes UTF-8: `\detokenize`, `\string`, `\meaning`
+/// and `\luaescapestring` give one character token per scalar, so biblatex's
+/// `\DeclareRangeChars*{–—}` builds `\do\–\do\—` single-character control
+/// sequences that work as alphabetic constants; such a control sequence
+/// prints with a trailing space only when its character is a letter.
+#[test]
+fn string_conversions_yield_one_token_per_unicode_scalar() {
+    let mut e = luatex_ini();
+    run(
+        &mut e,
+        r#"\def\show#1{\immediate\write16{[#1]}}
+\def\count#1#2\relax{\number`#1\ifx\relax#2\relax\else,\count#2\relax\fi}
+\show{\expandafter\count\detokenize{–é—}\relax}
+\show{\expandafter\count\string\–\relax}
+\def\m{ü}\show{\expandafter\count\meaning\m\relax}
+\show{\expandafter\count\luaescapestring{ä"}\relax}
+\def\defdochars#1#2{\ifx#2\relax\else
+  \xdef#1{\unexpanded\expandafter{#1}\noexpand\do\expandafter\noexpand\csname#2\endcsname}%
+  \expandafter\defdochars\expandafter#1\fi}
+\def\foo{}\expandafter\defdochars\expandafter\foo\detokenize{–—}\relax
+\def\do#1{\uccode`#1=`\%}\foo
+\show{\the\uccode"2013,\the\uccode"2014}
+\show{\meaning\foo}
+\catcode`\é=11 \def\m{\é\–x\a}\show{\meaning\m}"#,
+    );
+    assert!(errors(&e).is_empty(), "errors: {:?}", errors(&e));
+    assert_eq!(
+        shown(&e),
+        [
+            "[8211,233,8212]",
+            "[92,8211]",
+            "[109,97,99,114,111,58,45,62,252]",
+            "[228,92,34]",
+            "[37,37]",
+            "[macro:->\\do \\–\\do \\—]",
+            "[macro:->\\é \\–x\\a ]",
+        ],
+        "term: {}",
+        e.term
+    );
+}
+
 #[test]
 fn printed_bytes_that_are_not_utf8_read_as_replacement_characters() {
     let mut e = luatex_ini();

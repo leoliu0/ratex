@@ -26,7 +26,7 @@ Typesetting algorithms are documented in the module comments of
 | `pdffile.rs`, `pdf_fonts.rs` | PDF serialization, Type 1 parsing and embedding |
 | `pdftex.rs`, `pdfrender.rs` | pdfTeX backend state: resource names (`/F`, `/Fm`, `/Im` and the `\pdfuniqueresname` tag), form shipping on first paint, query primitives, Info/trailer inputs |
 | `writet1.rs` | writet1.c port: Type 1 FontFile cleartext/`/Encoding`/eexec/Subrs rewrite, `/Length1-3` |
-| `pdf_images.rs`, `pdf_encodings.rs` | pdftoepdf port: one shared `PdfSource` per included file; with `\pdfinclusioncopyfonts=0` Type 1/Type1C fonts the font map knows are replaced by the map's program (xpdf base-encoding tables) |
+| `pdf_images.rs`, `pdf_encodings.rs` | pdftoepdf port: one shared `PdfSource` per included file; with `\pdfinclusioncopyfonts=0` Type 1/Type1C fonts the font map knows are replaced by the map's program (xpdf base-encoding tables) and their descriptor is never preset from a TFM; every other object is copied as it is, unembedded standard fonts included — only the EPS converter's PDFs (`tex_ps::EPS_PDF_PRODUCER`) get the standard-font programs Ghostscript would embed |
 | `pdfrender/dpx.rs`, `pdfrender/dpx_text.rs` | XeTeX's xdvipdfmx-compatible PDF driver: separate cached DVI and reader positions, text matrices and glyph runs; raw TFM metric words use the driver's `sqxfw` rounding for annotation bounds |
 | `dpx_font.rs`, `dpx_cff.rs`, `dpx_tt.rs`, `dpx_t1.rs` | xdvipdfmx native font objects, Unicode CMaps, TrueType/CFF subsetting and TFM Type 1 → Type1C conversion |
 | `diagnostics.rs` | structured diagnostics and their output bounds |
@@ -68,6 +68,16 @@ Lua PDF text follows [upstream positioning](https://github.com/TeX-Live/texlive-
 font changes establish an absolute text matrix. The glyph pen retains
 1/10000-em units and truncates when emitting coarser TJ adjustments; pdfTeX
 keeps its integer-sp raster and relative text moves.
+
+OpenType Lua fonts share a PDF font owner when their `filename` and `fullname`
+match ([`font_shareable`](https://github.com/TeX-Live/texlive-source/blob/trunk/texk/web2c/luatexdir/pdf/pdffont.c));
+`pdf.getfontname` reports that owner. Their two-byte codes are allocated per
+glyph and the ToUnicode text is settled when fonts are written, after
+`finish_pdffile` (where luaotfload's harf mode assigns final `tounicode`
+values), following `write_cid_tounicode`: the sharers are visited by id and
+their marked characters by code (the owner also holds every sharer's marks),
+and a glyph takes its first value from the showing font's `tounicode`, then
+the owner's, or the character code when neither font enables `tounicode`.
 
 Lua characters keep scalar metrics inline; kerning, ligatures, math variants
 and kerns, successors, extensible recipes and virtual packets live in optional

@@ -1134,9 +1134,6 @@ pub enum Node {
         /// luatex `noad_fam`: [`NO_FAM`] unless a Lua noad sets `fam`; with
         /// `\mathrulethicknessmode` its font gives the bar thickness
         fam: u8,
-        /// the already-packed bar-and-body box the conversion yields; `body`
-        /// is the original field, kept for `\showlists` (tex.web §692)
-        packed: Box<Node>,
         attr: Attr,
     },
     VCenter {
@@ -1317,7 +1314,7 @@ fn single_dims(n: &Node, eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
             (wn.max(wd), hn + hd, 0)
         }
         Node::Radical { body, .. } => hlist_dims(body, eqtb),
-        Node::Overline { packed, .. } => single_dims(packed, eqtb),
+        Node::Overline { body, .. } => hlist_dims(body, eqtb),
         Node::OpLimits { op, .. } => hlist_dims(op, eqtb),
         Node::VCenter { box_node } => single_dims(box_node, eqtb),
         Node::Whatsit(WhatIt::PdfRefXImage { w, h, d, .. }, _)

@@ -179,6 +179,10 @@ pub(crate) fn finish_math_group(mut inner: NodeList, flatten: i32, attr: crate::
                 }
                 return n;
             }
+            // tex.web §1186: the lone ord noad may have a box nucleus
+            // (`{\raise1pt\hbox{}}`, amsmath's \smash); the group becomes that
+            // sub_box, so a shifted box is not repacked by a sub_mlist hpack
+            Some(Node::Box { .. }) if bit(CL_ORD) => return inner.pop().unwrap(),
             _ => {}
         }
     }
@@ -478,6 +482,7 @@ impl Engine {
             // etex.ch init_math: x = \predisplaydirection, j = LR_box
             let mut lr_direction = 0;
             let mut lr_box = None;
+            let (display_l, display_s);
             if self.mode == Mode::Horizontal {
                 // the interrupted paragraph's LR_save is keyed by its depth
                 let lr_key = self.saved_lists.len();
@@ -522,8 +527,8 @@ impl Engine {
                 } else {
                     (hsize, 0)
                 };
-                self.pre_display_l = l;
-                self.pre_display_s = s;
+                display_l = l;
+                display_s = s;
                 self.pre_display_size = if was_empty {
                     -0x3FFF_FFFF
                 } else {
@@ -550,8 +555,8 @@ impl Engine {
                     self.prev_depth = 0;
                 }
                 self.pre_display_size = -0x3FFF_FFFF;
-                self.pre_display_l = self.eqtb.dim_params[DimParam::HSize.idx() as usize] as i64;
-                self.pre_display_s = 0;
+                display_l = self.eqtb.dim_params[DimParam::HSize.idx() as usize] as i64;
+                display_s = 0;
             }
             // tex.web push_math: the display math group level (exit_math /
             // \\endgroup pop it; dropping this push leaves one pop too many
@@ -572,12 +577,12 @@ impl Engine {
                 .assign_int_param(IntParam::PreDisplayDirection, lr_direction, false);
             self.eqtb.assign_dim_param(
                 crate::prim::DimParam::DisplayWidth,
-                self.pre_display_l as i32,
+                display_l as i32,
                 false,
             );
             self.eqtb.assign_dim_param(
                 crate::prim::DimParam::DisplayIndent,
-                self.pre_display_s as i32,
+                display_s as i32,
                 false,
             );
             let outer_mode = self.mode;
@@ -863,6 +868,9 @@ impl Engine {
                 g(crate::prim::GlueParam::LineSkip),
                 self.eqtb.dim_params[crate::prim::DimParam::LineSkipLimit.idx() as usize],
                 i(crate::prim::IntParam::PreDisplayDirection),
+                self.eqtb.dim_params[DimParam::DisplayWidth.idx() as usize],
+                self.eqtb.dim_params[DimParam::DisplayIndent.idx() as usize],
+                self.eqtb.dim_params[DimParam::PreDisplaySize.idx() as usize],
             ))
         } else {
             None
@@ -936,24 +944,20 @@ impl Engine {
         }
         let hlist = inline_hlist.unwrap();
         match self.mode {
-            // tex.web §22461 (finish math in text): the converted nodes are
-            // SPLICED into the current hlist between math-on/math-off nodes
-            // carrying \mathsurround — justification stretches into the
-            // formula and lines may break inside it (never inside a box)
-            Mode::Horizontal => {
-                self.cur_list.push(Node::MathKern(ms, 1, formula_attr));
-                self.cur_list.extend(hlist);
-                self.cur_list.push(Node::MathKern(ms, 2, formula_attr));
-                self.space_factor = 1000;
-            }
             Mode::Vertical | Mode::InternalVertical => {
                 let hbox = hpack(hlist, None, HBOX, &self.eqtb).node;
                 self.vlist_append(hbox);
             }
+            // tex.web §1196 (finish math in text): the converted nodes are
+            // SPLICED into the current hlist between math-on/math-off nodes
+            // carrying \mathsurround — justification stretches into the
+            // formula and lines may break inside it (never inside a box) —
+            // and the space factor is 1000 in either horizontal mode
             _ => {
                 self.cur_list.push(Node::MathKern(ms, 1, formula_attr));
                 self.cur_list.extend(hlist);
                 self.cur_list.push(Node::MathKern(ms, 2, formula_attr));
+                self.space_factor = 1000;
             }
         }
     }
@@ -972,6 +976,9 @@ impl Engine {
             i32,
             crate::boxes::Glue,
             crate::boxes::Glue,
+            i32,
+            i32,
+            i32,
             i32,
             i32,
         ),
@@ -1044,10 +1051,12 @@ impl Engine {
                 self.resume_after_display();
                 return;
             }
-            // tex.web §22504 (finish displayed math): z = \displaywidth,
-            // s = \displayindent, b = the formula at natural width
-            let z = self.pre_display_l;
-            let s = self.pre_display_s;
+            // tex.web §1199 (finish displayed math): z = \displaywidth,
+            // s = \displayindent as the display left them (read before
+            // unsave, so assignments inside the formula count), b = the
+            // formula at natural width
+            let z = i64::from(regs.10);
+            let s = i64::from(regs.11);
             // tex.web after_math converts the equation number (when there is one)
             // before the formula itself
             let tag_hlist = tag.as_ref().map(|(tl, _)| self.run_mlist_to_hlist(tl, 2, false));
@@ -1136,12 +1145,14 @@ impl Engine {
                 }
             }
             // tex.web §22563: normal skips iff `(d+s<=pre_display_size) or l`
-            // (l = \leqno). The sentinel -max_dimen (head=tail: `\noindent$$`
+            // (l = \leqno), \predisplaysize as the display left it. The
+            // sentinel -max_dimen (head=tail: `\noindent$$`
             // or a display following a display, §1148) therefore selects the
             // SHORT skips — raw comparison reproduces this, exactly as the
             // oracle shows (t6: consecutive $$ get \abovedisplayshortskip).
             // etex.ch: `if pre_display_direction<0 then s:=-s-z`
             let s_clear = if x < 0 { -s - z } else { s };
+            let pds = i64::from(regs.12);
             let is_short = if self.is_luamath()
                 && self.eqtb.int_params[IntParam::MathEqDirMode.idx() as usize] > 0
             {
@@ -1149,9 +1160,9 @@ impl Engine {
                 // direction of the text
                 let reversed = x < 0;
                 let near = a.is_some() && ((!reversed && leqno) || (reversed && !leqno));
-                !(s_clear + d <= self.pre_display_size || near)
+                !(s_clear + d <= pds || near)
             } else {
-                !leqno && (s_clear + d > self.pre_display_size)
+                !leqno && (s_clear + d > pds)
             };
             let (above, below) = if is_short {
                 (regs.2.clone(), regs.3.clone())
@@ -2014,13 +2025,13 @@ impl Engine {
         if xe_char {
             crate::xemath_prims::xe_char_field(&mut field);
         }
-        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
-            // texmath.c scan_math stores only the family and character of
-            // an unbraced math character field, not its original noad class.
-            if let [Node::MathChar { fam, class, .. }] = field.as_mut_slice() {
-                if *fam != crate::boxes::NO_FAM {
-                    *class = CL_ORD;
-                }
+        // tex.web §1151 scan_math (texmath.c alike) stores only the family
+        // and character of an unbraced math character field, not its noad
+        // class: `\mathop\mathchar"303A` is an op noad with a math_char
+        // nucleus, centered on the axis by make_op
+        if let [Node::MathChar { fam, class, .. }] = field.as_mut_slice() {
+            if *fam != crate::boxes::NO_FAM {
+                *class = CL_ORD;
             }
         }
         field
@@ -2161,14 +2172,11 @@ impl Engine {
     pub fn do_math_class(&mut self, class: u8) {
         self.show.scan_owner = Some(ScanKind::Class(class));
         let field = self.scan_math_group_or_token();
-        let node = if field.is_empty() {
-            Node::MathChar {
-                fam: 255,
-                c: 0,
-                class,
-                origin: MathDiagnosticOrigin::default(), attr: self.eqtb.cur_attr,
-            }
-        } else if field.len() == 1 {
+        // tex.web §1151/§1186: `\mathopen{}` is a noad of the class whose
+        // nucleus is an empty sub-mlist (an empty hbox that still takes part
+        // in inter-atom spacing); only a non-empty group reaches the
+        // single-node shortcuts below.
+        let node = if field.len() == 1 {
             match field.into_iter().next().unwrap() {
                 Node::MathChar {
                     fam,
@@ -2216,7 +2224,7 @@ impl Engine {
                 }
             }
         } else {
-            // multi-node group atom. tex.web: `\mathop{...}` (and the other
+            // empty or multi-node group atom. tex.web: `\mathop{...}` (and the other
             // math_comp prims) tail_append a FRESH noad whose type is the
             // class and whose subtype is `normal` — scripts then take the
             // make_op promotion rule `(subtype=normal) and (cur_style<
@@ -2243,36 +2251,47 @@ impl Engine {
         self.append_mlist_node(node);
     }
 
-    /// Knuth \\overline / \\underline: scan a math field, pack it, and
-    /// put a default-rule bar above (or below) with 3 default_rule_thickness
-    /// clearance (tex.web make_over / make_under).
+    /// Knuth \\overline / \\underline: scan a math field; the bar is built
+    /// when the noad is converted ([`Self::make_over_under`]), in the style
+    /// the enclosing mlist assigns it there (a fraction denominator, a
+    /// script, ...), not the style current while scanning.
     pub fn do_overline(&mut self, under: bool) {
         self.show.scan_owner = Some(if under { ScanKind::Under } else { ScanKind::Over });
         let group = self.scan_math_group_or_token();
-        // tex.web make_over uses cramped_style; make_under keeps cur_style.
-        let g = gstyle_of(self.cur_math_style()) | u8::from(!under);
-        let body = self.mlist_to_hlist_pen(&group, g, self.mode == Mode::Horizontal);
-        let packed = hpack(body, None, HBOX, &self.eqtb).node;
-        let (w, body_h, _) = box_dims(&packed);
+        self.append_mlist_node(Node::Overline {
+            body: group,
+            under,
+            fam: crate::boxes::NO_FAM,
+            attr: self.eqtb.cur_attr,
+        });
+    }
+
+    /// tex.web make_over (§734) / make_under (§735): the nucleus as a clean
+    /// box (cramped for \\overline) with a default-rule bar above or below
+    /// it at 3 default_rule_thickness clearance.
+    fn make_over_under(&mut self, body: &[Node], under: bool, style: GStyle, attr: crate::boxes::Attr) -> Node {
+        let g = if under { style } else { style | 1 };
+        let packed = self.clean_math_box(body, g);
+        let body_h = box_dims(&packed).1;
         let rt = self.default_rule_thickness(g);
         let kern = 3 * rt;
         let rule = Node::Rule {
-            // a running rule: the bar is as wide as the vlist (xetex.web
-            // overbar -- `new_rule` keeps its null width)
-            width: if self.engine_kind == crate::engine::EngineKind::XeTeX { crate::build::RULE_FILL } else { w },
+            // tex.web fraction_rule: a running rule, as wide as the vlist
+            // (wider once a script's \scriptspace is added to it)
+            width: crate::build::RULE_FILL,
             height: rt,
-            depth: 0, subtype: crate::boxes::RULE_NORMAL, index: 0, attr: self.eqtb.cur_attr,
+            depth: 0, subtype: crate::boxes::RULE_NORMAL, index: 0, attr,
         };
         let mut vlist = Vec::new();
         if under {
             vlist.push(packed);
-            vlist.push(Node::Kern(kern, self.eqtb.cur_attr));
+            vlist.push(Node::Kern(kern, attr));
             vlist.push(rule);
         } else {
             // tex.web overbar: an extra rule-thickness kern above the rule.
-            vlist.push(Node::Kern(rt, self.eqtb.cur_attr));
+            vlist.push(Node::Kern(rt, attr));
             vlist.push(rule);
-            vlist.push(Node::Kern(kern, self.eqtb.cur_attr));
+            vlist.push(Node::Kern(kern, attr));
             vlist.push(packed);
         }
         let mut vb = vpack(vlist, None, VBOX, &self.eqtb).node;
@@ -2285,12 +2304,7 @@ impl Engine {
                 *d = (extent - body_h as i64) as i32;
             }
         }
-        self.append_mlist_node(Node::Overline {
-            body: group,
-            under,
-            fam: crate::boxes::NO_FAM,
-            packed: Box::new(vb), attr: self.eqtb.cur_attr,
-        });
+        vb
     }
 
     /// tex.web scan_delimiter (§1160, r=false): after the next non-blank
@@ -2777,11 +2791,17 @@ impl Engine {
         let mut i = 0usize;
 
         while i < nodes.len() {
+            // A `\right` marker that took scripts (`\right)^a`) is wrapped
+            // in a Scripts node; it still closes the group, or every later
+            // atom of the list would lose its lig/kern program.
+            if is_lr_close(&nodes[i]) {
+                left_right_depth = left_right_depth.saturating_sub(1);
+                i += 1;
+                continue;
+            }
             if let Node::DelimBox { size, .. } = &nodes[i] {
-                match *size {
-                    0 => left_right_depth += 1,
-                    1 if left_right_depth > 0 => left_right_depth -= 1,
-                    _ => {}
+                if *size == 0 {
+                    left_right_depth += 1;
                 }
                 i += 1;
                 continue;
@@ -3411,7 +3431,15 @@ impl Engine {
                     let mut out = vec![Node::Char { c: byte, font: fid, attr: self.eqtb.cur_attr }];
                     if let Some(f) = self.eqtb.fonts.get(fid as usize) {
                         let ic = f.char_italic(byte);
-                        if ic != 0 && !(math_text_char && f.space() != 0) {
+                        // tex.web §755: `space(cur_f)` is the font's current
+                        // \fontdimen2, not the value loaded from the TFM
+                        let space = self
+                            .eqtb
+                            .font_params
+                            .get(fid as usize)
+                            .and_then(|v| v.get(1).copied())
+                            .unwrap_or_else(|| f.space());
+                        if ic != 0 && !(math_text_char && space != 0) {
                             out.push(Node::Kern(ic, self.eqtb.cur_attr));
                         }
                     }
@@ -3576,7 +3604,7 @@ impl Engine {
                 vec![b]
             }
             Node::Box { .. } => vec![n.clone()],
-            Node::Overline { packed, .. } => vec![(**packed).clone()],
+            Node::Overline { body, under, attr, .. } => vec![self.make_over_under(body, *under, style, *attr)],
             other => vec![other.clone()],
         }
     }
@@ -3618,7 +3646,7 @@ impl Engine {
             if let Some(ci) = f.chars.get(c as usize) {
                 if ci.tag == TAG_LIST {
                     let next = ci.remainder;
-                    if next != c && f.exists_char(next) {
+                    if next != c && f.char_present(next) {
                         c = next;
                     }
                 }
@@ -3734,8 +3762,10 @@ impl Engine {
         let nuc: Node;
         let mut shift_up = 0i32;
         let mut shift_down = 0i32;
-        // XeTeX: a native-font character nucleus is a bare glyph node
-        let mut xe_list: Option<NodeList> = None;
+        // tex.web §755: a character nucleus is the bare character node (plus
+        // its italic kern when no subscript follows), not a box; a XeTeX
+        // native-font nucleus is likewise a bare glyph node
+        let mut char_list: Option<NodeList> = None;
         let mut xe_glyph: Option<(FontId, u16)> = None;
         match nucleus {
             // A character nucleus keeps its italic correction as a trailing
@@ -3760,7 +3790,7 @@ impl Engine {
                         let (list, d) = self.xe_native_char(fid, *c, false, sub.is_some());
                         delta = d;
                         xe_glyph = list.first().and_then(Self::xe_glyph_of);
-                        xe_list = Some(list);
+                        char_list = Some(list);
                         nuc = Node::Empty;
                     } else if self.engine_kind == crate::engine::EngineKind::XeTeX && *c > 255 {
                         self.xe_missing_math_char(fid, *c, origin);
@@ -3777,13 +3807,8 @@ impl Engine {
                         } else {
                             delta = ic;
                         }
-                        // tex.web §755: the nucleus is the character node itself
-                        if self.engine_kind == crate::engine::EngineKind::XeTeX {
-                            xe_list = Some(core);
-                            nuc = Node::Empty;
-                        } else {
-                            nuc = hpack(core, None, HBOX, &self.eqtb).node;
-                        }
+                        char_list = Some(core);
+                        nuc = Node::Empty;
                     } else {
                         nuc = hpack(Vec::new(), None, HBOX, &self.eqtb).node;
                     }
@@ -3809,12 +3834,8 @@ impl Engine {
                     } else {
                         delta = ic;
                     }
-                    if self.engine_kind == crate::engine::EngineKind::XeTeX {
-                        xe_list = Some(core);
-                        nuc = Node::Empty;
-                    } else {
-                        nuc = hpack(core, None, HBOX, &self.eqtb).node;
-                    }
+                    char_list = Some(core);
+                    nuc = Node::Empty;
                 } else {
                     nuc = hpack(Vec::new(), None, HBOX, &self.eqtb).node;
                 }
@@ -3839,6 +3860,15 @@ impl Engine {
                 shift_up = zh - self.fparam_idx(drop_size, 2, 18);
                 shift_down = zd + self.fparam_idx(drop_size, 2, 19);
             }
+            // tex.web §754-§756: an empty nucleus (`$^a$`) converts to no
+            // node at all; the scripts are placed against `hpack(null)`
+            [] => {
+                char_list = Some(Vec::new());
+                nuc = Node::Empty;
+                let drop_size = font_size(sup_style(style));
+                shift_up = -self.fparam_idx(drop_size, 2, 18);
+                shift_down = self.fparam_idx(drop_size, 2, 19);
+            }
             // boxed nucleus: initial shifts from its (shift-adjusted) dims
             _ => {
                 let boxed = self.clean_math_box(nucleus, style);
@@ -3860,7 +3890,7 @@ impl Engine {
                 shift_down = zd + self.fparam_idx(drop_size, 2, 19);
             }
         }
-        let mut out: NodeList = match xe_list {
+        let mut out: NodeList = match char_list {
             Some(list) => list,
             None => vec![nuc],
         };
@@ -4268,8 +4298,8 @@ impl Engine {
                 num_c,
                 Node::Kern((su - nd) - (axis + dr), self.eqtb.cur_attr),
                 Node::Rule {
-                    // xetex.web fraction_rule: a running-width rule
-                    width: if xe_mode { crate::build::RULE_FILL } else { w },
+                    // tex.web fraction_rule: a running-width rule
+                    width: crate::build::RULE_FILL,
                     height: r,
                     depth: 0, subtype: crate::boxes::RULE_NORMAL, index: 0, attr: self.eqtb.cur_attr,
                 },
@@ -4325,15 +4355,10 @@ impl Engine {
         style: GStyle,
         origin: &MathDiagnosticOrigin,
     ) -> NodeList {
-        // xetex.web make_radical: `x:=clean_box(nucleus(q),cramped_style)`
+        // tex.web make_radical: `x:=clean_box(nucleus(q),cramped_style)`
         // (no penalties; a lone unshifted box stays as it is)
-        let x = if self.engine_kind == crate::engine::EngineKind::XeTeX {
-            self.clean_math_box(body, style | 1)
-        } else {
-            let body_nodes = self.mlist_to_hlist_pen(body, style | 1, self.math_penalties.get());
-            hpack(body_nodes, None, HBOX, &self.eqtb).node
-        };
-        let (xw, xh, xd) = box_dims(&x);
+        let x = self.clean_math_box(body, style | 1);
+        let (_, xh, xd) = box_dims(&x);
         // xetex.web make_radical: `f` is the small family font at this size
         let xe_f = self.xe_fam_fnt(style, delim.small_fam);
         let xe_ot = self.engine_kind == crate::engine::EngineKind::XeTeX && self.xe_is_new_mathfont(xe_f);
@@ -4376,12 +4401,12 @@ impl Engine {
         if delta > 0 {
             clr += half_i(delta);
         }
-        // overbar(b, k=clr, t=surd height): [kern(t), rule(t), kern(clr), body]
-        let xe_mode = self.engine_kind == crate::engine::EngineKind::XeTeX;
+        // overbar(b, k=clr, t=surd height): [kern(t), rule(t), kern(clr),
+        // body]; the fraction_rule has running width
         let vlist = vec![
             Node::Kern(dh, self.eqtb.cur_attr),
             Node::Rule {
-                width: if xe_mode { crate::build::RULE_FILL } else { xw },
+                width: crate::build::RULE_FILL,
                 height: dh,
                 depth: 0, subtype: crate::boxes::RULE_NORMAL, index: 0, attr: self.eqtb.cur_attr,
             },
@@ -4392,14 +4417,8 @@ impl Engine {
         if let Node::Box { shift, .. } = &mut d_box {
             *shift = -(xh + clr);
         }
-        let mut out = NodeList::new();
-        out.push(d_box);
-        out.push(v);
-        if xe_mode {
-            // info(nucleus(q)) := hpack(y, natural)
-            return vec![hpack(out, None, HBOX, &self.eqtb).node];
-        }
-        out
+        // info(nucleus(q)) := hpack(y, natural)
+        vec![hpack(vec![d_box, v], None, HBOX, &self.eqtb).node]
     }
 
     fn make_accent(
@@ -5159,7 +5178,8 @@ mod tests {
             approx(*k1, 1.23732, "num->rule kern");
             approx(*k2, 0.88731, "rule->den kern");
             approx(*height, RT * 10.0, "rule thickness");
-            approx(*width, 4.33765, "rule width = box width");
+            // tex.web fraction_rule: a running width (pdftex shows `x*`)
+            assert_eq!(*width, crate::build::RULE_FILL, "rule width is running");
         } else {
             panic!("fraction middle: {:?}", vlist);
         }
@@ -5206,15 +5226,19 @@ mod tests {
         }
     }
 
-    /// oracle: `\hbox{$\sqrt{x}$}` — cmex surd shifted to -(h+clr), bar box
-    /// = [kern(surd_h), rule(surd_h), kern(clr), body]
+    /// oracle: `\hbox{$\sqrt{x}$}` — one hbox (tex.web §737 `hpack(y)`)
+    /// holding the cmex surd shifted to -(h+clr) and the bar box =
+    /// [kern(surd_h), rule(surd_h), kern(clr), body]
     #[test]
     fn radical_sqrt_x() {
         let b = text_math("\\sqrtG{x}");
-        let (list, w, h, d, _) = box_of(&b);
+        let (outer, w, h, d, _) = box_of(&b);
         approx(w, 14.04863, "sqrt width = surd + body");
         approx(h, 8.00272, "sqrt height");
         approx(d, 2.39725, "sqrt depth");
+        assert_eq!(outer.len(), 1, "one radical box: {:?}", outer);
+        let (list, rw, _, _, _) = box_of(&outer[0]);
+        approx(rw, 14.04863, "radical box width");
         assert_eq!(list.len(), 2, "surd + bar vbox: {:?}", list);
         let (_, sw, _, sd, ssh) = box_of(&list[0]);
         approx(sw, 8.33336, "surd width");

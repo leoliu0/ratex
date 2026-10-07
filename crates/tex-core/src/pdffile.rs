@@ -393,6 +393,9 @@ pub fn validate_pdfa_catalog(catalog_str: &str) -> Result<(), String> {
 
 // ---------------------------------------------------------------- serializer
 
+/// Highest object number the writer hands out or accepts.
+const MAX_PDF_OBJECTS: usize = 250_000;
+
 struct PdfBuilder {
     packable: Vec<bool>,
     objs: Vec<Option<Vec<u8>>>, // index n-1 holds object n
@@ -411,19 +414,19 @@ impl PdfBuilder {
     }
 
     fn alloc(&mut self) -> usize {
-        if self.objs.len() >= crate::engine::MAX_PAGE_LIST {
+        if self.objs.len() >= MAX_PDF_OBJECTS {
             return self.objs.len().max(1);
         }
         loop {
             self.objs.push(None);
-            if !self.claimed.contains(&self.objs.len()) || self.objs.len() >= crate::engine::MAX_PAGE_LIST {
+            if !self.claimed.contains(&self.objs.len()) || self.objs.len() >= MAX_PDF_OBJECTS {
                 return self.objs.len();
             }
         }
     }
 
     fn set(&mut self, num: usize, body: String) {
-        if num == 0 || num > crate::engine::MAX_PAGE_LIST {
+        if num == 0 || num > MAX_PDF_OBJECTS {
             return;
         }
         if self.objs.len() < num {
@@ -435,7 +438,7 @@ impl PdfBuilder {
     }
 
     fn set_bytes(&mut self, num: usize, body: Vec<u8>) {
-        if num == 0 || num > crate::engine::MAX_PAGE_LIST {
+        if num == 0 || num > MAX_PDF_OBJECTS {
             return;
         }
         if self.objs.len() < num {
@@ -447,7 +450,7 @@ impl PdfBuilder {
     }
 
     fn set_stream(&mut self, num: usize, dict_extra: &str, data: &[u8], compress: bool) {
-        if num == 0 || num > crate::engine::MAX_PAGE_LIST {
+        if num == 0 || num > MAX_PDF_OBJECTS {
             return;
         }
         if self.objs.len() < num {
@@ -458,7 +461,7 @@ impl PdfBuilder {
     }
 
     fn set_encoded_stream(&mut self, num: usize, dict_extra: &str, data: &[u8], compress: bool) {
-        if num == 0 || num > crate::engine::MAX_PAGE_LIST {
+        if num == 0 || num > MAX_PDF_OBJECTS {
             return;
         }
         if self.objs.len() < num {
@@ -1271,7 +1274,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
     // Engine-reserved numbers (\pdfpageref pages, \pdffontobjnum fonts,
     // unused reservations) stay below the writer's own objects.
     let reserved = usize::try_from(doc.reserved_objects).unwrap_or(0);
-    if reserved > b.objs.len() && reserved <= crate::engine::MAX_PAGE_LIST {
+    if reserved > b.objs.len() && reserved <= MAX_PDF_OBJECTS {
         b.objs.resize(reserved, None);
         b.packable.resize(reserved, false);
     }
@@ -1557,7 +1560,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             for &(_, gid, _) in &font.legacy_cids {
                 gids.insert(gid);
             }
-            for &(_, gid, _) in &font.native_cids {
+            for &(_, gid) in &font.native_cids {
                 gids.insert(gid);
             }
         }
@@ -1853,7 +1856,6 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
     // pdfTeX walks font objects newest first: the most recently initialized
     // font of a program creates (and presets) the shared descriptor
     let mut descriptor_owner: HashMap<FontFileKey, usize> = HashMap::new();
-    let mut first_init: HashMap<FontFileKey, usize> = HashMap::new();
     for (index, (font, &key)) in doc.fonts.iter().zip(&font_keys).enumerate() {
         if is_sfnt(font) || font.font_file.is_empty() {
             continue;
@@ -1862,17 +1864,14 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         if font.init_order > doc.fonts[*owner].init_order {
             *owner = index;
         }
-        let first = first_init.entry(key).or_insert(font.init_order);
-        *first = (*first).min(font.init_order);
     }
-    // epdf.c created the descriptor of these programs before any document
-    // font was initialized: no font presets it from its TFM, and its /StemV
-    // is the included font's
+    // epdf.c created the descriptor of these programs while a page was shipped
+    // out, before `do_pdf_font` reaches any document font at the end of the
+    // job: no font presets it from its TFM, and its /StemV is the included
+    // font's
     let mut import_created: HashMap<FontFileKey, i32> = HashMap::new();
     for (font, &key) in doc.imported_fonts.iter().zip(&imported_keys) {
-        if first_init.get(&key).is_some_and(|&first| font.init_order <= first) {
-            import_created.entry(key).or_insert(font.stem_v);
-        }
+        import_created.entry(key).or_insert(font.stem_v);
     }
 
     // pdfencoding.c `pdf_encoding_complete`: the /Encoding entry and the ToUnicode CMap (made on
@@ -1981,7 +1980,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             if emitted_encoding.insert(enc_obj) {
                 let enc_cmap = if f.is_native {
                     let mut entries = Vec::new();
-                    for &(code, gid, _) in &f.native_cids {
+                    for &(code, gid) in &f.native_cids {
                         let cid = prep.remapper.get(gid).ok_or_else(|| {
                             format!(
                                 "Font `{}` lost used glyph {gid} during subsetting",

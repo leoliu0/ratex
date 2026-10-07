@@ -77,7 +77,10 @@ pub const MAX_MAIN_STEPS: u64 = 100_000_000;
 /// Default resident-set cap. Override with TEX_MEM_LIMIT_MIB (0 disables).
 pub const DEFAULT_RSS_LIMIT: u64 = 512 << 20;
 pub const MAX_TERM_BYTES: usize = 32 << 20;
-pub const MAX_PAGE_LIST: usize = 250_000;
+/// TeX Live's `main_memory` (texmf.cnf): the words of dynamic memory that
+/// hold every node. Each node takes at least one word, so a list longer
+/// than this would have overflowed TeX Live's memory already.
+pub const MAIN_MEMORY_WORDS: usize = 5_000_000;
 pub const DEFAULT_MAX_ERRORS: usize = 100;
 /// Cumulative expansion count is not a TeX capacity: valid large documents
 /// have no fixed upper bound. Set TEX_EXPANSION_LIMIT to opt into a watchdog.
@@ -483,9 +486,16 @@ pub struct Engine {
     /// Unlike end-of-job metadata, these remain correct if TeX rewrites the
     /// same auxiliary or included file later in the pass.
     pub loaded_file_digests: Vec<(std::path::PathBuf, u64, u64)>,
+    /// Lengths of `loaded_file_digests` and `loaded_file_sizes` when this run
+    /// first executed a `\write18` command. Files such a command creates and
+    /// deletes again (minted's `latexminted config`/`cleanconfig`) are its
+    /// output, not state the run started from.
+    pub observations_before_shell_escape: Option<(usize, usize)>,
     /// File sizes observed by `\\pdffilesize`/`\\filesize`. These preserve
     /// the value used during expansion without paying to read file contents.
     pub loaded_file_sizes: Vec<(std::path::PathBuf, u64)>,
+    /// `\pdffilemoddate` results, for the result cache to revalidate.
+    pub loaded_file_mod_dates: Vec<(std::path::PathBuf, String)>,
     /// Disk paths whose absence affected a file lookup. Dependency caches
     /// must invalidate when one of these paths later appears.
     pub missing_files: Vec<std::path::PathBuf>,
@@ -642,12 +652,9 @@ pub struct Engine {
     pub(crate) pdf_creation_date: Option<String>,
     pub current_macro: crate::token::CsId,
     pub math_style_stack: Vec<crate::boxes::MathStyle>,
-    /// tex.web §1181 (init_math): \\predisplaysize, \\displaywidth and
-    /// \\displayindent are computed at display entry from the final line of
-    /// the interrupted paragraph and consumed by finish_display.
+    /// tex.web §1146 (init_math): \\predisplaysize as computed at display
+    /// entry from the final line of the interrupted paragraph.
     pub pre_display_size: i64,
-    pub pre_display_l: i64,
-    pub pre_display_s: i64,
     /// tex.web keeps the interrupted paragraph's final line in just_box so
     /// finish_display can measure \predisplaysize AFTER the page builder has
     /// consumed the contributions. We clone the last broken line here at
@@ -948,8 +955,10 @@ impl Engine {
             ));
             return true;
         }
-        if self.page_list.len() > MAX_PAGE_LIST || self.cur_list.len() > MAX_PAGE_LIST {
-            self.capacity_error("TeX capacity exceeded, sorry [page/list size]");
+        if self.page_list.len() > MAIN_MEMORY_WORDS || self.cur_list.len() > MAIN_MEMORY_WORDS {
+            self.capacity_error(&format!(
+                "TeX capacity exceeded, sorry [main memory size={MAIN_MEMORY_WORDS}]"
+            ));
             return true;
         }
         if self.term.len() > MAX_TERM_BYTES
@@ -1248,7 +1257,9 @@ impl Engine {
             read_readers: Vec::new(),
             loaded_files: Vec::new(),
             loaded_file_digests: Vec::new(),
+            observations_before_shell_escape: None,
             loaded_file_sizes: Vec::new(),
+            loaded_file_mod_dates: Vec::new(),
             missing_files: Vec::new(),
             written_files: Vec::new(),
             lua_deps_seen: Default::default(),
@@ -1324,7 +1335,6 @@ impl Engine {
             reported_missing_math_atoms: crate::FxHashSet::default(),
             xe_math: Default::default(),
             pre_display_size: -0x3FFF_FFFF,
-            pre_display_l: 0,
             last_par_line: None,
             next_par_widow: None,
             lr_save: Vec::new(),
@@ -1333,7 +1343,6 @@ impl Engine {
             pending_display_formula: None,
             eqno_leqno: None,
             math_group_marks: Vec::new(),
-            pre_display_s: 0,
             current_macro: 0,
             math_style_stack: Vec::new(),
             scanner_status: ScannerStatus::Normal,
@@ -2729,7 +2738,7 @@ mod capacity_tests {
         let mut eng = Engine::new(true);
         eng.init_primitives();
         eng.page_list
-            .resize(MAX_PAGE_LIST + 1, crate::boxes::Node::Penalty(0, crate::boxes::Attr::NONE));
+            .resize(MAIN_MEMORY_WORDS + 1, crate::boxes::Node::Penalty(0, crate::boxes::Attr::NONE));
         assert!(eng.capacity_exceeded());
         assert!(eng.end_occurred);
     }

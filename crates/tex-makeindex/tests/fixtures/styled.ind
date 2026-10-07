@@ -1,0 +1,24 @@
+\begin{theindex}
+<H:Symbols:>
+
+  \item #, 5
+
+  \indexspace
+<H:Numbers:>
+
+  \item 3, 4
+
+  \indexspace
+<H:A:>
+
+  \item a
+<x1>x, 1\ff
+    \subitem y
+      \subsubitem z, 3
+
+  \indexspace
+<H:B:>
+
+  \item b, iv ; x ; 1 ; 5
+
+\end{theindex}

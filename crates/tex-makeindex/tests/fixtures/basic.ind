@@ -1,0 +1,38 @@
+\begin{theindex}
+
+  \item @at, 1
+  \item 1num, 3
+
+  \indexspace
+
+  \item 9, 2
+  \item 10, 1
+
+  \indexspace
+
+  \item Apple, 2
+  \item apple, 1
+
+  \indexspace
+
+  \item banana
+    \subitem green, \textbf{4}, 5--7
+    \subitem yellow, 3
+
+  \indexspace
+
+  \item cherry, \see{apple}{9}
+
+  \indexspace
+
+  \item fig, ii, 10, A-3
+
+  \indexspace
+
+  \item x!y, 2
+
+  \indexspace
+
+  \item \textsf{Zed}, 8--12
+
+\end{theindex}

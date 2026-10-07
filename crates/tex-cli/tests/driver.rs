@@ -2669,3 +2669,56 @@ printf '%%PDF-1.4 /Type /Pages /Count 1 /Type /Page ' > "$out/$job.pdf"
         "Expected 2 passes for cross-reference document, got: {stderr}"
     );
 }
+
+#[test]
+fn copied_texres_generates_indexes_with_embedded_makeindex() {
+    let fixture = Fixture(std::env::temp_dir().join(format!(
+        "texres-makeindex-{}", std::process::id()
+    )));
+    std::fs::create_dir_all(&fixture.0).unwrap();
+    let executable = fixture.0.join("texres");
+    support::copy_executable(
+        std::path::Path::new(env!("CARGO_BIN_EXE_texres")), &executable,
+    );
+    // makeidx (latexmk's `makeindex -o main.ind main.idx`) and imakeidx (the
+    // command it announces) both need the index built from the first pass.
+    fixture.write("plain.tex", concat!(
+        "\\documentclass{article}\n\\usepackage{makeidx}\\makeindex\n",
+        "\\begin{document}Zebra\\index{zebra}\\index{Apple!red}\\index{Apple}\n",
+        "\\newpage Apple\\index{Apple|textbf}\\printindex\\end{document}\n",
+    ));
+    fixture.write("imakeidx.tex", concat!(
+        "\\documentclass{article}\n\\usepackage{imakeidx}\\makeindex[intoc]\n",
+        "\\begin{document}Zebra\\index{zebra}\\index{Apple}\\printindex\\end{document}\n",
+    ));
+    for source in ["plain.tex", "imakeidx.tex"] {
+        let output = Command::new(&executable)
+            .arg(source).current_dir(&fixture.0).env_clear()
+            .env("HOME", fixture.0.join("home"))
+            .env("TEX_RS_CACHE_DIR", fixture.0.join("cache"))
+            .env("SOURCE_DATE_EPOCH", "1700000000")
+            .output().unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{source}: {stderr}");
+        assert!(stderr.contains("makeindex run"), "{source}: {stderr}");
+        let pdf = lopdf::Document::load(fixture.0.join(source.replace(".tex", ".pdf"))).unwrap();
+        let pages: Vec<u32> = pdf.get_pages().keys().copied().collect();
+        let text = pdf.extract_text(&pages).unwrap();
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(text.contains("Index"), "{source}: {text}");
+        assert!(text.contains("Apple"), "{source}: {text}");
+    }
+    // The page ranges and sub-entries come from makeindex's own algorithm.
+    let ind = std::fs::read_to_string(
+        find_file(&fixture.0.join("cache/texmk/jobs"), "plain.ind").unwrap()
+    ).unwrap();
+    assert!(ind.contains("\\item Apple, 1, \\textbf{2}\n    \\subitem red, 1"), "{ind}");
+    // Invoked under its own name the binary is makeindex.
+    let link = fixture.0.join("makeindex");
+    std::os::unix::fs::symlink("texres", &link).unwrap();
+    std::fs::write(fixture.0.join("x.idx"), "\\indexentry{b}{2}\n\\indexentry{a}{1}\n").unwrap();
+    let output = Command::new(&link).args(["-q", "x.idx"]).current_dir(&fixture.0).env_clear().output().unwrap();
+    assert!(output.status.success());
+    let x = std::fs::read_to_string(fixture.0.join("x.ind")).unwrap();
+    assert!(x.contains("\\item a, 1") && x.contains("\\item b, 2"), "{x}");
+}

@@ -29,6 +29,7 @@ libc = { workspace = true }
 tex-core = { path = "../tex-core" }
 tex-kpse = { path = "../tex-kpse" }
 tex-bibtex = { path = "../tex-bibtex" }
+tex-makeindex = { path = "../tex-makeindex" }
 tex-biber = { path = "../tex-biber" }
 tex-ps = { path = "../tex-ps" }
 

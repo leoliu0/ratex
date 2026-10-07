@@ -5,6 +5,8 @@ use crate::input::{Source, SourceContext, SourceMark};
 use crate::prim::{IntParam, ToksParam};
 
 const MAX_CONTEXT_FRAMES: usize = 20;
+/// Entries kept in the macro trace of a diagnostic.
+const MAX_MACRO_TRACE: usize = 20;
 const DEFAULT_CONTEXT_FRAMES: usize = 5;
 const MAX_SOURCE_COLUMNS: usize = 120;
 const MAX_MESSAGE_BYTES: usize = 16 * 1024;
@@ -563,21 +565,31 @@ impl Engine {
         self.last_pack = None;
     }
 
+    /// Record a macro expansion in the macro trace of later diagnostics.
+    #[inline(always)]
     pub(crate) fn enter_macro_diagnostic(
         &mut self,
         owner: crate::token::CsId,
         invocation: crate::token::CsId,
     ) {
-        const MAX_TRACE: usize = 20;
-        let (synthetic, physical) = if self.diagnostic_sources_live {
-            let synthetic = self
-                .diagnostic_synthetic_source
-                .take()
-                .filter(|(token, _, _)| *token == invocation);
-            (synthetic, self.physical_source_for_cs(invocation))
-        } else {
-            (None, None)
-        };
+        if self.diagnostic_sources_live {
+            self.enter_macro_call_site(invocation);
+        }
+        self.push_macro_trace(invocation);
+        if owner != invocation {
+            self.push_macro_trace(owner);
+        }
+    }
+
+    /// A call read from a recorded source position becomes the outer call
+    /// of the trace.
+    #[inline(never)]
+    fn enter_macro_call_site(&mut self, invocation: crate::token::CsId) {
+        let synthetic = self
+            .diagnostic_synthetic_source
+            .take()
+            .filter(|(token, _, _)| *token == invocation);
+        let physical = self.physical_source_for_cs(invocation);
         // Reset the outer call only for a token whose exact physical spelling
         // matches this invocation. Scanning a macro's physical argument can
         // leave a physical source set while an internal wrapper is expanded;
@@ -592,18 +604,26 @@ impl Engine {
             self.diagnostic_macro_call_site = Some(mark);
             self.diagnostic_macro_call_span = span.max(1);
         }
-        for id in [invocation, owner] {
-            if self.diagnostic_macro_trace.last() != Some(&id) {
-                if self.diagnostic_macro_trace.len() == MAX_TRACE {
-                    // Entry zero names the physical call highlighted by the
-                    // source excerpt. Keep it and discard the oldest inner
-                    // frame so a deep trace cannot disagree with its caret.
-                    self.diagnostic_macro_trace.remove(1);
-                    self.diagnostic_macro_trace_truncated = true;
-                }
-                self.diagnostic_macro_trace.push(id);
+    }
+
+    #[inline(always)]
+    fn push_macro_trace(&mut self, id: crate::token::CsId) {
+        if self.diagnostic_macro_trace.last() != Some(&id) {
+            if self.diagnostic_macro_trace.len() == MAX_MACRO_TRACE {
+                self.drop_inner_macro_trace_entry();
             }
+            self.diagnostic_macro_trace.push(id);
         }
+    }
+
+    /// Entry zero names the physical call highlighted by the source
+    /// excerpt. Keep it and discard the oldest inner frame so a deep trace
+    /// cannot disagree with its caret.
+    #[cold]
+    #[inline(never)]
+    fn drop_inner_macro_trace_entry(&mut self) {
+        self.diagnostic_macro_trace.remove(1);
+        self.diagnostic_macro_trace_truncated = true;
     }
 
     fn physical_source_for_cs(&self, id: crate::token::CsId) -> Option<(SourceMark, usize)> {

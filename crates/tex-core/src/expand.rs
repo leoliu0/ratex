@@ -213,6 +213,14 @@ impl AlignFilter {
     }
 }
 
+/// Count one expansion step; true once the step count passes a nonzero
+/// `limit` (the runaway-expansion guard of `get_token`).
+#[inline(always)]
+fn expansion_step(steps: &mut u64, limit: u64) -> bool {
+    *steps = steps.saturating_add(1);
+    limit > 0 && *steps > limit
+}
+
 /// A macro call ended before its arguments were complete (tex.web §396 and
 /// §398 abort the call); diagnostics have already been issued.
 struct ArgAbort;
@@ -344,7 +352,11 @@ impl Engine {
                     }
                     _ => return None,
                 },
-                Some(crate::input::Source::MacroFrame(frame)) => match frame.peek_token_advancing() {
+                // Only within the current segment: moving on to the next
+                // segment calls out of line, which would make every call of
+                // `raw_token` set up a stack frame. `raw_token_general`
+                // crosses segment boundaries.
+                Some(crate::input::Source::MacroFrame(frame)) => match frame.peek_token() {
                     Some(t) if filter.passes(t, eqtb) => {
                         frame.skip(1);
                         (t, frame.trace_depth)
@@ -660,8 +672,9 @@ impl Engine {
                 id = next;
                 equiv = self.eqtb.get(id);
             }
-            match equiv.cloned() {
+            match equiv {
                 Some(Equiv::Macro(m)) => {
+                    let m = std::rc::Rc::clone(m);
                     if m.outer
                         && self.outer_scan.is_some()
                         && self.eqtb.int_params[crate::prim::IntParam::SuppressOuterError.idx() as usize] == 0
@@ -687,7 +700,7 @@ impl Engine {
                     continue;
                 }
 
-                Some(Equiv::CharTok(v)) => {
+                Some(&Equiv::CharTok(v)) => {
                     let tok = Token(v);
                     if tok.is_space() {
                         self.cur_tok = tok;
@@ -699,7 +712,11 @@ impl Engine {
                         return t;
                     }
                 }
-                Some(Equiv::Prim(p)) => {
+                Some(&Equiv::Prim(p)) => {
+                    if !self.is_expandable(p) && p != Prim::PdfPrimitiveExec {
+                        self.set_cur_cs_known(t, Some(p));
+                        return t;
+                    }
                     // While scanning a conditional's numeric operand, expansion
                     // may run nested conditionals. The delimiter belonging to
                     // the pending outer test must terminate the number instead
@@ -758,7 +775,7 @@ impl Engine {
                         return t;
                     }
                 }
-                Some(Equiv::LuaCall { slot, protected: false }) => {
+                Some(&Equiv::LuaCall { slot, protected: false }) => {
                     self.call_lua_function(slot as i32);
                     first = self.raw_token();
                     continue;
@@ -933,6 +950,19 @@ impl Engine {
         self.input.push_toks_owned(toks, name, owner, depth);
         true
     }
+    /// The runaway-expansion guard fired while expanding `t` (meaning of
+    /// `id`): a fatal error, after which the input ends.
+    #[cold]
+    #[inline(never)]
+    fn expansion_limit_exceeded(&mut self, t: Token, id: CsId) -> Token {
+        self.set_cur_cs(t);
+        self.fatal_error(&format!(
+            "TeX capacity exceeded [expansion steps={}]; runaway expansion near {}",
+            self.expansion_limit,
+            self.display_cs(id)
+        ));
+        EOF_MARKER
+    }
     /// tex.web §370: expanding an undefined control sequence is an error;
     /// TeX then forgets the token and reads on.
     #[cold]
@@ -1074,33 +1104,19 @@ impl Engine {
 
                 if t.is_cs() {
                     let mut id = t.cs_id();
-                    if let Some(Equiv::Alias(mut next)) = self.eqtb.get(id) {
+                    let mut equiv = self.eqtb.get(id);
+                    if let Some(Equiv::Alias(mut next)) = equiv {
                         while let Some(Equiv::Alias(n)) = self.eqtb.get(next) {
                             next = *n;
                         }
                         id = next;
+                        equiv = self.eqtb.get(id);
                     }
-                    let is_expansion = match self.eqtb.get(id) {
-                        Some(Equiv::Macro(_)) => true,
-                        Some(Equiv::Prim(p)) => self.is_expandable(*p),
-                        Some(Equiv::LuaCall { protected, .. }) => !protected,
-                        _ => false,
-                    };
-                    if is_expansion {
-                        self.expansion_steps = self.expansion_steps.saturating_add(1);
-                        if self.expansion_limit > 0 && self.expansion_steps > self.expansion_limit {
-                            self.set_cur_cs(t);
-                            self.fatal_error(&format!(
-                            "TeX capacity exceeded [expansion steps={}]; runaway expansion near {}",
-                            self.expansion_limit,
-                            self.display_cs(id)
-                        ));
-                            return EOF_MARKER;
-                        }
-                    }
-                    let equiv = self.eqtb.get(id);
                     match equiv {
                         Some(Equiv::Macro(m)) => {
+                            if expansion_step(&mut self.expansion_steps, self.expansion_limit) {
+                                return self.expansion_limit_exceeded(t, id);
+                            }
                             if m.outer
                         && self.outer_scan.is_some()
                         && self.eqtb.int_params[crate::prim::IntParam::SuppressOuterError.idx() as usize] == 0
@@ -1177,7 +1193,17 @@ impl Engine {
                         }
                         Some(Equiv::Prim(p_ref)) => {
                             let p = *p_ref;
-
+                            if !self.is_expandable(p) {
+                                if p == Prim::PdfPrimitiveExec && !self.in_expanded_scan {
+                                    t = self.pdf_primitive_target();
+                                    continue 'resolve;
+                                }
+                                self.set_cur_cs_known(t, Some(p));
+                                return t;
+                            }
+                            if expansion_step(&mut self.expansion_steps, self.expansion_limit) {
+                                return self.expansion_limit_exceeded(t, id);
+                            }
                             // NOTE: no early-return for UnExpanded inside
                             // e-scans. Returning the bare token leaked an
                             // unexpanded-marker into \expanded results, which
@@ -1198,47 +1224,42 @@ impl Engine {
                                 self.set_cur_cs(tok);
                                 return tok;
                             }
-                            if self.is_expandable(p) {
-                                match self.expand_prim(p, id) {
-                                    Some(tok) => {
-                                        if tok.0 >= UNEXPANDED_CS_FLAG && tok.0 < 0xFFFF_0000 {
-                                            let tok = self.unfreeze_unexpanded_token(tok);
-                                            self.no_expand_tok = tok.is_cs().then_some(tok);
-                                            if tok.is_cs() {
-                                                self.set_cur_cs(tok);
-                                                self.cur_prim = Some(Prim::Relax);
-                                            } else {
-                                                self.set_cur_char(tok);
-                                            }
-                                            return tok;
-                                        }
-                                        if tok.0 >= NOEXP_FLAG && tok.0 < UNEXPANDED_CS_FLAG {
-                                            let cs = tok.0 & 0x3FFF_FFFF;
-                                            let tok = Token::from_cs(cs);
-                                            self.no_expand_tok = Some(tok);
-                                            self.cur_tok = tok;
-                                            self.cur_cs = Some(cs);
+                            match self.expand_prim(p, id) {
+                                Some(tok) => {
+                                    if tok.0 >= UNEXPANDED_CS_FLAG && tok.0 < 0xFFFF_0000 {
+                                        let tok = self.unfreeze_unexpanded_token(tok);
+                                        self.no_expand_tok = tok.is_cs().then_some(tok);
+                                        if tok.is_cs() {
+                                            self.set_cur_cs(tok);
                                             self.cur_prim = Some(Prim::Relax);
-                                            return tok;
-                                        }
-                                        if !tok.is_cs() {
+                                        } else {
                                             self.set_cur_char(tok);
-                                            return tok;
                                         }
-                                        self.push_token(tok);
-                                        break 'expand;
+                                        return tok;
                                     }
-                                    None => break 'expand,
+                                    if tok.0 >= NOEXP_FLAG && tok.0 < UNEXPANDED_CS_FLAG {
+                                        let cs = tok.0 & 0x3FFF_FFFF;
+                                        let tok = Token::from_cs(cs);
+                                        self.no_expand_tok = Some(tok);
+                                        self.cur_tok = tok;
+                                        self.cur_cs = Some(cs);
+                                        self.cur_prim = Some(Prim::Relax);
+                                        return tok;
+                                    }
+                                    if !tok.is_cs() {
+                                        self.set_cur_char(tok);
+                                        return tok;
+                                    }
+                                    self.push_token(tok);
+                                    break 'expand;
                                 }
-                            } else if p == Prim::PdfPrimitiveExec && !self.in_expanded_scan {
-                                t = self.pdf_primitive_target();
-                                continue 'resolve;
-                            } else {
-                                self.set_cur_cs_known(t, Some(p));
-                                return t;
+                                None => break 'expand,
                             }
                         }
                         Some(&Equiv::LuaCall { slot, protected: false }) => {
+                            if expansion_step(&mut self.expansion_steps, self.expansion_limit) {
+                                return self.expansion_limit_exceeded(t, id);
+                            }
                             self.call_lua_function(slot as i32);
                             break 'expand;
                         }
@@ -3150,17 +3171,13 @@ impl Engine {
         }
     }
 
+    /// titlesec's `\GetTitleString` helpers are stored, not expanded, by an
+    /// expanding scan outside `\csname`.
+    #[inline(always)]
     fn freeze_gts_in_edef(&self, id: CsId) -> bool {
         self.in_expanded_scan
             && self.csname_depth == 0
-            && matches!(
-                self.cs.name(id),
-                b"GTS@RemoveLeft"
-                    | b"GTS@TestLeftEnd"
-                    | b"GTS@TestLeft"
-                    | b"GetTitleStringNonExpand"
-                    | b"GetTitleString"
-            )
+            && self.cs.name_flags(id) & crate::token::NAME_FROZEN_IN_EDEF != 0
     }
 
     fn is_self_quark(&self, id: CsId, m: &Macro) -> bool {
@@ -3181,9 +3198,7 @@ impl Engine {
         if self.is_self_quark(id, m) {
             return;
         }
-        if m.body.is_empty()
-            && (self.cs.name(id) == b"f@encoding" || self.cs.name(id) == b"cf@encoding")
-        {
+        if m.body.is_empty() && self.cs.name_flags(id) & crate::token::NAME_FONT_ENCODING != 0 {
             let ot1_body = vec![
                 Token::char(12, b'O' as u32),
                 Token::char(12, b'T' as u32),

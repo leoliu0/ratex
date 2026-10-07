@@ -162,6 +162,9 @@ pub enum Source {
         /// group and conditional nesting at open is on the engine's
         /// `file_nests` stack (e-TeX's `grp_stack`/`if_stack`).
         tracked: bool,
+        /// The file's start was shown (`(name`, tex.web §537 `start_input`,
+        /// which counts it in `open_parens`), so its end shows `)`.
+        announced: bool,
         /// XeTeX: how the bytes of this file are decoded (`\XeTeXinputencoding`).
         xetex_enc: crate::xetex_input::Enc,
     },
@@ -866,6 +869,7 @@ impl InputStack {
             lua_reader: 0,
             cat_regime: -1,
             tracked: false,
+            announced: false,
             xetex_enc: crate::xetex_input::Enc::Default,
         });
         self.top_file.set(self.stack.len() - 1);
@@ -876,6 +880,13 @@ impl InputStack {
         self.push_file_from(name, Vec::<u8>::new(), included_from);
         if let Some(Source::File { lua_reader, .. }) = self.stack.last_mut() {
             *lua_reader = reader;
+        }
+    }
+
+    /// The file just pushed was opened by `start_input`, which showed it.
+    pub(crate) fn announce_top_file(&mut self) {
+        if let Some(Source::File { announced, .. }) = self.stack.last_mut() {
+            *announced = true;
         }
     }
 
@@ -903,6 +914,7 @@ impl InputStack {
             lua_reader: 0,
             cat_regime: -1,
             tracked: false,
+            announced: false,
             xetex_enc: crate::xetex_input::Enc::Utf8,
         });
         self.top_file.set(self.stack.len() - 1);
@@ -1081,6 +1093,7 @@ mod tests {
             lua_reader: 0,
             cat_regime: -1,
             tracked: false,
+            announced: false,
             xetex_enc: crate::xetex_input::Enc::Default,
         });
 

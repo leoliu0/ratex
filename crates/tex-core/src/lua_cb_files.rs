@@ -207,22 +207,22 @@ impl Engine {
     }
 
     /// tex.web §1335 `final_cleanup`: every file still open when `\end` is
-    /// executed is shown as closed, ` )` each (luatex: its `stop_file`
-    /// callback, innermost first).
+    /// executed is shown as closed, ` )` each (luatex: `report_stop_file`,
+    /// its `stop_file` callback or `)`, innermost first).
     pub(crate) fn close_open_files_at_end(&mut self) {
-        let callback = self.engine_kind == crate::engine::EngineKind::LuaTeX && self.cb_defined(Cb::StopFile);
+        let luatex = self.engine_kind == crate::engine::EngineKind::LuaTeX;
+        let callback = luatex && self.cb_defined(Cb::StopFile);
         let open = self
             .input
             .stack
             .iter()
             .filter(|s| match s {
-                crate::input::Source::File { name, lua_lines, lua_reader, .. } => {
-                    let real = !name.starts_with('<') || name.starts_with("<embedded:");
+                crate::input::Source::File { name, lua_lines, lua_reader, announced, .. } => {
                     lua_lines.is_none()
                         && if callback {
-                            real || *lua_reader != 0
+                            !name.starts_with('<') || name.starts_with("<embedded:") || *lua_reader != 0
                         } else {
-                            real || name.starts_with("<compat:")
+                            *announced
                         }
                 }
                 _ => false,
@@ -232,7 +232,7 @@ impl Engine {
             if callback {
                 self.lua_report_stop_file(filetype::TEX);
             } else {
-                self.tex_print_str(true, true, " )");
+                self.tex_print_str(true, true, if luatex { ")" } else { " )" });
             }
         }
     }

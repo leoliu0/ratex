@@ -96,6 +96,7 @@ impl Engine {
                 lua_lines,
                 lua_reader,
                 name,
+                announced,
                 ..
             } = &self.input.stack[si]
             else {
@@ -109,8 +110,7 @@ impl Engine {
                 let lua = lua_lines.is_some();
                 let reader = *lua_reader;
                 let real_file = !name.starts_with('<') || name.starts_with("<embedded:");
-                // The files whose start printed `(name`.
-                let announced = real_file || name.starts_with("<compat:");
+                let announced = *announced;
                 if matches!(
                     self.input.stack.get(si),
                     Some(Source::File { tracked: true, .. })

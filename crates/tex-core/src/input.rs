@@ -68,6 +68,21 @@ impl MarkOrigin {
     }
 }
 
+/// The include chain is as deep as the files nest (up to [`MAX_INPUT_STACK`]).
+/// Dropped by recursion it takes several frames per level, which overflowed
+/// the 2 MiB test-thread stack of a debug build on Windows at 4000 levels;
+/// unlink the levels this origin owns alone one at a time instead.
+impl Drop for MarkOrigin {
+    fn drop(&mut self) {
+        let mut next = self.included_from.take();
+        while let Some(mut mark) = next {
+            next = Rc::get_mut(&mut mark)
+                .and_then(|mark| Rc::get_mut(&mut mark.origin))
+                .and_then(|origin| origin.included_from.take());
+        }
+    }
+}
+
 impl SourceMark {
     pub(crate) fn to_context(&self) -> SourceContext {
         let data = &self.origin.data;

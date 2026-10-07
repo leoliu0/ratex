@@ -20,22 +20,26 @@ impl Fixture {
     }
 
     fn run(&self, binary: &str) -> Output {
-        self.exec(std::path::Path::new(binary), binary)
+        self.exec(binary, &[])
     }
 
-    /// Runs the multi-call binary under an engine name (`xelatex`, `lualatex`).
+    /// Runs the multi-call binary as an engine (`xelatex`, `lualatex`). The
+    /// engine mode texmk itself uses for its passes selects the personality,
+    /// so no `xelatex` symlink or `xelatex.exe` copy is needed on any host
+    /// (argv[0] dispatch has its own driver tests).
     fn run_as(&self, engine: &str) -> Output {
-        let binary = env!("CARGO_BIN_EXE_texmk");
-        let alias = self.0.join(engine);
-        std::os::unix::fs::symlink(binary, &alias).unwrap();
-        self.exec(&alias, binary)
+        self.exec(
+            env!("CARGO_BIN_EXE_texmk"),
+            &[("TEXMK_INTERNAL_MODE", "engine"), ("TEX_SUITE_PROGRAM_NAME", engine)],
+        )
     }
 
-    fn exec(&self, program: &std::path::Path, binary: &str) -> Output {
-        let out = Command::new(program)
+    fn exec(&self, binary: &str, mode: &[(&str, &str)]) -> Output {
+        let out = Command::new(binary)
             .arg("main.tex")
             .current_dir(&self.0)
             .env_clear()
+            .envs(mode.iter().copied())
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", &self.0)
             .env("TEX_RS_CACHE_DIR", self.0.join("cache"))

@@ -33247,9 +33247,9 @@
   },
   "supplement_archive": {
     "name": "packages-supplement.tar.zst",
-    "sha256": "bd833f8343d901f34d5cdd0057129857c3333ca2d03ca1943e54f9cbef9949df",
-    "size_bytes": 34989183,
-    "total_members": 718,
+    "sha256": "e1a2e17f50675c4bd96c97bce37b056f60946cf61bbea7d2b5eb4f577b619c84",
+    "size_bytes": 35637557,
+    "total_members": 749,
     "precedence": "read before the main archive; its members shadow same-named main members",
     "packages": {
       "beamer": {
@@ -35772,6 +35772,50 @@
           ]
         }
       ]
+    },
+    "mf_outlines": {
+      "generator": "scripts/mf_trace.py (mf + potrace) from authentic CTAN METAFONT sources",
+      "source_archives": [
+        "bbm.tar.xz",
+        "ifsym.tar.xz",
+        "cm-mf-extra-bold.tar.xz",
+        "cmcyr.tar.xz",
+        "cm.tar.xz"
+      ],
+      "file_count": 31,
+      "files": {
+        "fonts/type1/public/bbm/bbm10.pfb": "d067bc72517691b8f96b4c0d3fc87ebc12ea60faf82f6c8001e169930c5b9276",
+        "fonts/type1/public/bbm/bbm12.pfb": "8f5bb5849bc93edcd88ceeed82207b9cbb7bd6dfd5cede537f225fa2a11faee1",
+        "fonts/type1/public/bbm/bbm17.pfb": "28067804050aa1a0587409afe2ecb005970b8d0a806020a2920cc226d35a8e2f",
+        "fonts/type1/public/bbm/bbm5.pfb": "b2c901a6a083fd771f89d0f91ab80479b3b295721da389fea5255ac0f38df356",
+        "fonts/type1/public/bbm/bbm6.pfb": "6116140f209d422857f60355744fddc574dcb3ea7e0264a67cb52bac22d0d9f5",
+        "fonts/type1/public/bbm/bbm7.pfb": "58ba25edbb056588bac4653d57d60460c4ef74dbb7328043a28c1e531c976351",
+        "fonts/type1/public/bbm/bbm8.pfb": "cb51cbff9fdbd97c1fb9f19804d55c2f7f8e0597d84726b1c25144ea07f35066",
+        "fonts/type1/public/bbm/bbm9.pfb": "7689c9515296e59bcb640e8eb77e65722d433f97c4f37f64ca07b57cb39c19fb",
+        "fonts/type1/public/bbm/bbmbx10.pfb": "07b23f0dc8e5be1dcfa760cfa03b640baf848561efd1950b4145409d79c1c259",
+        "fonts/type1/public/bbm/bbmbx12.pfb": "9428554decfa03bcc27e9cb6a13c941919ab01f70edfae1ee3fe96e35fdd7c08",
+        "fonts/type1/public/bbm/bbmbx5.pfb": "106b94bd2a2cbe7879ce99139e0187d8169170a59775d97e499b52edd09e189f",
+        "fonts/type1/public/bbm/bbmbx6.pfb": "fae28c0215a8c2fb70435b7770ba22a2323613776a6df9cc9c8f7abfbb820ebd",
+        "fonts/type1/public/bbm/bbmbx7.pfb": "6a20ec91a3feb239116c031c26396ff9bec67f30d543a86e23f77e6f3141fd1e",
+        "fonts/type1/public/bbm/bbmbx8.pfb": "4908f22010b83a4d93e466d899e2cd90c45de2dff0fd2366f8860077220e7483",
+        "fonts/type1/public/bbm/bbmbx9.pfb": "e8e1176ef63e0c19ca93aaa4153cd21a76aa018654757e04800d072b21567f43",
+        "fonts/type1/public/bbm/bbmsl10.pfb": "42b3f0a1637fabfdabf567650fc82d1cbbbb1ca4c2a17801849a6f486da3684d",
+        "fonts/type1/public/bbm/bbmsl12.pfb": "1678429dbd6a3f3ceae4bdbbf556ee1d3160985c46aca916fd2cd1d05e0b4950",
+        "fonts/type1/public/bbm/bbmsl8.pfb": "0a38dfcd583d48657c779a8a326f5fc5598f77b738ddc2f57c7842af237c67a7",
+        "fonts/type1/public/bbm/bbmsl9.pfb": "ea454c77e44011c16e64bfc0fe6c6e57545b8231f1b82ce2ec7f390dae761dfb",
+        "fonts/type1/public/bbm/bbmss10.pfb": "feb25d5b924b78317e4d647e99648367e7cf9f7931d5056d652703ff341da7a4",
+        "fonts/type1/public/bbm/bbmss12.pfb": "9da3b0b903910f6309a21240d10f5e0c2eb72436546a5657a636d1726e00f1c5",
+        "fonts/type1/public/bbm/bbmss17.pfb": "1e7a5c51a2cca7523c08ff90ddde1eb1d5d8bb52d01f27a21e3f4b27b8a7916e",
+        "fonts/type1/public/bbm/bbmss8.pfb": "fe12856d4651f1826d883af7091b41b4f77fce77afeebc7eceb156a4d8eb42fe",
+        "fonts/type1/public/bbm/bbmss9.pfb": "9d591c18f34067dffce4dd3d5ac4956fc8454ff9e2931d2a53f01e4e818df37a",
+        "fonts/type1/public/cmextra/cmbcsc10.pfb": "0128fe44e20f1aefef87e488155d52a610497e6ddd7eb292b578a0209dfc1983",
+        "fonts/type1/public/cmextra/cmcsc12.pfb": "24a02bea591dac5e159199c560456f1bbbc86d268fc06d33c76ce073e56bd5db",
+        "fonts/type1/public/ifsym/ifclk10.pfb": "c97bad8aae26b2a18692a66215a809b2e14a5ed7c712619768e9872f79da90f6",
+        "fonts/type1/public/ifsym/ifgeo10.pfb": "27363fdfd535ee9e8d8eabc8e4285ed3b507c31117cb7ab3c8dea94b32056112",
+        "fonts/type1/public/ifsym/ifsym10.pfb": "8bd055b9d98cf66f01e05014448b48e901d9aeb6848d6415ab4e5db9e26289e7",
+        "fonts/type1/public/ifsym/ifsymb10.pfb": "6c5ee023fe74c2734576949ed5bff7fedd2358156d24238e2d0f4c53b27b7c4f",
+        "fonts/type1/public/ifsym/ifwea10.pfb": "64ea3b444c3975dcd02dc9a233786f3274ce809676aeb10d59bbf71a44d03eae"
+      }
     }
   }
 }

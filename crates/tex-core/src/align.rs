@@ -153,7 +153,7 @@ fn split_pre_adjust(adj: NodeList) -> (NodeList, NodeList) {
 /// the dispatcher only tests `align_state > 0` for \span placement, which
 /// matches "a cell is open").
 pub const PH_IDLE: i32 = 0; // no cell open
-const PH_U: i32 = 1; // u part of the template is playing
+pub(crate) const PH_U: i32 = 1; // u part of the template is playing
 pub(crate) const PH_CONTENT: i32 = 2; // cell content phase
 const PH_OMIT: i32 = 4; // template omitted for the current cell
 pub(crate) const PH_CLOSE: i32 = 8; // close stream pushed; sentinel not yet seen
@@ -234,6 +234,22 @@ pub(crate) fn row_delimiter(t: Token, eqtb: &crate::eqtb::Eqtb) -> Option<RowDel
     }
 }
 
+/// Whether `t` is a row delimiter (see `row_delimiter`). Inlined into the
+/// token fetch of an alignment entry, where nearly every token is a macro:
+/// one load of the meaning's tag rejects it.
+#[inline(always)]
+pub(crate) fn is_row_delimiter(t: Token, eqtb: &crate::eqtb::Eqtb) -> bool {
+    if t.is_char() {
+        return t.cc() == 4;
+    }
+    t.is_cs()
+        && match eqtb.resolve(t.cs_id()) {
+            Some(Equiv::CharTok(raw)) => Token(*raw).cc() == 4,
+            Some(Equiv::Prim(p)) => matches!(p, Prim::Cr | Prim::CrCr),
+            _ => false,
+        }
+}
+
 impl Engine {
     pub fn align_phase(&self) -> i32 {
         self.align_state & (PH_U | PH_CONTENT)
@@ -271,20 +287,25 @@ impl Engine {
     /// tex.web get_next: a row delimiter at alignment brace-depth zero
     /// cannot be consumed by a macro parameter scanner. Queue the current
     /// template's close stream so scanning proceeds through the same input
-    /// TeX would insert at the end of the cell.
+    /// TeX would insert at the end of the cell. Inlined state tests first:
+    /// the meaning of `t` is looked up only at brace depth zero of an
+    /// entry's content.
+    #[inline(always)]
     pub(crate) fn align_intercept_raw_token(&mut self, t: Token) -> bool {
         if self.scanner_status != ScannerStatus::Aligning
-            || self.align_phase() != PH_CONTENT
-            || self.align_state & PH_CLOSE != 0
+            || self.align_state & (PH_U | PH_CONTENT | PH_CLOSE) != PH_CONTENT
+            || self.align_delimiter_hidden()
         {
             return false;
         }
+        self.align_intercept_delimiter(t)
+    }
+
+    #[inline(never)]
+    fn align_intercept_delimiter(&mut self, t: Token) -> bool {
         let Some(delimiter) = row_delimiter(t, &self.eqtb) else {
             return false;
         };
-        if self.align_delimiter_hidden() {
-            return false;
-        }
         match delimiter {
             RowDelimiter::Tab => self.align_tab(),
             RowDelimiter::Cr(prim) => {

@@ -504,3 +504,39 @@ fn radical_is_one_box_with_a_clean_radicand() {
 "#],
     );
 }
+
+/// tex.web §754: an empty nucleus (`$^a$`) converts to nothing, only its
+/// script box appears; an empty group `{}` or `\mathord{}` is a sub-mlist
+/// and becomes an empty hbox, scripted or not.
+#[test]
+fn empty_nucleus_and_empty_group_boxes() {
+    let log = run(
+        r#"\setbox1\hbox{$^a {}^a {} x \mathord{}$}\showbox1
+\setbox1\hbox{$\displaystyle {} x$}\showbox1"#,
+    );
+    assert_displays(
+        &log,
+        &[
+            r#"> \box1=
+\hbox(7.93446+0.0)x16.28705
+.\mathon
+.\hbox(4.30554+0.0)x5.28589, shifted -3.62892
+..\teni a
+.\hbox(0.0+0.0)x0.0
+.\hbox(4.30554+0.0)x5.28589, shifted -3.62892
+..\teni a
+.\hbox(0.0+0.0)x0.0
+.\teni x
+.\hbox(0.0+0.0)x0.0
+.\mathoff
+"#,
+            r#"> \box1=
+\hbox(4.30554+0.0)x5.71527
+.\mathon
+.\hbox(0.0+0.0)x0.0
+.\teni x
+.\mathoff
+"#,
+        ],
+    );
+}

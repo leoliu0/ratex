@@ -2161,14 +2161,10 @@ impl Engine {
     pub fn do_math_class(&mut self, class: u8) {
         self.show.scan_owner = Some(ScanKind::Class(class));
         let field = self.scan_math_group_or_token();
-        let node = if field.is_empty() {
-            Node::MathChar {
-                fam: 255,
-                c: 0,
-                class,
-                origin: MathDiagnosticOrigin::default(), attr: self.eqtb.cur_attr,
-            }
-        } else if field.len() == 1 {
+        // tex.web math_comp: an empty field (`\mathord{}`) is an empty
+        // sub_mlist, which converts to an empty hbox like `{}` -- it takes
+        // the multi-node group form below with only the class marker
+        let node = if field.len() == 1 {
             match field.into_iter().next().unwrap() {
                 Node::MathChar {
                     fam,
@@ -3845,6 +3841,15 @@ impl Engine {
                 let (zh, zd) = box_dims_shifted(&nuc);
                 shift_up = zh - self.fparam_idx(drop_size, 2, 18);
                 shift_down = zd + self.fparam_idx(drop_size, 2, 19);
+            }
+            // tex.web §754-§756: an empty nucleus (`$^a$`) converts to no
+            // node at all; the scripts are placed against `hpack(null)`
+            [] => {
+                char_list = Some(Vec::new());
+                nuc = Node::Empty;
+                let drop_size = font_size(sup_style(style));
+                shift_up = -self.fparam_idx(drop_size, 2, 18);
+                shift_down = self.fparam_idx(drop_size, 2, 19);
             }
             // boxed nucleus: initial shifts from its (shift-adjusted) dims
             _ => {

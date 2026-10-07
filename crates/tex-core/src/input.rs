@@ -38,31 +38,52 @@ pub struct SourceContext {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[doc(hidden)]
 pub struct SourceMark {
-    name: Rc<str>,
-    data: Rc<[u8]>,
+    /// The file the position lies in, shared by every bookmark of it so that
+    /// capturing one costs a single reference count.
+    origin: Rc<MarkOrigin>,
     line: u32,
     /// Byte offset of `line` in `data`. Keeping this in the bookmark avoids
     /// rescanning the file from byte zero whenever a diagnostic is rendered.
     line_start: usize,
     byte_column: usize,
+}
+
+/// What a [`SourceMark`] needs to know about its file.
+#[derive(Debug, PartialEq, Eq)]
+#[doc(hidden)]
+pub struct MarkOrigin {
+    name: Rc<str>,
+    data: Rc<[u8]>,
+    /// Location in the parent source that opened this file.
     included_from: Option<Rc<SourceMark>>,
+}
+
+impl MarkOrigin {
+    fn new(name: Rc<str>, data: Rc<[u8]>, included_from: Option<SourceMark>) -> Rc<MarkOrigin> {
+        Rc::new(MarkOrigin {
+            name,
+            data,
+            included_from: included_from.map(Rc::new),
+        })
+    }
 }
 
 impl SourceMark {
     pub(crate) fn to_context(&self) -> SourceContext {
+        let data = &self.origin.data;
         let bytes = if self.line == 0 {
             &[][..]
         } else {
-            let (end, _) = physical_line_bounds(&self.data, self.line_start);
-            &self.data[self.line_start.min(end)..end]
+            let (end, _) = physical_line_bounds(data, self.line_start);
+            &data[self.line_start.min(end)..end]
         };
         let mut context = InputStack::context_from_line(
-            self.name.to_string(),
+            self.origin.name.to_string(),
             self.line,
             bytes,
             self.byte_column.min(bytes.len()),
         );
-        context.included_from = self.included_from.clone();
+        context.included_from = self.origin.included_from.clone();
         context
     }
 
@@ -75,10 +96,10 @@ impl SourceMark {
 pub enum Source {
     File {
         name: String,
-        diagnostic_name: Rc<str>,
+        /// Shared by the bookmarks taken in this file: its diagnostic name, a
+        /// handle on `data` and the location in the parent source that opened it.
+        origin: Rc<MarkOrigin>,
         data: Rc<[u8]>,
-        /// Location in the parent source that opened this file.
-        included_from: Option<Rc<SourceMark>>,
         pos: usize,
         line_no: u32,
         /// Byte offset of the current physical line in `data`.
@@ -474,9 +495,8 @@ impl InputStack {
     fn context_for_at(source: &Source, byte_column: Option<usize>) -> Option<SourceContext> {
         let Source::File {
             name,
-            diagnostic_name: _,
+            origin,
             data,
-            included_from,
             line_no,
             line_start,
             line_buf,
@@ -508,7 +528,7 @@ impl InputStack {
             })
             .min(bytes.len());
         let mut context = Self::context_from_line(name.clone(), *line_no, bytes, byte_column);
-        context.included_from = included_from.clone();
+        context.included_from = origin.included_from.clone();
         Some(context)
     }
 
@@ -557,9 +577,8 @@ impl InputStack {
         byte_column: usize,
     ) -> Option<SourceMark> {
         let Source::File {
-            diagnostic_name,
+            origin,
             data,
-            included_from,
             line_no,
             line_start,
             ..
@@ -573,12 +592,10 @@ impl InputStack {
             Self::raw_line_at(data, line).0
         };
         Some(SourceMark {
-            name: diagnostic_name.clone(),
-            data: data.clone(),
+            origin: origin.clone(),
             line,
             line_start,
             byte_column,
-            included_from: included_from.clone(),
         })
     }
 
@@ -592,17 +609,15 @@ impl InputStack {
     pub(crate) fn current_source_mark(&self) -> Option<SourceMark> {
         self.stack.iter().rev().find_map(|source| match source {
             Source::File {
-                diagnostic_name,
+                origin,
                 data,
                 line_no,
                 line_start,
                 line_buf,
                 line_pos,
-                included_from,
                 ..
             } => Some(SourceMark {
-                name: diagnostic_name.clone(),
-                data: data.clone(),
+                origin: origin.clone(),
                 line: *line_no,
                 line_start: *line_start,
                 byte_column: if line_buf.is_some() {
@@ -613,7 +628,6 @@ impl InputStack {
                     let (end, _) = physical_line_bounds(data, *line_start);
                     end.saturating_sub(*line_start)
                 },
-                included_from: included_from.clone(),
             }),
             _ => None,
         })
@@ -630,9 +644,8 @@ impl InputStack {
         }
         self.stack.iter().rev().find_map(|source| {
             let Source::File {
-                diagnostic_name,
+                origin,
                 data,
-                included_from,
                 pos,
                 line_no,
                 line_buf,
@@ -670,12 +683,10 @@ impl InputStack {
                 line = line.saturating_add(1);
             }
             Some(SourceMark {
-                name: diagnostic_name.clone(),
-                data: data.clone(),
+                origin: origin.clone(),
                 line,
                 line_start,
                 byte_column: index - line_start,
-                included_from: included_from.clone(),
             })
         })
     }
@@ -795,12 +806,12 @@ impl InputStack {
         included_from: Option<SourceMark>,
     ) {
         self.ensure_stack_room();
-        let diagnostic_name: Rc<str> = Rc::from(name.as_str());
+        let data: Rc<[u8]> = data.into();
+        let origin = MarkOrigin::new(Rc::from(name.as_str()), data.clone(), included_from);
         self.stack.push(Source::File {
             name,
-            diagnostic_name,
-            data: data.into(),
-            included_from: included_from.map(Rc::new),
+            origin,
+            data,
             pos: 0,
             line_no: 0,
             line_start: 0,
@@ -832,11 +843,12 @@ impl InputStack {
     pub(crate) fn push_lua_lines(&mut self, lines: crate::engine_lua::LuaLines) {
         let included_from = self.current_source_mark();
         self.ensure_stack_room();
+        let data: Rc<[u8]> = Rc::from(&b""[..]);
+        let origin = MarkOrigin::new(Rc::from("<directlua>"), data.clone(), included_from);
         self.stack.push(Source::File {
             name: "<directlua>".to_string(),
-            diagnostic_name: Rc::from("<directlua>"),
-            data: Rc::from(&b""[..]),
-            included_from: included_from.map(Rc::new),
+            origin,
+            data,
             pos: 0,
             line_no: 0,
             line_start: 0,
@@ -924,22 +936,18 @@ impl InputStack {
     /// name of an open file instead of copying it.
     pub(crate) fn current_file_location(&self) -> (Rc<str>, u32) {
         if let Some(Source::File {
-            diagnostic_name,
-            line_no,
-            ..
+            origin, line_no, ..
         }) = self.stack.get(self.top_file.get())
         {
-            return (diagnostic_name.clone(), *line_no);
+            return (origin.name.clone(), *line_no);
         }
         for (index, s) in self.stack.iter().enumerate().rev() {
             if let Source::File {
-                diagnostic_name,
-                line_no,
-                ..
+                origin, line_no, ..
             } = s
             {
                 self.top_file.set(index);
-                return (diagnostic_name.clone(), *line_no);
+                return (origin.name.clone(), *line_no);
             }
         }
         self.last_finished_file
@@ -961,9 +969,9 @@ mod tests {
         for _ in 0..4_000 {
             s.push_file(key.clone(), rc.clone());
         }
-        // Each source owns the shared bytes; every nested include bookmark
-        // after the first owns one more reference for its parent location.
-        assert_eq!(Rc::strong_count(&rc), 2 + 4_000 + 3_999);
+        // Each source owns the shared bytes twice (the scanner's handle and
+        // its bookmark origin); the include bookmarks share the parent's origin.
+        assert_eq!(Rc::strong_count(&rc), 2 + 2 * 4_000);
         assert_eq!(s.file_bytes.len(), 1);
     }
 
@@ -989,9 +997,8 @@ mod tests {
         let mut input = InputStack::new();
         input.stack.push(Source::File {
             name: "legacy-cr.tex".into(),
-            diagnostic_name: Rc::from("legacy-cr.tex"),
+            origin: MarkOrigin::new(Rc::from("legacy-cr.tex"), bytes.clone(), None),
             data: bytes,
-            included_from: None,
             pos: 0,
             line_no: 2,
             line_start: b"first\r".len(),

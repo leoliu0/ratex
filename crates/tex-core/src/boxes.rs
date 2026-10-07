@@ -1681,6 +1681,16 @@ pub fn hpack_migrate(
     kind: u8,
     eqtb: &crate::eqtb::Eqtb,
 ) -> (PackResult, NodeList) {
+    let (kept, mut migrated, mut pre) = split_adjust_material(list);
+    migrated.append(&mut pre);
+    (hpack(kept, w, kind, eqtb), migrated)
+}
+
+/// The `adjust_tail<>null` part of hpack: the hlist without its top-level
+/// `Ins`/`Mark`/`VAdjust` nodes, those nodes in source order (a `VAdjust`
+/// contributes its own vlist), and the `\vadjust pre` material
+/// (pdftex.web `pre_adjust_tail`), which belongs before the packed box.
+pub fn split_adjust_material(list: NodeList) -> (NodeList, NodeList, NodeList) {
     let mut migrated: NodeList = Vec::new();
     let mut pre: NodeList = Vec::new();
     let mut kept: NodeList = Vec::with_capacity(list.len());
@@ -1694,8 +1704,7 @@ pub fn hpack_migrate(
             other => kept.push(other),
         }
     }
-    migrated.append(&mut pre);
-    (hpack(kept, w, kind, eqtb), migrated)
+    (kept, migrated, pre)
 }
 
 /// \vbox/\vtop packing with explicit max depth (tex.web vpackage's `l`):

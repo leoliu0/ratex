@@ -315,3 +315,37 @@ fn openout_names_print_as_scanned() {
 "#],
     );
 }
+
+/// tex.web §1084/§1076: an `\hbox` appended to a vertical list is packed in
+/// an adjusted_hbox_group, so its marks, insertions and `\vadjust` material
+/// (`\vadjust pre` first, pdftex.web) follow it on the vertical list; a
+/// `\setbox`, `\leaders` or `\copy` of such a box keeps them inside.
+#[test]
+fn appended_hbox_migrates_marks_inserts_and_vadjust() {
+    let log = run(
+        r#"\baselineskip=0pt \lineskip=0pt \lineskiplimit=0pt \topskip=0pt
+\setbox2\vbox{\hbox{\tenrm y\vadjust pre{\kern 2pt}\mark{a}\vadjust{\kern 3pt}\insert100{\kern 1pt}}\moveleft 3pt\hbox{\mark{z}}\setbox1\hbox{\mark{q}}\copy1 \leaders\hbox{\mark{m}}\vskip 20pt}\showbox2"#,
+    );
+    assert_displays(
+        &log,
+        &[r#"> \box2=
+\vbox(31.24998+0.0)x5.2778
+.\kern 2.0
+.\hbox(4.30554+1.94444)x5.2778
+..\tenrm y
+.\mark{a}
+.\kern 3.0
+.\insert100, natural size 1.0; split(0.0,0.0); float cost 0
+..\kern 1.0
+.\glue(\lineskip) 0.0
+.\hbox(0.0+0.0)x0.0, shifted -3.0
+.\mark{z}
+.\glue(\baselineskip) 0.0
+.\hbox(0.0+0.0)x0.0
+..\mark{q}
+.\leaders 20.0
+..\hbox(0.0+0.0)x0.0
+...\mark{m}
+"#],
+    );
+}

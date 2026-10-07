@@ -241,6 +241,10 @@ fn collect_single_value<T: IntoLua>(
     value: T,
     context: &str,
 ) -> LuaResult<LuaValue> {
+    let value = match value.into_plain() {
+        Ok(plain) => return Ok(plain),
+        Err(value) => value,
+    };
     let base_top = global_state.main_state().get_top();
 
     let pushed = {

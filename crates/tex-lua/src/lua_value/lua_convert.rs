@@ -100,6 +100,18 @@ pub trait IntoLua {
     {
         self.into_lua(state).map_err(|msg| state.error(msg))
     }
+
+    /// The value as a single Lua value made without the stack, for the
+    /// types that need neither allocation nor a state (nil, booleans,
+    /// numbers); `Err(self)` for the others.
+    #[doc(hidden)]
+    #[inline]
+    fn into_plain(self) -> Result<LuaValue, Self>
+    where
+        Self: Sized,
+    {
+        Err(self)
+    }
 }
 
 // ==================== Identity: LuaValue ====================
@@ -116,6 +128,11 @@ impl IntoLua for LuaValue {
     fn into_lua(self, state: &mut LuaState) -> Result<usize, String> {
         state.push_value(self).map_err(|e| format!("{:?}", e))?;
         Ok(1)
+    }
+
+    #[inline]
+    fn into_plain(self) -> Result<LuaValue, Self> {
+        Ok(self)
     }
 }
 
@@ -200,6 +217,18 @@ impl IntoLua for crate::UdValue {
         state.push_value(value).map_err(|e| format!("{:?}", e))?;
         Ok(1)
     }
+
+    #[inline]
+    fn into_plain(self) -> Result<LuaValue, Self> {
+        use crate::UdValue;
+        match self {
+            UdValue::Nil => Ok(LuaValue::nil()),
+            UdValue::Boolean(b) => Ok(LuaValue::boolean(b)),
+            UdValue::Integer(i) => Ok(LuaValue::integer(i)),
+            UdValue::Number(n) => Ok(LuaValue::float(n)),
+            other => Err(other),
+        }
+    }
 }
 
 // ==================== Boolean ====================
@@ -219,6 +248,11 @@ impl IntoLua for bool {
             .push_value(LuaValue::boolean(self))
             .map_err(|e| format!("{:?}", e))?;
         Ok(1)
+    }
+
+    #[inline]
+    fn into_plain(self) -> Result<LuaValue, Self> {
+        Ok(LuaValue::boolean(self))
     }
 }
 
@@ -256,6 +290,12 @@ macro_rules! impl_from_lua_int {
                         .push_value(LuaValue::integer(i))
                         .map_err(|e| format!("{:?}", e))?;
                     Ok(1)
+                }
+
+                #[inline]
+                #[allow(clippy::useless_conversion)]
+                fn into_plain(self) -> Result<LuaValue, Self> {
+                    i64::try_from(self).map(LuaValue::integer).map_err(|_| self)
                 }
             }
         )*
@@ -298,6 +338,11 @@ macro_rules! impl_from_lua_float {
                         .push_value(LuaValue::float(self as f64))
                         .map_err(|e| format!("{:?}", e))?;
                     Ok(1)
+                }
+
+                #[inline]
+                fn into_plain(self) -> Result<LuaValue, Self> {
+                    Ok(LuaValue::float(self as f64))
                 }
             }
         )*
@@ -368,6 +413,14 @@ impl<T: IntoLua> IntoLua for Option<T> {
                     .map_err(|e| format!("{:?}", e))?;
                 Ok(1)
             }
+        }
+    }
+
+    #[inline]
+    fn into_plain(self) -> Result<LuaValue, Self> {
+        match self {
+            Some(v) => v.into_plain().map_err(Some),
+            None => Ok(LuaValue::nil()),
         }
     }
 }

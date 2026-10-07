@@ -23,7 +23,10 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
 
 out=${1:-target/pgo/texres}
-work=$root/target/pgo
+# The instrumented build and the profile live in PGO_DIR; the optimized build
+# goes to the normal target directory (under its <host triple>/ subdirectory).
+work=${PGO_DIR:-$root/target/pgo}
+target_dir=${CARGO_TARGET_DIR:-$root/target}
 triple=$(rustc -vV | sed -n 's/^host: //p')
 export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN)}
 
@@ -69,8 +72,8 @@ done
 "$profdata" merge -o "$work/merged.profdata" "$work/raw"
 
 echo "==> optimized build"
-build "$work/use" "-Cprofile-use=$work/merged.profdata"
+build "$target_dir" "-Cprofile-use=$work/merged.profdata"
 
 mkdir -p "$(dirname "$out")"
-cp "$work/use/$triple/release/texres" "$out"
+cp "$target_dir/$triple/release/texres" "$out"
 echo "wrote $out"

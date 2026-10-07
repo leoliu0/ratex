@@ -196,18 +196,33 @@ The `ffi-release` profile used for `libtex` inherits `release` but sets
 ## Profile-guided build
 
 `scripts/build_pgo.sh [OUTPUT]` builds an instrumented `texres`, runs it over
-the benchmark corpus and rebuilds with the recorded profile
-(`-Cprofile-use`, about 7 minutes). Nothing it generates is committed: the
-profile belongs to the exact sources it was recorded from.
+the benchmark corpus (`scripts/bench/corpus`) and rebuilds with the recorded
+profile (`-Cprofile-use`). It needs `llvm-profdata` of the LLVM that `rustc`
+uses (`rustup component add llvm-tools` or the distribution's `llvm`
+package). Nothing it generates is committed: the profile belongs to the exact
+sources it was recorded from.
 
-Why it pays: the engine's hot loop (token fetch, macro expansion, `\def`,
-conditionals) is spread over tens of KB of machine code interleaved with cold
-paths. On the Beamer deck a plain release build retires 4.1G taken branches
-and 67M instruction-cache misses per pass, against 2.5G and 1.5M for
-`pdflatex`; the profile-laid-out build takes the taken branches down to 2.1G
-and instruction-cache misses to 25M. One pdfLaTeX pass over the Beamer deck
-(median of 7, converged TeX Live auxiliary files): 4.35 s plain release, 2.96 s
-profile-guided, 2.36 s `pdflatex`. Output is byte-identical.
+Why it pays: the engine is a token interpreter whose hot paths (token fetch,
+macro expansion, `\def`, conditionals) run through a dozen large functions,
+about 100 KiB of machine code interleaved with cold paths. Without a profile
+the compiler cannot tell hot from cold blocks, and the processor spends its
+time fetching instructions. One pdfLaTeX pass over the `tikz_pgfplots` aux
+files of a converged TeX Live build (`perf stat`, user space):
+
+| | instructions | cycles (lowest of 3) | L1 instruction-cache misses | wall (7 runs, median) |
+| --- | ---: | ---: | ---: | ---: |
+| `/usr/bin/pdflatex` | 58.6 G | 21.9 G | 0.05 G | 8.31 s |
+| TeXres 0.7.2 | 72.2 G | 39.7 G | 3.8 G | 14.81 s |
+| TeXres, source changes only | 66.6 G | 28.7 G | 1.8 G | 11.74 s |
+| TeXres, `build_pgo.sh` | 57.1 G | 21.0 G | 1.0 G | 8.46 s |
+
+The machine was loaded by other jobs during these runs (load average above
+80, hence the slow absolute times); the tools alternated, so the ratios hold.
+A profile taken without `tikz_pgfplots` gave the same cycles, so the gain does
+not come from training on the measured document. On the Beamer deck a plain
+release build retires 4.1G taken branches and 67M instruction-cache misses per
+pass, against 2.5G and 1.5M for `pdflatex`; the profile-laid-out build takes
+them to 2.1G and 25M. Output is byte-identical.
 
 ## Runtime design relevant to speed
 

@@ -499,3 +499,30 @@ fn luatex_engine_compilation_succeeds() {
     assert_eq!(result.selected_engine, EngineKind::LuaTeX);
     assert!(!result.pdf.is_empty());
 }
+
+/// `\mathscr` from rsfso is the virtual font rsfso10 over rrsfso10, whose
+/// map entry is `rsfs10 " -.4 SlantFont "`. TeX Live (pdfTeX) embeds the
+/// rsfs10 program as `/FontName /<tag>+rsfs10-Slant_-400` with the slant
+/// folded into its `/FontMatrix` (`[0.001 0 -0.0004 0.001 0 0]`).
+#[test]
+fn rsfso_virtual_font_embeds_the_slanted_rsfs_program() {
+    let s = session(
+        r"\documentclass{article}
+\usepackage[scr]{rsfso}
+\begin{document}
+$\mathscr{M}_{x}$
+\end{document}",
+    );
+    let r = s.compile("main.tex");
+    assert_eq!(r.status, Status::Success, "{}\n{}", r.diagnostics, r.log);
+    let pdf = lopdf::Document::load_mem(&r.pdf).unwrap();
+    let fonts = embedded_font_names(&pdf);
+    assert!(fonts.iter().any(|f| f == "rsfs10-Slant_-400"), "{fonts:?}");
+    let slanted = pdf.objects.values().any(|object| {
+        let lopdf::Object::Stream(stream) = object else { return false };
+        let Ok(data) = stream.decompressed_content() else { return false };
+        data.windows(37)
+            .any(|w| w == b"/FontMatrix [0.001 0 -0.0004 0.001 0 ")
+    });
+    assert!(slanted, "no slanted /FontMatrix in an embedded program");
+}

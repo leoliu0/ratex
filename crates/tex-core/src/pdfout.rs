@@ -381,6 +381,11 @@ pub struct EmbedFont {
     /// program share a descriptor preset from the newest-initialized TFM.
     pub t1_preset: [i32; crate::pdf_fonts::INT_KEYS_NUM],
     pub t1_keys: std::rc::Rc<crate::pdf_fonts::Type1Keys>,
+    /// The map entry's `SlantFont` and `ExtendFont` in thousandths (`fm_slant`,
+    /// `fm_extend`; an extension of exactly 1 is 0), applied to the program's
+    /// `/FontMatrix` when it is written.
+    pub t1_slant: i32,
+    pub t1_extend: i32,
     /// `pdf_init_font` order of the engine font.
     pub init_order: usize,
     /// The object number `font_descriptor_objnum_provider` chose for the

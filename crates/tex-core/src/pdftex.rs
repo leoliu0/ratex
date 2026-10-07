@@ -295,6 +295,8 @@ impl Engine {
                     t1_preset: Default::default(),
                     t1_keys: Default::default(),
                     init_order: 0,
+                    t1_slant: 0,
+                    t1_extend: 0,
                     desc_obj: 0,
                     pdftex: None,
                     xe: Some(crate::pdfout::XeFont {
@@ -407,6 +409,7 @@ impl Engine {
                             );
                             embedded.to_unicode = to_unicode;
                             embedded.t1_preset = self.preset_fontmetrics(fid);
+                            (embedded.t1_slant, embedded.t1_extend) = self.font_loader.map_transform_millis(&font);
                             embedded.init_order = self.pdf_backend.init_order(fid);
                             self.pdf_doc.fonts.push(embedded);
                             remap.insert(
@@ -502,6 +505,7 @@ impl Engine {
                         embedded.obj_font =
                             self.pdf_backend.font_objs.get(&ff).copied().unwrap_or(0);
                         embedded.t1_preset = self.preset_fontmetrics(fid);
+                        (embedded.t1_slant, embedded.t1_extend) = self.font_loader.map_transform_millis(&font);
                         embedded.init_order = self.pdf_backend.init_order(fid);
                         self.pdf_doc.fonts.push(embedded);
                         remap.insert(
@@ -591,6 +595,8 @@ impl Engine {
                                 t1_preset: Default::default(),
                                 t1_keys: Default::default(),
                                 init_order: 0,
+                                t1_slant: 0,
+                                t1_extend: 0,
                                 desc_obj: 0,
                                 pdftex: None,
                                 xe: None,
@@ -736,6 +742,8 @@ impl Engine {
                                 t1_preset: Default::default(),
                                 t1_keys: Default::default(),
                                 init_order: 0,
+                                t1_slant: 0,
+                                t1_extend: 0,
                                 desc_obj: 0,
                                 pdftex: None,
                                 xe: None,

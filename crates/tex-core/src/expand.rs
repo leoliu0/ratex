@@ -244,6 +244,11 @@ impl Engine {
     }
 
     /// fetch next raw token honoring pushback
+    ///
+    /// One shared copy with a small frame: the pushback, file and
+    /// post-processing paths live in functions of their own so the common
+    /// fetch from a token list neither saves many registers nor reserves
+    /// their stack.
     #[inline(never)]
     pub fn raw_token(&mut self) -> Token {
         // tex.web @7335/@7492: a brace fetched from a real input source
@@ -257,12 +262,7 @@ impl Engine {
                 && (self.scanner_status != ScannerStatus::Aligning
                     || self.pushed.len() > self.align_pushed_base)
             {
-                if let Some(t) = self.pushed.pop() {
-                    self.pushed_read = t;
-                    self.retain_diagnostic_sources_for(t);
-                    if self.lua_cb[crate::lua_callbacks::Cb::ShowErrorHook as usize] > 0 {
-                        self.recent_pushed = Some((t, self.input.signature()));
-                    }
+                if let Some(t) = self.raw_token_pushed() {
                     break 'fetch t;
                 }
             }
@@ -295,6 +295,49 @@ impl Engine {
                 self.end_token_list();
             }
         };
+        self.raw_token_finish(t)
+    }
+
+    /// The top of the pushback stack, which `raw_token` reads before any
+    /// input source.
+    #[inline(never)]
+    fn raw_token_pushed(&mut self) -> Option<Token> {
+        let t = self.pushed.pop()?;
+        self.pushed_read = t;
+        self.retain_diagnostic_sources_for(t);
+        if self.lua_cb[crate::lua_callbacks::Cb::ShowErrorHook as usize] > 0 {
+            self.recent_pushed = Some((t, self.input.signature()));
+        }
+        Some(t)
+    }
+
+    /// What `raw_token` does with a token it has fetched. Tokens that
+    /// need nothing (no alignment open, not a brace, ignored character,
+    /// parameter reference or marker) return at once; braces are counted.
+    #[inline(always)]
+    fn raw_token_finish(&mut self, t: Token) -> Token {
+        if self.align_state == crate::align::PH_IDLE {
+            let top = t.0 >> 24;
+            if top < 0x40 {
+                // Characters, except ignored, comment and invalid ones.
+                if (0xC200u64 >> top) & 1 == 0 {
+                    if top == 1 {
+                        self.align_brace_depth = self.align_brace_depth.saturating_add(1);
+                    } else if top == 2 {
+                        self.align_brace_depth = self.align_brace_depth.saturating_sub(1);
+                    }
+                    return t;
+                }
+            } else if t.0 >> 30 == 2 {
+                // An ordinary control sequence.
+                return t;
+            }
+        }
+        self.raw_token_special(t)
+    }
+
+    #[inline(never)]
+    fn raw_token_special(&mut self, t: Token) -> Token {
         // tex.web's frozen \endtemplate is an outer control sequence. A
         // delimited macro argument cannot consume it after a top-level `&`
         // has ended the cell; report the runaway argument instead of letting

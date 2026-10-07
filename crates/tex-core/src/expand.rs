@@ -3566,9 +3566,15 @@ impl Engine {
         collect: bool,
         out: &mut Vec<Token>,
     ) -> UndelimitedArg {
-        if self.align_state != crate::align::PH_IDLE {
-            return UndelimitedArg::Slow;
-        }
+        // Inside an alignment, raw_token() would end the cell at a row
+        // delimiter when one is live, and the frozen end of a cell aborts the
+        // argument; tokens in a closed group are below the cell's brace level.
+        let align_live = self.align_state != crate::align::PH_IDLE && {
+            if self.align_state & crate::align::PH_CLOSE != 0 {
+                return UndelimitedArg::Slow;
+            }
+            self.align_delimiter_live()
+        };
         let partoken = self.partoken_id();
         let Some((segment, _)) = self.token_list_front() else {
             return UndelimitedArg::Slow;
@@ -3611,6 +3617,7 @@ impl Engine {
                 || t.0 >> 24 == 2
                 || (t.is_cs() && self.cs.is_active(t.cs_id()))
                 || (outer && self.is_outer_macro_token(t))
+                || (align_live && crate::align::is_row_delimiter(t, &self.eqtb))
             {
                 return UndelimitedArg::Slow;
             }
@@ -4527,10 +4534,7 @@ impl Engine {
             let Some(&brace) = segment.get(length) else {
                 break;
             };
-            if brace.0 >> 24 != 1
-                || self.align_state != crate::align::PH_IDLE
-                || self.delim_eq(brace, first)
-            {
+            if brace.0 >> 24 != 1 || self.delim_eq(brace, first) {
                 break;
             }
             let group = &segment[length + 1..];
@@ -4550,9 +4554,8 @@ impl Engine {
             stored += size + 1;
         }
         // The delimiter that stopped the run, when macro_arg_token would
-        // return its tokens as they are stored (no alignment is running).
-        let delimited = self.align_state == crate::align::PH_IDLE
-            && segment.len() - length >= delim.len()
+        // return its tokens as they are stored (and none ends the cell).
+        let delimited = segment.len() - length >= delim.len()
             && delim.iter().zip(&segment[length..]).all(|(&d, &t)| {
                 let top = t.0 >> 24;
                 (if top < 0x80 {
@@ -4560,6 +4563,7 @@ impl Engine {
                 } else {
                     top < 0xC0 && !self.cs.is_active(t.cs_id())
                 }) && !(outer && self.is_outer_macro_token(t))
+                    && !(align_live && crate::align::is_row_delimiter(t, &self.eqtb))
                     && self.delim_eq(t, d)
             });
         if length == 0 && !delimited {

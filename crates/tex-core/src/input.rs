@@ -365,41 +365,6 @@ impl MacroFrame {
         (&self.body, self.resume as usize, Some((arg, self.pos as usize - start)))
     }
 
-    /// Net brace depth of the tokens delivered so far (alignment scanning
-    /// needs the braces that real input sources have already produced).
-    pub fn delivered_brace_balance(&self) -> i32 {
-        fn balance(tokens: &[Token]) -> i32 {
-            tokens.iter().fold(0, |depth, t| {
-                if t.is_char() && t.cc() == 1 {
-                    depth + 1
-                } else if t.is_char() && t.cc() == 2 {
-                    depth - 1
-                } else {
-                    depth
-                }
-            })
-        }
-        // Parameter references are not braces, so the delivered body prefix
-        // can be counted whole.
-        let body_end = if self.in_arg {
-            self.resume as usize - 1
-        } else {
-            self.pos as usize
-        };
-        let mut depth = balance(&self.body[..body_end]);
-        let passed = self.next_ref as usize;
-        for (n, &(_, index)) in self.references[..passed].iter().enumerate() {
-            if let Some(arg) = self.args.get(index) {
-                if self.in_arg && n + 1 == passed {
-                    depth += balance(&self.args.toks[self.args.start(index)..self.pos as usize]);
-                } else {
-                    depth += balance(arg);
-                }
-            }
-        }
-        depth
-    }
-
     pub(crate) fn into_arg_buffer(self) -> Vec<Token> {
         self.args.into_buffer()
     }

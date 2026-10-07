@@ -541,11 +541,6 @@ pub struct Engine {
     /// Expansions after that point outrank the toklist; older `pushed`
     /// tokens (e.g. a \\futurelet peek) wait until the toklist finishes.
     pub align_pushed_base: usize,
-    /// Brace-balance baseline of active token-list sources after the current
-    /// alignment u-template completes.
-    pub(crate) align_delimiter_balance_base: i32,
-    /// eqtb group level after the current alignment u-template completes.
-    pub(crate) align_cell_level: u16,
     /// tex.web align_state (tex.web @6745): net brace depth relative to the
     /// current alignment entry. A row delimiter ends the entry only at 0.
     /// Maintained cumulatively at token fetch (tex.web @7335/@7492); reset
@@ -1288,8 +1283,6 @@ impl Engine {
             align_scanning_cell: false,
             align_close_reason: crate::align::AlignCloseReason::default(),
             align_pushed_base: 0,
-            align_delimiter_balance_base: 0,
-            align_cell_level: 0,
             align_brace_depth: 0,
             middle_delimiter_size: 0,
             align_is_valign: false,

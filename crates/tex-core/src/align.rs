@@ -194,8 +194,6 @@ pub(crate) struct AlignSave {
     done: bool,
     to: Option<(i32, bool)>,
     pushed_base: usize,
-    delimiter_balance_base: i32,
-    cell_level: u16,
     brace_depth: i32,
     t0: Glue,
     everycr_done: bool,
@@ -249,27 +247,6 @@ impl Engine {
         self.align_state = (self.align_state & PH_OMIT) | phase;
     }
 
-    fn align_token_list_brace_balance(&self) -> i32 {
-        self.input
-            .stack
-            .iter()
-            .fold(0i32, |sum, source| match source {
-                crate::input::Source::TokList { pos, toks, .. } => {
-                    sum + toks[..*pos].iter().fold(0i32, |depth, t| {
-                        if t.is_char() && t.cc() == 1 {
-                            depth + 1
-                        } else if t.is_char() && t.cc() == 2 {
-                            depth - 1
-                        } else {
-                            depth
-                        }
-                    })
-                }
-                crate::input::Source::MacroFrame(frame) => sum + frame.delivered_brace_balance(),
-                _ => sum,
-            })
-    }
-
     pub(crate) fn align_delimiter_hidden(&self) -> bool {
         // tex.web @7257-7264: a row delimiter ends the entry only at
         // align_state = 0, where align_state is the cumulative net brace
@@ -286,8 +263,6 @@ impl Engine {
     /// expansions and commands emitted by the u-template have completed.
     pub(crate) fn align_u_template_finished(&mut self) {
         if self.align_phase() == PH_U {
-            self.align_cell_level = self.eqtb.cur_level;
-            self.align_delimiter_balance_base = self.align_token_list_brace_balance();
             self.align_brace_depth = 0;
             self.align_set_phase(PH_CONTENT);
         }
@@ -352,8 +327,6 @@ impl Engine {
                 done: self.align_done,
                 to: self.align_to,
                 pushed_base: self.align_pushed_base,
-                delimiter_balance_base: self.align_delimiter_balance_base,
-                cell_level: self.align_cell_level,
                 brace_depth: self.align_brace_depth,
                 close_reason: self.align_close_reason,
                 everycr_done: self.align_everycr_done,
@@ -469,8 +442,6 @@ impl Engine {
                 done: self.align_done,
                 to: self.align_to,
                 pushed_base: self.align_pushed_base,
-                delimiter_balance_base: self.align_delimiter_balance_base,
-                cell_level: self.align_cell_level,
                 brace_depth: self.align_brace_depth,
                 everycr_done: self.align_everycr_done,
                 adjust: std::mem::take(&mut self.align_adjust),
@@ -558,8 +529,6 @@ impl Engine {
             self.align_done = sv.done;
             self.align_to = sv.to;
             self.align_pushed_base = sv.pushed_base;
-            self.align_delimiter_balance_base = sv.delimiter_balance_base;
-            self.align_cell_level = sv.cell_level;
             self.align_brace_depth = sv.brace_depth;
             self.align_scanning_cell = sv.scanning_cell;
             self.align_close_reason = sv.close_reason;
@@ -856,8 +825,6 @@ impl Engine {
         if self.align_is_valign {
             self.prev_depth = self.ignore_depth();
         }
-        self.align_cell_level = self.eqtb.cur_level;
-        self.align_delimiter_balance_base = self.align_token_list_brace_balance();
         while self.align_cur_row.len() <= col {
             self.align_cur_row.push(Cell::default());
         }

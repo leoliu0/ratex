@@ -1542,7 +1542,7 @@ impl Engine {
             num_params,
             has_param_refs,
             params,
-            body: body.into(),
+            body: Rc::from(&body[..]),
             prefix: std::mem::take(&mut self.def_prefix),
             long: self.long_flag,
             outer: self.outer_flag,
@@ -1551,6 +1551,7 @@ impl Engine {
         self.long_flag = false;
         self.outer_flag = false;
         self.protected_flag = false;
+        self.recycle_token_vec(body);
         self.eqtb.assign(target, Equiv::Macro(Rc::new(m)), global);
         self.clear_prefixes();
     }
@@ -1609,7 +1610,9 @@ impl Engine {
         if expanded {
             self.in_expanded_scan = true;
         }
-        let mut out = Vec::new();
+        // A recycled buffer already has the capacity of earlier bodies;
+        // `finish_def` copies the finished body out and recycles it.
+        let mut out = self.token_vec_pool.pop().unwrap_or_default();
         let mut depth = 1i32;
         if !brace_consumed {
             self.skip_spaces_relax();

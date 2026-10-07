@@ -531,51 +531,37 @@ fn candidates(name: &str, fmt: &FormatInfo) -> Vec<String> {
     out
 }
 
-/// `kpse.find_file`: the lookup is a dependency of the build.
+/// `kpse.find_file`: the lookup is a dependency of the build. A file of the
+/// job's output directories records its own probes; a search-path lookup
+/// records the search (and an embedded fallback its failed disk search).
 fn find_one(name: &str, fmt: &FormatInfo) -> Option<PathBuf> {
-    let found = find_one_uncounted(name, fmt);
-    if !name.is_empty() && !tex_kpse::embedded_tree::is_embedded_path(name) {
-        let format = match fmt.search {
-            Search::Format(format) => Some(format),
-            Search::Any => None,
-        };
-        let _ = with_engine(|e| e.lua_dep_lookup(name, format, found.as_deref()));
-    }
-    found
-}
-
-fn find_one_uncounted(name: &str, fmt: &FormatInfo) -> Option<PathBuf> {
     if name.is_empty() {
         return None;
     }
     if tex_kpse::embedded_tree::is_embedded_path(name) {
         return is_file(name).then(|| PathBuf::from(name));
     }
-    let found = with_engine(|e| {
-        let names = match fmt.search {
-            Search::Format(format) => tex_kpse::Kpse::candidates(name, format),
-            Search::Any => candidates(name, fmt),
-        };
+    let names = match fmt.search {
+        Search::Format(format) => tex_kpse::Kpse::candidates(name, format),
+        Search::Any => candidates(name, fmt),
+    };
+    let embedded = || {
+        let member = names.iter().find(|c| tex_kpse::has_embedded_package(c))?;
+        tex_kpse::embedded_tree::member_path(member).map(PathBuf::from)
+    };
+    with_engine(|e| {
         if let Some(path) = e.find_job_output_file(&names) {
             return Some(path);
         }
-        match fmt.search {
-            Search::Format(format) => e.font_loader.kpse.find(name, format),
-            Search::Any => names.iter().find_map(|c| e.font_loader.kpse.find_any(c)),
-        }
+        let (format, found) = match fmt.search {
+            Search::Format(format) => (Some(format), e.font_loader.kpse.find(name, format)),
+            Search::Any => (None, names.iter().find_map(|c| e.font_loader.kpse.find_any(c))),
+        };
+        let found = found.or_else(embedded);
+        e.lua_dep_lookup(name, format, found.as_deref());
+        found
     })
-    .ok()
-    .flatten();
-    if let Some(path) = found {
-        return Some(path);
-    }
-    let member = match fmt.search {
-        Search::Format(format) => tex_kpse::Kpse::candidates(name, format)
-            .into_iter()
-            .find(|c| tex_kpse::has_embedded_package(c)),
-        Search::Any => candidates(name, fmt).into_iter().find(|c| tex_kpse::has_embedded_package(c)),
-    }?;
-    tex_kpse::embedded_tree::member_path(&member).map(PathBuf::from)
+    .unwrap_or_else(|_| embedded())
 }
 
 /// `find_format`: the format a file name suggests.

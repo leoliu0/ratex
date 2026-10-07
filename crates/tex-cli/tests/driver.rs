@@ -1060,6 +1060,58 @@ fn publishing_outputs_does_not_defer_the_first_engine_cache_hit() {
     );
 }
 
+/// texmk keeps the job's `.aux` in a private directory, where a Lua
+/// `kpse.find_file` finds it (as luaotfload and LaTeX's Lua code look up
+/// job files). That lookup is a dependency like TeX's own `\input` of the
+/// file, so an unchanged LuaLaTeX document is answered from the cache
+/// instead of running the engine again.
+#[test]
+fn lua_lookup_of_a_private_aux_file_keeps_lualatex_rebuilds_cached() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let fixture = Fixture(std::env::temp_dir().join(format!(
+        "texmk-lua-private-aux-{}-{nonce}",
+        std::process::id()
+    )));
+    std::fs::create_dir_all(&fixture.0).unwrap();
+    std::fs::write(
+        fixture.0.join("main.tex"),
+        concat!(
+            "\\documentclass{article}\n",
+            "\\begin{document}\n",
+            "Stable \\directlua{tex.print(kpse.find_file('main.aux') and 'present' or 'absent')}.\n",
+            "\\end{document}\n"
+        ),
+    )
+    .unwrap();
+    let build = || {
+        let output = Command::new(env!("CARGO_BIN_EXE_texres"))
+            .args(["-lualatex", "main.tex"])
+            .current_dir(&fixture.0)
+            .env("TEX_RS_CACHE_DIR", fixture.0.join("cache"))
+            .env("SOURCE_DATE_EPOCH", "1700000000")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    build();
+    let private_log = find_file(&fixture.0.join("cache/texmk/jobs"), "main.log").unwrap();
+    std::fs::write(&private_log, "no-change cache sentinel").unwrap();
+    build();
+    assert_eq!(
+        std::fs::read_to_string(private_log).unwrap(),
+        "no-change cache sentinel",
+        "an unchanged LuaLaTeX document ran the engine again"
+    );
+}
+
 #[test]
 fn redefined_at_input_observes_created_aux_before_texmk_converges() {
     let nonce = std::time::SystemTime::now()

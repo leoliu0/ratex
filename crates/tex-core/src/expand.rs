@@ -1079,50 +1079,58 @@ impl Engine {
     fn get_token_inner(&mut self, mut t: Token) -> Token {
         'resolve: loop {
             'expand: {
-                if t.0 >= UNEXPANDED_CS_FLAG && t.0 < 0xFFFF_0000 {
-                    t = self.unfreeze_unexpanded_token(t);
-                    if t.is_cs() {
-                        self.no_expand_tok = Some(t);
-                        self.cur_cs = Some(t.cs_id());
-                        self.cur_prim = Some(Prim::Relax);
-                    } else {
+                // The common tokens first: an ordinary character, and a
+                // plain control sequence, which none of the tests below
+                // concern.
+                if t.0 < UNEXPANDED_PARAMETER_FLAG && t.cc() != 13 {
+                    self.set_cur_char(t);
+                    return t;
+                }
+                if !(0x8000_0000..NOEXP_FLAG).contains(&t.0) {
+                    if t.0 >= UNEXPANDED_CS_FLAG && t.0 < 0xFFFF_0000 {
+                        t = self.unfreeze_unexpanded_token(t);
+                        if t.is_cs() {
+                            self.no_expand_tok = Some(t);
+                            self.cur_cs = Some(t.cs_id());
+                            self.cur_prim = Some(Prim::Relax);
+                        } else {
+                            self.set_cur_char(t);
+                        }
+                        return t;
+                    }
+                    if t.0 >= UNEXPANDED_PARAMETER_FLAG && t.0 < 0x2000_0000 {
+                        t = t.unfreeze();
+                        self.unexpanded_parameter = true;
                         self.set_cur_char(t);
-                    }
-                    return t;
-                }
-                if t.0 >= UNEXPANDED_PARAMETER_FLAG && t.0 < 0x2000_0000 {
-                    t = t.unfreeze();
-                    self.unexpanded_parameter = true;
-                    self.set_cur_char(t);
-                    return t;
-                }
-                if t.0 < 0x8000_0000 && t.cc() != 13 {
-                    self.set_cur_char(t);
-                    return t;
-                }
-                if t.0 >= NOEXP_FLAG && t.0 < 0xFFFF_0000 {
-                    let cs = t.0 & 0x3FFF_FFFF;
-                    let tok = Token::from_cs(cs);
-                    self.no_expand_tok = Some(tok);
-                    self.cur_tok = tok;
-                    self.cur_cs = Some(cs);
-                    self.cur_prim = Some(Prim::Relax);
-                    return tok;
-                }
-
-                if t.0 >= crate::page::WRITE_END_TOKEN.0 {
-                    if t == EOF_MARKER {
-                        self.end_occurred = true;
-                        return EOF_MARKER;
-                    }
-                    if t == crate::page::OUT_END_TOKEN {
                         return t;
                     }
-                    if t == crate::page::WRITE_END_TOKEN {
+                    if t.0 < 0x8000_0000 && t.cc() != 13 {
+                        self.set_cur_char(t);
                         return t;
                     }
-                    if t == PAR_END {
-                        t = Token::from_cs(self.partoken_id());
+                    if t.0 >= NOEXP_FLAG && t.0 < 0xFFFF_0000 {
+                        let cs = t.0 & 0x3FFF_FFFF;
+                        let tok = Token::from_cs(cs);
+                        self.no_expand_tok = Some(tok);
+                        self.cur_tok = tok;
+                        self.cur_cs = Some(cs);
+                        self.cur_prim = Some(Prim::Relax);
+                        return tok;
+                    }
+                    if t.0 >= crate::page::WRITE_END_TOKEN.0 {
+                        if t == EOF_MARKER {
+                            self.end_occurred = true;
+                            return EOF_MARKER;
+                        }
+                        if t == crate::page::OUT_END_TOKEN {
+                            return t;
+                        }
+                        if t == crate::page::WRITE_END_TOKEN {
+                            return t;
+                        }
+                        if t == PAR_END {
+                            t = Token::from_cs(self.partoken_id());
+                        }
                     }
                 }
 
@@ -1165,37 +1173,59 @@ impl Engine {
                                 return t;
                             }
                             if m.num_params == 0 && m.prefix.is_empty() && !self.xetex_macro_trace() {
-                                let body = std::rc::Rc::clone(&m.body);
-                                self.enter_macro_diagnostic(id, t.cs_id());
-                                if body.is_empty() {
-                                    break 'expand;
+                                // What the body amounts to, decided before the
+                                // diagnostic bookkeeping ends the borrow of
+                                // the meaning; only a body that is read as a
+                                // token list costs a reference count.
+                                enum Body {
+                                    Empty,
+                                    SelfReference,
+                                    ControlSequence(Token),
+                                    Character(Token),
+                                    List(std::rc::Rc<[Token]>),
                                 }
-                                if body.len() == 1 {
-                                    let t_only = body[0];
-                                    if t_only == Token::from_cs(id) {
+                                let body = match *m.body {
+                                    [] => Body::Empty,
+                                    [only] if only == Token::from_cs(id) => Body::SelfReference,
+                                    [only]
+                                        if (0x8000_0000..NOEXP_FLAG).contains(&only.0)
+                                            && !self.align_macro_arg =>
+                                    {
+                                        Body::ControlSequence(only)
+                                    }
+                                    [only]
+                                        if only.0 < 0x8000_0000
+                                            && only.cc() != 13
+                                            && !matches!(only.cc(), 1 | 2 | 4) =>
+                                    {
+                                        Body::Character(only)
+                                    }
+                                    _ => Body::List(std::rc::Rc::clone(&m.body)),
+                                };
+                                self.enter_macro_diagnostic(id, t.cs_id());
+                                match body {
+                                    Body::Empty => break 'expand,
+                                    Body::SelfReference => {
                                         self.set_cur_cs(t);
                                         return t;
                                     }
-                                    if (0x8000_0000..NOEXP_FLAG).contains(&t_only.0)
-                                        && !self.align_macro_arg
-                                    {
-                                        t = t_only;
+                                    Body::ControlSequence(only) => {
+                                        t = only;
                                         continue 'resolve;
                                     }
-                                    if t_only.0 < 0x8000_0000
-                                        && t_only.cc() != 13
-                                        && !matches!(t_only.cc(), 1 | 2 | 4)
-                                    {
-                                        self.cur_tok = t_only;
+                                    Body::Character(only) => {
+                                        self.cur_tok = only;
                                         self.cur_cs = None;
                                         self.cur_prim = None;
-                                        return t_only;
+                                        return only;
+                                    }
+                                    Body::List(body) => {
+                                        if !self.try_push_tokens_rc(body, id) {
+                                            return EOF_MARKER;
+                                        }
+                                        break 'expand;
                                     }
                                 }
-                                if !self.try_push_tokens_rc(body, id) {
-                                    return EOF_MARKER;
-                                }
-                                break 'expand;
                             }
                             let m = m.clone();
                             self.expand_macro(id, &m, t.cs_id());

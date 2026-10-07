@@ -1064,7 +1064,10 @@ fn publishing_outputs_does_not_defer_the_first_engine_cache_hit() {
 /// `kpse.find_file` finds it (as luaotfload and LaTeX's Lua code look up
 /// job files). That lookup is a dependency like TeX's own `\input` of the
 /// file, so an unchanged LuaLaTeX document is answered from the cache
-/// instead of running the engine again.
+/// instead of running the engine again. FORCE_SOURCE_DATE=1 makes
+/// SOURCE_DATE_EPOCH fix `\time` as well; otherwise the cache is keyed by the
+/// minute the first build started, and that build's one pass, which creates
+/// the font names database, often ends in the next minute.
 #[test]
 fn lua_lookup_of_a_private_aux_file_keeps_lualatex_rebuilds_cached() {
     let nonce = std::time::SystemTime::now()
@@ -1092,7 +1095,8 @@ fn lua_lookup_of_a_private_aux_file_keeps_lualatex_rebuilds_cached() {
                 .args(["-lualatex", "main.tex"])
                 .current_dir(&fixture.0)
                 .env("TEX_RS_CACHE_DIR", fixture.0.join("cache"))
-                .env("SOURCE_DATE_EPOCH", "1700000000"),
+                .env("SOURCE_DATE_EPOCH", "1700000000")
+                .env("FORCE_SOURCE_DATE", "1"),
             &fixture.0,
         )
         .output()

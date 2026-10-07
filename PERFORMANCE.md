@@ -246,12 +246,15 @@ The `ffi-release` profile used for `libtex` inherits `release` but sets
 ## Profile-guided build
 
 `scripts/build_pgo.sh [OUTPUT]` builds an instrumented `texres`, runs a cold
-build of every pdfLaTeX and XeLaTeX document of the benchmark corpora
-(`scripts/bench/corpus` and `scripts/bench/corpus100`, eight at a time) and
-rebuilds with the recorded profile (`-Cprofile-use`). The 100-document corpus
-brings the packages the eight-document one leaves out (beamer themes, siunitx
-tables, CJK, KOMA-Script, memoir, indexes). It needs `llvm-profdata` of the
-LLVM that `rustc`
+build of every document of the training corpora (`scripts/bench/corpus`
+without its LuaLaTeX document, and a variant of `scripts/bench/corpus100` with
+other text and data, eight at a time) and rebuilds with the recorded profile
+(`-Cprofile-use`). The 100-document corpus brings the packages the
+eight-document one leaves out (beamer themes, siunitx tables, CJK,
+KOMA-Script, memoir, indexes, fontspec/luaotfload). LuaLaTeX training builds
+see only the TeX Live fonts (an empty `OSFONTDIR` and a `luaotfload.conf`
+with `location-precedence = texmf`), so the profile does not depend on the
+machine's fonts. It needs `llvm-profdata` of the LLVM that `rustc`
 uses (`rustup component add llvm-tools` or the distribution's `llvm`
 package). Nothing it generates is committed: the profile belongs to the exact
 sources it was recorded from.

@@ -78,6 +78,7 @@ pub mod lua_node;
 mod lua_node_conv;
 pub mod lua_node_tables;
 mod lua_node_lib;
+mod lua_node_iter;
 mod lua_node_ops;
 mod lua_node_pack;
 pub mod maincontrol;

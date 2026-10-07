@@ -241,6 +241,10 @@ fn collect_single_value<T: IntoLua>(
     value: T,
     context: &str,
 ) -> LuaResult<LuaValue> {
+    let value = match value.into_plain() {
+        Ok(plain) => return Ok(plain),
+        Err(value) => value,
+    };
     let base_top = global_state.main_state().get_top();
 
     let pushed = {
@@ -1255,30 +1259,46 @@ impl<T: 'static> Clone for UserDataRef<T> {
 // LuaAnyRef
 // ============================================================================
 
-/// A reference to any Lua value held in the VM registry.
+/// A reference to any Lua value: collectable values are held in the VM
+/// registry, values that need no rooting (nil, booleans, numbers, light
+/// userdata, light C functions) are kept in the handle itself.
 ///
 /// Can be down-cast to a typed ref (`LuaTableRef`, `LuaFunctionRef`, `LuaStringRef`)
 /// when the concrete type is known.
 pub struct LuaAnyRef {
     inner: RefInner,
+    /// The value when `inner` holds no registry slot (`LUA_REFNIL`).
+    inline: LuaValue,
 }
 
 impl LuaAnyRef {
-    pub(crate) fn from_raw(ref_id: RefId, vm: GlobalStateHandle) -> Self {
+    /// A handle for `value`, registered only if it is collectable.
+    pub(crate) fn new(global_state: &mut GlobalState, value: LuaValue) -> Self {
+        let (ref_id, inline) = if value.is_collectable() {
+            (store_in_registry(global_state, value), LuaValue::nil())
+        } else {
+            (LUA_REFNIL, value)
+        };
         LuaAnyRef {
-            inner: RefInner::new(ref_id, vm),
+            inner: RefInner::new(ref_id, GlobalStateHandle::from_global(global_state)),
+            inline,
         }
     }
 
     /// Get the underlying LuaValue.
+    #[inline]
     pub fn to_value(&self) -> LuaValue {
-        self.inner.to_value()
+        if self.inner.ref_id == LUA_REFNIL {
+            self.inline
+        } else {
+            self.inner.to_value()
+        }
     }
 
     /// Register the value again, for a typed handle.
     fn rereference(&self, accept: impl FnOnce(&LuaValue) -> bool) -> Option<(RefId, GlobalStateHandle)> {
         let handle = self.inner.handle().ok()?;
-        let value = self.inner.to_value();
+        let value = self.to_value();
         if !accept(&value) {
             return None;
         }
@@ -1316,14 +1336,14 @@ impl LuaAnyRef {
 
     /// Get the value's type kind.
     pub fn kind(&self) -> LuaValueKind {
-        self.inner.to_value().kind()
+        self.to_value().kind()
     }
 
     /// Get the referenced value's metatable, if present.
     pub fn get_metatable(&self) -> Option<LuaTableRef> {
         let handle = self.inner.handle().ok()?;
         let vm = handle.as_mut();
-        let value = self.inner.to_value();
+        let value = self.to_value();
         let metatable = get_metatable(vm.main_state(), &value)?;
         if !metatable.is_table() {
             return None;
@@ -1340,7 +1360,7 @@ impl LuaAnyRef {
         {
             return Err(vm.error("metatable belongs to a different Lua state".to_string()));
         }
-        let value = self.inner.to_value();
+        let value = self.to_value();
         let mt_value = metatable.map(LuaTableRef::to_value);
 
         if let Some(table) = value.as_table_mut() {
@@ -1382,12 +1402,16 @@ impl LuaAnyRef {
 
     /// Extract the value as a Rust type via `FromLua`.
     pub fn get_as<T: crate::FromLua>(&self) -> LuaResult<T> {
-        let val = self.inner.to_value();
+        let val = self.to_value();
         let vm = self.inner.global_state_mut()?;
         T::from_lua(val, vm.main_state()).map_err(|msg| vm.error(msg))
     }
 
     pub(crate) fn push_into(&self, state: &mut LuaState) -> Result<usize, String> {
+        if self.inner.ref_id == LUA_REFNIL {
+            state.push_value(self.inline).map_err(|e| format!("{:?}", e))?;
+            return Ok(1);
+        }
         push_handle_value(&self.inner, state)
     }
 
@@ -1410,9 +1434,12 @@ impl std::fmt::Debug for LuaAnyRef {
 
 impl Clone for LuaAnyRef {
     fn clone(&self) -> Self {
-        LuaAnyRef {
-            inner: self.inner.clone(),
-        }
+        let inner = if self.inner.ref_id == LUA_REFNIL {
+            RefInner { ref_id: LUA_REFNIL, liveness: Rc::clone(&self.inner.liveness) }
+        } else {
+            self.inner.clone()
+        };
+        LuaAnyRef { inner, inline: self.inline }
     }
 }
 

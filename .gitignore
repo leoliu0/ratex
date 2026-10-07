@@ -29,3 +29,5 @@ output/
 /.pi/
 /.omp/
 /trust_own/
+scripts/bench/corpus_public/
+scripts/bench/results/*_docs/

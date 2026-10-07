@@ -180,6 +180,56 @@ Needs `/usr/bin/{pdflatex,xelatex,lualatex,latexmk,bibtex}` from TeX Live,
 write elsewhere. A full run took about 31 minutes here, of which about 12
 minutes is TeXres building the LuaLaTeX font database.
 
+## 100-document benchmark (TeXres vs TeX Live 2026)
+
+`scripts/bench100.py` extends the benchmark above to 100 documents: 70
+generated ones (`scripts/bench/corpus100/`, committed, regenerate with
+`scripts/bench/gen_corpus100.py`) and 30 real public ones, fetched by pinned
+arXiv version or GitHub commit and verified by a sha256 over the unpacked tree
+(`scripts/bench/public_manifest.json`, `scripts/bench/fetch_public.py`). Third-
+party sources are not committed.
+
+- Engines: 60 pdfLaTeX, 25 XeLaTeX, 15 LuaLaTeX.
+- Classes: article, report, book, memoir, scrartcl/scrbook, amsart, revtex4-1/-2,
+  elsarticle, IEEEtran, llncs, svjour3, lipics, lmcs, ecta/ectj, jcap/jhep, beamer
+  (Madrid, Boadilla, metropolis), standalone, letter, ctexart/ctexbook, tufte.
+- Packages: amsmath/amsthm, hyperref, cleveref, biblatex+biber (numeric,
+  alphabetic, authortitle, ieee, chicago), natbib/BibTeX, tikz, pgfplots, siunitx,
+  booktabs/longtable/tabularx, listings, algorithm2e, xcolor, tcolorbox, fontspec
+  (TeX Gyre, Latin Modern), unicode-math, polyglossia (de, fr, es, pl, ru, el),
+  xeCJK/ctex, microtype, glossaries, makeidx/imakeidx, subcaption, footmisc.
+- Sizes: 1 to about 300 pages.
+
+Each document is built once with both tools; a document that TeX Live cannot
+build, that TeXres cannot build, or whose `pdftotext -layout` text or page count
+differs is not timed but stays in the results with its status. Scenarios: (a)
+cold full build (fresh TeXres cache vs clean latexmk directory), (b) no-change
+rebuild, (c) one-line edit rebuild (generated documents: `BENCH-A` becomes
+`BENCH-B`; public documents: ` BENCH-B` is appended to one plain-text line of a
+body file, chosen automatically and recorded). `--scenarios abcd` adds (d), one
+engine pass. At least 5 runs per cell, medians; tools alternate and flip order
+every run.
+
+The ratio is TeXres wall time divided by TeX Live wall time (below 1: TeXres is
+faster). The results (`scripts/bench/results/bench100.{json,md}`) list every
+document, slowest first, with the count of documents faster and slower per
+scenario.
+
+```sh
+python3 scripts/bench100.py --texres BIN                      # everything, one document at a time
+python3 scripts/bench100.py --texres BIN --jobs 16 --cpus-per-job 4   # parallel, each job pinned to its own cores
+python3 scripts/bench100.py --texres BIN --docs pdf_letter,arxiv_bert,engine=lua,source=github
+python3 scripts/bench100.py --texres BIN --resume             # skip documents already measured with this binary
+```
+
+Parallel jobs are pinned with `taskset` to disjoint physical cores (both tools
+of one document share a CPU set). On a 128-thread machine, 16 jobs of 4 CPUs
+gave medians within about 3% of one-at-a-time runs on four test documents
+(biblatex, tikz, XeLaTeX, letter); check this on your machine with `--jobs 1`
+before trusting parallel numbers. The whole corpus then takes about 10 minutes.
+Copy the binary under test to a stable path first, and pass `--texres-note` to
+record its commit in the results.
+
 ## Build profile
 
 `[profile.release]` in the workspace `Cargo.toml`:

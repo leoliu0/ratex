@@ -1557,7 +1557,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             for &(_, gid, _) in &font.legacy_cids {
                 gids.insert(gid);
             }
-            for &(_, gid, _) in &font.native_cids {
+            for &(_, gid) in &font.native_cids {
                 gids.insert(gid);
             }
         }
@@ -1981,7 +1981,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             if emitted_encoding.insert(enc_obj) {
                 let enc_cmap = if f.is_native {
                     let mut entries = Vec::new();
-                    for &(code, gid, _) in &f.native_cids {
+                    for &(code, gid) in &f.native_cids {
                         let cid = prep.remapper.get(gid).ok_or_else(|| {
                             format!(
                                 "Font `{}` lost used glyph {gid} during subsetting",

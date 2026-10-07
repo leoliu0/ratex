@@ -69,6 +69,16 @@ font changes establish an absolute text matrix. The glyph pen retains
 1/10000-em units and truncates when emitting coarser TJ adjustments; pdfTeX
 keeps its integer-sp raster and relative text moves.
 
+OpenType Lua fonts share a PDF font owner when their `filename` and `fullname`
+match ([`font_shareable`](https://github.com/TeX-Live/texlive-source/blob/trunk/texk/web2c/luatexdir/pdf/pdffont.c));
+`pdf.getfontname` reports that owner. Their two-byte codes are allocated per
+glyph and the ToUnicode text is settled when fonts are written, after
+`finish_pdffile` (where luaotfload's harf mode assigns final `tounicode`
+values), following `write_cid_tounicode`: the sharers are visited by id and
+their marked characters by code (the owner also holds every sharer's marks),
+and a glyph takes its first value from the showing font's `tounicode`, then
+the owner's, or the character code when neither font enables `tounicode`.
+
 Lua characters keep scalar metrics inline; kerning, ligatures, math variants
 and kerns, successors, extensible recipes and virtual packets live in optional
 `LuaCharExtras`. Ordinary characters allocate no extras. Packet presence is

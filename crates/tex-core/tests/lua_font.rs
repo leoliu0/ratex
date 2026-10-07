@@ -121,6 +121,63 @@ fn opentype_font_from_table_is_embedded_with_tounicode() {
     }
 }
 
+/// luatex shares one PDF font between OpenType fonts of the same `filename`
+/// and `fullname`, and writes its /ToUnicode after `finish_pdffile` (where
+/// luaotfload's harf mode sets the final `tounicode` of each glyph): every
+/// glyph takes the value of its first marked character, read from the font
+/// it was shown in, the owner holding the marks of all sharers. TeX Live
+/// 2026 `luatex --ini` on this input prints NAMES=1,1 and its PDF maps
+/// glyph 27 to "X" and glyph 111 to "V": the owner's later `tounicode` wins
+/// for A, the sharer's for V does not.
+#[test]
+fn shared_cid_font_tounicode_is_settled_after_finish_pdffile() {
+    let mut e = run_luatex(
+        r#"\directlua{
+ local file = kpse.find_file("lmroman10-regular.otf", "opentype fonts")
+ if not file then texio.write_nl("NOFONT") return end
+ local function def(name, size)
+  return font.define{
+   name=name, psname="LMRoman10-Regular", fullname="LMRoman10-Regular",
+   filename=file, format="opentype", embedding="subset", encodingbytes=2, type="real", subfont=1,
+   size=size, designsize=655360, tounicode=1,
+   characters={
+    [65]={index=27,width=491520,height=469237,depth=0,tounicode="0041"},
+    [86]={index=111,width=491520,height=447610,depth=14417,tounicode="0056"},
+   },
+   parameters={slant=0, space=332871, space_stretch=166436, space_shrink=110957, x_height=430555, quad=655360, extra_space=0},
+  }
+ end
+ FA = def("lmA", 655360)
+ FB = def("lmB", 786432)
+ callback.register("finish_pdffile", function()
+  font.addcharacters(FA, {characters={[65]={index=27,width=491520,height=469237,depth=0,tounicode="0058",used=true}}})
+  font.addcharacters(FB, {characters={[86]={index=111,width=491520,height=447610,depth=14417,tounicode="0059",used=true}}})
+ end)
+}
+\outputmode=1 \pagewidth=100pt \pageheight=50pt
+\shipout\hbox{\raise10pt\hbox{\directlua{font.current(FA)}A\directlua{font.current(FB)}VA}}
+\directlua{texio.write_nl("NAMES=" .. pdf.getfontname(FA) .. "," .. pdf.getfontname(FB))}"#,
+    );
+    assert_eq!(e.error_count, 0, "errors: {:?}\n{}", e.diagnostics, e.term);
+    if e.term.contains("NOFONT") {
+        return;
+    }
+    assert!(e.term.contains("NAMES=1,1"), "{}", e.term);
+    // luatex close_files_and_terminate: finish_pdffile, then the fonts
+    e.finish_job_diagnostics();
+    let bytes = tex_core::driver::finish_pdf(&mut e, false).expect("PDF output");
+    let pdf = lopdf::Document::load_mem(&bytes).expect("valid PDF");
+    let mut texts = std::collections::BTreeSet::new();
+    for font in pdf.objects.values().filter_map(|object| object.as_dict().ok()) {
+        let Ok(cmap) = font.get(b"ToUnicode") else { continue };
+        let cmap = pdf.dereference(cmap).unwrap().1.as_stream().unwrap().decompressed_content().unwrap();
+        let cmap = String::from_utf8(cmap).unwrap();
+        let body = cmap.split("beginbfchar").nth(1).unwrap().split("endbfchar").next().unwrap();
+        texts.extend(body.split_whitespace().skip(1).step_by(2).map(str::to_owned));
+    }
+    assert_eq!(texts.into_iter().collect::<Vec<_>>(), ["<0056>", "<0058>"]);
+}
+
 /// LuaTeX's Pagella Math descriptor keeps tall glyph bounds separate from
 /// baseline metrics; conflating them changes fractions' PDF reading order.
 #[test]

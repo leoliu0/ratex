@@ -434,6 +434,9 @@ pub struct LuaFontState {
     pub used: crate::FxHashSet<FontId>,
     /// Glyph indices found through the character map of the font program.
     pub cmap_cache: crate::FxHashMap<(FontId, u32), u16>,
+    /// luatex `pdf_mark_char`: the characters of each font whose glyph
+    /// reached the PDF through a CID font.
+    pub marked_chars: crate::FxHashMap<FontId, crate::FxHashSet<u32>>,
 }
 
 impl Engine {
@@ -520,6 +523,7 @@ impl Engine {
         }
         self.lua_fonts.touched.remove(&f);
         self.lua_fonts.used.remove(&f);
+        self.lua_fonts.marked_chars.remove(&f);
         if i + 1 == self.eqtb.fonts.len() {
             self.eqtb.fonts.pop();
             self.eqtb.font_params.pop();
@@ -1084,5 +1088,82 @@ impl Engine {
             .map_or(0, |g| g.0);
         self.lua_fonts.cmap_cache.insert((fid, c), gid);
         Ok(gid)
+    }
+}
+
+/// The text of a `tounicode` value (UTF-16BE hex digits).
+pub(crate) fn tounicode_text(hex: &[u8]) -> String {
+    let units: Vec<u16> = hex
+        .chunks(4)
+        .filter_map(|chunk| u16::from_str_radix(std::str::from_utf8(chunk).ok()?, 16).ok())
+        .collect();
+    String::from_utf16_lossy(&units)
+}
+
+impl Engine {
+    /// luatex `write_cid_tounicode` for the CID font owned by `master`: the
+    /// text of each glyph, read once `finish_pdffile` has run. The fonts
+    /// sharing the dictionary are visited by id, their marked characters
+    /// in code order (the owner also holds every sharer's marks); the first
+    /// character drawn with a glyph that yields a value names it, from its
+    /// own font's `tounicode`, else the owner's, else (neither font having
+    /// `tounicode` set) its own code.
+    pub(crate) fn lua_cid_tounicode(&mut self, master: FontId) -> crate::FxHashMap<u16, String> {
+        let mut members: Vec<FontId> = self
+            .pdf_backend
+            .font_ff
+            .iter()
+            .filter(|&(&k, &ff)| ff == master || k == master)
+            .map(|(&k, _)| k)
+            .collect();
+        if !members.contains(&master) {
+            members.push(master);
+        }
+        members.sort_unstable();
+        let lua_of = |e: &Engine, k: FontId| e.eqtb.fonts.get(usize::from(k)).and_then(|font| font.lua.clone());
+        let marked = |e: &Engine, k: FontId, lf: &LuaFont| -> Vec<u32> {
+            let mut v: Vec<u32> = e.lua_fonts.marked_chars.get(&k).map(|s| s.iter().copied().collect()).unwrap_or_default();
+            v.extend(lf.chars.iter().filter(|(_, ci)| ci.used).map(|(&c, _)| c));
+            v
+        };
+        let mut texts = crate::FxHashMap::default();
+        let Some(parent) = lua_of(self, master) else { return texts };
+        // pdfgen.c: the marks of every sharer are copied into the owner
+        let mut owner_marks: Vec<u32> = Vec::new();
+        for &k in &members {
+            if let Some(lf) = lua_of(self, k) {
+                owner_marks.extend(marked(self, k, &lf));
+            }
+        }
+        for &k in &members {
+            let Some(lf) = lua_of(self, k) else { continue };
+            let mut codes = if k == master { std::mem::take(&mut owner_marks) } else { marked(self, k, &lf) };
+            codes.sort_unstable();
+            codes.dedup();
+            for c in codes {
+                let Some(ci) = lf.chars.get(&c) else { continue };
+                let Ok(gid) = self.lua_glyph_index(k, &lf, c) else { continue };
+                if texts.contains_key(&gid) {
+                    continue;
+                }
+                let mut has_tounicode = false;
+                let mut text = None;
+                if lf.tounicode != 0 {
+                    has_tounicode = true;
+                    text = ci.tounicode().map(tounicode_text);
+                }
+                if k != master && text.is_none() && parent.tounicode != 0 {
+                    has_tounicode = true;
+                    text = parent.chars.get(&c).and_then(LuaCharInfo::tounicode).map(tounicode_text);
+                }
+                if !has_tounicode {
+                    text = char::from_u32(c).map(String::from);
+                }
+                if let Some(text) = text {
+                    texts.insert(gid, text);
+                }
+            }
+        }
+        texts
     }
 }

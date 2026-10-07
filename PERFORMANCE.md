@@ -195,6 +195,22 @@ minutes is TeXres building the LuaLaTeX font database.
 The `ffi-release` profile used for `libtex` inherits `release` but sets
 `panic = "unwind"` (see [docs/libraries.md](docs/libraries.md)).
 
+## Profile-guided build
+
+`scripts/build_pgo.sh [OUTPUT]` builds an instrumented `texres`, runs it over
+the benchmark corpus and rebuilds with the recorded profile
+(`-Cprofile-use`, about 7 minutes). Nothing it generates is committed: the
+profile belongs to the exact sources it was recorded from.
+
+Why it pays: the engine's hot loop (token fetch, macro expansion, `\def`,
+conditionals) is spread over tens of KB of machine code interleaved with cold
+paths. On the Beamer deck a plain release build retires 4.1G taken branches
+and 67M instruction-cache misses per pass, against 2.5G and 1.5M for
+`pdflatex`; the profile-laid-out build takes the taken branches down to 2.1G
+and instruction-cache misses to 25M. One pdfLaTeX pass over the Beamer deck
+(median of 7, converged TeX Live auxiliary files): 4.35 s plain release, 2.96 s
+profile-guided, 2.36 s `pdflatex`. Output is byte-identical.
+
 ## Runtime design relevant to speed
 
 - The LaTeX formats are embedded zstd-compressed and loaded at startup.

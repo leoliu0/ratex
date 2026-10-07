@@ -503,6 +503,25 @@ pub(crate) enum TraceEvent {
 struct EqEntry {
     equiv: Option<Equiv>,
     level: u16,
+    /// The meaning is an \outer macro (tex.web's eq_type `outer_call`):
+    /// argument and text scanners test every token for it without loading
+    /// the macro.
+    outer: bool,
+}
+
+impl EqEntry {
+    const UNDEFINED: EqEntry = EqEntry {
+        equiv: None,
+        level: LEVEL_ONE,
+        outer: false,
+    };
+
+    /// Install `equiv` as the meaning, returning the previous one.
+    #[inline]
+    fn set(&mut self, equiv: Option<Equiv>) -> Option<Equiv> {
+        self.outer = matches!(&equiv, Some(Equiv::Macro(m)) if m.outer);
+        std::mem::replace(&mut self.equiv, equiv)
+    }
 }
 
 /// Deduplicated LuaTeX attribute lists: `Attr(n)` names the n-th distinct
@@ -987,13 +1006,7 @@ impl Eqtb {
     fn ensure_entry(&mut self, id: CsId) -> &mut EqEntry {
         let idx = id as usize;
         if idx >= self.entries.len() {
-            self.entries.resize(
-                idx + 1,
-                EqEntry {
-                    equiv: None,
-                    level: LEVEL_ONE,
-                },
-            );
+            self.entries.resize(idx + 1, EqEntry::UNDEFINED);
         }
         &mut self.entries[idx]
     }
@@ -1009,14 +1022,26 @@ impl Eqtb {
 
     /// follow \let aliases to the effective meaning
     #[inline(always)]
-    pub fn resolve(&self, mut id: CsId) -> Option<&Equiv> {
+    pub fn resolve(&self, id: CsId) -> Option<&Equiv> {
+        self.resolve_entry(id).and_then(|e| e.equiv.as_ref())
+    }
+
+    #[inline(always)]
+    fn resolve_entry(&self, mut id: CsId) -> Option<&EqEntry> {
         for _ in 0..1024 {
-            match self.get(id) {
+            let entry = self.entries.get(id as usize)?;
+            match &entry.equiv {
                 Some(Equiv::Alias(next)) => id = *next,
-                other => return other,
+                _ => return Some(entry),
             }
         }
         None
+    }
+
+    /// True when the effective meaning of `id` is an \outer macro.
+    #[inline(always)]
+    pub(crate) fn is_outer_cs(&self, id: CsId) -> bool {
+        self.resolve_entry(id).is_some_and(|e| e.outer)
     }
     #[inline]
     pub fn push_save(&mut self, item: SaveItem) {
@@ -1066,13 +1091,7 @@ impl Eqtb {
         let idx = id as usize;
         let cur_level = self.cur_level;
         if idx >= self.entries.len() {
-            self.entries.resize(
-                idx + 1,
-                EqEntry {
-                    equiv: None,
-                    level: LEVEL_ONE,
-                },
-            );
+            self.entries.resize(idx + 1, EqEntry::UNDEFINED);
         }
         let same = Equiv::same(self.entries[idx].equiv.as_ref(), equiv.as_ref());
         if !self.begin_assign(global, same, TraceSlot::Eq(id)) {
@@ -1080,12 +1099,12 @@ impl Eqtb {
         }
         let entry = &mut self.entries[idx];
         if !global && entry.level < cur_level {
-            let old = std::mem::replace(&mut entry.equiv, equiv);
+            let old = entry.set(equiv);
             let ol = entry.level;
             entry.level = cur_level;
             self.push_save(SaveItem::Eq(id, old, ol));
         } else {
-            entry.equiv = equiv;
+            entry.set(equiv);
             entry.level = if global { LEVEL_ONE } else { cur_level };
         }
         self.end_assign(TraceSlot::Eq(id));
@@ -2432,7 +2451,7 @@ impl Eqtb {
                     let e = self.ensure_entry(id);
                     let restored = e.level > LEVEL_ONE;
                     if restored {
-                        e.equiv = old;
+                        e.set(old);
                         e.level = ol;
                     }
                     self.trace_restore(restored, TraceSlot::Eq(id));
@@ -2721,7 +2740,7 @@ impl Eqtb {
             self.outer_macros = true;
         }
         let e = self.ensure_entry(id);
-        e.equiv = equiv;
+        e.set(equiv);
         e.level = level;
     }
 

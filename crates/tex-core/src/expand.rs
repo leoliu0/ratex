@@ -207,7 +207,7 @@ impl AlignFilter {
             }
     }
 
-    #[inline(never)]
+    #[inline(always)]
     fn no_row_delimiter(t: Token, eqtb: &crate::eqtb::Eqtb) -> bool {
         crate::align::row_delimiter(t, eqtb).is_none()
     }
@@ -278,12 +278,29 @@ impl Engine {
     /// Out of line so that its many callers share one copy. The common case
     /// (no alignment entry being scanned) is served by `raw_token_fast`,
     /// which never calls another function and therefore runs without
-    /// setting up a stack frame; everything else is a tail call to
+    /// setting up a stack frame; inside an alignment entry the next stop is
+    /// `raw_token_aligning`, and everything else is a tail call to
     /// `raw_token_general`.
     #[inline(never)]
     pub fn raw_token(&mut self) -> Token {
-        if self.align_state == crate::align::PH_IDLE && !self.diagnostic_sources_live {
+        if !self.diagnostic_sources_live {
+            if self.align_state != crate::align::PH_IDLE {
+                return self.raw_token_aligning();
+            }
             if let Some(t) = self.raw_token_fast(AlignFilter::None) {
+                return t;
+            }
+        }
+        self.raw_token_general()
+    }
+
+    /// Inside an alignment entry, tokens that cannot end the cell take the
+    /// fast path too, without the frame of `raw_token_general`.
+    #[inline(never)]
+    fn raw_token_aligning(&mut self) -> Token {
+        let filter = self.align_raw_filter();
+        if filter != AlignFilter::All {
+            if let Some(t) = self.raw_token_fast(filter) {
                 return t;
             }
         }
@@ -327,7 +344,7 @@ impl Engine {
                     }
                     _ => return None,
                 },
-                Some(crate::input::Source::MacroFrame(frame)) => match frame.peek_token() {
+                Some(crate::input::Source::MacroFrame(frame)) => match frame.peek_token_advancing() {
                     Some(t) if filter.passes(t, eqtb) => {
                         frame.skip(1);
                         (t, frame.trace_depth)
@@ -388,16 +405,6 @@ impl Engine {
 
     #[inline(never)]
     fn raw_token_general(&mut self) -> Token {
-        // Inside an alignment entry, tokens that cannot end the cell take
-        // the fast path too.
-        if self.align_state != crate::align::PH_IDLE && !self.diagnostic_sources_live {
-            let filter = self.align_raw_filter();
-            if filter != AlignFilter::All {
-                if let Some(t) = self.raw_token_fast(filter) {
-                    return t;
-                }
-            }
-        }
         // tex.web @7335/@7492: a brace fetched from a real input source
         // adjusts the alignment brace depth. Tokens returned from the
         // pushback stack were counted at their original fetch (tex.web
@@ -3525,7 +3532,7 @@ impl Engine {
 
     #[inline(always)]
     fn is_outer_cs(&self, id: CsId) -> bool {
-        matches!(self.eqtb.resolve(id), Some(Equiv::Macro(m)) if m.outer)
+        self.eqtb.is_outer_cs(id)
     }
 
     #[inline(never)]

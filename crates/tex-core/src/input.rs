@@ -286,6 +286,21 @@ impl MacroFrame {
         })
     }
 
+    /// The next token, moving on to the following segment when the current
+    /// one is used up, without consuming it; `None` once the frame is
+    /// exhausted.
+    #[inline(always)]
+    pub(crate) fn peek_token_advancing(&mut self) -> Option<Token> {
+        loop {
+            if let Some(t) = self.peek_token() {
+                return Some(t);
+            }
+            if !self.next_segment() {
+                return None;
+            }
+        }
+    }
+
     /// The undelivered rest of the current body or argument segment.
     #[inline]
     pub(crate) fn segment(&self) -> &[Token] {

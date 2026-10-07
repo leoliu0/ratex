@@ -1537,12 +1537,14 @@ impl Engine {
     ) {
         let has_param_refs =
             num_params > 0 && body.iter().any(|t| t.0 >= 0x4000_0000 && t.0 < 0x8000_0000);
+        let stored: Rc<[Token]> = Rc::from(&body[..]);
+        self.recycle_token_vec(body);
         let m = Macro {
             replacement: Default::default(),
             num_params,
             has_param_refs,
             params,
-            body: body.into(),
+            body: stored,
             prefix: std::mem::take(&mut self.def_prefix),
             long: self.long_flag,
             outer: self.outer_flag,
@@ -1609,7 +1611,7 @@ impl Engine {
         if expanded {
             self.in_expanded_scan = true;
         }
-        let mut out = Vec::new();
+        let mut out = self.token_vec_pool.pop().unwrap_or_default();
         let mut depth = 1i32;
         if !brace_consumed {
             self.skip_spaces_relax();

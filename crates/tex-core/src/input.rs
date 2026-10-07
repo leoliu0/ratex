@@ -271,24 +271,19 @@ impl MacroFrame {
         }
     }
 
-    /// Deliver the next token of the current segment when `accept` takes it.
-    /// Nothing is consumed at a segment boundary or for a refused token.
+    /// The next token of the current segment, without consuming it; `None`
+    /// at a segment boundary.
     #[inline(always)]
-    pub(crate) fn next_token_if(&mut self, accept: impl FnOnce(Token) -> bool) -> Option<Token> {
+    pub(crate) fn peek_token(&self) -> Option<Token> {
         if self.pos >= self.end {
             return None;
         }
         let index = self.pos as usize;
-        let token = if self.in_arg {
+        Some(if self.in_arg {
             self.args.toks[index]
         } else {
             self.body[index]
-        };
-        if !accept(token) {
-            return None;
-        }
-        self.pos += 1;
-        Some(token)
+        })
     }
 
     /// The undelivered rest of the current body or argument segment.
@@ -627,7 +622,7 @@ impl InputStack {
     }
 
     pub(crate) fn current_source_mark(&self) -> Option<SourceMark> {
-        self.stack.iter().rev().find_map(|source| match source {
+        match self.top_file()? {
             Source::File {
                 origin,
                 data,
@@ -650,7 +645,7 @@ impl InputStack {
                 },
             }),
             _ => None,
-        })
+        }
     }
 
     /// Find the most recent physical spelling of text in an active source.
@@ -937,15 +932,26 @@ impl InputStack {
             .unwrap_or_default()
     }
 
-    pub fn current_file_line(&self) -> u32 {
-        if let Some(Source::File { line_no, .. }) = self.stack.get(self.top_file.get()) {
-            return *line_no;
+    /// The innermost open file. Pushing a file records its index, so the
+    /// stack is only searched after that file was closed.
+    #[inline]
+    fn top_file(&self) -> Option<&Source> {
+        if let Some(source @ Source::File { .. }) = self.stack.get(self.top_file.get()) {
+            return Some(source);
         }
-        for (index, s) in self.stack.iter().enumerate().rev() {
-            if let Source::File { line_no, .. } = s {
-                self.top_file.set(index);
-                return *line_no;
-            }
+        let (index, source) = self
+            .stack
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, s)| matches!(s, Source::File { .. }))?;
+        self.top_file.set(index);
+        Some(source)
+    }
+
+    pub fn current_file_line(&self) -> u32 {
+        if let Some(Source::File { line_no, .. }) = self.top_file() {
+            return *line_no;
         }
         self.last_finished_file
             .as_ref()
@@ -957,18 +963,9 @@ impl InputStack {
     pub(crate) fn current_file_location(&self) -> (Rc<str>, u32) {
         if let Some(Source::File {
             origin, line_no, ..
-        }) = self.stack.get(self.top_file.get())
+        }) = self.top_file()
         {
             return (origin.name.clone(), *line_no);
-        }
-        for (index, s) in self.stack.iter().enumerate().rev() {
-            if let Source::File {
-                origin, line_no, ..
-            } = s
-            {
-                self.top_file.set(index);
-                return (origin.name.clone(), *line_no);
-            }
         }
         self.last_finished_file
             .as_ref()

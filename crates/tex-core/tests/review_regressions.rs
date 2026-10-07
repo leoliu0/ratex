@@ -1710,3 +1710,61 @@ fn hbox_starts_at_space_factor_1000() {
         assert!(e.term.contains(expected), "{expected}: {}", e.term);
     }
 }
+
+/// pdftex -ini (TeX Live 2026, main_memory = 5000000): a single paragraph of
+/// 300 000 characters (more nodes than the old fixed 250 000-node list
+/// bound) breaks into 3334 lines without exceeding TeX's capacity.
+#[test]
+fn long_paragraph_fits_in_main_memory() {
+    // The resident-set guard measures the whole test process, which the
+    // tests running alongside share; only TeX's own capacity is tested here.
+    std::env::set_var("TEX_MEM_LIMIT_MIB", "0");
+    let e = engine(
+        r"\font\f=cmr10 \f \hsize=400pt \pretolerance=10000
+\def\w{abcdefghi }
+\count1=0
+\def\loop{\w\advance\count1 by1 \ifnum\count1<30000 \expandafter\loop\fi}
+\loop\par
+\message{[LINES \the\prevgraf]}
+\end",
+    );
+    assert!(e.term.contains("[LINES 3334]"), "{}", e.term);
+}
+
+/// pdftex -ini (TeX Live 2026): macro arguments and expansions inside
+/// alignment entries end the entry only at a row delimiter met at brace
+/// depth zero (tex.web §342); `&` hidden in braces, `\let` to `&`, `\cr`
+/// in a macro body and delimited arguments around them behave as in TeX.
+#[test]
+fn alignment_entries_end_only_at_visible_row_delimiters() {
+    let e = engine(
+        r"\catcode`\&=4
+\font\f=cmr10 \f
+\let\amp=&
+\count1=0
+\def\upto#1.{\message{<#1>}}
+\def\pick#1#2{\message{(#2)}}
+\def\twocells{x&y}
+\def\threecells{a\amp b\amp c}
+\def\row{p&q\cr}
+\def\inner#1;#2;{#1#2}
+\setbox0\vbox{\halign{\global\advance\count1 by1 #&&\global\advance\count1 by1 [#]\cr
+\upto {u\amp v}.\pick a{b&c}&\twocells\cr
+\threecells\cr
+\row\row
+\inner A&;B&;C\cr
+\upto w x y z.&\upto{\cr}.\cr}}
+\message{[CELLS \the\count1, WD \the\wd0]}
+\end",
+    );
+    let flat = e.term.replace('\n', "");
+    for expected in [
+        r"<u\amp v>",
+        "(b&c)",
+        "<w x y z>",
+        r"<\cr >",
+        "[CELLS 15, WD 32.91675pt]",
+    ] {
+        assert!(flat.contains(expected), "{expected}: {}", e.term);
+    }
+}

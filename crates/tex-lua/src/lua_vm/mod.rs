@@ -660,8 +660,7 @@ impl GlobalState {
     }
 
     pub fn to_ref(&mut self, value: LuaValue) -> LuaAnyRef {
-        let ref_id = store_in_registry(self, value);
-        LuaAnyRef::from_raw(ref_id, GlobalStateHandle::from_global(self))
+        LuaAnyRef::new(self, value)
     }
 
     pub fn to_table_ref(&mut self, value: LuaValue) -> Option<LuaTableRef> {

@@ -1,0 +1,53 @@
+traverse	false	29	0
+traverse	false	13	0
+traverse	false	29	0
+traverse	false	0	0
+traverse	false	29	256
+traverse	false	1	0
+traverse	false	29	0
+traverse_id	5.0	0
+traverse_char	65	1
+traverse_char	66	2
+traverse_char	67	1
+traverse_glyph	65	1
+traverse_glyph	66	2
+traverse_glyph	68	1
+traverse_glyph	67	1
+traverse_list	0	0	70
+traverse_list	1	0	nil
+traverse returns	3	true	nil
+next counts	3	1
+traverse_id counts	2	1
+traverse_char counts	3	1
+traverse_list counts	4	1
+nil heads	1	1	1	1	1
+nil iterator	1	nil
+zero heads	1	0	1	1	1
+userdata nil heads	1	1	1
+traverse_id filters	13	13	0	0		
+string head	4
+skip by relinking	1,4
+extended while traversing	11,12,13
+replaced next	21,22,23
+traverse_list prev	true
+ud traverse	userdata	29	0
+ud traverse	userdata	13	0
+ud traverse	userdata	29	0
+ud traverse	userdata	0	0
+ud traverse	userdata	29	256
+ud traverse	userdata	1	0
+ud traverse	userdata	29	0
+ud traverse_id	5	0
+ud traverse_char	65	1	65
+ud traverse_char	66	2	66
+ud traverse_char	67	1	67
+ud traverse_list	0	0	70
+ud traverse_list	1	0	nil
+ud returns	3	true	3	1
+properties tables	table	true	false	table
+after mode	true
+getproperty	red	red	red	red	nil
+proxy set	blue	nil	1
+copy inherits	true	blue	nil	true
+copy shares	true
+flush returns	true	nil

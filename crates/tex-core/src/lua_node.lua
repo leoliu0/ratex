@@ -121,17 +121,9 @@ for _, name in pairs(passthrough) do
   if N[name] then direct[name] = N[name] end
 end
 
--- `mark` fields are tables of {cmd, chr, cs} (lnodelib.c); setting takes a
--- string, a table of tokens or a table of such triples.
-local mark_get, mark_set = N.mark_get, N.mark_set
-local function mark_table(h)
-  local flat = { mark_get(h) }
-  local count = flat[1]
-  if count == nil then return nil end
-  local t = {}
-  for i = 0, count - 1 do t[i + 1] = { flat[2 + 3 * i], flat[3 + 3 * i], flat[4 + 3 * i] } end
-  return t
-end
+-- `mark` fields are tables of {cmd, chr, cs} (lnodelib.c), which getfield
+-- builds; setting takes a string, a table of tokens or a table of such triples.
+local is_mark, mark_set = N.is_mark, N.mark_set
 local function mark_assign(h, v)
   local quads = {}
   if type(v) == "string" then
@@ -163,20 +155,12 @@ local function mark_assign(h, v)
   mark_set(h, quads)
 end
 do
-  local getfield0, setfield0 = N.getfield, N.setfield
-  function direct.getfield(n, k)
-    if k == "mark" then
-      local t = mark_table(n)
-      if t then return t end
-    end
-    return getfield0(n, k)
-  end
+  local setfield0 = N.setfield
   function direct.setfield(n, k, v, ...)
-    if k == "mark" and mark_table(n) then return mark_assign(n, v) end
+    if k == "mark" and is_mark(n) then return mark_assign(n, v) end
     return setfield0(n, k, v, ...)
   end
 end
-N.mark_table, N.mark_assign = mark_table, mark_assign
 
 function direct.todirect(n)
   if type(n) == "userdata" then return todirect_ud(n) end
@@ -199,73 +183,62 @@ function direct.prepend_prevdepth(n, prevdepth) return N.prepend_prevdepth(n, pr
 function direct.is_node(n) if N.is_node_ud(n) then return n end return false end
 
 -- --------------------------------------------------------- traversal ----
-local getnext, getid, getsubtype = N.getnext, N.getid, N.getsubtype
+-- The iterators are natives (lua_node_iter.rs); as in lnodelib.c the
+-- traversal functions return them with the head as state.
+local mtype, tointeger = math.type, N.tointeger
 
 local function nil_iter() return nil end
 
-local function next_handle(state, c)
-  local t
-  if c == nil then t = state else t = getnext(c) end
-  if t == nil then return nil end
-  return t, getid(t), getsubtype(t)
+-- the head of a direct traversal (lua_tointeger), nil for none
+local function head_of(n)
+  if mtype(n) ~= "integer" then n = tointeger(n) end
+  if n ~= 0 then return n end
 end
 
+-- the iterator of traverse_id: prebuilt for the usual ids, else one with
+-- the filter value as upvalue (converted by lua_tointeger at every step)
+local function id_iter(prebuilt, generic, id)
+  local f = prebuilt[id]
+  if f then return f end
+  return function(state, c) return generic(id, state, c) end
+end
+
+local trav_next, trav_char, trav_glyph, trav_list = N.trav_next, N.trav_char, N.trav_glyph, N.trav_list
+local trav_id, trav_ids = N.trav_id, N.trav_ids
+
 function direct.traverse(n)
-  if n == nil or n == 0 then return nil_iter end
-  return next_handle, n, nil
+  if n == nil then return nil_iter end
+  n = head_of(n)
+  if n == nil then return nil_iter end
+  return trav_next, n, nil
 end
 
 function direct.traverse_id(id, n)
   if n == nil then return nil_iter end
-  if n == 0 then return end
-  local function iter(state, c)
-    local t
-    if c == nil then t = state else t = getnext(c) end
-    while t ~= nil and getid(t) ~= id do t = getnext(t) end
-    if t == nil then return nil end
-    return t, getsubtype(t)
-  end
-  return iter, n, nil
+  n = head_of(n)
+  if n == nil then return end
+  return id_iter(trav_ids, trav_id, id), n, nil
 end
 
-local getchar, getfont = direct.getchar, N.getfont
 function direct.traverse_char(n)
-  if n == nil or n == 0 then return nil_iter end
-  local function iter(state, c)
-    local t
-    if c == nil then t = state else t = getnext(c) end
-    while t ~= nil and (getid(t) ~= 29 or N.is_protected(t)) do
-      t = getnext(t)
-    end
-    if t == nil then return nil end
-    return t, getchar(t), getfont(t)
-  end
-  return iter, n, nil
+  if n == nil then return nil_iter end
+  n = head_of(n)
+  if n == nil then return nil_iter end
+  return trav_char, n, nil
 end
 
 function direct.traverse_glyph(n)
-  if n == nil or n == 0 then return nil_iter end
-  local function iter(state, c)
-    local t
-    if c == nil then t = state else t = getnext(c) end
-    while t ~= nil and getid(t) ~= 29 do t = getnext(t) end
-    if t == nil then return nil end
-    return t, getchar(t), getfont(t)
-  end
-  return iter, n, nil
+  if n == nil then return nil_iter end
+  n = head_of(n)
+  if n == nil then return nil_iter end
+  return trav_glyph, n, nil
 end
 
-local getlist = N.getlist
 function direct.traverse_list(n)
-  if n == nil or n == 0 then return nil_iter end
-  local function iter(state, c)
-    local t
-    if c == nil then t = state else t = getnext(c) end
-    while t ~= nil and getid(t) ~= 0 and getid(t) ~= 1 do t = getnext(t) end
-    if t == nil then return nil end
-    return t, getid(t), getsubtype(t), getlist(t)
-  end
-  return iter, n, nil
+  if n == nil then return nil_iter end
+  n = head_of(n)
+  if n == nil then return nil_iter end
+  return trav_list, n, nil
 end
 
 -- ------------------------------------------------- hpack, vpack, ... ----
@@ -275,41 +248,48 @@ direct.vpack = N.wrap_vpack
 
 
 -- ------------------------------------------------------- properties ----
+-- `node.properties`: a plain table indexed by direct nodes. The mode only
+-- tells the engine what to do with an entry when a node is freed or copied
+-- (lua_node.rs); the engine learns the table when the mode is first set
+-- (it is not reachable while the library is installed).
 local properties = {}
--- the engine learns the table when Lua first touches properties (the
--- engine is not reachable while the library is installed)
 local registered = false
-local function register()
+
+function direct.get_properties_table() return properties end
+function direct.flush_properties_table()
+  for k in next, properties do properties[k] = nil end
+  return properties
+end
+function direct.getproperty(n)
+  if n ~= 0 then return properties[n] end
+  return nil
+end
+function direct.setproperty(n, v)
+  if n ~= nil and n ~= 0 then properties[n] = v end
+end
+
+local set_properties_mode = N.set_properties_mode
+function direct.set_properties_mode(basic, use_metatable)
   if not registered then
     registered = true
     N.set_properties_table(properties)
   end
-end
-
-function direct.get_properties_table() register() return properties end
-function direct.flush_properties_table()
-  for k in next, properties do properties[k] = nil end
-end
-function direct.getproperty(n) register() return rawget(properties, n) end
-function direct.setproperty(n, v) register() rawset(properties, n, v) end
-
-local props_meta = {
-  __index = function(t, n) return rawget(t, todirect_ud(n) or n) end,
-  __newindex = function(t, n, v)
-    if type(n) == "userdata" then n = todirect_ud(n) end
-    rawset(t, n, v)
-  end,
-}
-local set_properties_mode = N.set_properties_mode
-function direct.set_properties_mode(basic, use_metatable)
-  register()
   set_properties_mode(basic, use_metatable)
-  if use_metatable == true then
-    setmetatable(properties, props_meta)
-  elseif use_metatable == false then
-    setmetatable(properties, nil)
-  end
 end
+
+-- `node.properties.indirect`: what node.get_properties_table returns, an
+-- empty table reaching the direct one through userdata keys
+local indirect_properties = setmetatable({}, {
+  __index = function(_, n)
+    local h = todirect_ud(n)
+    if h then return properties[h] end
+    return nil
+  end,
+  __newindex = function(_, n, v)
+    local h = todirect_ud(n)
+    if h then properties[h] = v end
+  end,
+})
 
 -- ---------------------------------------------------- userdata flavour ----
 -- Wrap a direct function: userdata arguments become handles; result
@@ -410,24 +390,18 @@ node.last_node = function() return tonode(N.last_node()) end
 node.write = function(n) return N.write(todirect_ud(n)) end
 function node.prepend_prevdepth(n, prevdepth) return N.prepend_prevdepth(todirect_ud(n), prevdepth, true) end
 node.fix_node_lists = N.fix_node_lists
+node.getfield = N.getfield_ud
 do
-  local getfield_ud, setfield_ud = N.getfield_ud, N.setfield_ud
-  node.getfield = function(n, k, ...)
-    if k == "mark" and type(n) == "userdata" then
-      local t = mark_table(todirect_ud(n))
-      if t then return t end
-    end
-    return getfield_ud(n, k, ...)
-  end
+  local setfield_ud = N.setfield_ud
   node.setfield = function(n, k, v, ...)
-    if k == "mark" and type(n) == "userdata" and mark_table(todirect_ud(n)) then
+    if k == "mark" and type(n) == "userdata" and is_mark(todirect_ud(n)) then
       return mark_assign(todirect_ud(n), v)
     end
     return setfield_ud(n, k, v, ...)
   end
 end
 -- the metatable of node userdata (`luatex.node`): the engine attaches it to every node it
--- hands out; equality and tostring are the host's, and `mark` tables are built here
+-- hands out; equality and tostring are the host's, `mark` reads and writes go to getfield/setfield
 debug.getregistry()["luatex.node"] = {
   __name = "luatex.node",
   __eq = function(a, b) return todirect_ud(a) == todirect_ud(b) end,
@@ -438,64 +412,50 @@ debug.getregistry()["luatex.node"] = {
 node.flush_node = function(n) return N.flush_node(todirect_ud(n)) end
 
 -- userdata traversal (nodes in, nodes out)
-local function node_next(state, c)
-  local t
-  if c == nil then t = todirect_ud(state) else t = getnext(todirect_ud(c)) end
-  if t == nil then return nil end
-  return tonode(t), getid(t), getsubtype(t)
+local function check_node(n)
+  if type(n) ~= "userdata" then
+    error("error:  (node lib): lua <node> expected, not an object with type " .. type(n), 0)
+  end
 end
+local trav_next_ud, trav_char_ud, trav_glyph_ud, trav_list_ud =
+  N.trav_next_ud, N.trav_char_ud, N.trav_glyph_ud, N.trav_list_ud
+local trav_id_ud, trav_ids_ud = N.trav_id_ud, N.trav_ids_ud
 function node.traverse(n)
   if n == nil then return nil_iter end
-  return node_next, n, nil
+  check_node(n)
+  return trav_next_ud, n, nil
 end
 function node.traverse_id(id, n)
   if n == nil then return nil_iter end
-  local function iter(state, c)
-    local t
-    if c == nil then t = todirect_ud(state) else t = getnext(todirect_ud(c)) end
-    while t ~= nil and getid(t) ~= id do t = getnext(t) end
-    if t == nil then return nil end
-    return tonode(t), getsubtype(t)
-  end
-  return iter, n, nil
+  check_node(n)
+  return id_iter(trav_ids_ud, trav_id_ud, id), n, nil
 end
 function node.traverse_char(n)
   if n == nil then return nil_iter end
-  local function iter(state, c)
-    local t
-    if c == nil then t = todirect_ud(state) else t = getnext(todirect_ud(c)) end
-    while t ~= nil and (getid(t) ~= 29 or N.is_protected(t)) do t = getnext(t) end
-    if t == nil then return nil end
-    return tonode(t), getchar(t), getfont(t)
-  end
-  return iter, n, nil
+  check_node(n)
+  return trav_char_ud, n, nil
 end
 function node.traverse_glyph(n)
   if n == nil then return nil_iter end
-  local function iter(state, c)
-    local t
-    if c == nil then t = todirect_ud(state) else t = getnext(todirect_ud(c)) end
-    while t ~= nil and getid(t) ~= 29 do t = getnext(t) end
-    if t == nil then return nil end
-    return tonode(t), getchar(t), getfont(t)
-  end
-  return iter, n, nil
+  check_node(n)
+  return trav_glyph_ud, n, nil
 end
 function node.traverse_list(n)
   if n == nil then return nil_iter end
-  local function iter(state, c)
-    local t
-    if c == nil then t = todirect_ud(state) else t = getnext(todirect_ud(c)) end
-    while t ~= nil and getid(t) ~= 0 and getid(t) ~= 1 do t = getnext(t) end
-    if t == nil then return nil end
-    return tonode(t), getid(t), getsubtype(t), tonode(getlist(t))
-  end
-  return iter, n, nil
+  check_node(n)
+  return trav_list_ud, n, nil
 end
 
-function node.getproperty(n) register() return rawget(properties, todirect_ud(n)) end
-function node.setproperty(n, v) register() rawset(properties, todirect_ud(n), v) end
-node.get_properties_table = direct.get_properties_table
+function node.getproperty(n)
+  local h = todirect_ud(n)
+  if h then return properties[h] end
+  return nil
+end
+function node.setproperty(n, v)
+  local h = todirect_ud(n)
+  if h then properties[h] = v end
+end
+function node.get_properties_table() return indirect_properties end
 node.flush_properties_table = direct.flush_properties_table
 node.set_properties_mode = direct.set_properties_mode
 

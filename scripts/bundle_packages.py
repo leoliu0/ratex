@@ -1985,6 +1985,26 @@ SUPPLEMENT_PACKAGES = {
             ("libertinus-fonts-README.md", "doc/fonts/libertinus-fonts/README.md"),
         ],
     },
+    # Computer Modern Unicode (CMU Serif, Sans, Typewriter, ...), the usual
+    # fontspec choice for Cyrillic and Greek documents under XeLaTeX and
+    # LuaLaTeX. TeX Live enables no map for it (the tlpobj has no addMap), so
+    # only the OpenType files are taken.
+    "cm-unicode": {
+        "version": "0.7.0",
+        "revision": 58661,
+        "license": "OFL-1.1",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/cm-unicode.tar.xz",
+        "upstream_sha256": "d4d050c5613fc47b2722cf2232c2f91b6e08875fc65c72069a151101d4e5ac2d",
+        "upstream_size_bytes": 14122248,
+        "description": 'Computer Modern Unicode OpenType fonts',
+        "source_obligations": 'SIL Open Font License 1.1. Unmodified; no separate source obligations.',
+        "select": [("fonts/opentype/public/cm-unicode", (".otf",))],
+        "map_files": [],
+        "notices": [
+            ("cm-unicode-OFL.txt", "doc/fonts/cm-unicode/OFL.txt"),
+            ("cm-unicode-README.txt", "doc/fonts/cm-unicode/README"),
+        ],
+    },
     # XeTeX TECkit mappings (fontspec `Mapping=`, polyglossia/arabxetex digit and
     # transliteration maps) and the XeLaTeX macro packages that the main archive
     # lacks. xetex's tex-text and qx-unicode back `Mapping=tex-text`.

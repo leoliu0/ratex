@@ -1613,6 +1613,268 @@ impl Engine {
                 }
                 None
             }
+            Unless => {
+                // etex.ch expand: \unless reads the next token unexpanded; only
+                // a conditional other than \ifcase may follow, the flag is then
+                // consumed by do_if.
+                let t = self.raw_token();
+                let target = if t.is_cs() {
+                    match self.eqtb.resolve(t.cs_id()) {
+                        Some(Equiv::Prim(p)) => Some(*p),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                match target {
+                    // tex.web `goto reswitch` with the unless flag: the
+                    // conditional is expanded in this very step (so an
+                    // `\expandafter` over `\unless` sees its result).
+                    Some(p) if Self::is_if_test(p) && p != IfCase => {
+                        self.unless_next = true;
+                        self.expand_prim(p, t.cs_id())
+                    }
+                    _ => {
+                        self.push_token(t);
+                        let meaning = self.meaning_of(t);
+                        let name = meaning.split(':').next().unwrap_or("");
+                        self.error(&format!("You can't use `\\unless' before `{name}'"));
+                        None
+                    }
+                }
+            }
+            IfTrue => self.do_if(true, id),
+            IfFalse => self.do_if(false, id),
+            IfChar => {
+                // tex.web 498: push this \\if *before* get_x_token so a nested
+                // true conditional from the test sits on top (babel
+                // `\\if T\\ifeof1F\\fi T`).
+                let unless = std::mem::take(&mut self.unless_next);
+                let save = self.push_if(id, unless);
+                let a = self.character_test_operand();
+                let b = self.character_test_operand();
+                // tex.web: CS tokens have character code 256, so two
+                // control sequences always compare equal for \\if.
+                let mut eq = if a.is_cs() && b.is_cs() {
+                    true
+                } else if !a.is_cs() && !b.is_cs() {
+                    a.chr() == b.chr()
+                } else {
+                    false
+                };
+                if unless {
+                    eq = !eq;
+                }
+                self.finish_if(save, eq)
+            }
+            IfCat => {
+                let unless = std::mem::take(&mut self.unless_next);
+                let save = self.push_if(id, unless);
+                let a = self.character_test_operand();
+                let b = self.character_test_operand();
+                // tex.web: CS tokens have category 16.
+                let mut eq = if a.is_cs() && b.is_cs() {
+                    true
+                } else if !a.is_cs() && !b.is_cs() {
+                    a.cc() == b.cc()
+                } else {
+                    false
+                };
+                if unless {
+                    eq = !eq;
+                }
+                self.finish_if(save, eq)
+            }
+            // tex.web §501 with §1370's `mode=0`: no mode test holds while a
+            // `\write` text expands.
+            IfVMode => self.do_if(!self.write_mode_zero && self.mode.is_v(), id),
+            IfHMode => self.do_if(!self.write_mode_zero && self.mode.is_h(), id),
+            IfMMode => self.do_if(!self.write_mode_zero && self.mode.is_m(), id),
+            IfInner => {
+                let ok = !self.write_mode_zero && self.mode.is_inner();
+                self.do_if(ok, id)
+            }
+            IfDef => {
+                let t = self.raw_token_normal();
+                let def = if t.is_cs() {
+                    self.eqtb.resolve(t.cs_id()).is_some()
+                } else if t.is_char() && t.cc() == 13 {
+                    let id = self.active_cs_id(t.chr());
+                    self.eqtb.resolve(id).is_some()
+                } else {
+                    false
+                };
+                self.do_if(def, id)
+            }
+            IfInCsName => self.do_if(self.csname_depth > 0, id),
+
+            IfCSName => {
+                // e-TeX \\ifcsname: get_x_token until \\endcsname; true iff
+                // the name is already in the hash (even if \\relax). Must not
+                // intern on a miss — that would poison \\ifcsname.
+                // Take \\unless now so name collection cannot flip nested
+                // \\ifx; restore before do_if so \\unless\\ifcsname inverts.
+                let unless = std::mem::take(&mut self.unless_next);
+                self.csname_depth += 1;
+                let mut name: Vec<u8> = Vec::new();
+                let mut aborted = false;
+                loop {
+                    let t = self.get_x_raw();
+                    if t == EOF_MARKER {
+                        self.error("Missing \\endcsname inserted");
+                        break;
+                    }
+                    if t.is_cs() {
+                        let id = t.cs_id();
+                        let is_end = matches!(
+                            self.eqtb.resolve(id),
+                            Some(Equiv::Prim(crate::prim::Prim::EndCsName))
+                        );
+                        if is_end {
+                            break;
+                        }
+                        match self.eqtb.resolve(id).cloned() {
+                            Some(Equiv::Prim(p)) if self.is_expandable(p) => {
+                                match self.expand_prim(p, id) {
+                                    Some(tok) if tok.is_char() => {
+                                        tok.append_character_bytes(&mut name)
+                                    }
+                                    Some(tok) => self.push_token(tok),
+                                    None => {}
+                                }
+                                continue;
+                            }
+                            _ => {
+                                if self.eqtb.int_params[crate::prim::IntParam::SuppressIfCsnameError.idx() as usize] != 0 {
+                                    // conditional.c test_for_cs: skip to the
+                                    // \endcsname, the test fails
+                                    aborted = true;
+                                    loop {
+                                        let t = self.get_x_raw();
+                                        if t == EOF_MARKER {
+                                            self.push_token(t);
+                                            break;
+                                        }
+                                        if t.is_cs()
+                                            && matches!(
+                                                self.eqtb.resolve(t.cs_id()),
+                                                Some(Equiv::Prim(crate::prim::Prim::EndCsName))
+                                            )
+                                        {
+                                            break;
+                                        }
+                                    }
+                                    break;
+                                }
+                                self.push_token(t);
+                                self.error("Missing \\endcsname inserted");
+                                break;
+                            }
+                        }
+                    }
+                    if t.is_char() && t.cc() == 9 {
+                        continue;
+                    }
+                    t.append_character_bytes(&mut name);
+                }
+                self.csname_depth = self.csname_depth.saturating_sub(1);
+                let def = if aborted {
+                    self.last_named_cs = None;
+                    false
+                } else if let Some(id) = self.cs.lookup(&name) {
+                    self.last_named_cs = Some(id);
+                    self.eqtb.resolve(id).is_some()
+                } else {
+                    false
+                };
+                self.unless_next = unless;
+                self.do_if(def, id);
+                None
+            }
+            IfX => {
+                // tex.web if_x: operands see expandable PRIMS (\\csname...)
+                // but never macros (\\ifx\\foo x is false for \\def\\foo{x}).
+                let a = self.raw_token_normal();
+                let b = self.raw_token_normal();
+
+                let eq = self.ifx_equal(a, b);
+                self.do_if(eq, id)
+            }
+            Or => {
+                self.show_if_delimiter(Prim::Or);
+                if self.if_stack.last().is_some_and(|st| st.evaluating) {
+                    self.insert_relax(id);
+                    return None;
+                }
+                // encountered while accepting: skip to \fi or next \or
+                if let Some(st) = self.if_stack.last_mut() {
+                    if st.matched {
+                        st.if_case = -1; // skip mode
+                        self.skip_to_fi();
+                        return None;
+                    }
+                }
+                self.error("Extra \\or");
+                None
+            }
+            Else => {
+                self.show_if_delimiter(Prim::Else);
+                if self.if_stack.last().is_some_and(|st| st.evaluating) {
+                    self.insert_relax(id);
+                    return None;
+                }
+                match self.if_stack.last_mut() {
+                    Some(st) if st.matched => self.skip_to_fi(),
+                    Some(st) => {
+                        st.accepting = true;
+                        st.matched = true;
+                        st.in_else = true;
+                    }
+                    None => self.error("Extra \\else"),
+                }
+                None
+            }
+            ElIf | ElIfX => {
+                if self.if_stack.last().is_some_and(|st| st.evaluating) {
+                    self.insert_relax(id);
+                    return None;
+                }
+                // TeX has no \elseif; treat like \else that never accepts
+                let st = self.if_stack.last().cloned();
+                match st {
+                    Some(s) => {
+                        if s.matched {
+                            self.skip_to_fi();
+                        } else {
+                            self.error("\\elseif not supported");
+                        }
+                    }
+                    None => self.error("Extra \\elseif"),
+                }
+                None
+            }
+            Fi => {
+                self.show_if_delimiter(Prim::Fi);
+                if self.if_stack.last().is_some_and(|st| st.evaluating) {
+                    self.insert_relax(id);
+                    return None;
+                }
+                if !self.pop_cond() {
+                    self.error("Extra \\fi");
+                }
+                None
+            }
+            _ => self.expand_prim_extended(p, id),
+        }
+    }
+
+    /// The expandable primitives `expand_prim_inner` leaves to a separate
+    /// function: they are rare, and their bodies would otherwise bloat the
+    /// code of the conditionals and `\expandafter` that run all the time.
+    #[inline(never)]
+    fn expand_prim_extended(&mut self, p: Prim, id: CsId) -> Option<Token> {
+        use Prim::*;
+        match p {
             ScanTokens => {
                 // \scantokens{...}: stringify and rescan (e-TeX pseudo_start;
                 // the string is split into lines at \newlinechar)
@@ -1773,99 +2035,6 @@ impl Engine {
                 self.exp_string(s.as_bytes());
                 None
             }
-            Unless => {
-                // etex.ch expand: \unless reads the next token unexpanded; only
-                // a conditional other than \ifcase may follow, the flag is then
-                // consumed by do_if.
-                let t = self.raw_token();
-                let target = if t.is_cs() {
-                    match self.eqtb.resolve(t.cs_id()) {
-                        Some(Equiv::Prim(p)) => Some(*p),
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
-                match target {
-                    // tex.web `goto reswitch` with the unless flag: the
-                    // conditional is expanded in this very step (so an
-                    // `\expandafter` over `\unless` sees its result).
-                    Some(p) if Self::is_if_test(p) && p != IfCase => {
-                        self.unless_next = true;
-                        self.expand_prim(p, t.cs_id())
-                    }
-                    _ => {
-                        self.push_token(t);
-                        let meaning = self.meaning_of(t);
-                        let name = meaning.split(':').next().unwrap_or("");
-                        self.error(&format!("You can't use `\\unless' before `{name}'"));
-                        None
-                    }
-                }
-            }
-            IfTrue => self.do_if(true, id),
-            IfFalse => self.do_if(false, id),
-            IfChar => {
-                // tex.web 498: push this \\if *before* get_x_token so a nested
-                // true conditional from the test sits on top (babel
-                // `\\if T\\ifeof1F\\fi T`).
-                let unless = std::mem::take(&mut self.unless_next);
-                let save = self.push_if(id, unless);
-                let a = self.character_test_operand();
-                let b = self.character_test_operand();
-                // tex.web: CS tokens have character code 256, so two
-                // control sequences always compare equal for \\if.
-                let mut eq = if a.is_cs() && b.is_cs() {
-                    true
-                } else if !a.is_cs() && !b.is_cs() {
-                    a.chr() == b.chr()
-                } else {
-                    false
-                };
-                if unless {
-                    eq = !eq;
-                }
-                self.finish_if(save, eq)
-            }
-            IfCat => {
-                let unless = std::mem::take(&mut self.unless_next);
-                let save = self.push_if(id, unless);
-                let a = self.character_test_operand();
-                let b = self.character_test_operand();
-                // tex.web: CS tokens have category 16.
-                let mut eq = if a.is_cs() && b.is_cs() {
-                    true
-                } else if !a.is_cs() && !b.is_cs() {
-                    a.cc() == b.cc()
-                } else {
-                    false
-                };
-                if unless {
-                    eq = !eq;
-                }
-                self.finish_if(save, eq)
-            }
-            // tex.web §501 with §1370's `mode=0`: no mode test holds while a
-            // `\write` text expands.
-            IfVMode => self.do_if(!self.write_mode_zero && self.mode.is_v(), id),
-            IfHMode => self.do_if(!self.write_mode_zero && self.mode.is_h(), id),
-            IfMMode => self.do_if(!self.write_mode_zero && self.mode.is_m(), id),
-            IfInner => {
-                let ok = !self.write_mode_zero && self.mode.is_inner();
-                self.do_if(ok, id)
-            }
-            IfDef => {
-                let t = self.raw_token_normal();
-                let def = if t.is_cs() {
-                    self.eqtb.resolve(t.cs_id()).is_some()
-                } else if t.is_char() && t.cc() == 13 {
-                    let id = self.active_cs_id(t.chr());
-                    self.eqtb.resolve(id).is_some()
-                } else {
-                    false
-                };
-                self.do_if(def, id)
-            }
             IfPdfPrimitive => {
                 // pdftex.web if_pdfprimitive_code: the next token (read
                 // without expansion) still has the primitive meaning that
@@ -1921,164 +2090,6 @@ impl Engine {
                     None => "0pt".to_string(),
                 };
                 self.exp_string(text.as_bytes());
-                None
-            }
-            IfInCsName => self.do_if(self.csname_depth > 0, id),
-
-            IfCSName => {
-                // e-TeX \\ifcsname: get_x_token until \\endcsname; true iff
-                // the name is already in the hash (even if \\relax). Must not
-                // intern on a miss — that would poison \\ifcsname.
-                // Take \\unless now so name collection cannot flip nested
-                // \\ifx; restore before do_if so \\unless\\ifcsname inverts.
-                let unless = std::mem::take(&mut self.unless_next);
-                self.csname_depth += 1;
-                let mut name: Vec<u8> = Vec::new();
-                let mut aborted = false;
-                loop {
-                    let t = self.get_x_raw();
-                    if t == EOF_MARKER {
-                        self.error("Missing \\endcsname inserted");
-                        break;
-                    }
-                    if t.is_cs() {
-                        let id = t.cs_id();
-                        let is_end = matches!(
-                            self.eqtb.resolve(id),
-                            Some(Equiv::Prim(crate::prim::Prim::EndCsName))
-                        );
-                        if is_end {
-                            break;
-                        }
-                        match self.eqtb.resolve(id).cloned() {
-                            Some(Equiv::Prim(p)) if self.is_expandable(p) => {
-                                match self.expand_prim(p, id) {
-                                    Some(tok) if tok.is_char() => {
-                                        tok.append_character_bytes(&mut name)
-                                    }
-                                    Some(tok) => self.push_token(tok),
-                                    None => {}
-                                }
-                                continue;
-                            }
-                            _ => {
-                                if self.eqtb.int_params[crate::prim::IntParam::SuppressIfCsnameError.idx() as usize] != 0 {
-                                    // conditional.c test_for_cs: skip to the
-                                    // \endcsname, the test fails
-                                    aborted = true;
-                                    loop {
-                                        let t = self.get_x_raw();
-                                        if t == EOF_MARKER {
-                                            self.push_token(t);
-                                            break;
-                                        }
-                                        if t.is_cs()
-                                            && matches!(
-                                                self.eqtb.resolve(t.cs_id()),
-                                                Some(Equiv::Prim(crate::prim::Prim::EndCsName))
-                                            )
-                                        {
-                                            break;
-                                        }
-                                    }
-                                    break;
-                                }
-                                self.push_token(t);
-                                self.error("Missing \\endcsname inserted");
-                                break;
-                            }
-                        }
-                    }
-                    if t.is_char() && t.cc() == 9 {
-                        continue;
-                    }
-                    t.append_character_bytes(&mut name);
-                }
-                self.csname_depth = self.csname_depth.saturating_sub(1);
-                let def = if aborted {
-                    self.last_named_cs = None;
-                    false
-                } else if let Some(id) = self.cs.lookup(&name) {
-                    self.last_named_cs = Some(id);
-                    self.eqtb.resolve(id).is_some()
-                } else {
-                    false
-                };
-                self.unless_next = unless;
-                self.do_if(def, id);
-                None
-            }
-            IfX => {
-                // tex.web if_x: operands see expandable PRIMS (\\csname...)
-                // but never macros (\\ifx\\foo x is false for \\def\\foo{x}).
-                let a = self.raw_token_normal();
-                let b = self.raw_token_normal();
-
-                let eq = self.ifx_equal(a, b);
-                self.do_if(eq, id)
-            }
-            Or => {
-                self.show_if_delimiter(Prim::Or);
-                if self.if_stack.last().is_some_and(|st| st.evaluating) {
-                    self.insert_relax(id);
-                    return None;
-                }
-                // encountered while accepting: skip to \fi or next \or
-                if let Some(st) = self.if_stack.last_mut() {
-                    if st.matched {
-                        st.if_case = -1; // skip mode
-                        self.skip_to_fi();
-                        return None;
-                    }
-                }
-                self.error("Extra \\or");
-                None
-            }
-            Else => {
-                self.show_if_delimiter(Prim::Else);
-                if self.if_stack.last().is_some_and(|st| st.evaluating) {
-                    self.insert_relax(id);
-                    return None;
-                }
-                match self.if_stack.last_mut() {
-                    Some(st) if st.matched => self.skip_to_fi(),
-                    Some(st) => {
-                        st.accepting = true;
-                        st.matched = true;
-                        st.in_else = true;
-                    }
-                    None => self.error("Extra \\else"),
-                }
-                None
-            }
-            ElIf | ElIfX => {
-                if self.if_stack.last().is_some_and(|st| st.evaluating) {
-                    self.insert_relax(id);
-                    return None;
-                }
-                // TeX has no \elseif; treat like \else that never accepts
-                let st = self.if_stack.last().cloned();
-                match st {
-                    Some(s) => {
-                        if s.matched {
-                            self.skip_to_fi();
-                        } else {
-                            self.error("\\elseif not supported");
-                        }
-                    }
-                    None => self.error("Extra \\elseif"),
-                }
-                None
-            }
-            Fi => {
-                self.show_if_delimiter(Prim::Fi);
-                if self.if_stack.last().is_some_and(|st| st.evaluating) {
-                    self.insert_relax(id);
-                    return None;
-                }
-                if !self.pop_cond() {
-                    self.error("Extra \\fi");
-                }
                 None
             }
             PdfTexRevision => {

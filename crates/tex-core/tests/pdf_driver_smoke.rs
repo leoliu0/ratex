@@ -266,6 +266,40 @@ fn display_list_captures_rules_and_glyphs() {
     );
 }
 
+/// tex.web §629 `vlist_out` ignores `ins_node`: an `\insert` left inside a
+/// shipped box (e.g. a `\footnote` in a float caption) must not be typeset.
+#[test]
+fn insert_inside_shipped_box_is_not_rendered() {
+    let source = r#"\catcode`\{=1 \catcode`\}=2
+\pdfpagewidth=100pt \pdfpageheight=100pt
+\pdfhorigin=0pt \pdfvorigin=0pt
+\setbox0=\vbox{\hrule height 1pt width 10pt
+  \insert100{\hrule height 7pt width 33pt}\hrule height 1pt width 10pt}
+\shipout\box0
+\end"#;
+    let mut e = Engine::new(true);
+    e.init_primitives();
+    e.add_nullfont();
+    e.input
+        .push_file("insert_shipout.tex".into(), source.as_bytes().to_vec());
+    e.run();
+    assert_eq!(e.error_count, 0, "{}", e.term);
+    let dl = e.pdf_doc.pages[0]
+        .display_list
+        .as_ref()
+        .expect("display list should be present");
+    let rule_widths: Vec<f64> = dl
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            tex_core::boxes::DisplayItem::Rule { width_bp, .. } => Some(*width_bp),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(rule_widths.len(), 2, "rules: {rule_widths:?}");
+    assert!(rule_widths.iter().all(|w| (*w - 10.0).abs() < 0.5), "{rule_widths:?}");
+}
+
 #[test]
 fn tagged_pdf_emits_markinfo_and_struct_tree_root() {
     let source = r#"\catcode`\{=1 \catcode`\}=2

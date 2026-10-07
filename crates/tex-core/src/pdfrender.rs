@@ -1364,12 +1364,6 @@ impl<'a> RenderCtx<'a> {
                 Node::Whatsit(w, _) => {
                     self.emit_whatsit_sp(w, x, cur_y);
                 }
-                Node::Ins { box_node, .. } => {
-                    if let Node::Box { list: inner, .. } = &**box_node {
-                        self.box_lr = 0;
-                        self.ship_vlist(inner, x, cur_y, 0, 0, 0.0);
-                    }
-                }
                 Node::VAdjust(items, _) | Node::PreAdjust(items, _) => {
                     self.box_lr = 0;
                     self.ship_vlist(items, x, cur_y, 0, 0, 0.0);

@@ -634,17 +634,21 @@ impl Engine {
     /// `kpse.find_file`, `require`, `io.open`) must see it there once TeX has
     /// closed it, exactly as `\input`/`\openin` do. `names` are the candidate
     /// spellings of the request, most specific first; absolute requests are
-    /// not job files.
-    pub(crate) fn find_job_output_file<S: AsRef<str>>(&self, names: &[S]) -> Option<std::path::PathBuf> {
-        let out = (!self.out_dir.is_empty()).then(|| std::path::Path::new(&self.out_dir));
-        for dir in self.aux_dir.as_deref().into_iter().chain(out) {
+    /// not job files. Every probe is a dependency of the build: the hit is
+    /// read, and each candidate tried before it must stay absent.
+    pub(crate) fn find_job_output_file<S: AsRef<str>>(&mut self, names: &[S]) -> Option<std::path::PathBuf> {
+        let out = (!self.out_dir.is_empty()).then(|| std::path::PathBuf::from(&self.out_dir));
+        let dirs: Vec<std::path::PathBuf> = self.aux_dir.clone().into_iter().chain(out).collect();
+        for dir in dirs {
             for name in names {
                 let name = name.as_ref();
                 if name.is_empty() || std::path::Path::new(name).is_absolute() {
                     continue;
                 }
                 let path = dir.join(crate::tex_bytes::text_to_path(name));
-                if path.tex_is_file() {
+                let present = path.tex_is_file();
+                self.lua_dep_read(&path, present);
+                if present {
                     return Some(path);
                 }
             }

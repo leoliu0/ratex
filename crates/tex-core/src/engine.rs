@@ -501,6 +501,8 @@ pub struct Engine {
     pub missing_files: Vec<std::path::PathBuf>,
     /// Files this run created through `\openout`, for `-recorder` output.
     pub written_files: Vec<std::path::PathBuf>,
+    /// What the Lua observers already recorded (see `lua_deps`).
+    pub(crate) lua_deps_seen: crate::lua_deps::Seen,
     pub out_dir: String,
     /// Optional directory for TeX-generated state (for example `.aux`,
     /// `.toc`, and files opened through `\\openout`).  When unset, output
@@ -1260,6 +1262,7 @@ impl Engine {
             loaded_file_mod_dates: Vec::new(),
             missing_files: Vec::new(),
             written_files: Vec::new(),
+            lua_deps_seen: Default::default(),
             out_dir: String::new(),
             aux_dir: None,
             allow_missing_main_aux: false,

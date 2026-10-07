@@ -114,6 +114,24 @@ fn test_debug_traceback_in_hook_reports_hook_frame() {
     assert!(result.is_ok(), "Test failed: {:?}", result);
 }
 
+/// A count hook keeps counting across function calls: texlua (Lua 5.3.6)
+/// fires it 520 times for this loop of short calls. Resetting the count on
+/// every call entry never let it fire at all.
+#[test]
+fn test_count_hook_counts_across_calls() {
+    run_debug_level(
+        crate::LuaLanguageLevel::Lua53,
+        r#"
+        local n = 0
+        local function f() return 1 end
+        debug.sethook(function() n = n + 1 end, "", 100)
+        for i = 1, 10000 do f() end
+        debug.sethook()
+        assert(n >= 400 and n <= 650, n)
+        "#,
+    );
+}
+
 fn run_debug_level(level: crate::LuaLanguageLevel, code: &str) {
     let mut vm = GlobalState::new_with_language(SafeOption::default(), level);
     vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();

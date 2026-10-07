@@ -278,6 +278,12 @@ impl LuaFile {
 
     /// `fopen(path, mode)`; `mode` must satisfy [`valid_open_mode`].
     pub(crate) fn open(path: &[u8], mode: &[u8]) -> io::Result<Self> {
+        let result = Self::open_unobserved(path, mode);
+        crate::host_access::notify(&crate::host_access::HostAccess::Open { path, mode, ok: result.is_ok() });
+        result
+    }
+
+    fn open_unobserved(path: &[u8], mode: &[u8]) -> io::Result<Self> {
         let plus = mode.get(1) == Some(&b'+');
         let mut options = std::fs::OpenOptions::new();
         let (readable, writable) = match mode[0] {
@@ -335,6 +341,7 @@ impl LuaFile {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn popen(command: &str, write: bool) -> io::Result<Self> {
         use std::process::{Command, Stdio};
+        crate::host_access::notify(&crate::host_access::HostAccess::Spawn);
         // C Lua flushes every stream before forking (`fflush(NULL)`).
         let _ = io::stdout().flush();
         #[cfg(windows)]

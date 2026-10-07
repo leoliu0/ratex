@@ -45,8 +45,9 @@ mod lua_align;
 mod lua_cb_resources;
 mod lua_ligkern;
 mod lua_bridge;
+mod lua_deps;
 mod lua_sys;
-pub use lua_sys::{set_cache_dir, set_shell_escape, ShellEscape};
+pub use lua_sys::{set_cache_dir, set_font_cache_dir, set_shell_escape, ShellEscape};
 #[cfg(any(windows, test))]
 mod lua_sys_crt;
 mod lua_sys_embedded;

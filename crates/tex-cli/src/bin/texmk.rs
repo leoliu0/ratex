@@ -38,6 +38,7 @@ const CACHE_GC_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const TEXMK_CACHE_HIT_MARKER_ENV: &str = "TEX_RS_CACHE_HIT_MARKER";
 const TEXMK_PUBLISHED_OUTPUT_ENV: &str = "TEX_RS_TEXMK_PUBLISHED_OUTPUT";
 const TEXMK_WATCH_DEPENDENCIES_ENV: &str = "TEX_RS_TEXMK_WATCH_DEPENDENCIES";
+const TEXMK_FONT_CACHE_ENV: &str = "TEX_RS_TEXMK_FONT_CACHE";
 const TEXMK_INTERNAL_MODE_ENV: &str = "TEXMK_INTERNAL_MODE";
 const HERMETIC_ENV: &str = "TEX_RS_HERMETIC";
 const AUX_GRAPH_MAX_DEPTH: usize = 32;
@@ -3346,6 +3347,10 @@ fn build(opt: &Options, info: &mut BuildInfo) -> i32 {
     // The engine may omit this one future output from directory-membership
     // fingerprints. Direct reads and missing-file probes remain dependencies.
     let force_color = tex_core::diagnostics::color_enabled();
+    // The Lua font database (luaotfload names, font caches) is per machine, not
+    // per document: building it takes tens of seconds, so all jobs share it
+    // (and direct engine passes, which keep it in the same place).
+    let font_cache_dir = Some(requested_cache.join("texmf-var"));
     let mut engine_env = vec![
         (
             OsString::from(TEXMK_INTERNAL_MODE_ENV),
@@ -3368,6 +3373,12 @@ fn build(opt: &Options, info: &mut BuildInfo) -> i32 {
             OsString::from(if force_color { "1" } else { "0" }),
         ),
     ];
+    if let Some(dir) = font_cache_dir.filter(|dir| std::fs::create_dir_all(dir).is_ok()) {
+        engine_env.push((
+            OsString::from(TEXMK_FONT_CACHE_ENV),
+            dir.into_os_string(),
+        ));
+    }
     // Watch mode also wants the font files and failed lookups, which the
     // recorder (kept in web2c's format) does not list. The file lives with the
     // engine cache, which is neither snapshotted nor exported.

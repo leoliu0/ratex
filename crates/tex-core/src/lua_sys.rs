@@ -156,6 +156,7 @@ thread_local! {
     static SHELL: std::cell::Cell<ShellEscape> = const { std::cell::Cell::new(ShellEscape::Disabled) };
     static SAFER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static CACHE_DIR: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+    static FONT_CACHE_DIR: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Use `dir` as the per-user cache root (`-cache-directory`) instead of
@@ -164,6 +165,19 @@ thread_local! {
 /// (`$TEXMFVAR` is `<root>/texmf-var`).
 pub fn set_cache_dir(dir: PathBuf) {
     CACHE_DIR.with(|d| *d.borrow_mut() = Some(dir));
+}
+
+/// Use `dir` as `$TEXMFVAR` (the Lua font loader's name database and font
+/// caches) instead of `<cache root>/texmf-var`. The build driver shares one
+/// such directory between all its jobs, so the font database is built once.
+pub fn set_font_cache_dir(dir: PathBuf) {
+    FONT_CACHE_DIR.with(|d| *d.borrow_mut() = Some(dir));
+}
+
+pub(crate) fn font_cache_dir() -> PathBuf {
+    FONT_CACHE_DIR
+        .with(|d| d.borrow().clone())
+        .unwrap_or_else(|| cache_dir().join("texmf-var"))
 }
 
 pub(crate) fn cache_dir() -> PathBuf {
@@ -258,6 +272,7 @@ fn register_handles(lua: &mut Lua, sys: &LuaTable) -> Result<(), String> {
 /// Install every system library into a Lua state whose standard libraries
 /// and TeX bridge are open.
 pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
+    crate::lua_deps::install_observer();
     let sys: LuaTable = lua.create_table().map_err(|e| format!("{e:?}"))?;
     register_handles(lua, &sys)?;
     crate::lua_sys_embedded::register(lua, &sys)?;

@@ -479,7 +479,9 @@ fn search_path(name: &str, path: &str, sep: &str, rep: &str, lua53: bool) -> Res
         let mut tried = String::new();
         for template in path.split(';').filter(|template| !template.is_empty()) {
             let filename = template.replace('?', &name);
-            if std::fs::File::open(&filename).is_ok() {
+            let found = std::fs::File::open(&filename).is_ok();
+            crate::host_access::notify(&crate::host_access::HostAccess::Probe { path: &filename, ok: found });
+            if found {
                 return Ok(filename);
             }
             tried.push_str(&format!("\n\tno file '{filename}'"));
@@ -489,7 +491,9 @@ fn search_path(name: &str, path: &str, sep: &str, rep: &str, lua53: bool) -> Res
     let path = path.replace('?', &name);
     if !path.is_empty() {
         for filename in path.split(';') {
-            if std::fs::File::open(filename).is_ok() {
+            let found = std::fs::File::open(filename).is_ok();
+            crate::host_access::notify(&crate::host_access::HostAccess::Probe { path: filename, ok: found });
+            if found {
                 return Ok(filename.to_owned());
             }
         }

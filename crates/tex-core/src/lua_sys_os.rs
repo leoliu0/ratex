@@ -93,6 +93,7 @@ fn spawn_error_code(error: &std::io::Error) -> i64 {
 }
 
 fn command_for(program: &[u8], args: &[Vec<u8>]) -> Command {
+    let _ = crate::lua_bridge::with_engine(|e| e.lua_untracked("os.spawn"));
     let mut command = Command::new(os_str(program));
     #[cfg(unix)]
     {
@@ -112,6 +113,13 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
     for (key, value) in [("LC_CTYPE", "C"), ("LC_COLLATE", "C"), ("LC_NUMERIC", "C"), ("engine", "luatex")] {
         std::env::set_var(key, value);
     }
+    sys_reg!(lua, s, "os_env_note", |name: LuaString| {
+        let name = String::from_utf8_lossy(&bytes_of(&name)).into_owned();
+        let _ = crate::lua_bridge::with_engine(|e| e.lua_dep_environment(&name));
+    });
+    sys_reg!(lua, s, "os_env_all", || {
+        let _ = crate::lua_bridge::with_engine(|e| e.lua_untracked("listing the environment"));
+    });
     sys_reg!(lua, s, "os_environ", || -> Vec<LuaBytes> {
         std::env::vars_os()
             .flat_map(|(k, v)| [LuaBytes(crate::lua_sys::os_bytes(&k)), LuaBytes(crate::lua_sys::os_bytes(&v))])
@@ -256,6 +264,7 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
         if crate::lua_sys::shell_escape() == crate::lua_sys::ShellEscape::Disabled {
             return (None, Some("All command execution disabled.".to_string()));
         }
+        let _ = crate::lua_bridge::with_engine(|e| e.lua_untracked("os.execute"));
         let text = String::from_utf8_lossy(&bytes_of(&cmd)).into_owned();
         let (allow, run) = check_command(&text);
         if allow <= 0 {

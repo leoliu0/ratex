@@ -1447,7 +1447,11 @@ pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
             let found = [alt.as_str(), name.as_str()].into_iter().find_map(|n| {
                 let path = e.lua_kpse_find(n, tex_kpse::Format::Lua)?;
                 let bytes = read_found_file(&path)?;
-                e.record_loaded_bytes(std::path::Path::new(&path), &bytes);
+                // The embedded runtime is part of the executable; only files
+                // found on disk are inputs of the build.
+                if !tex_kpse::embedded_tree::is_embedded_path(&path) {
+                    e.record_loaded_bytes(std::path::Path::new(&path), &bytes);
+                }
                 Some((LuaBytes(bytes), path))
             });
             found

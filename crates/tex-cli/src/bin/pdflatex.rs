@@ -32,6 +32,7 @@ const DEPCACHE_RECORD_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const TEXMK_CACHE_HIT_MARKER_ENV: &str = "TEX_RS_CACHE_HIT_MARKER";
 const TEXMK_PUBLISHED_OUTPUT_ENV: &str = "TEX_RS_TEXMK_PUBLISHED_OUTPUT";
 const TEXMK_WATCH_DEPENDENCIES_ENV: &str = "TEX_RS_TEXMK_WATCH_DEPENDENCIES";
+const TEXMK_FONT_CACHE_ENV: &str = "TEX_RS_TEXMK_FONT_CACHE";
 const DEPCACHE_END_DOMAIN: &[u8] = b"TEX-DEPCACHE-7-END";
 
 use tex_kpse::platform_cache_dir;
@@ -864,6 +865,25 @@ fn check_depcache(
             }
             continue;
         }
+        if let Some(path) = line.strip_prefix("DIRPRESENT\t") {
+            if !decode_record_path(path)?.is_dir() {
+                return None;
+            }
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("ENV\t") {
+            let (name, value) = rest.split_once('\t')?;
+            let name = decode_record_path(name)?.into_os_string();
+            let expected = match value.strip_prefix('=') {
+                Some(value) => Some(decode_record_path(value)?.into_os_string()),
+                None if value == "-" => None,
+                None => return None,
+            };
+            if std::env::var_os(name) != expected {
+                return None;
+            }
+            continue;
+        }
         if let Some(rest) = line.strip_prefix("AUX\t") {
             let (path, stamp, hash) = parse_stamped_entry(rest)?;
             if content_identity_matches(&path, stamp, hash, &cache_meta) {
@@ -1076,6 +1096,8 @@ struct DepcacheInputs<'a> {
     sizes: &'a [(std::path::PathBuf, u64)],
     missing: &'a [std::path::PathBuf],
     missing_directories: &'a [std::path::PathBuf],
+    present_directories: &'a [std::path::PathBuf],
+    environment: &'a [(String, Option<std::ffi::OsString>)],
     outputs_missing_at_start: &'a [std::path::PathBuf],
     published_outputs: Option<&'a TexmkPublishedOutputs>,
     aux_start: &'a [(std::path::PathBuf, u64, u64)],
@@ -1297,6 +1319,40 @@ fn write_depcache(cache_path: &std::path::Path, inputs: DepcacheInputs<'_>) {
         }
         missing_directory_paths.push(path.clone());
     }
+    let present_directories: BTreeSet<std::path::PathBuf> = inputs
+        .present_directories
+        .iter()
+        .map(|path| anchored_path(path))
+        .collect();
+    for path in &present_directories {
+        if !path.is_dir() {
+            return;
+        }
+        out.push_str(&format!("DIRPRESENT\t{}\n", encode_record_path(path)));
+        if out.len() as u64 > DEPCACHE_RECORD_MAX_BYTES {
+            return;
+        }
+    }
+    let environment: std::collections::BTreeMap<&str, &Option<std::ffi::OsString>> = inputs
+        .environment
+        .iter()
+        .map(|(name, value)| (name.as_str(), value))
+        .collect();
+    for (name, value) in &environment {
+        // The value was read during the run; a script that set it itself
+        // leaves a different starting state, so require the current one.
+        if std::env::var_os(name) != **value {
+            return;
+        }
+        let value = match value {
+            Some(value) => format!("={}", encode_record_path(std::path::Path::new(value))),
+            None => "-".to_string(),
+        };
+        out.push_str(&format!("ENV\t{}\t{value}\n", encode_record_path(std::path::Path::new(name))));
+        if out.len() as u64 > DEPCACHE_RECORD_MAX_BYTES {
+            return;
+        }
+    }
     for (p, len, h) in inputs.aux_start {
         let path = absolute_path(p);
         if *len == u64::MAX {
@@ -1359,7 +1415,8 @@ fn write_depcache(cache_path: &std::path::Path, inputs: DepcacheInputs<'_>) {
             .map(|metadata| FileStamp::from_metadata(&metadata))
             == Some(*stamp)
     }) && missing_file_paths.iter().all(|path| !path.is_file())
-        && missing_directory_paths.iter().all(|path| !path.is_dir());
+        && missing_directory_paths.iter().all(|path| !path.is_dir())
+        && present_directories.iter().all(|path| path.is_dir());
     if written.is_ok() && inputs_unchanged {
         let _ = replace_file(&temporary, cache_path);
     }
@@ -2571,6 +2628,10 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     let aux_start = snapshot_aux_state(&job, &aux_dir);
     let cache_root = requested_cache_dir.unwrap_or_else(platform_cache_dir);
     tex_core::set_cache_dir(absolute_path(&cache_root));
+    // The build driver shares one font database between its jobs.
+    if let Some(dir) = std::env::var_os(TEXMK_FONT_CACHE_ENV).filter(|value| !value.is_empty()) {
+        tex_core::set_font_cache_dir(absolute_path(std::path::Path::new(&dir)));
+    }
     let published_outputs = texmk_published_outputs(&cache_root, synctex_mode.extension());
     let private_cache = depcache_path(
         &cache_root,
@@ -3094,6 +3155,8 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
                     sizes: &eng.loaded_file_sizes,
                     missing: &eng.missing_files,
                     missing_directories: &eng.font_loader.dependency_missing_directories,
+                    present_directories: &eng.font_loader.dependency_present_directories,
+                    environment: &eng.font_loader.dependency_environment,
                     outputs_missing_at_start: &outputs_missing_at_start,
                     published_outputs: published_outputs.as_ref(),
                     aux_start: &aux_start,
@@ -3378,6 +3441,8 @@ mod startup_tests {
                 sizes: &stale_observation,
                 missing: &[],
                 missing_directories: &[],
+                present_directories: &[],
+                environment: &[],
                 outputs_missing_at_start: &[],
                 published_outputs: None,
                 aux_start: &[],
@@ -3400,6 +3465,8 @@ mod startup_tests {
                 sizes: &stable_observation,
                 missing: &[],
                 missing_directories: &[],
+                present_directories: &[],
+                environment: &[],
                 outputs_missing_at_start: &[],
                 published_outputs: None,
                 aux_start: &[],

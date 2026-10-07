@@ -185,6 +185,7 @@ fn roots() -> Vec<PathBuf> {
 /// Raw (unexpanded) value of `name`: the environment, then the built-ins.
 fn raw_var(program: &str, name: &str) -> Option<String> {
     for key in [format!("{name}_{program}"), format!("{name}.{program}"), name.to_string()] {
+        let _ = with_engine(|e| e.lua_dep_environment(&key));
         if let Ok(value) = std::env::var(&key) {
             if !value.is_empty() {
                 return Some(value);
@@ -203,7 +204,7 @@ fn raw_var(program: &str, name: &str) -> Option<String> {
         }
         // The per-user cache: font databases and caches live below it.
         "TEXMFVAR" | "TEXMFSYSVAR" => {
-            return Some(kpse_path(&crate::lua_sys::cache_dir().join("texmf-var")))
+            return Some(kpse_path(&crate::lua_sys::font_cache_dir()))
         }
         "TEXMFCACHE" => return Some("$TEXMFVAR".to_string()),
         // The search roots of the engine, then the bundled archive.
@@ -442,7 +443,9 @@ fn child_directories(dir: &str) -> Vec<String> {
         let entries = tex_kpse::embedded_tree::read_dir(dir).unwrap_or_default();
         return entries.into_iter().filter(|(_, directory)| *directory).map(|(name, _)| name).collect();
     }
-    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let listing = std::fs::read_dir(dir);
+    let _ = with_engine(|e| e.lua_dep_directory(Path::new(dir), listing.is_ok()));
+    let Ok(entries) = listing else { return Vec::new() };
     let mut children: Vec<String> = entries
         .flatten()
         .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
@@ -479,7 +482,9 @@ fn expand_path(program: &str, path: &str) -> String {
             if trimmed.is_empty() {
                 continue;
             }
-            if !is_dir(trimmed) {
+            let present = is_dir(trimmed);
+            let _ = with_engine(|e| e.lua_dep_stat(Path::new(trimmed), present.then_some("directory")));
+            if !present {
                 continue;
             }
             if recursive {
@@ -526,7 +531,20 @@ fn candidates(name: &str, fmt: &FormatInfo) -> Vec<String> {
     out
 }
 
+/// `kpse.find_file`: the lookup is a dependency of the build.
 fn find_one(name: &str, fmt: &FormatInfo) -> Option<PathBuf> {
+    let found = find_one_uncounted(name, fmt);
+    if !name.is_empty() && !tex_kpse::embedded_tree::is_embedded_path(name) {
+        let format = match fmt.search {
+            Search::Format(format) => Some(format),
+            Search::Any => None,
+        };
+        let _ = with_engine(|e| e.lua_dep_lookup(name, format, found.as_deref()));
+    }
+    found
+}
+
+fn find_one_uncounted(name: &str, fmt: &FormatInfo) -> Option<PathBuf> {
     if name.is_empty() {
         return None;
     }
@@ -826,6 +844,7 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
             let program = s_of(&program);
             let name = s_of(&name);
             let mut found: Vec<String> = if let Some(path) = path {
+                let _ = with_engine(|e| e.lua_untracked("kpse.lookup in an explicit path"));
                 path_search(&program, &s_of(&path), &name, all || !subdirs.is_empty(), must_exist)
             } else {
                 let index = if format >= 0 {
@@ -856,6 +875,7 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
         LuaBytes(expand_var(&s_of(&program), &s_of(&text)).into_bytes())
     });
     sys_reg!(lua, s, "kpse_expand_path", |program: LuaString, text: LuaString| -> LuaBytes {
+
         LuaBytes(expand_path(&s_of(&program), &s_of(&text)).into_bytes())
     });
     sys_reg!(lua, s, "kpse_expand_braces", |text: LuaString| -> LuaBytes { LuaBytes(expand_braces(&s_of(&text)).into_bytes()) });
@@ -878,7 +898,9 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
             }
         }
         let path = path_of(&bytes);
-        match std::fs::File::open(&path) {
+        let opened = std::fs::File::open(&path);
+        let _ = with_engine(|e| e.lua_dep_read(&path, opened.is_ok() && path.is_file()));
+        match opened {
             Ok(_) if path.is_file() => Some(LuaBytes(bytes)),
             Ok(_) => None,
             Err(e) => {
@@ -912,6 +934,9 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
     sys_reg!(lua, s, "kpse_record", |name: LuaString, output: bool| {
         let path = path_of(&bytes_of(&name));
         let _ = with_engine(|e| {
+            if crate::lua_deps::ignored(&path) {
+                return;
+            }
             let list = if output { &mut e.written_files } else { &mut e.loaded_files };
             if !list.contains(&path) {
                 list.push(path);

@@ -1,0 +1,33 @@
+This is makeindex, version 2.18 [TeX Live 2026] (kpathsea + Thai support).
+Scanning style file ./bad.ist
+** Input style error (file = ./bad.ist, line = 2):
+   -- Unknown specifier foo.
+** Input style error (file = ./bad.ist, line = 3):
+   -- No opening delimiter.
+** Input style error (file = ./bad.ist, line = 3):
+   -- No closing delimiter or too many letters.
+** Input style error (file = ./bad.ist, line = 5):
+   -- Unknown specifier '.
+..
+** Input style error (file = ./bad.ist, line = 8):
+   -- line_max must be positive (got -5)** Input style error (file = ./bad.ist, line = 9):
+   -- indent_length must be nonnegative (got -2).
+** Input style error (file = ./bad.ist, line = 12):
+   -- Unknown specifier x.
+..
+** Input style error (file = ./bad.ist, line = 17):
+   -- Unknown specifier '+'.
+** Input style error (file = ./bad.ist, line = 17):
+   -- No attribute for specifier keyword (premature EOF)
+** Input style error (file = ./bad.ist, line = 18):
+   -- No opening delimiter.
+** Input style error (file = ./bad.ist, line = 19):
+   -- Multiple instances of type `n' in page precedence specification `rnn'.
+** Input style error (file = ./bad.ist, line = 19):
+   -- Quote and escape symbols must be distinct (both `\' now).
+done (2 attributes redefined, 12 ignored).
+Scanning input file ok.idx....done (5 entries accepted, 0 rejected).
+Sorting entries....done (11 comparisons).
+Generating output file ok.ind....done (18 lines written, 0 warnings).
+Output written in ok.ind.
+Transcript written in ok.ilg.

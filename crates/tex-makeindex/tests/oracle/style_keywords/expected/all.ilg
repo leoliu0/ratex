@@ -1,0 +1,25 @@
+This is makeindex, version 2.18 [TeX Live 2026] (kpathsea + Thai support).
+Scanning style file ./all.ist............................................done (44 attributes redefined, 0 ignored).
+Scanning input file all.idx....
+!! Input index error (file = all.idx, line = 2):
+   -- No opening delimiter for second argument (illegal character `r').
+!! Input index error (file = all.idx, line = 3):
+   -- No opening delimiter for second argument (illegal character `r').
+!! Input index error (file = all.idx, line = 4):
+   -- No opening delimiter for second argument (illegal character `g').
+
+!! Input index error (file = all.idx, line = 8):
+   -- No opening delimiter for second argument (illegal character `d').
+
+!! Input index error (file = all.idx, line = 20):
+   -- No opening delimiter for second argument (illegal character `y').
+!! Input index error (file = all.idx, line = 21):
+   -- No opening delimiter for second argument (illegal character `y').
+
+!! Input index error (file = all.idx, line = 23):
+   -- Missing arguments -- need two (premature LFD).
+done (16 entries accepted, 7 rejected).
+Sorting entries....done (68 comparisons).
+Generating output file all.ind....done (40 lines written, 0 warnings).
+Output written in all.ind.
+Transcript written in all.ilg.

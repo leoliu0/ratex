@@ -1,0 +1,11 @@
+This is makeindex, version 2.18 [TeX Live 2026] (kpathsea + Thai support).
+Scanning input file c.idx....
+!! Input index error (file = c.idx, line = 12):
+   -- Illegal null field.
+!! Input index error (file = c.idx, line = 13):
+   -- Illegal null field.
+done (11 entries accepted, 2 rejected).
+Sorting entries....done (40 comparisons).
+Generating output file c.ind....done (26 lines written, 0 warnings).
+Output written in c.ind.
+Transcript written in c.ilg.

@@ -135,6 +135,90 @@ impl Host for FsHost {
     }
 }
 
+/// A TeX job's directories: makeindex run in `work_dir` (the directory of
+/// the main source) on a job whose files TeX writes to `output_dir`, the
+/// way TeX Live runs it in a directory that holds both. Relative names are
+/// read from `output_dir` first and written there; style files are found
+/// in either directory (reported as `./name`, as kpathsea does) and then by
+/// `tree`, which searches the TeX tree.
+pub struct DirHost<'a> {
+    pub work_dir: &'a std::path::Path,
+    pub output_dir: Option<&'a std::path::Path>,
+    pub tree: &'a dyn Fn(&str) -> Option<(String, Vec<u8>)>,
+    /// Whether standard input may be read (`-i`, or no input file).
+    pub stdin: bool,
+}
+
+impl DirHost<'_> {
+    fn directories(&self) -> impl Iterator<Item = &std::path::Path> {
+        self.output_dir.into_iter().chain(std::iter::once(self.work_dir))
+    }
+
+    fn locate(&self, path: &str) -> Option<std::path::PathBuf> {
+        let path = std::path::Path::new(path);
+        if path.is_absolute() {
+            return path.is_file().then(|| path.to_path_buf());
+        }
+        self.directories().map(|directory| directory.join(path)).find(|candidate| candidate.is_file())
+    }
+}
+
+impl Host for DirHost<'_> {
+    fn read(&self, path: &str) -> std::io::Result<Vec<u8>> {
+        match self.locate(path) {
+            Some(found) => std::fs::read(found),
+            None => Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
+        }
+    }
+
+    fn write(&self, path: &str, bytes: &[u8]) -> std::io::Result<()> {
+        let target = std::path::Path::new(path);
+        let target = if target.is_absolute() {
+            target.to_path_buf()
+        } else {
+            self.output_dir.unwrap_or(self.work_dir).join(target)
+        };
+        std::fs::write(target, bytes)
+    }
+
+    fn exists(&self, path: &str) -> bool {
+        self.locate(path).is_some()
+    }
+
+    fn find_style(&self, name: &str) -> Option<(String, Vec<u8>)> {
+        let candidates = style_candidates(name);
+        if std::path::Path::new(name).is_absolute() {
+            return candidates.into_iter().find_map(|path| {
+                std::fs::read(&path).ok().filter(|_| std::path::Path::new(&path).is_file()).map(|bytes| (path, bytes))
+            });
+        }
+        let explicit = is_explicit_path(name);
+        for directory in [Some(self.work_dir), self.output_dir].into_iter().flatten() {
+            for candidate in &candidates {
+                let path = directory.join(candidate);
+                if path.is_file() {
+                    if let Ok(bytes) = std::fs::read(&path) {
+                        let shown = if explicit { candidate.clone() } else { format!("./{candidate}") };
+                        return Some((shown, bytes));
+                    }
+                }
+            }
+        }
+        if explicit {
+            return None;
+        }
+        candidates.iter().find_map(|candidate| (self.tree)(candidate))
+    }
+
+    fn read_stdin(&self) -> std::io::Result<Vec<u8>> {
+        if self.stdin {
+            FsHost.read_stdin()
+        } else {
+            Ok(Vec::new())
+        }
+    }
+}
+
 /// Parses makeindex's command line; the error is makeindex's message.
 pub fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut options = Options::default();

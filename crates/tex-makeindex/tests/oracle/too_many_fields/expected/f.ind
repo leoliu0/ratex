@@ -1,0 +1,31 @@
+\begin{theindex}
+
+  \item a
+    \subitem b, 1
+
+  \indexspace
+
+  \item c!d, 2
+
+  \indexspace
+
+  \item e@f, 3
+
+  \indexspace
+
+  \item g|textbf, 4
+
+  \indexspace
+
+  \item i, 5
+
+  \indexspace
+
+  \item j, \k{6}
+
+  \indexspace
+
+  \item l
+    \subitem m, 7
+
+\end{theindex}

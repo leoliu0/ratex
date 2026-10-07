@@ -1,0 +1,42 @@
+\begin{theindex}
+A
+  \item abc, 17
+  \item Abc, 16
+  \item "a"o"u, 18
+  \item "Apfel, 5
+  \item Apfel, 6
+
+  \indexspace
+M
+  \item m"uller, 4
+  \item Mueller, 3
+  \item M"uller, 1
+    \subitem K"ohler, 19
+  \item Mueller, 20
+  \item Muller, 2
+
+  \indexspace
+O
+  \item "Ol, 9
+  \item ol, 11
+  \item Ol, 10
+
+  \indexspace
+S
+  \item Strasse, 8
+  \item Stra"se, 7
+
+  \indexspace
+X
+  \item x, 15
+
+  \indexspace
+Z
+  \item Zebra, 12
+
+  \indexspace
+Numbers
+  \item 2, 13
+  \item 10, 14
+
+\end{theindex}

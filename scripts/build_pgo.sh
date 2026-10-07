@@ -4,10 +4,12 @@
 #   scripts/build_pgo.sh [OUTPUT]      # default: target/pgo/texres
 #
 # 1. builds an instrumented texres,
-# 2. runs a cold build of every pdfLaTeX/XeLaTeX document of the benchmark
-#    corpora (scripts/bench/corpus and scripts/bench/corpus100; LuaLaTeX cold
-#    starts are dominated by building a font database) to record which code
-#    the engine runs and how its branches go,
+# 2. runs a cold build of every pdfLaTeX/XeLaTeX document of the training
+#    corpus (scripts/bench/corpus, plus a variant of scripts/bench/corpus100
+#    with other text and data: gen_corpus100.py --seed-offset; documents that
+#    come out identical to the measured ones are left out, so no benchmark
+#    input is trained on) to record which code the engine runs and how its
+#    branches go,
 # 3. rebuilds texres with that profile.
 #
 # The TeX engine is a large interpreter loop; laid out with the profile, the
@@ -54,11 +56,15 @@ build "$work/gen" "-Cprofile-generate=$work/raw"
 echo "==> training run over the benchmark corpora"
 bin=$work/gen/$triple/release/texres
 # One cold build per document: scripts/bench/corpus (except the LuaLaTeX
-# document) and the pdfLaTeX/XeLaTeX documents of scripts/bench/corpus100,
-# whose packages (beamer themes, siunitx tables, CJK, KOMA, memoir, TikZ,
-# indexes, bibliographies, ...) the eight-document corpus alone leaves out of
-# the profile. Instrumented processes merge into the same raw profile files,
-# so documents run in parallel.
+# document) and the pdfLaTeX/XeLaTeX documents of a corpus100 variant, whose
+# packages (beamer themes, siunitx tables, CJK, KOMA, memoir, TikZ, indexes,
+# bibliographies, ...) the eight-document corpus alone leaves out of the
+# profile. The variant has the measured documents' structure but other text
+# and data; any document identical to its measured counterpart is skipped.
+# Instrumented processes merge into the same raw profile files, so documents
+# run in parallel.
+rm -rf "$work/train100"
+python3 scripts/bench/gen_corpus100.py --out "$work/train100" --seed-offset 1000003 >/dev/null
 train() { # train <source dir> <engine flag>
     doc=$(basename "$1")
     rm -rf "$work/run/$doc" "$work/run/$doc.cache"
@@ -81,12 +87,18 @@ export work bin
             *) printf '%s\0%s\0' "$dir" -pdf ;;
         esac
     done
-    python3 - <<'EOF'
-import json, sys
+    WORK="$work" python3 - <<'EOF'
+import filecmp, json, os, sys
+from pathlib import Path
+train = Path(os.environ["WORK"]) / "train100"
 flags = {"pdf": "-pdf", "xe": "-xelatex"}
-for name, doc in sorted(json.load(open("scripts/bench/corpus100/manifest.json")).items()):
-    if doc["engine"] in flags and doc["main"] == "main.tex":
-        sys.stdout.write(f"scripts/bench/corpus100/{name}/\0{flags[doc['engine']]}\0")
+for name, doc in sorted(json.load(open(train / "manifest.json")).items()):
+    if doc["engine"] not in flags or doc["main"] != "main.tex":
+        continue
+    measured = Path("scripts/bench/corpus100") / name / "main.tex"
+    if measured.is_file() and filecmp.cmp(train / name / "main.tex", measured, shallow=False):
+        continue
+    sys.stdout.write(f"{train / name}/\0{flags[doc['engine']]}\0")
 EOF
 } | xargs -0 -n 2 -P "${PGO_TRAIN_JOBS:-8}" bash -c 'train "$0" "$1"'
 "$profdata" merge -o "$work/merged.profdata" "$work/raw"

@@ -16,12 +16,30 @@
 //! itself, exactly as with TeX Live. The embedded runtime is part of the
 //! executable, which the cache identity covers.
 
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 use tex_lua::HostAccess;
 
 use crate::engine::Engine;
 use crate::lua_bridge::with_engine;
+
+/// Paths the observers already recorded. A font database scan stats and
+/// opens thousands of files, several times each: the dependency lists must
+/// not be searched linearly for every access.
+#[derive(Default)]
+pub(crate) struct Seen {
+    read: HashSet<PathBuf>,
+    missing: HashSet<PathBuf>,
+    present_directories: HashSet<PathBuf>,
+    missing_directories: HashSet<PathBuf>,
+    listed_directories: HashSet<PathBuf>,
+}
+
+/// Insert `path` into `set`; true when it was not there yet.
+fn first_sight(set: &mut HashSet<PathBuf>, path: &Path) -> bool {
+    !set.contains(path) && set.insert(path.to_path_buf())
+}
 
 /// Install the observer of the standard libraries for this thread.
 pub(crate) fn install_observer() {
@@ -102,10 +120,10 @@ impl Engine {
             return;
         }
         if present {
-            if !self.loaded_files.iter().any(|known| known == path) {
+            if first_sight(&mut self.lua_deps_seen.read, path) {
                 self.loaded_files.push(path.to_path_buf());
             }
-        } else if !self.missing_files.iter().any(|known| known == path) {
+        } else if first_sight(&mut self.lua_deps_seen.missing, path) {
             self.missing_files.push(path.to_path_buf());
         }
     }
@@ -120,7 +138,7 @@ impl Engine {
         match kind {
             Some("file") => self.lua_dep_read(path, true),
             Some("directory") => {
-                if !ignored(path) && !self.font_loader.dependency_present_directories.iter().any(|known| known == path) {
+                if !ignored(path) && first_sight(&mut self.lua_deps_seen.present_directories, path) {
                     self.font_loader.dependency_present_directories.push(path.to_path_buf());
                 }
             }
@@ -144,7 +162,7 @@ impl Engine {
         }
         if !present {
             self.lua_dep_missing_directory(path);
-        } else if self.font_loader.dependency_directories.iter().any(|(known, _)| known == path) {
+        } else if !first_sight(&mut self.lua_deps_seen.listed_directories, path) {
             // listed before in this run
         } else if let Some(fingerprint) = tex_kpse::directory_fingerprint(path) {
             self.font_loader.dependency_directories.push((path.to_path_buf(), fingerprint));
@@ -154,7 +172,7 @@ impl Engine {
     }
 
     fn lua_dep_missing_directory(&mut self, path: &Path) {
-        if !self.font_loader.dependency_missing_directories.iter().any(|known| known == path) {
+        if first_sight(&mut self.lua_deps_seen.missing_directories, path) {
             self.font_loader.dependency_missing_directories.push(path.to_path_buf());
         }
     }

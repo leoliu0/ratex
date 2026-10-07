@@ -1375,118 +1375,12 @@ impl Engine {
 
     #[inline(always)]
     pub fn is_expandable(&self, p: Prim) -> bool {
-        use Prim::*;
-        matches!(
-            p,
-            ExpandAfter
-                | NoExpand
-                | CsName
-                | LastNamedCs
-                | The
-                | String
-                | Meaning
-                | Number
-                | RomanNumeral
-                | Detokenize
-                | ScanTokens
-                | DirectLua
-                | LuaFunction
-                | LuaBytecode
-                | Input
-                | EndInput
-                | Expanded
-                | UnExpanded
-                | JobName
-                | FontName
-                | FontIdPrim
-                | IfChar
-                | IfCat
-                | IfOdd
-                | IfNum
-                | IfDim
-                | IfVoid
-                | IfHBox
-                | IfVBox
-                | IfHMode
-                | IfVMode
-                | IfInner
-                | IfMMode
-                | IfTrue
-                | IfFalse
-                | IfEOF
-                | IfDef
-                | IfCSName
-                | IfInCsName
-                | IfX
-                | IfFontChar
-                | IfPdfAbsNum
-                | IfPdfAbsDim
-                | IfPdfPrimitive
-                | PdfPrimitive
-                | PdfInsertHt
-                | IfCase
-                | Or
-                | Else
-                | ElIf
-                | ElIfX
-                | Fi
-                | Unless
-                | PdfFileSize
-                | PdfMdFiveSum
-                | PdfFileModDate
-                | PdfCreationDate
-                | PdfFileDump
-                | PdfStrCmp
-                | PdfUniformDeviate
-                | PdfNormalDeviate
-                | PdfEscapeString
-                | PdfEscapeName
-                | PdfEscapeHex
-                | PdfUnescapeHex
-                | PdfTexRevision
-                | EtxRevision
-                | PdfColorStackInit
-                | PdfBanner
-                | PdfFontSize
-                | PdfPageRef
-                | PdfFontName
-                | PdfFontObjNum
-                | PdfXFormName
-                | PdfXImageBBox
-                | LeftMarginKern
-                | RightMarginKern
-                | UcharCat
-                | XeTeXUchar
-                | FileSize
-                | PdfMatch
-                | PdfLastMatch
-                | TopMark
-                | FirstMark
-                | BotMark
-                | SplitFirstMark
-                | SplitBotMark
-                | TopMarksClass
-                | FirstMarksClass
-                | BotMarksClass
-                | SplitFirstMarksClass
-                | SplitBotMarksClass
-                | Prim::XeTeXRevision
-                | Prim::XeTeXGlyphName
-                | Prim::XeTeXFeatureName
-                | Prim::XeTeXVariationName
-                | Prim::XeTeXQuery(crate::xetex_query::XeQuery::SelectorName)
-                | Prim::LuaTeXRevision
-                | Prim::LuaTeXBanner
-                | PdfVariable
-                | PdfFeedback
-                | DviVariable
-                | DviFeedback
-                | EtxVersionString
-                | CsString
-                | BeginCsName
-                | FormatName
-                | LuaEscapeString
-        ) || matches!(p, Prim::U(u) if u.is_expandable())
+        EXPANDABLE_PRIMS.contains(p)
+            && match p {
+                Prim::U(u) => u.is_expandable(),
+                Prim::XeTeXQuery(q) => q == crate::xetex_query::XeQuery::SelectorName,
+                _ => true,
+            }
     }
 
     /// Execute an expandable primitive; None = keep expanding,
@@ -1495,658 +1389,741 @@ impl Engine {
         // tex.web expand: cur_cs is the expanding control sequence, which a
         // general-text scan names in its errors (warning_index).
         self.cur_cs = Some(id);
-        if self.eqtb.int_params[crate::prim::IntParam::TracingIfs as usize] > 0
-            && Self::is_if_test(p)
+        if Self::is_if_test(p)
+            && self.eqtb.int_params[crate::prim::IntParam::TracingIfs as usize] > 0
         {
             self.show_if_start(p);
         }
-        if p == Prim::IfCase {
-            // The case frame must exist while its numeric operand expands:
-            // nested conditionals can remain open until after the first digit.
-            let save = self.push_if(id, false);
-            let previous = self.pending_if_depth.replace(self.if_stack.len());
-            let n = self.scan_int();
-            self.pending_if_depth = previous;
-            if let Some(st) = self.if_stack.get_mut(save) {
-                st.evaluating = false;
-                st.accepting = n == 0;
-                st.matched = n == 0;
-                st.if_case = n;
-            }
-            if n != 0 {
-                self.skip_branch(true, save);
-            }
-            return None;
-        }
-        if matches!(
-            p,
-            Prim::IfOdd
-                | Prim::IfNum
-                | Prim::IfDim
-                | Prim::IfVoid
-                | Prim::IfFontChar
-                | Prim::IfPdfAbsNum
-                | Prim::IfPdfAbsDim
-                | Prim::IfHBox
-                | Prim::IfVBox
-                | Prim::IfEOF
-        ) {
-            // The outer conditional must exist before operand expansion:
-            // an operand can leave a nested conditional open.
-            let unless = std::mem::take(&mut self.unless_next);
-            let save = self.push_if(id, unless);
-            let previous = self.pending_if_depth.replace(self.if_stack.len());
-            let value = match p {
-                Prim::IfOdd => self.scan_int() % 2 != 0,
-                Prim::IfNum | Prim::IfDim | Prim::IfPdfAbsNum | Prim::IfPdfAbsDim => {
-                    let numeric = matches!(p, Prim::IfNum | Prim::IfPdfAbsNum);
-                    // pdfTeX \ifpdfabsnum/\ifpdfabsdim compare magnitudes
-                    let absolute = matches!(p, Prim::IfPdfAbsNum | Prim::IfPdfAbsDim);
-                    let operand = |e: &mut Self| {
-                        let v = if numeric {
-                            e.scan_int()
-                        } else {
-                            e.scan_dimen(false, false)
-                        };
-                        if absolute {
-                            v.wrapping_abs()
-                        } else {
-                            v
-                        }
-                    };
-                    let a = operand(self);
-                    let rel = self.scan_relational();
-                    let b = operand(self);
-                    compare(a, rel, b)
-                }
-                Prim::IfVoid | Prim::IfHBox | Prim::IfVBox => {
-                    let n = self.scan_reg_num() as usize;
-                    match p {
-                        Prim::IfVoid => self.eqtb.boxed[n].is_none(),
-                        Prim::IfHBox => matches!(
-                            &self.eqtb.boxed[n],
-                            Some(crate::boxes::Node::Box { kind: 0, .. })
-                        ),
-                        _ => matches!(
-                            &self.eqtb.boxed[n],
-                            Some(crate::boxes::Node::Box { kind: 1 | 2, .. })
-                        ),
-                    }
-                }
-                Prim::IfFontChar => {
-                    let f = self.scan_font_id();
-                    let lua_font = self.eqtb.fonts.get(f as usize).is_some_and(|font| font.lua_font().is_some());
-                    let c = if lua_font || self.is_native_font(f) {
-                        self.scan_unicode_character_code("\\iffontchar")
-                    } else {
-                        self.scan_character_code("\\iffontchar") as u32
-                    };
-                    if lua_font {
-                        self.eqtb.fonts.get(f as usize).is_some_and(|font| font.lua_char_exists(c))
-                    } else {
-                        self.native_char_present(f, c).unwrap_or_else(|| {
-                            u8::try_from(c).ok().is_some_and(|byte| {
-                                self.eqtb
-                                    .fonts
-                                    .get(f as usize)
-                                    .is_some_and(|font| font.char_present(byte))
-                            })
-                        })
-                    }
-                }
-                Prim::IfEOF => {
-                    let n = self.scan_int();
-                    self.read_eof
-                        .get(n.max(0) as usize)
-                        .copied()
-                        .unwrap_or(true)
-                }
-                _ => unreachable!(),
-            };
-            self.pending_if_depth = previous;
-            self.finish_if(save, value ^ unless)
-        } else {
-            self.expand_prim_inner(p, id)
-        }
+        self.expand_prim_inner(p, id)
     }
 
+    /// `\ifcase`.
+    #[inline(never)]
+    fn expand_if_case(&mut self, p: Prim, id: CsId) -> Option<Token> {
+        // The case frame must exist while its numeric operand expands:
+        // nested conditionals can remain open until after the first digit.
+        let save = self.push_if(id, p, false);
+        let previous = self.pending_if_depth.replace(self.if_stack.len());
+        let n = self.scan_int();
+        self.pending_if_depth = previous;
+        if let Some(st) = self.if_stack.get_mut(save) {
+            st.evaluating = false;
+            st.accepting = n == 0;
+            st.matched = n == 0;
+            st.if_case = n;
+        }
+        if n != 0 {
+            self.skip_branch(true, save);
+        }
+        None
+    }
+
+    /// The conditionals with operands that scanning can expand: `\ifodd`,
+    /// `\ifnum`, `\ifdim`, the box tests, `\iffontchar`, `\ifeof` and
+    /// pdfTeX's `\ifpdfabsnum`/`\ifpdfabsdim`.
+    #[inline(never)]
+    fn expand_operand_if(&mut self, p: Prim, id: CsId) -> Option<Token> {
+        // The outer conditional must exist before operand expansion:
+        // an operand can leave a nested conditional open.
+        let unless = std::mem::take(&mut self.unless_next);
+        let save = self.push_if(id, p, unless);
+        let previous = self.pending_if_depth.replace(self.if_stack.len());
+        let value = match p {
+            Prim::IfOdd => self.scan_int() % 2 != 0,
+            Prim::IfNum | Prim::IfDim | Prim::IfPdfAbsNum | Prim::IfPdfAbsDim => {
+                let numeric = matches!(p, Prim::IfNum | Prim::IfPdfAbsNum);
+                // pdfTeX \ifpdfabsnum/\ifpdfabsdim compare magnitudes
+                let absolute = matches!(p, Prim::IfPdfAbsNum | Prim::IfPdfAbsDim);
+                let operand = |e: &mut Self| {
+                    let v = if numeric {
+                        e.scan_int()
+                    } else {
+                        e.scan_dimen(false, false)
+                    };
+                    if absolute {
+                        v.wrapping_abs()
+                    } else {
+                        v
+                    }
+                };
+                let a = operand(self);
+                let rel = self.scan_relational();
+                let b = operand(self);
+                compare(a, rel, b)
+            }
+            Prim::IfVoid | Prim::IfHBox | Prim::IfVBox => {
+                let n = self.scan_reg_num() as usize;
+                match p {
+                    Prim::IfVoid => self.eqtb.boxed[n].is_none(),
+                    Prim::IfHBox => matches!(
+                        &self.eqtb.boxed[n],
+                        Some(crate::boxes::Node::Box { kind: 0, .. })
+                    ),
+                    _ => matches!(
+                        &self.eqtb.boxed[n],
+                        Some(crate::boxes::Node::Box { kind: 1 | 2, .. })
+                    ),
+                }
+            }
+            Prim::IfFontChar => {
+                let f = self.scan_font_id();
+                let lua_font = self.eqtb.fonts.get(f as usize).is_some_and(|font| font.lua_font().is_some());
+                let c = if lua_font || self.is_native_font(f) {
+                    self.scan_unicode_character_code("\\iffontchar")
+                } else {
+                    self.scan_character_code("\\iffontchar") as u32
+                };
+                if lua_font {
+                    self.eqtb.fonts.get(f as usize).is_some_and(|font| font.lua_char_exists(c))
+                } else {
+                    self.native_char_present(f, c).unwrap_or_else(|| {
+                        u8::try_from(c).ok().is_some_and(|byte| {
+                            self.eqtb
+                                .fonts
+                                .get(f as usize)
+                                .is_some_and(|font| font.char_present(byte))
+                        })
+                    })
+                }
+            }
+            Prim::IfEOF => {
+                let n = self.scan_int();
+                self.read_eof
+                    .get(n.max(0) as usize)
+                    .copied()
+                    .unwrap_or(true)
+            }
+            _ => unreachable!(),
+        };
+        self.pending_if_depth = previous;
+        self.finish_if(save, value ^ unless)
+    }
+
+    #[inline(always)]
     fn expand_prim_inner(&mut self, p: Prim, id: CsId) -> Option<Token> {
         use Prim::*;
         match p {
-            ExpandAfter => {
-                let t1 = self.raw_token_outer();
-                let t2 = self.raw_token_outer();
-                if t2.0 >= NOEXP_FLAG && t2.0 < 0xFFFF_0000 {
-                    self.push_token(t2);
-                } else if t2.is_cs() || (t2.is_char() && t2.cc() == 13) {
-                    let mut id2 = if t2.is_cs() {
-                        t2.cs_id()
-                    } else {
-                        self.active_cs_id(t2.chr())
-                    };
-                    let invocation = id2;
-                    for _ in 0..1024 {
-                        match self.eqtb.get(id2) {
-                            Some(Equiv::Alias(next)) => id2 = *next,
-                            _ => break,
-                        }
-                    }
-                    if let Some(eq) = self.eqtb.get(id2) {
-                        match eq {
-                            // tex.web: \expandafter expands even \protected macros
-                            Equiv::Macro(m) => {
-                                if self.freeze_gts_in_edef(id2) {
-                                    self.push_token(t2);
-                                } else if m.num_params == 0 && m.prefix.is_empty() && !self.xetex_macro_trace() {
-                                    let body = std::rc::Rc::clone(&m.body);
-                                    self.enter_macro_diagnostic(id2, invocation);
-                                    self.push_tokens_rc(body, id2);
-                                } else {
-                                    let m = m.clone();
-                                    self.expand_macro(id2, &m, invocation);
-                                }
-                            }
-                            Equiv::Prim(The) => {
-                                let expanded = self.in_expanded_scan;
-                                self.in_expanded_scan = false;
-                                self.the_scan();
-                                self.in_expanded_scan = expanded;
-                            }
-                            Equiv::Prim(p2) if self.is_expandable(*p2) => {
-                                let p2 = *p2;
-                                if let Some(tt) = self.expand_prim(p2, id2) {
-                                    self.push_token(tt);
-                                }
-                            }
-                            &Equiv::LuaCall { slot, protected: false } => {
-                                self.call_lua_function(slot as i32);
-                            }
-                            _ => {
-                                self.push_token(t2);
-                            }
-                        }
-                    } else {
-                        // tex.web §368: expand the undefined token (§370).
-                        self.undefined_cs_error(Token::from_cs(id2));
-                    }
-                } else {
-                    self.push_token(t2);
-                }
-                self.push_token(t1);
-                None
-            }
-
-            NoExpand => {
-                let t = self.raw_token_normal();
-                let id = if t.is_cs() {
-                    Some(t.cs_id())
-                } else if t.is_char() && t.cc() == 13 {
-                    Some(self.active_cs_id(t.chr()))
-                } else {
-                    None
-                };
-                if let Some(id) = id {
-                    // tex.web §367: \noexpand marks every control sequence,
-                    // active characters included, with frozen_dont_expand.
-                    // An undefined one then reads as \relax (§358) instead
-                    // of raising "Undefined control sequence" when expanded.
-                    let needs_freeze = match self.eqtb.resolve(id) {
-                        None | Some(Equiv::Macro(_)) => true,
-                        Some(Equiv::Prim(p2)) => self.is_expandable(*p2),
-                        Some(Equiv::LuaCall { protected, .. }) => !protected,
-                        _ => false,
-                    };
-                    if needs_freeze {
-                        Some(Token(NOEXP_FLAG | id))
-                    } else {
-                        Some(t)
-                    }
-                } else {
-                    Some(t)
-                }
-            }
+            ExpandAfter => self.expand_after(),
+            IfCase => self.expand_if_case(p, id),
+            IfOdd | IfNum | IfDim | IfVoid | IfFontChar | IfPdfAbsNum | IfPdfAbsDim | IfHBox
+            | IfVBox | IfEOF => self.expand_operand_if(p, id),
+            NoExpand => self.expand_noexpand(),
             EndCsName => {
                 // extra \endcsname outside \csname: TeX errors then continues
                 None
             }
-            CsName | BeginCsName => {
-                let csname_origin = self.current_token_source_mark();
-                let csname_span = if self.diagnostic_macro_trace.is_empty() {
-                    self.diagnostic_cs_source_width(self.diagnostic_source_cs.unwrap_or(id))
-                } else {
-                    self.diagnostic_macro_call_span
-                };
-                self.csname_depth += 1;
-                let mut name: Vec<u8> = Vec::with_capacity(32);
-                // A leftover e-TeX \unless flag must not flip \ifx inside \csname
-                self.unless_next = false;
-                loop {
-                    if name.len() > 2000 {
-                        self.csname_depth = self.csname_depth.saturating_sub(1);
-                        self.fatal_error_at(
-                            "TeX capacity exceeded [control sequence name exceeds 2000 bytes]",
-                            csname_origin
-                                .as_ref()
-                                .map(crate::input::SourceMark::to_context),
-                        );
-                        return None;
-                    }
-                    if self.take_csname_run(&mut name) {
-                        continue;
-                    }
-                    let t = self.get_x_raw();
-                    if t == EOF_MARKER {
-                        self.csname_depth = self.csname_depth.saturating_sub(1);
-                        self.fatal_error_at(
-                            "File ended while scanning \\csname; missing \\endcsname",
-                            csname_origin
-                                .as_ref()
-                                .map(crate::input::SourceMark::to_context),
-                        );
-                        return None;
-                    }
-                    if t.is_cs() {
-                        // tex.web §372: the name ends at the first
-                        // unexpandable control sequence. Anything but
-                        // \endcsname, a \noexpand-marked token (which means
-                        // \relax) included, is an error and is read again.
-                        if self.cur_prim == Some(Prim::EndCsName) {
-                            break;
-                        }
-                        self.push_token(t);
-                        self.error_at(
-                            "Missing \\endcsname inserted",
-                            csname_origin
-                                .as_ref()
-                                .map(crate::input::SourceMark::to_context),
-                        );
-                        break;
-                    }
-
-                    if t.is_char() && t.cc() == 9 {
-                        continue;
-                    }
-                    t.append_character_bytes(&mut name);
-                }
-                self.csname_depth = self.csname_depth.saturating_sub(1);
-                let id = self.cs.intern(&name);
-                if p == BeginCsName && self.eqtb.get(id).is_none() {
-                    // LuaTeX `\begincsname`: an undefined name expands to
-                    // nothing and stays undefined.
-                    return None;
-                }
-                self.last_named_cs = Some(id);
-                if self.eqtb.get(id).is_none() {
-                    // tex.web §372: a new name means \relax (locally).
-                    let relax = self.cs.lookup(b"relax").unwrap();
-                    let r = self.eqtb.get(relax).cloned();
-                    if let Some(e) = r {
-                        self.eqtb.assign(id, e, false);
-                    }
-                }
-                if let Some(mark) = csname_origin {
-                    self.diagnostic_synthetic_source = Some((id, mark, csname_span.max(1)));
-                    self.diagnostic_sources_live = true;
-                }
-                Some(Token::from_cs(id))
-            }
-
-            LastNamedCs => {
-                let id = self
-                    .last_named_cs
-                    .unwrap_or_else(|| self.cs.lookup(b"relax").unwrap());
-                Some(Token::from_cs(id))
-            }
+            CsName | BeginCsName => self.expand_csname(p, id),
+            LastNamedCs => self.expand_lastnamedcs(),
             The => {
                 self.the_scan();
                 None
             }
-            Prim::String => {
-                let t = self.raw_token_normal();
-                let mut bytes: Vec<u8> = Vec::new();
-                let esc = self.eqtb.int_params[crate::prim::IntParam::EscapeChar.idx() as usize];
-                if t.is_cs() {
-                    let name = self.cs.name(t.cs_id());
-                    if let Some((source_bytes, len)) = Self::active_cs_source_bytes(name) {
-                        bytes.extend_from_slice(&source_bytes[..len]);
-                    } else {
-                        if esc >= 0 && esc <= 255 {
-                            bytes.push(esc as u8);
-                        }
-                        bytes.extend_from_slice(name);
-                    }
-                } else {
-                    t.append_character_bytes(&mut bytes);
-                }
-                self.exp_string(&bytes);
-                None
-            }
-            Prim::Meaning => {
-                let t = self.raw_token_normal();
-                let text = self.meaning_of(t);
-                self.exp_string(&crate::tex_bytes::text_to_bytes(&text));
-                None
-            }
-            Number => {
-                let n = self.scan_int();
-                let s = n.to_string();
-                self.exp_string(s.as_bytes());
-                None
-            }
-            RomanNumeral => {
-                let n = self.scan_int();
-                let s = if n <= 0 {
-                    ::std::string::String::new()
-                } else {
-                    roman(n)
-                };
-                self.exp_string(s.as_bytes());
-                None
-            }
-            Detokenize => {
-                let toks = self.scan_general_text();
-                let bytes = self.tokens_to_bytes(&toks);
-                self.exp_string(&bytes);
-                None
-            }
-            Expanded => {
-                let r = self.scan_general_text_expanded();
-
-                self.push_tokens(r);
-                None
-            }
-            UnExpanded => {
-                self.skip_spaces_relax();
-                let t = self.get_x_raw();
-
-                if t.is_cs() {
-                    if let Some(Equiv::ToksReg(i)) = self.eqtb.resolve(t.cs_id()).cloned() {
-                        let toks = (*self.eqtb.toks[i as usize]).clone();
-                        self.push_tokens_exp_not(toks);
-                        return None;
-                    }
-                    // e-TeX pair `\unexpanded\expanded{{X}}`: run the
-                    // \expanded to completion, deliver its result frozen.
-                    // l3's \__kernel_exp_not:w = \tex_unexpanded:D, so
-                    // keyval/tl machinery leans on this exact idiom.
-                    if let Some(Equiv::Prim(p)) = self.eqtb.resolve(t.cs_id()).cloned() {
-                        if p == Prim::Expanded {
-                            let mut toks = self.scan_general_text_expanded();
-                            Self::strip_outer_braces(&mut toks, 0);
-                            if self.in_expanded_scan {
-                                self.push_tokens_exp_not(toks);
-                            } else {
-                                self.push_tokens(toks);
-                            }
-
-                            return None;
-                        }
-                    }
-                }
-                self.push_token(t);
-                let toks = self.scan_general_text();
-                if self.in_expanded_scan {
-                    self.push_tokens_exp_not(toks);
-                } else {
-                    self.push_tokens(toks);
-                }
-                None
-            }
-            Unless => {
-                // etex.ch expand: \unless reads the next token unexpanded; only
-                // a conditional other than \ifcase may follow, the flag is then
-                // consumed by do_if.
-                let t = self.raw_token();
-                let target = if t.is_cs() {
-                    match self.eqtb.resolve(t.cs_id()) {
-                        Some(Equiv::Prim(p)) => Some(*p),
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
-                match target {
-                    // tex.web `goto reswitch` with the unless flag: the
-                    // conditional is expanded in this very step (so an
-                    // `\expandafter` over `\unless` sees its result).
-                    Some(p) if Self::is_if_test(p) && p != IfCase => {
-                        self.unless_next = true;
-                        self.expand_prim(p, t.cs_id())
-                    }
-                    _ => {
-                        self.push_token(t);
-                        let meaning = self.meaning_of(t);
-                        let name = meaning.split(':').next().unwrap_or("");
-                        self.error(&format!("You can't use `\\unless' before `{name}'"));
-                        None
-                    }
-                }
-            }
-            IfTrue => self.do_if(true, id),
-            IfFalse => self.do_if(false, id),
-            IfChar => {
-                // tex.web 498: push this \\if *before* get_x_token so a nested
-                // true conditional from the test sits on top (babel
-                // `\\if T\\ifeof1F\\fi T`).
-                let unless = std::mem::take(&mut self.unless_next);
-                let save = self.push_if(id, unless);
-                let a = self.character_test_operand();
-                let b = self.character_test_operand();
-                // tex.web: CS tokens have character code 256, so two
-                // control sequences always compare equal for \\if.
-                let mut eq = if a.is_cs() && b.is_cs() {
-                    true
-                } else if !a.is_cs() && !b.is_cs() {
-                    a.chr() == b.chr()
-                } else {
-                    false
-                };
-                if unless {
-                    eq = !eq;
-                }
-                self.finish_if(save, eq)
-            }
-            IfCat => {
-                let unless = std::mem::take(&mut self.unless_next);
-                let save = self.push_if(id, unless);
-                let a = self.character_test_operand();
-                let b = self.character_test_operand();
-                // tex.web: CS tokens have category 16.
-                let mut eq = if a.is_cs() && b.is_cs() {
-                    true
-                } else if !a.is_cs() && !b.is_cs() {
-                    a.cc() == b.cc()
-                } else {
-                    false
-                };
-                if unless {
-                    eq = !eq;
-                }
-                self.finish_if(save, eq)
-            }
+            Prim::String => self.expand_string(),
+            Prim::Meaning => self.expand_meaning(),
+            Number => self.expand_number(),
+            RomanNumeral => self.expand_romannumeral(),
+            Detokenize => self.expand_detokenize(),
+            Expanded => self.expand_expanded(),
+            UnExpanded => self.expand_unexpanded(),
+            Unless => self.expand_unless(),
+            IfTrue => self.do_if(true, id, p),
+            IfFalse => self.do_if(false, id, p),
+            IfChar => self.expand_if_char(p, id),
+            IfCat => self.expand_if_cat(p, id),
             // tex.web §501 with §1370's `mode=0`: no mode test holds while a
             // `\write` text expands.
-            IfVMode => self.do_if(!self.write_mode_zero && self.mode.is_v(), id),
-            IfHMode => self.do_if(!self.write_mode_zero && self.mode.is_h(), id),
-            IfMMode => self.do_if(!self.write_mode_zero && self.mode.is_m(), id),
+            IfVMode => self.do_if(!self.write_mode_zero && self.mode.is_v(), id, p),
+            IfHMode => self.do_if(!self.write_mode_zero && self.mode.is_h(), id, p),
+            IfMMode => self.do_if(!self.write_mode_zero && self.mode.is_m(), id, p),
             IfInner => {
                 let ok = !self.write_mode_zero && self.mode.is_inner();
-                self.do_if(ok, id)
+                self.do_if(ok, id, p)
             }
-            IfDef => {
-                let t = self.raw_token_normal();
-                let def = if t.is_cs() {
-                    self.eqtb.resolve(t.cs_id()).is_some()
-                } else if t.is_char() && t.cc() == 13 {
-                    let id = self.active_cs_id(t.chr());
-                    self.eqtb.resolve(id).is_some()
-                } else {
-                    false
-                };
-                self.do_if(def, id)
-            }
-            IfInCsName => self.do_if(self.csname_depth > 0, id),
-
-            IfCSName => {
-                // e-TeX \\ifcsname: get_x_token until \\endcsname; true iff
-                // the name is already in the hash (even if \\relax). Must not
-                // intern on a miss — that would poison \\ifcsname.
-                // Take \\unless now so name collection cannot flip nested
-                // \\ifx; restore before do_if so \\unless\\ifcsname inverts.
-                let unless = std::mem::take(&mut self.unless_next);
-                self.csname_depth += 1;
-                let mut name: Vec<u8> = Vec::new();
-                let mut aborted = false;
-                loop {
-                    let t = self.get_x_raw();
-                    if t == EOF_MARKER {
-                        self.error("Missing \\endcsname inserted");
-                        break;
-                    }
-                    if t.is_cs() {
-                        let id = t.cs_id();
-                        let is_end = matches!(
-                            self.eqtb.resolve(id),
-                            Some(Equiv::Prim(crate::prim::Prim::EndCsName))
-                        );
-                        if is_end {
-                            break;
-                        }
-                        match self.eqtb.resolve(id).cloned() {
-                            Some(Equiv::Prim(p)) if self.is_expandable(p) => {
-                                match self.expand_prim(p, id) {
-                                    Some(tok) if tok.is_char() => {
-                                        tok.append_character_bytes(&mut name)
-                                    }
-                                    Some(tok) => self.push_token(tok),
-                                    None => {}
-                                }
-                                continue;
-                            }
-                            _ => {
-                                if self.eqtb.int_params[crate::prim::IntParam::SuppressIfCsnameError.idx() as usize] != 0 {
-                                    // conditional.c test_for_cs: skip to the
-                                    // \endcsname, the test fails
-                                    aborted = true;
-                                    loop {
-                                        let t = self.get_x_raw();
-                                        if t == EOF_MARKER {
-                                            self.push_token(t);
-                                            break;
-                                        }
-                                        if t.is_cs()
-                                            && matches!(
-                                                self.eqtb.resolve(t.cs_id()),
-                                                Some(Equiv::Prim(crate::prim::Prim::EndCsName))
-                                            )
-                                        {
-                                            break;
-                                        }
-                                    }
-                                    break;
-                                }
-                                self.push_token(t);
-                                self.error("Missing \\endcsname inserted");
-                                break;
-                            }
-                        }
-                    }
-                    if t.is_char() && t.cc() == 9 {
-                        continue;
-                    }
-                    t.append_character_bytes(&mut name);
-                }
-                self.csname_depth = self.csname_depth.saturating_sub(1);
-                let def = if aborted {
-                    self.last_named_cs = None;
-                    false
-                } else if let Some(id) = self.cs.lookup(&name) {
-                    self.last_named_cs = Some(id);
-                    self.eqtb.resolve(id).is_some()
-                } else {
-                    false
-                };
-                self.unless_next = unless;
-                self.do_if(def, id);
-                None
-            }
-            IfX => {
-                // tex.web if_x: operands see expandable PRIMS (\\csname...)
-                // but never macros (\\ifx\\foo x is false for \\def\\foo{x}).
-                let a = self.raw_token_normal();
-                let b = self.raw_token_normal();
-
-                let eq = self.ifx_equal(a, b);
-                self.do_if(eq, id)
-            }
-            Or => {
-                self.show_if_delimiter(Prim::Or);
-                if self.if_stack.last().is_some_and(|st| st.evaluating) {
-                    self.insert_relax(id);
-                    return None;
-                }
-                // encountered while accepting: skip to \fi or next \or
-                if let Some(st) = self.if_stack.last_mut() {
-                    if st.matched {
-                        st.if_case = -1; // skip mode
-                        self.skip_to_fi();
-                        return None;
-                    }
-                }
-                self.error("Extra \\or");
-                None
-            }
-            Else => {
-                self.show_if_delimiter(Prim::Else);
-                if self.if_stack.last().is_some_and(|st| st.evaluating) {
-                    self.insert_relax(id);
-                    return None;
-                }
-                match self.if_stack.last_mut() {
-                    Some(st) if st.matched => self.skip_to_fi(),
-                    Some(st) => {
-                        st.accepting = true;
-                        st.matched = true;
-                        st.in_else = true;
-                    }
-                    None => self.error("Extra \\else"),
-                }
-                None
-            }
-            ElIf | ElIfX => {
-                if self.if_stack.last().is_some_and(|st| st.evaluating) {
-                    self.insert_relax(id);
-                    return None;
-                }
-                // TeX has no \elseif; treat like \else that never accepts
-                let st = self.if_stack.last().cloned();
-                match st {
-                    Some(s) => {
-                        if s.matched {
-                            self.skip_to_fi();
-                        } else {
-                            self.error("\\elseif not supported");
-                        }
-                    }
-                    None => self.error("Extra \\elseif"),
-                }
-                None
-            }
-            Fi => {
-                self.show_if_delimiter(Prim::Fi);
-                if self.if_stack.last().is_some_and(|st| st.evaluating) {
-                    self.insert_relax(id);
-                    return None;
-                }
-                if !self.pop_cond() {
-                    self.error("Extra \\fi");
-                }
-                None
-            }
+            IfDef => self.expand_if_def(p, id),
+            IfInCsName => self.do_if(self.csname_depth > 0, id, p),
+            IfCSName => self.expand_if_csname(p, id),
+            IfX => self.expand_if_x(p, id),
+            Or => self.expand_or(id),
+            Else => self.expand_else(id),
+            ElIf | ElIfX => self.expand_elif(id),
+            Fi => self.expand_fi(id),
             _ => self.expand_prim_extended(p, id),
         }
     }
 
+    /// `\expandafter`: expand the token after the next one.
+    #[inline(never)]
+    fn expand_after(&mut self) -> Option<Token> {
+        use Prim::*;
+        let t1 = self.raw_token_outer();
+        let t2 = self.raw_token_outer();
+        if t2.0 >= NOEXP_FLAG && t2.0 < 0xFFFF_0000 {
+            self.push_token(t2);
+        } else if t2.is_cs() || (t2.is_char() && t2.cc() == 13) {
+            let mut id2 = if t2.is_cs() {
+                t2.cs_id()
+            } else {
+                self.active_cs_id(t2.chr())
+            };
+            let invocation = id2;
+            for _ in 0..1024 {
+                match self.eqtb.get(id2) {
+                    Some(Equiv::Alias(next)) => id2 = *next,
+                    _ => break,
+                }
+            }
+            if let Some(eq) = self.eqtb.get(id2) {
+                match eq {
+                    // tex.web: \expandafter expands even \protected macros
+                    Equiv::Macro(m) => {
+                        if self.freeze_gts_in_edef(id2) {
+                            self.push_token(t2);
+                        } else if m.num_params == 0 && m.prefix.is_empty() && !self.xetex_macro_trace() {
+                            let body = std::rc::Rc::clone(&m.body);
+                            self.enter_macro_diagnostic(id2, invocation);
+                            self.push_tokens_rc(body, id2);
+                        } else {
+                            let m = m.clone();
+                            self.expand_macro(id2, &m, invocation);
+                        }
+                    }
+                    Equiv::Prim(The) => {
+                        let expanded = self.in_expanded_scan;
+                        self.in_expanded_scan = false;
+                        self.the_scan();
+                        self.in_expanded_scan = expanded;
+                    }
+                    Equiv::Prim(p2) if self.is_expandable(*p2) => {
+                        let p2 = *p2;
+                        if let Some(tt) = self.expand_prim(p2, id2) {
+                            self.push_token(tt);
+                        }
+                    }
+                    &Equiv::LuaCall { slot, protected: false } => {
+                        self.call_lua_function(slot as i32);
+                    }
+                    _ => {
+                        self.push_token(t2);
+                    }
+                }
+            } else {
+                // tex.web §368: expand the undefined token (§370).
+                self.undefined_cs_error(Token::from_cs(id2));
+            }
+        } else {
+            self.push_token(t2);
+        }
+        self.push_token(t1);
+        None
+    }
+
+    /// `\noexpand`.
+    #[inline(never)]
+    fn expand_noexpand(&mut self) -> Option<Token> {
+        let t = self.raw_token_normal();
+        let id = if t.is_cs() {
+            Some(t.cs_id())
+        } else if t.is_char() && t.cc() == 13 {
+            Some(self.active_cs_id(t.chr()))
+        } else {
+            None
+        };
+        if let Some(id) = id {
+            // tex.web §367: \noexpand marks every control sequence,
+            // active characters included, with frozen_dont_expand.
+            // An undefined one then reads as \relax (§358) instead
+            // of raising "Undefined control sequence" when expanded.
+            let needs_freeze = match self.eqtb.resolve(id) {
+                None | Some(Equiv::Macro(_)) => true,
+                Some(Equiv::Prim(p2)) => self.is_expandable(*p2),
+                Some(Equiv::LuaCall { protected, .. }) => !protected,
+                _ => false,
+            };
+            if needs_freeze {
+                Some(Token(NOEXP_FLAG | id))
+            } else {
+                Some(t)
+            }
+        } else {
+            Some(t)
+        }
+    }
+
+    /// `\csname` (and LuaTeX `\begincsname`).
+    #[inline(never)]
+    fn expand_csname(&mut self, p: Prim, id: CsId) -> Option<Token> {
+        use Prim::*;
+        let csname_origin = self.current_token_source_mark();
+        let csname_span = if self.diagnostic_macro_trace.is_empty() {
+            self.diagnostic_cs_source_width(self.diagnostic_source_cs.unwrap_or(id))
+        } else {
+            self.diagnostic_macro_call_span
+        };
+        self.csname_depth += 1;
+        let mut name: Vec<u8> = Vec::with_capacity(32);
+        // A leftover e-TeX \unless flag must not flip \ifx inside \csname
+        self.unless_next = false;
+        loop {
+            if name.len() > 2000 {
+                self.csname_depth = self.csname_depth.saturating_sub(1);
+                self.fatal_error_at(
+                    "TeX capacity exceeded [control sequence name exceeds 2000 bytes]",
+                    csname_origin
+                        .as_ref()
+                        .map(crate::input::SourceMark::to_context),
+                );
+                return None;
+            }
+            if self.take_csname_run(&mut name) {
+                continue;
+            }
+            let t = self.get_x_raw();
+            if t == EOF_MARKER {
+                self.csname_depth = self.csname_depth.saturating_sub(1);
+                self.fatal_error_at(
+                    "File ended while scanning \\csname; missing \\endcsname",
+                    csname_origin
+                        .as_ref()
+                        .map(crate::input::SourceMark::to_context),
+                );
+                return None;
+            }
+            if t.is_cs() {
+                // tex.web §372: the name ends at the first
+                // unexpandable control sequence. Anything but
+                // \endcsname, a \noexpand-marked token (which means
+                // \relax) included, is an error and is read again.
+                if self.cur_prim == Some(Prim::EndCsName) {
+                    break;
+                }
+                self.push_token(t);
+                self.error_at(
+                    "Missing \\endcsname inserted",
+                    csname_origin
+                        .as_ref()
+                        .map(crate::input::SourceMark::to_context),
+                );
+                break;
+            }
+
+            if t.is_char() && t.cc() == 9 {
+                continue;
+            }
+            t.append_character_bytes(&mut name);
+        }
+        self.csname_depth = self.csname_depth.saturating_sub(1);
+        let id = self.cs.intern(&name);
+        if p == BeginCsName && self.eqtb.get(id).is_none() {
+            // LuaTeX `\begincsname`: an undefined name expands to
+            // nothing and stays undefined.
+            return None;
+        }
+        self.last_named_cs = Some(id);
+        if self.eqtb.get(id).is_none() {
+            // tex.web §372: a new name means \relax (locally).
+            let relax = self.cs.lookup(b"relax").unwrap();
+            let r = self.eqtb.get(relax).cloned();
+            if let Some(e) = r {
+                self.eqtb.assign(id, e, false);
+            }
+        }
+        if let Some(mark) = csname_origin {
+            self.diagnostic_synthetic_source = Some((id, mark, csname_span.max(1)));
+            self.diagnostic_sources_live = true;
+        }
+        Some(Token::from_cs(id))
+    }
+
+    /// LuaTeX `\lastnamedcs`.
+    #[inline(never)]
+    fn expand_lastnamedcs(&mut self) -> Option<Token> {
+        let id = self
+            .last_named_cs
+            .unwrap_or_else(|| self.cs.lookup(b"relax").unwrap());
+        Some(Token::from_cs(id))
+    }
+
+    /// `\string`.
+    #[inline(never)]
+    fn expand_string(&mut self) -> Option<Token> {
+        let t = self.raw_token_normal();
+        let esc = self.eqtb.int_params[crate::prim::IntParam::EscapeChar.idx() as usize];
+        if t.is_cs() && self.exp_cs_name_string(t.cs_id(), esc) {
+            return None;
+        }
+        let mut bytes: Vec<u8> = Vec::new();
+        if t.is_cs() {
+            let name = self.cs.name(t.cs_id());
+            if let Some((source_bytes, len)) = Self::active_cs_source_bytes(name) {
+                bytes.extend_from_slice(&source_bytes[..len]);
+            } else {
+                if esc >= 0 && esc <= 255 {
+                    bytes.push(esc as u8);
+                }
+                bytes.extend_from_slice(name);
+            }
+        } else {
+            t.append_character_bytes(&mut bytes);
+        }
+        self.exp_string(&bytes);
+        None
+    }
+
+    /// `\meaning`.
+    #[inline(never)]
+    fn expand_meaning(&mut self) -> Option<Token> {
+        let t = self.raw_token_normal();
+        let text = self.meaning_of(t);
+        self.exp_string(&crate::tex_bytes::text_to_bytes(&text));
+        None
+    }
+
+    /// `\number`.
+    #[inline(never)]
+    fn expand_number(&mut self) -> Option<Token> {
+        let n = self.scan_int();
+        self.exp_int(i64::from(n));
+        None
+    }
+
+    /// `\romannumeral`.
+    #[inline(never)]
+    fn expand_romannumeral(&mut self) -> Option<Token> {
+        let n = self.scan_int();
+        if n > 0 {
+            self.exp_string(roman(n).as_bytes());
+        }
+        None
+    }
+
+    /// e-TeX `\detokenize`.
+    #[inline(never)]
+    fn expand_detokenize(&mut self) -> Option<Token> {
+        let toks = self.scan_general_text();
+        let bytes = self.tokens_to_bytes(&toks);
+        // The pooled buffer serves the string's token list next.
+        self.recycle_token_vec(toks);
+        self.exp_string(&bytes);
+        None
+    }
+
+    /// `\expanded`.
+    #[inline(never)]
+    fn expand_expanded(&mut self) -> Option<Token> {
+        let r = self.scan_general_text_expanded();
+
+        self.push_tokens(r);
+        None
+    }
+
+    /// e-TeX `\unexpanded`.
+    #[inline(never)]
+    fn expand_unexpanded(&mut self) -> Option<Token> {
+        self.skip_spaces_relax();
+        let t = self.get_x_raw();
+
+        if t.is_cs() {
+            if let Some(Equiv::ToksReg(i)) = self.eqtb.resolve(t.cs_id()).cloned() {
+                let toks = (*self.eqtb.toks[i as usize]).clone();
+                self.push_tokens_exp_not(toks);
+                return None;
+            }
+            // e-TeX pair `\unexpanded\expanded{{X}}`: run the
+            // \expanded to completion, deliver its result frozen.
+            // l3's \__kernel_exp_not:w = \tex_unexpanded:D, so
+            // keyval/tl machinery leans on this exact idiom.
+            if let Some(Equiv::Prim(p)) = self.eqtb.resolve(t.cs_id()).cloned() {
+                if p == Prim::Expanded {
+                    let mut toks = self.scan_general_text_expanded();
+                    Self::strip_outer_braces(&mut toks, 0);
+                    if self.in_expanded_scan {
+                        self.push_tokens_exp_not(toks);
+                    } else {
+                        self.push_tokens(toks);
+                    }
+
+                    return None;
+                }
+            }
+        }
+        self.push_token(t);
+        let toks = self.scan_general_text();
+        if self.in_expanded_scan {
+            self.push_tokens_exp_not(toks);
+        } else {
+            self.push_tokens(toks);
+        }
+        None
+    }
+
+    /// e-TeX `\unless`.
+    #[inline(never)]
+    fn expand_unless(&mut self) -> Option<Token> {
+        use Prim::*;
+        // etex.ch expand: \unless reads the next token unexpanded; only
+        // a conditional other than \ifcase may follow, the flag is then
+        // consumed by do_if.
+        let t = self.raw_token();
+        let target = if t.is_cs() {
+            match self.eqtb.resolve(t.cs_id()) {
+                Some(Equiv::Prim(p)) => Some(*p),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        match target {
+            // tex.web `goto reswitch` with the unless flag: the
+            // conditional is expanded in this very step (so an
+            // `\expandafter` over `\unless` sees its result).
+            Some(p) if Self::is_if_test(p) && p != IfCase => {
+                self.unless_next = true;
+                self.expand_prim(p, t.cs_id())
+            }
+            _ => {
+                self.push_token(t);
+                let meaning = self.meaning_of(t);
+                let name = meaning.split(':').next().unwrap_or("");
+                self.error(&format!("You can't use `\\unless' before `{name}'"));
+                None
+            }
+        }
+    }
+
+    /// `\if`.
+    #[inline(never)]
+    fn expand_if_char(&mut self, p: Prim, id: CsId) -> Option<Token> {
+        // tex.web 498: push this \\if *before* get_x_token so a nested
+        // true conditional from the test sits on top (babel
+        // `\\if T\\ifeof1F\\fi T`).
+        let unless = std::mem::take(&mut self.unless_next);
+        let save = self.push_if(id, p, unless);
+        let a = self.character_test_operand();
+        let b = self.character_test_operand();
+        // tex.web: CS tokens have character code 256, so two
+        // control sequences always compare equal for \\if.
+        let mut eq = if a.is_cs() && b.is_cs() {
+            true
+        } else if !a.is_cs() && !b.is_cs() {
+            a.chr() == b.chr()
+        } else {
+            false
+        };
+        if unless {
+            eq = !eq;
+        }
+        self.finish_if(save, eq)
+    }
+
+    /// `\ifcat`.
+    #[inline(never)]
+    fn expand_if_cat(&mut self, p: Prim, id: CsId) -> Option<Token> {
+        let unless = std::mem::take(&mut self.unless_next);
+        let save = self.push_if(id, p, unless);
+        let a = self.character_test_operand();
+        let b = self.character_test_operand();
+        // tex.web: CS tokens have category 16.
+        let mut eq = if a.is_cs() && b.is_cs() {
+            true
+        } else if !a.is_cs() && !b.is_cs() {
+            a.cc() == b.cc()
+        } else {
+            false
+        };
+        if unless {
+            eq = !eq;
+        }
+        self.finish_if(save, eq)
+    }
+
+    /// e-TeX `\ifdefined`.
+    #[inline(never)]
+    fn expand_if_def(&mut self, p: Prim, id: CsId) -> Option<Token> {
+        let t = self.raw_token_normal();
+        let def = if t.is_cs() {
+            self.eqtb.resolve(t.cs_id()).is_some()
+        } else if t.is_char() && t.cc() == 13 {
+            let id = self.active_cs_id(t.chr());
+            self.eqtb.resolve(id).is_some()
+        } else {
+            false
+        };
+        self.do_if(def, id, p)
+    }
+
+    /// e-TeX `\ifcsname`.
+    #[inline(never)]
+    fn expand_if_csname(&mut self, p: Prim, id: CsId) -> Option<Token> {
+        // e-TeX \\ifcsname: get_x_token until \\endcsname; true iff
+        // the name is already in the hash (even if \\relax). Must not
+        // intern on a miss — that would poison \\ifcsname.
+        // Take \\unless now so name collection cannot flip nested
+        // \\ifx; restore before do_if so \\unless\\ifcsname inverts.
+        let unless = std::mem::take(&mut self.unless_next);
+        self.csname_depth += 1;
+        let mut name: Vec<u8> = Vec::new();
+        let mut aborted = false;
+        loop {
+            let t = self.get_x_raw();
+            if t == EOF_MARKER {
+                self.error("Missing \\endcsname inserted");
+                break;
+            }
+            if t.is_cs() {
+                let id = t.cs_id();
+                let is_end = matches!(
+                    self.eqtb.resolve(id),
+                    Some(Equiv::Prim(crate::prim::Prim::EndCsName))
+                );
+                if is_end {
+                    break;
+                }
+                match self.eqtb.resolve(id).cloned() {
+                    Some(Equiv::Prim(p)) if self.is_expandable(p) => {
+                        match self.expand_prim(p, id) {
+                            Some(tok) if tok.is_char() => {
+                                tok.append_character_bytes(&mut name)
+                            }
+                            Some(tok) => self.push_token(tok),
+                            None => {}
+                        }
+                        continue;
+                    }
+                    _ => {
+                        if self.eqtb.int_params[crate::prim::IntParam::SuppressIfCsnameError.idx() as usize] != 0 {
+                            // conditional.c test_for_cs: skip to the
+                            // \endcsname, the test fails
+                            aborted = true;
+                            loop {
+                                let t = self.get_x_raw();
+                                if t == EOF_MARKER {
+                                    self.push_token(t);
+                                    break;
+                                }
+                                if t.is_cs()
+                                    && matches!(
+                                        self.eqtb.resolve(t.cs_id()),
+                                        Some(Equiv::Prim(crate::prim::Prim::EndCsName))
+                                    )
+                                {
+                                    break;
+                                }
+                            }
+                            break;
+                        }
+                        self.push_token(t);
+                        self.error("Missing \\endcsname inserted");
+                        break;
+                    }
+                }
+            }
+            if t.is_char() && t.cc() == 9 {
+                continue;
+            }
+            t.append_character_bytes(&mut name);
+        }
+        self.csname_depth = self.csname_depth.saturating_sub(1);
+        let def = if aborted {
+            self.last_named_cs = None;
+            false
+        } else if let Some(id) = self.cs.lookup(&name) {
+            self.last_named_cs = Some(id);
+            self.eqtb.resolve(id).is_some()
+        } else {
+            false
+        };
+        self.unless_next = unless;
+        self.do_if(def, id, p);
+        None
+    }
+
+    /// `\ifx`.
+    #[inline(never)]
+    fn expand_if_x(&mut self, p: Prim, id: CsId) -> Option<Token> {
+        // tex.web if_x: operands see expandable PRIMS (\\csname...)
+        // but never macros (\\ifx\\foo x is false for \\def\\foo{x}).
+        let a = self.raw_token_normal();
+        let b = self.raw_token_normal();
+
+        let eq = self.ifx_equal(a, b);
+        self.do_if(eq, id, p)
+    }
+
+    /// `\or`.
+    #[inline(never)]
+    fn expand_or(&mut self, id: CsId) -> Option<Token> {
+        self.trace_if_delimiter(Prim::Or);
+        if self.if_stack.last().is_some_and(|st| st.evaluating) {
+            self.insert_relax(id);
+            return None;
+        }
+        // encountered while accepting: skip to \fi or next \or
+        if let Some(st) = self.if_stack.last_mut() {
+            if st.matched {
+                st.if_case = -1; // skip mode
+                self.skip_to_fi();
+                return None;
+            }
+        }
+        self.error("Extra \\or");
+        None
+    }
+
+    /// `\else`.
+    #[inline(never)]
+    fn expand_else(&mut self, id: CsId) -> Option<Token> {
+        self.trace_if_delimiter(Prim::Else);
+        if self.if_stack.last().is_some_and(|st| st.evaluating) {
+            self.insert_relax(id);
+            return None;
+        }
+        match self.if_stack.last_mut() {
+            Some(st) if st.matched => self.skip_to_fi(),
+            Some(st) => {
+                st.accepting = true;
+                st.matched = true;
+                st.in_else = true;
+            }
+            None => self.error("Extra \\else"),
+        }
+        None
+    }
+
+    /// The unsupported `\elseif` forms.
+    #[inline(never)]
+    fn expand_elif(&mut self, id: CsId) -> Option<Token> {
+        if self.if_stack.last().is_some_and(|st| st.evaluating) {
+            self.insert_relax(id);
+            return None;
+        }
+        // TeX has no \elseif; treat like \else that never accepts
+        let st = self.if_stack.last().cloned();
+        match st {
+            Some(s) => {
+                if s.matched {
+                    self.skip_to_fi();
+                } else {
+                    self.error("\\elseif not supported");
+                }
+            }
+            None => self.error("Extra \\elseif"),
+        }
+        None
+    }
+
+    /// `\fi`.
+    #[inline(never)]
+    fn expand_fi(&mut self, id: CsId) -> Option<Token> {
+        self.trace_if_delimiter(Prim::Fi);
+        if self.if_stack.last().is_some_and(|st| st.evaluating) {
+            self.insert_relax(id);
+            return None;
+        }
+        if !self.pop_cond() {
+            self.error("Extra \\fi");
+        }
+        None
+    }
     /// The expandable primitives `expand_prim_inner` leaves to a separate
     /// function: they are rare, and their bodies would otherwise bloat the
     /// code of the conditionals and `\expandafter` that run all the time.
@@ -2330,7 +2307,7 @@ impl Engine {
                         (Some(p), Some(Equiv::Prim(q))) => p == q,
                         _ => false,
                     };
-                self.do_if(b, id)
+                self.do_if(b, id, p)
             }
             PdfPrimitive => {
                 // pdftex.web <Implement \pdfprimitive>
@@ -2916,13 +2893,19 @@ impl Engine {
     }
 
     /// tex.web "Push the condition stack" (the conditional's operands are
-    /// scanned with it already on top).
-    fn push_if(&mut self, id: CsId, unless: bool) -> usize {
+    /// scanned with it already on top). `p` is the conditional being
+    /// expanded (e-TeX `cur_if := cur_chr`).
+    fn push_if(&mut self, id: CsId, p: Prim, unless: bool) -> usize {
         let loc = self.current_token_source_mark();
-        let (loc_file, loc_line) = self.input.current_file_location();
-        let kind = match self.eqtb.resolve(id) {
-            Some(Equiv::Prim(p)) => Self::if_code(*p),
-            _ => 0,
+        // The file name is kept only when `loc` lies in another file.
+        let (loc_file, loc_line) = match self.input.top_file_origin() {
+            Some((origin, line)) if loc.as_ref().is_some_and(|mark| mark.in_origin(origin)) => {
+                (None, line)
+            }
+            _ => {
+                let (name, line) = self.input.current_file_location();
+                (Some(name), line)
+            }
         };
         self.if_stack.push(crate::engine::IfState {
             accepting: false,
@@ -2930,7 +2913,7 @@ impl Engine {
             if_case: -1,
             evaluating: true,
             delimiter_shown: false,
-            kind,
+            kind: Self::if_code(p),
             unless,
             in_else: false,
             loc_file,
@@ -2942,69 +2925,59 @@ impl Engine {
     }
 
     /// tex.web "Pop the condition stack"; false when it is empty.
+    #[inline]
     fn pop_cond(&mut self) -> bool {
-        if self.if_stack.is_empty() {
+        let depth = self.if_stack.len();
+        if depth == 0 {
             return false;
         }
         // e-TeX: a conditional that began in another file than the one it
-        // ends in is recorded (and reported) by if_warning
-        self.if_warning();
+        // ends in is recorded (and reported) by if_warning, which acts only
+        // when the innermost tracked file began at this depth.
+        if self.file_nests.last().is_some_and(|nest| nest.if_depth == depth) {
+            self.if_warning();
+        }
         self.if_stack.pop();
         true
     }
 
+    #[inline]
     fn finish_if(&mut self, save: usize, b: bool) -> Option<Token> {
         if let Some(st) = self.if_stack.get_mut(save) {
             st.evaluating = false;
-        }
-        if b {
-            if let Some(st) = self.if_stack.get_mut(save) {
+            if b {
                 st.accepting = true;
                 st.matched = true;
             }
-        } else {
+        }
+        if !b {
             self.skip_to_else_or_fi(save);
         }
         None
     }
 
-    fn do_if(&mut self, mut b: bool, id: CsId) -> Option<Token> {
+    #[inline(never)]
+    fn do_if(&mut self, mut b: bool, id: CsId, p: Prim) -> Option<Token> {
         let unless = std::mem::take(&mut self.unless_next);
         if unless {
             b = !b;
         }
-        let save = self.push_if(id, unless);
+        let save = self.push_if(id, p, unless);
         self.finish_if(save, b)
     }
 
+    /// `show_if_delimiter` with its `\tracingifs` test inlined: the
+    /// delimiters run all the time, the trace almost never.
+    #[inline(always)]
+    fn trace_if_delimiter(&mut self, delimiter: Prim) {
+        if self.eqtb.int_params[crate::prim::IntParam::TracingIfs as usize] > 0 {
+            self.show_if_delimiter(delimiter);
+        }
+    }
+
+    #[inline(always)]
     fn is_if_test(p: Prim) -> bool {
-        matches!(
-            p,
-            Prim::IfChar
-                | Prim::IfCat
-                | Prim::IfOdd
-                | Prim::IfNum
-                | Prim::IfDim
-                | Prim::IfVoid
-                | Prim::IfHBox
-                | Prim::IfVBox
-                | Prim::IfHMode
-                | Prim::IfVMode
-                | Prim::IfInner
-                | Prim::IfMMode
-                | Prim::IfTrue
-                | Prim::IfFalse
-                | Prim::IfEOF
-                | Prim::IfDef
-                | Prim::IfCSName
-                | Prim::IfInCsName
-                | Prim::IfX
-                | Prim::IfCase
-                | Prim::IfFontChar
-                | Prim::IfPdfAbsNum
-                | Prim::IfPdfAbsDim
-                | Prim::IfPdfPrimitive
-        )
+        IF_TESTS.contains(p)
     }
 
     /// tex.web §494: unexpanded skip to next \fi/\else/\or at local depth 0.
@@ -3039,7 +3012,7 @@ impl Engine {
             };
             let is = match self.eqtb.resolve(id) {
                 Some(Equiv::Prim(p)) => *p,
-                Some(Equiv::Macro(m)) if m.outer => {
+                Some(Equiv::Macro(_)) if self.eqtb.has_outer_macros() && self.eqtb.is_outer_cs(id) => {
                     self.incomplete_conditional(t, skip_line);
                     continue;
                 }
@@ -3067,6 +3040,50 @@ impl Engine {
         }
         self.scanner_status = save_scanner;
         res
+    }
+
+    /// Continue the decimal constant `value` with the digits (other
+    /// characters `0`-`9`) at the front of the current token list, taking
+    /// them as `scan_int`'s expanding fetches would, and with the space
+    /// that ends the constant when `space_ends` (`scan_int`; `scan_dimen`
+    /// reads on). Stops before a digit that would overflow and before any
+    /// other token. Returns true when it consumed that space (the constant
+    /// is complete).
+    pub(crate) fn take_decimal_run(&mut self, value: &mut i64, space_ends: bool) -> bool {
+        let Some((segment, trace_depth)) = self.token_list_front() else {
+            return false;
+        };
+        let mut v = *value;
+        let mut length = 0;
+        let mut last = None;
+        let mut space = false;
+        for &t in segment {
+            let digit = t.0.wrapping_sub(Token::other(b'0').0);
+            if digit < 10 {
+                let next = v * 10 + i64::from(digit);
+                if next > 0x7FFF_FFFF {
+                    break;
+                }
+                v = next;
+            } else if space_ends && t.0 >> 24 == u32::from(crate::token::CAT_SPACE) {
+                space = true;
+            } else {
+                break;
+            }
+            length += 1;
+            last = Some(t);
+            if space {
+                break;
+            }
+        }
+        let Some(last) = last else {
+            return false;
+        };
+        self.consume_token_list_front(length, trace_depth);
+        self.unexpanded_parameter = false;
+        self.set_cur_char(last);
+        *value = v;
+        space
     }
 
     /// Skip the tokens at the front of the current token list that
@@ -3097,18 +3114,15 @@ impl Engine {
         for &t in segment {
             let top = t.0 >> 24;
             if top < 0x80 {
-                match top {
-                    1 => braces += 1,
-                    2 => braces -= 1,
-                    13 => break,
-                    _ => {}
+                if top == u32::from(CAT_ACTIVE) {
+                    break;
                 }
+                braces += i32::from(top == 1) - i32::from(top == 2);
             } else if t.0 < NOEXP_FLAG {
+                // The \outer flag lives in the eqtb entry: no macro load.
                 match self.eqtb.resolve(t.cs_id()) {
                     Some(Equiv::Prim(p)) if Self::is_if_test(*p) => *level += 1,
-                    Some(Equiv::Prim(
-                        p @ (Prim::Fi | Prim::Else | Prim::Or | Prim::ElIf | Prim::ElIfX),
-                    )) => {
+                    Some(Equiv::Prim(p)) if IF_DELIMITERS.contains(*p) => {
                         if *level == 0 {
                             found = Some(*p);
                             length += 1;
@@ -3118,7 +3132,11 @@ impl Engine {
                             *level -= 1;
                         }
                     }
-                    Some(Equiv::Macro(m)) if m.outer => break,
+                    Some(Equiv::Macro(_))
+                        if self.eqtb.has_outer_macros() && self.eqtb.is_outer_cs(t.cs_id()) =>
+                    {
+                        break
+                    }
                     _ => {}
                 }
             } else if t.0 >= 0xFFFF_0000 {
@@ -4521,20 +4539,74 @@ impl Engine {
     /// Unicode engines decode UTF-8 (xetex.web and luatex textoken.c
     /// `str_toks`), so `\detokenize{–}` is one character token there.
     pub fn exp_string(&mut self, bytes: &[u8]) {
+        self.exp_string_inner(bytes);
+    }
+
+    /// `\string` of the control sequence `id` (escape character `esc`)
+    /// built straight into a pooled token list. False, with nothing done,
+    /// for the names that need `exp_string`'s general path: active
+    /// characters and, in the Unicode engines, non-ASCII text.
+    fn exp_cs_name_string(&mut self, id: CsId, esc: i32) -> bool {
+        let name = self.cs.name(id);
+        let escape = u8::try_from(esc).ok();
+        if self.engine_kind != crate::engine::EngineKind::PdfTeX
+            && !(name.is_ascii() && escape.is_none_or(|e| e.is_ascii()))
+        {
+            return false;
+        }
+        if Self::active_cs_source_bytes(name).is_some() {
+            return false;
+        }
+        let mut toks = self.token_vec_pool.pop().unwrap_or_default();
+        let string_token = |b: u8| if b == b' ' { Token::space() } else { Token::other(b) };
+        if let Some(e) = escape {
+            toks.push(string_token(e));
+        }
+        toks.extend(self.cs.name(id).iter().map(|&b| string_token(b)));
+        self.push_tokens_named(toks, "<inserted>");
+        true
+    }
+
+    /// `exp_string` of the decimal digits of `n` (tex.web print_int),
+    /// formatted without a heap string.
+    pub(crate) fn exp_int(&mut self, n: i64) {
+        let mut buf = [0u8; 20];
+        let mut at = buf.len();
+        let mut m = n.unsigned_abs();
+        loop {
+            at -= 1;
+            buf[at] = b'0' + (m % 10) as u8;
+            m /= 10;
+            if m == 0 {
+                break;
+            }
+        }
+        if n < 0 {
+            at -= 1;
+            buf[at] = b'-';
+        }
+        self.exp_string_inner(&buf[at..]);
+    }
+
+    #[inline(always)]
+    fn exp_string_inner(&mut self, bytes: &[u8]) {
         if self.engine_kind != crate::engine::EngineKind::PdfTeX && !bytes.is_ascii() {
             self.exp_string_scalars(bytes);
             return;
         }
-        let toks: Vec<Token> = bytes
-            .iter()
-            .map(|&b| {
-                if b == b' ' {
-                    Token::space()
-                } else {
-                    Token::other(b)
-                }
-            })
-            .collect();
+        if bytes.is_empty() {
+            return;
+        }
+        // A recycled buffer: the list is popped (and its buffer returned to
+        // the pool) as soon as it is read, so these lists never allocate.
+        let mut toks = self.token_vec_pool.pop().unwrap_or_default();
+        toks.extend(bytes.iter().map(|&b| {
+            if b == b' ' {
+                Token::space()
+            } else {
+                Token::other(b)
+            }
+        }));
         self.push_tokens_named(toks, "<inserted>");
     }
 
@@ -4691,21 +4763,20 @@ impl Engine {
             }
             return false;
         }
-        let ma = self.eqtb.resolve(a.cs_id()).cloned();
-        let mb = self.eqtb.resolve(b.cs_id()).cloned();
-        match (ma, mb) {
+        match (self.eqtb.resolve(a.cs_id()), self.eqtb.resolve(b.cs_id())) {
             (None, None) => true,
             (Some(Equiv::Macro(x)), Some(Equiv::Macro(y))) => {
-                x.num_params == y.num_params
-                    && x.params == y.params
-                    && x.body == y.body
-                    && x.long == y.long
-                    && x.outer == y.outer
-                    && x.protected == y.protected
+                std::rc::Rc::ptr_eq(x, y)
+                    || (x.num_params == y.num_params
+                        && x.params == y.params
+                        && x.body == y.body
+                        && x.long == y.long
+                        && x.outer == y.outer
+                        && x.protected == y.protected)
             }
             (Some(Equiv::Prim(x)), Some(Equiv::Prim(y))) => x == y,
             (Some(Equiv::CharTok(v)), Some(Equiv::CharTok(w))) => v == w,
-            (Some(x), Some(y)) => match (&x, &y) {
+            (Some(x), Some(y)) => match (x, y) {
                 (Equiv::CharDef(v1), Equiv::CharDef(v2)) => v1 == v2,
                 (Equiv::MathCharDef(v1), Equiv::MathCharDef(v2)) => v1 == v2,
                 (Equiv::UMathCharDef(v1), Equiv::UMathCharDef(v2)) => v1 == v2,
@@ -4821,6 +4892,161 @@ fn regex_byte(byte: u8) -> String {
         format!("byte 0x{byte:02X}")
     }
 }
+
+/// The expandable primitives (`Engine::is_expandable`). `U` and
+/// `XeTeXQuery` are members for some payloads only; the caller tests those.
+static EXPANDABLE_PRIMS: crate::prim::PrimSet = {
+    use Prim::*;
+    crate::prim::PrimSet::of(&[
+        ExpandAfter,
+        NoExpand,
+        CsName,
+        LastNamedCs,
+        The,
+        String,
+        Meaning,
+        Number,
+        RomanNumeral,
+        Detokenize,
+        ScanTokens,
+        DirectLua,
+        LuaFunction,
+        LuaBytecode,
+        Input,
+        EndInput,
+        Expanded,
+        UnExpanded,
+        JobName,
+        FontName,
+        FontIdPrim,
+        IfChar,
+        IfCat,
+        IfOdd,
+        IfNum,
+        IfDim,
+        IfVoid,
+        IfHBox,
+        IfVBox,
+        IfHMode,
+        IfVMode,
+        IfInner,
+        IfMMode,
+        IfTrue,
+        IfFalse,
+        IfEOF,
+        IfDef,
+        IfCSName,
+        IfInCsName,
+        IfX,
+        IfFontChar,
+        IfPdfAbsNum,
+        IfPdfAbsDim,
+        IfPdfPrimitive,
+        PdfPrimitive,
+        PdfInsertHt,
+        IfCase,
+        Or,
+        Else,
+        ElIf,
+        ElIfX,
+        Fi,
+        Unless,
+        PdfFileSize,
+        PdfMdFiveSum,
+        PdfFileModDate,
+        PdfCreationDate,
+        PdfFileDump,
+        PdfStrCmp,
+        PdfUniformDeviate,
+        PdfNormalDeviate,
+        PdfEscapeString,
+        PdfEscapeName,
+        PdfEscapeHex,
+        PdfUnescapeHex,
+        PdfTexRevision,
+        EtxRevision,
+        PdfColorStackInit,
+        PdfBanner,
+        PdfFontSize,
+        PdfPageRef,
+        PdfFontName,
+        PdfFontObjNum,
+        PdfXFormName,
+        PdfXImageBBox,
+        LeftMarginKern,
+        RightMarginKern,
+        UcharCat,
+        XeTeXUchar,
+        FileSize,
+        PdfMatch,
+        PdfLastMatch,
+        TopMark,
+        FirstMark,
+        BotMark,
+        SplitFirstMark,
+        SplitBotMark,
+        TopMarksClass,
+        FirstMarksClass,
+        BotMarksClass,
+        SplitFirstMarksClass,
+        SplitBotMarksClass,
+        XeTeXRevision,
+        XeTeXGlyphName,
+        XeTeXFeatureName,
+        XeTeXVariationName,
+        XeTeXQuery(crate::xetex_query::XeQuery::SelectorName),
+        LuaTeXRevision,
+        LuaTeXBanner,
+        PdfVariable,
+        PdfFeedback,
+        DviVariable,
+        DviFeedback,
+        EtxVersionString,
+        CsString,
+        BeginCsName,
+        FormatName,
+        LuaEscapeString,
+        U(crate::uprim::UPrim::UChar),
+    ])
+};
+
+/// The conditionals that open an `\if...\fi` (`Engine::is_if_test`).
+static IF_TESTS: crate::prim::PrimSet = {
+    use Prim::*;
+    crate::prim::PrimSet::of(&[
+        IfChar,
+        IfCat,
+        IfOdd,
+        IfNum,
+        IfDim,
+        IfVoid,
+        IfHBox,
+        IfVBox,
+        IfHMode,
+        IfVMode,
+        IfInner,
+        IfMMode,
+        IfTrue,
+        IfFalse,
+        IfEOF,
+        IfDef,
+        IfCSName,
+        IfInCsName,
+        IfX,
+        IfCase,
+        IfFontChar,
+        IfPdfAbsNum,
+        IfPdfAbsDim,
+        IfPdfPrimitive,
+    ])
+};
+
+/// `\fi`, `\else`, `\or` and the unsupported `\elseif` forms: the
+/// delimiters `pass_text` stops at.
+static IF_DELIMITERS: crate::prim::PrimSet = {
+    use Prim::*;
+    crate::prim::PrimSet::of(&[Fi, Else, Or, ElIf, ElIfX])
+};
 
 fn roman(mut n: i32) -> String {
     let table: &[(&str, i32)] = &[

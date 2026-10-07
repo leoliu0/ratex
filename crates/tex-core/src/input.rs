@@ -90,6 +90,16 @@ impl SourceMark {
     pub(crate) fn rewind(&mut self, bytes: usize) {
         self.byte_column = self.byte_column.saturating_sub(bytes);
     }
+
+    /// The name of the file the position lies in.
+    pub(crate) fn file_name(&self) -> &Rc<str> {
+        &self.origin.name
+    }
+
+    /// The position lies in the file `origin` stands for.
+    pub(crate) fn in_origin(&self, origin: &Rc<MarkOrigin>) -> bool {
+        Rc::ptr_eq(&self.origin, origin)
+    }
 }
 
 /// An input source. `repr(C)` lays out the fields of each variant in
@@ -973,6 +983,16 @@ impl InputStack {
         self.last_finished_file
             .as_ref()
             .map_or_else(|| (Rc::from(""), 0), |context| (Rc::from(context.name.as_str()), context.line))
+    }
+
+    /// The innermost open file's bookmark origin and current line, without
+    /// touching its name (see `current_file_location`).
+    #[inline]
+    pub(crate) fn top_file_origin(&self) -> Option<(&Rc<MarkOrigin>, u32)> {
+        match self.top_file()? {
+            Source::File { origin, line_no, .. } => Some((origin, *line_no)),
+            _ => None,
+        }
     }
 }
 

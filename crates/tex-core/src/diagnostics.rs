@@ -1569,10 +1569,10 @@ impl Engine {
                 } else {
                     self.display_cs(state.loc_cs)
                 };
-                let opened = if state.loc_file.is_empty() {
+                let opened = if state.loc_file().is_empty() {
                     format!("line {}", state.loc_line)
                 } else {
-                    format!("{}:{}", state.loc_file, state.loc_line)
+                    format!("{}:{}", state.loc_file(), state.loc_line)
                 };
                 let source = state.loc.as_ref().map(SourceMark::to_context);
                 self.warning_at(
@@ -1631,10 +1631,10 @@ impl Engine {
                 .rev()
                 .take(3)
                 .map(|state| {
-                    if state.loc_file.is_empty() {
+                    if state.loc_file().is_empty() {
                         format!("line {}", state.loc_line)
                     } else {
-                        format!("{}:{}", state.loc_file, state.loc_line)
+                        format!("{}:{}", state.loc_file(), state.loc_line)
                     }
                 })
                 .collect::<Vec<_>>()

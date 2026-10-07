@@ -1099,7 +1099,7 @@ impl Engine {
                         };
                         (*lig_width as i64, [0; 5], [0; 5], fst, fsh)
                     }
-                    Node::Glue(g, _) => {
+                    Node::Glue(g, _) | Node::Leaders { glue: g, .. } => {
                         let mut st = [0i64; 5];
                         let mut sh = [0i64; 5];
                         st[g.stretch_order as usize] = g.stretch as i64;
@@ -1805,7 +1805,7 @@ impl Engine {
                     // tex.web §866: math_node does kern_break after setting
                     // auto_breaking, so only a math node followed by glue
                     // (outside a formula) is a legal breakpoint
-                    if auto_breaking && i + 1 < n && matches!(list[i + 1], Node::Glue(_, _)) {
+                    if auto_breaking && i + 1 < n && matches!(list[i + 1], Node::Glue(..) | Node::Leaders { .. }) {
                         consider!(i, false, 0, BreakType::Unhyphenated, false, cum_w[i]);
                     }
                 }
@@ -1816,12 +1816,13 @@ impl Engine {
                         consider!(i, false, *p, BreakType::Unhyphenated, forced, cum_w[i]);
                     }
                 }
-                Node::Glue(_, _) => {
+                Node::Glue(_, _) | Node::Leaders { .. } => {
                     let legal = auto_breaking
                         && i > 0
                         && !matches!(
                             list[i - 1],
                             Node::Glue(_, _)
+                                | Node::Leaders { .. }
                                 | Node::Penalty(_, _)
                                 | Node::ExplicitKern(_, _)
                                 | Node::MathKern(..)
@@ -1842,7 +1843,7 @@ impl Engine {
                 Node::ExplicitKern(k, _) => {
                     // tex's kern_break: explicit kern followed by glue; the
                     // kern itself is zeroed at the line end
-                    if auto_breaking && i + 1 < n && matches!(list[i + 1], Node::Glue(_, _)) {
+                    if auto_breaking && i + 1 < n && matches!(list[i + 1], Node::Glue(..) | Node::Leaders { .. }) {
                         consider!(i, false, 0, BreakType::Unhyphenated, false, cum_w[i]);
                         let _ = k;
                     }
@@ -2063,6 +2064,7 @@ impl Engine {
                         }
                     }
                     Node::Glue(_, _)
+                    | Node::Leaders { .. }
                     | Node::Penalty(_, _)
                     | Node::ExplicitKern(_, _)
                     | Node::SpaceAdjKern(_, _)
@@ -2072,7 +2074,7 @@ impl Engine {
                         // with width 0 (a math node also adjusts the LR
                         // stack); discardables at the start of the next line
                         // are pruned
-                        if matches!(list[j], Node::Glue(..)) {
+                        if matches!(list[j], Node::Glue(..) | Node::Leaders { .. }) {
                             // luatex post_line_break turns the glue node itself
                             // into the \rightskip glue: it keeps its attributes
                             break_glue_attr = Some(list[j].attr());
@@ -2901,7 +2903,7 @@ impl Reconstitute<'_> {
 fn is_prunable<const LUA: bool>(n: &Node) -> bool {
     matches!(
         n,
-        Node::Glue(_, _) | Node::Penalty(_, _) | Node::ExplicitKern(_, _) | Node::SpaceAdjKern(_, _) | Node::MathKern(..)
+        Node::Glue(_, _) | Node::Leaders { .. } | Node::Penalty(_, _) | Node::ExplicitKern(_, _) | Node::SpaceAdjKern(_, _) | Node::MathKern(..)
     ) || (LUA && matches!(n, Node::Whatsit(WhatIt::LocalPar(_), _))) // luatex post_line_break: "weird, in the middle somewhere"
 }
 

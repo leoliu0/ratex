@@ -305,6 +305,16 @@ fn compatibility_input(name: &str, kind: crate::engine::EngineKind) -> Option<&'
     })
 }
 
+/// pdftex.web new_write_whatsit: negative streams are 17 (log only), those
+/// above 15 are 16 (terminal and log) except 18, which runs a shell command.
+fn write_stream_number(n: i32) -> u16 {
+    match n {
+        n if n < 0 => 17,
+        18 => 18,
+        n => n.min(16) as u16,
+    }
+}
+
 impl Engine {
     pub fn record_loaded_bytes(&mut self, path: &std::path::Path, bytes: &[u8]) {
         let mut h1: u64 = 0xcbf2_9ce4_8422_2325;
@@ -1145,7 +1155,7 @@ impl Engine {
         // TeX maps negative streams to 17 and streams above 15 to 16.
         if !immediate {
             self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::Write {
-                stream: if n < 0 { 17 } else { n.min(16) as u16 },
+                stream: write_stream_number(n),
                 tokens: toks,
                 source: source.map(Box::new),
             }, self.eqtb.cur_attr));
@@ -1153,7 +1163,8 @@ impl Engine {
         }
         let text = self.expand_write_list(&toks, source.as_ref());
         if !self.stopped_on_error {
-            self.write_out(if n < 0 { -1 } else { n.min(16) }, &text, source.as_ref());
+            let stream = i32::from(write_stream_number(n));
+            self.write_out(if stream == 17 { -1 } else { stream }, &text, source.as_ref());
         }
     }
     /// tex.web §1395 out_what: a Write whatsit fires at ship time, expanding
@@ -1328,7 +1339,8 @@ impl Engine {
                 self.tex_print_chars(true, false, raw);
                 self.tex_print_ln(true, false);
             }
-            16 | 17 | 18 => {
+            18 => self.run_system_write(raw),
+            16 | 17 => {
                 self.tex_print_nl(true, true);
                 self.tex_print_chars(true, true, raw);
                 self.tex_print_ln(true, true);
@@ -1384,6 +1396,42 @@ impl Engine {
                 }
             }
         }
+    }
+
+    /// pdftex.web write_out for stream 18: log what `runsystem` is asked to
+    /// do, run it when the shell escape policy allows, and log the outcome.
+    fn run_system_write(&mut self, raw: &[u8]) {
+        let term = self.eqtb.int_params[IntParam::TracingOnline.idx() as usize] > 0;
+        self.tex_print_nl(term, true);
+        self.tex_print_str(term, true, "runsystem(");
+        self.tex_print_chars(term, true, raw);
+        self.tex_print_str(term, true, ")...");
+        if crate::lua_sys::shell_escape() == crate::lua_sys::ShellEscape::Disabled {
+            self.tex_print_str(term, true, "disabled");
+        } else if raw.contains(&0) {
+            self.tex_print_str(term, true, "clobbered");
+        } else {
+            let out_dir = self
+                .aux_dir
+                .clone()
+                .or_else(|| (!self.out_dir.is_empty()).then(|| std::path::PathBuf::from(&self.out_dir)));
+            let mut external = raw.to_vec();
+            if let Some(tcx) = &self.tcx {
+                for byte in &mut external {
+                    *byte = tcx.xchr[usize::from(*byte)];
+                }
+            }
+            let outcome = match crate::lua_sys_kpse::run_system(&external, out_dir.as_deref()) {
+                -1 => "quotation error in system command",
+                0 => "disabled (restricted)",
+                1 => "executed",
+                _ => "executed safely (allowed)",
+            };
+            self.tex_print_str(term, true, outcome);
+        }
+        self.tex_print_str(term, true, ".");
+        self.tex_print_nl(term, true);
+        self.tex_print_ln(term, true);
     }
 
     pub fn do_special(&mut self) {

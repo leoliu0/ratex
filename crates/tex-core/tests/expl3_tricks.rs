@@ -2434,11 +2434,11 @@ fn pdfshellescape_is_an_unexpandable_internal_integer() {
         &mut e,
         "\\catcode123=1 \\catcode125=2\n\
          \\chardef\\status\\pdfshellescape\n\
-         \\ifcase\\status \\count0=7 \\or \\count0=9 \\fi\n\
+         \\ifcase\\status \\count0=9 \\or \\count0=9 \\or \\count0=7 \\fi\n\
          \\edef\\saved{\\pdfshellescape}\\def\\expected{\\pdfshellescape}\n\
          \\ifx\\saved\\expected \\count1=1 \\fi\n\
-         \\edef\\numbered{\\number\\pdfshellescape}\\def\\zero{0}\n\
-         \\ifx\\numbered\\zero \\count2=1 \\fi\n",
+         \\edef\\numbered{\\number\\pdfshellescape}\\def\\two{2}\n\
+         \\ifx\\numbered\\two \\count2=1 \\fi\n",
     );
     assert_eq!(e.error_count, 0, "{}", e.term);
     assert_eq!(&e.eqtb.count[..3], &[7, 1, 1], "{}", e.term);

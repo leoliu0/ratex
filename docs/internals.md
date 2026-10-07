@@ -126,7 +126,8 @@ only as links to `texres` (or `texmk`). Releases ship only `texres`.
   1. `TEXMK_INTERNAL_MODE=engine|bibtex|latexdiff` (set by the driver for its
      child processes; the engine program name comes from
      `TEX_SUITE_PROGRAM_NAME`, default `pdflatex`);
-  2. a first argument `latexdiff`;
+  2. a first argument `latexdiff`, or `fmt` (the source formatter,
+     `tex_format::cli::run`; see below);
   3. the invoked file name: `pdflatex`, `xelatex`, `lualatex` run one engine
      pass, `bibtex`/`tex-bibtex` run BibTeX, `makeindex` runs makeindex,
      `latexdiff` runs the diff, and anything else (`texres`, `texmk`,
@@ -443,6 +444,52 @@ order; only those are compared order-insensitively. The `biber` binary and the
   failures keep inputs and a replay command. Fix every mismatch by porting the
   Perl logic and add a minimised oracle fixture for each root cause.
 
+## Source formatter (`crates/tex-format`)
+
+`texres fmt` is `tex_format::cli::run`. The library has four parts:
+
+- `format.rs`: one pass over the lines with a small lexer. It keeps a stack
+  of open frames (`{` groups, environments, `\item` bodies, `\[`, `\(`, and
+  `[` option lists that end a line); a line's indentation is the number of
+  indenting frames open after its leading closers (`}`, `\end{..}`, `]`,
+  `\]`, and the end of the previous `\item` for an `\item` line). Several
+  frames opened on one line add one level. Verbatim environments, verbatim
+  arguments that run past the line end (`\url`, `\index`, ...) and guarded
+  groups (after `\obeylines`, `\obeyspaces`, `\catcode` of a blank or line
+  end, `\endlinechar`, or a command whose definition uses them) make the
+  lines that start inside them `Kept`: copied byte for byte. Material after
+  a verbatim start on the same line is never modified either. Blank runs are
+  recorded during lexing; only those may become line breaks (`\item` split,
+  wrapping) or have tabs replaced. Wrapping re-lexes the line from a saved
+  state up to the chosen break, so continuation lines get the indentation a
+  second run computes (formatting is idempotent). Column alignment runs after
+  the pass, per environment instance.
+- `Extras::scan` collects project definitions (`\lstnewenvironment`,
+  `\DefineVerbatimEnvironment`, `\newminted`, `\newmintinline`,
+  `\DeclareUrlCommand`, xparse `v` arguments, `\newenvironment` built on
+  verbatim, commands defined with `\verb`/`\catcode`/`\obeylines`,
+  `\MakeShortVerb`). The CLI scans the files being formatted and the
+  `.tex`/`.sty`/`.cls` files next to them.
+- `tokens.rs`: the safety check. Input and output are tokenized as TeX reads
+  them (category codes of a LaTeX document, state N/M/S per line, trailing
+  spaces dropped, `^^` notation) and compared after normalizing runs of
+  `\par` to one and dropping a `\par` right before a sectioning command (both
+  only after an inactive character, `}`, `$` or `&`: after a control
+  sequence the first `\par` may be its argument, as with `\fbox` followed by
+  blank lines), and (with `align-columns`) dropping spaces next to `&`. The
+  formatter applies the same rule (`ends_safely`) before it drops or adds a
+  blank line. A difference makes `format_source` return an error and the
+  file is left unchanged.
+- `diff.rs` (unified diffs, Myers with linear-space bisection) and
+  `config.rs` (`.texresfmt.toml`: top-level keys only, unknown keys are
+  errors).
+
+Tests: `crates/tex-format/tests/format.rs` has one test per rule and safety
+case and checks idempotence for each. The output-identity check is manual:
+format every document of the benchmark corpus and the repository's `.tex`
+fixtures, rebuild both versions with `SOURCE_DATE_EPOCH`/`FORCE_SOURCE_DATE`
+and compare the PDFs byte for byte.
+
 ## Reference moved from the README
 
 ### Single-pass engine personalities
@@ -600,6 +647,7 @@ texres/
 │   ├── tex-bibtex/      # BibTeX implementation
 │   ├── tex-biber/       # Biber (biblatex backend) implementation
 │   ├── tex-cli/         # `texres` executable: build driver, engine/BibTeX personalities, latexdiff
+│   ├── tex-format/      # `texres fmt`: LaTeX source formatter
 │   ├── tex-lua/         # Lua VM used by the LuaTeX-compatible mode
 │   ├── tex-mplib/       # MetaPost engine (mplib)
 │   ├── tex-ps/          # PostScript/EPS interpreter and PDF renderer

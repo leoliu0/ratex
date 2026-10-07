@@ -138,6 +138,17 @@ document and load it with `Path=./`.
 **Compare versions.** `texres latexdiff old.tex new.tex diff.tex` writes a
 marked-up `diff.tex`; build it with `texres diff.tex`.
 
+**Format sources.** `texres fmt` tidies LaTeX files in place: it indents
+environment bodies, `{...}` groups and `\item` text, puts each `\item` on its
+own line, removes trailing spaces and keeps at most one blank line in a row.
+It changes only whitespace that TeX ignores, so the PDF stays the same.
+`--check` changes nothing and exits with status 1 if a file would change. See
+[Formatting](#formatting) for settings and editor setup.
+
+```bash
+texres fmt paper.tex chapters/
+```
+
 **Single tools.** A link to `texres` named `pdflatex`, `xelatex`, `lualatex`,
 `bibtex` or `biber` runs one pass of that tool. Named `latexmk`, it behaves
 like `texres`. The packages install only `texres`, so an existing TeX Live is
@@ -359,6 +370,142 @@ With `-pvc`, `texres` runs the `$compiling_cmd`, `$success_cmd` and
 `$failure_cmd` commands that editors set with `-e`, as latexmk does. Other
 `-e` code and `-r` are refused with a message, and so are DVI and PostScript
 modes (`-dvi`, `-ps`, `-pdfdvi`, `-pdfps`).
+
+## Formatting
+
+`texres fmt FILE...` rewrites LaTeX files in place. A folder stands for the
+`.tex`, `.sty`, `.cls` and `.ltx` files in it and its subfolders (hidden
+folders are skipped). `.bib`, `.dtx` and `.ins` files are refused.
+
+What it changes:
+
+- the indentation of environment bodies (not `document`), of lines continuing
+  a `{...}` group or a `[...]` option list, of `\[ ... \]`, and of the text
+  after `\item`;
+- each `\item` starts a new line, if a space came before it;
+- trailing spaces and tabs are removed, tabs become spaces, the file ends with
+  a newline, and runs of blank lines shrink to one (not after a line that
+  ends in a command such as `\fbox`, which may take the first blank line as
+  its argument);
+- a blank line goes before `\part`, `\chapter`, `\section`, `\subsection` and
+  `\subsubsection` when they are not inside an environment (other than
+  `document`) and the line before ends in text, `}` or `$`, not in a command
+  or a comment.
+
+It does not join lines and does not touch: verbatim environments
+(`verbatim`, `Verbatim`, `lstlisting`, `minted`, `comment`, `filecontents`,
+`alltt` and the like, including ones the project defines with
+`\lstnewenvironment`, `\DefineVerbatimEnvironment`, `\newminted` or a
+`\newenvironment` built on them), the arguments of `\verb`, `\lstinline`,
+`\url`, `\path`, `\href` and `\index`, the text of `%` comments, the
+`\end{frame}` line of fragile beamer frames, and any group that changes how
+spaces or line ends are read (`\obeylines`, `\obeyspaces`, `\catcode` of a
+space). Before it writes a file, `texres fmt` reads the old and the new text
+the way TeX does; if they differ in more than the changes above, the file is
+left as it was and the command exits with status 1.
+
+| Option | |
+|---|---|
+| `--check` | change nothing; print the files that would change; exit 1 if there are any |
+| `--diff` | change nothing; print the changes as a unified diff |
+| `-`, `--stdin` | read standard input, write the result to standard output (also when no files are given and input is piped) |
+| `--stdin-filename PATH` | with standard input: use the settings for `PATH` |
+| `--config FILE` | use these settings instead of `.texresfmt.toml` |
+| `--print-config` | print the settings in effect |
+
+Exit status: 0 when all files are formatted, 1 when `--check` found files to
+change or a file could not be read, formatted or written, 2 for a bad command
+line.
+
+**Settings.** `texres fmt` reads the nearest `.texresfmt.toml` in the file's
+folder or a folder above it:
+
+```toml
+indent-width = 2                  # spaces per level
+tab-width = 4                     # tab stops for tabs inside a line
+max-blank-lines = 1               # longest run of blank lines kept
+blank-line-before-sections = true
+one-item-per-line = true
+wrap = false                      # break lines longer than line-width at spaces
+line-width = 80
+align-columns = false             # line up & in tables, align, matrices
+no-indent-envs = ["document"]     # environments whose body is not indented
+verbatim-envs = []                # more environments to leave alone
+verbatim-commands = []            # more commands whose argument is left alone
+no-wrap-envs = []                 # more environments where lines are not wrapped
+```
+
+`align-envs` lists the environments `align-columns` works on (`tabular`,
+`align`, `pmatrix` and similar by default). Wrapping never breaks inside math,
+tables, TikZ pictures, comments, verbatim text or the preamble.
+
+### Format from the editor
+
+**VS Code (LaTeX Workshop).** LaTeX Workshop can run `tex-fmt`-style
+formatters; point it at `texres`:
+
+```json
+"latex-workshop.formatting.latex": "tex-fmt",
+"latex-workshop.formatting.tex-fmt.path": "/opt/homebrew/bin/texres",
+"latex-workshop.formatting.tex-fmt.args": ["fmt"]
+```
+
+*Format Document* (Shift+Alt+F) then runs `texres fmt --stdin` in the file's
+folder. On Windows use `"texres"` as the path.
+
+**Neovim (conform.nvim):**
+
+```lua
+require("conform").setup({
+  formatters = {
+    texres = { command = "texres", args = { "fmt", "--stdin-filename", "$FILENAME", "-" } },
+  },
+  formatters_by_ft = { tex = { "texres" } },
+})
+```
+
+**Vim (ALE):**
+
+```vim
+function! TexresFmt(buffer) abort
+  return {'command': 'texres fmt --stdin-filename %s -'}
+endfunction
+let g:ale_fixers = {'tex': ['TexresFmt']}
+```
+
+Without a plugin, `:setlocal formatprg=texres\ fmt\ -` makes `gggqG` format the
+whole buffer.
+
+**Emacs (apheleia):**
+
+```elisp
+(with-eval-after-load 'apheleia
+  (setf (alist-get 'texres apheleia-formatters)
+        '("texres" "fmt" "--stdin-filename" filepath "-"))
+  (setf (alist-get 'latex-mode apheleia-mode-alist) 'texres)
+  (setf (alist-get 'LaTeX-mode apheleia-mode-alist) 'texres))
+```
+
+### Check formatting in CI or before a commit
+
+`texres fmt --check .` lists the files that need formatting and exits with
+status 1, so a CI step fails until they are formatted. Add `--diff` to see
+what would change. With [pre-commit](https://pre-commit.com), in
+`.pre-commit-config.yaml`:
+
+```yaml
+repos:
+  - repo: local
+    hooks:
+      - id: texres-fmt
+        name: texres fmt
+        entry: texres fmt
+        language: system
+        files: \.(tex|sty|cls)$
+```
+
+The hook formats the staged files; pre-commit stops the commit when it changed
+any, so you can look at the changes and commit again.
 
 ## Switching from an older install to Homebrew (macOS)
 

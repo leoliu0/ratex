@@ -1268,6 +1268,7 @@ dependencies = [
  "tex-biber",
  "tex-bibtex",
  "tex-core",
+ "tex-format",
  "tex-kpse",
  "tex-makeindex",
  "tex-ps",
@@ -1300,6 +1301,10 @@ dependencies = [
  "unicode-properties",
  "unicode-segmentation",
 ]
+
+[[package]]
+name = "tex-format"
+version = "0.7.3"
 
 [[package]]
 name = "tex-kpse"

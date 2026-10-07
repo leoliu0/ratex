@@ -4,7 +4,7 @@
 //! embedded TeX engine and BibTeX implementation in isolated child processes,
 //! and Biber in-process, until references and bibliography output stabilize.
 //! Invoked as `pdflatex`, `xelatex`, `lualatex`, `bibtex`, `biber`, or `latexdiff`, it
-//! runs that tool directly instead.
+//! runs that tool directly instead; `texres fmt` runs the source formatter.
 //!
 //! Exit codes: 0 = converged, 1 = engine/bibliography failure, TeX errors (even
 //! when a nonstop-mode PDF was published), or no convergence, 2 = usage error.
@@ -301,7 +301,9 @@ fn usage() {
   --verbose, -V                 print detailed engine and tool output
   -h, --help                    this text
   -v, --version                 version
-Viewer options (-view=..., -pv, -new-viewer) are accepted and ignored."
+Viewer options (-view=..., -pv, -new-viewer) are accepted and ignored.
+Other commands: texres fmt [--check] FILE...   format LaTeX sources (see texres fmt --help)
+                texres latexdiff OLD.tex NEW.tex DIFF.tex"
     );
 }
 
@@ -4562,6 +4564,9 @@ pub(crate) fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() > 1 && args[1] == "latexdiff" {
         std::process::exit(latexdiff::latexdiff_main(&args[2..]));
+    }
+    if args.len() > 1 && args[1] == "fmt" {
+        std::process::exit(tex_format::cli::run(&args[2..]));
     }
     match invoked_name().as_str() {
         "pdflatex" => run_embedded_engine("pdflatex"),

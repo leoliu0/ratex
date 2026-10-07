@@ -1,0 +1,8 @@
+[package]
+name = "tex-format"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "tex_format"
+path = "src/lib.rs"

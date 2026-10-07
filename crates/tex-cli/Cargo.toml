@@ -32,6 +32,7 @@ tex-bibtex = { path = "../tex-bibtex" }
 tex-makeindex = { path = "../tex-makeindex" }
 tex-biber = { path = "../tex-biber" }
 tex-ps = { path = "../tex-ps" }
+tex-format = { path = "../tex-format" }
 
 [dev-dependencies]
 flate2 = { workspace = true }

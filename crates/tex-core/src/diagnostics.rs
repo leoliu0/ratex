@@ -226,25 +226,14 @@ impl Diagnostic {
         let mut out = String::new();
         let message = bounded_text(&self.message, MAX_MESSAGE_BYTES).replace('\n', "\n  | ");
         if is_transcript {
-            if self.severity == DiagnosticSeverity::Error {
-                if let Some(orig) = &self.original_message {
-                    let orig_text = bounded_text(orig, MAX_MESSAGE_BYTES).replace('\n', "\n  | ");
-                    out.push_str("! ");
-                    out.push_str(&orig_text);
-                    out.push('\n');
-                    out.push_str("error: ");
-                    out.push_str(&message);
-                    out.push('\n');
-                } else {
-                    out.push_str("! ");
-                    out.push_str(&message);
-                    out.push('\n');
-                }
-            } else {
-                out.push_str("warning: ");
-                out.push_str(&message);
-                out.push('\n');
-            }
+            // The TeX-standard error lines precede this block; see
+            // `Engine::print_tex_error`.
+            out.push_str(match self.severity {
+                DiagnosticSeverity::Error => "error: ",
+                DiagnosticSeverity::Warning => "warning: ",
+            });
+            out.push_str(&message);
+            out.push('\n');
         } else if color {
             match self.severity {
                 DiagnosticSeverity::Error => {
@@ -1422,9 +1411,47 @@ impl Engine {
         }
     }
 
+    /// The lines TeX itself writes for an error: tex.web §73 `print_err`
+    /// (`file:line:` instead of `!` under web2c's `-file-line-error`), then
+    /// the period and `show_context` of §82 `error`. Editors and build
+    /// tools parse these lines; the structured block, which replaces TeX's
+    /// help text, follows them in the transcript. On the terminal, where the
+    /// structured block goes to standard error, they appear only with
+    /// `-file-line-error`, which tools that parse TeX's output pass.
+    /// `context` is the raw message of an error found in TeX's input, which
+    /// selects how `show_context` presents inserted text, or `None` for an
+    /// error without input context.
+    fn print_tex_error(&mut self, text: &str, context: Option<&str>, hidden: u8) {
+        let show_message = hidden & HIDE_MESSAGE == 0;
+        let context = context.filter(|_| hidden & HIDE_CONTEXT == 0);
+        if !show_message && context.is_none() {
+            return;
+        }
+        let term = self.file_line_error;
+        if show_message {
+            let text = tex_error_text(text);
+            let prefix = match self.file_line_error.then(|| self.input.tex_error_file()).flatten() {
+                Some((name, line)) => format!("{}:{line}: ", tex_file_name(&name)),
+                None => "! ".to_string(),
+            };
+            self.tex_print_nl(term, true);
+            self.tex_print_str(term, true, &prefix);
+            self.tex_print_str(term, true, text);
+            if !text.ends_with('.') {
+                self.tex_print_str(term, true, ".");
+            }
+        }
+        if let Some(message) = context {
+            let lines = self.show_context_string(crate::lua_callbacks::inserted_text(message), true);
+            self.tex_print_printed(term, true, lines.as_bytes());
+        }
+        self.tex_print_ln(term, true);
+    }
+
     #[cold]
     #[inline(never)]
     pub fn error(&mut self, msg: &str) {
+        let errmessage_text = self.errmessage_text.take();
         if self.stopped_on_error {
             return;
         }
@@ -1433,6 +1460,7 @@ impl Engine {
         self.diagnostics.push(diagnostic.clone());
         self.error_count += 1;
         self.lua_error_hooks(msg, &mut diagnostic);
+        self.print_tex_error(errmessage_text.as_deref().unwrap_or(msg), Some(msg), diagnostic.hidden);
 
         if self.interaction_mode == crate::engine::InteractionMode::Batch {
             self.emit_diagnostic(&diagnostic, false);
@@ -1481,6 +1509,7 @@ impl Engine {
                 if self.error_count == 1 { "" } else { "s" }
             );
             let (stopped, _) = self.make_error_diagnostic(&message);
+            self.print_tex_error(&message, None, 0);
             self.emit_diagnostic(
                 &stopped,
                 self.interaction_mode != crate::engine::InteractionMode::Batch,
@@ -1506,6 +1535,7 @@ impl Engine {
     pub fn external_fatal_error(&mut self, message: &str, help: Option<&str>) {
         self.flush_diagnostic_repeats();
         let diagnostic = unlocated_diagnostic(DiagnosticSeverity::Error, message, help);
+        self.print_tex_error(message, None, 0);
         self.emit_diagnostic(
             &diagnostic,
             self.interaction_mode != crate::engine::InteractionMode::Batch,
@@ -1803,6 +1833,37 @@ impl Engine {
             result.push('…');
         }
         result
+    }
+}
+
+/// A file name as web2c's `-file-line-error` shows it: kpathsea finds a
+/// file of the current directory as `./name`. Editors resolve such names
+/// against the document's directory, where the build runs.
+fn tex_file_name(name: &str) -> std::borrow::Cow<'_, str> {
+    let path = std::path::Path::new(name);
+    if name.starts_with('<') || name.starts_with("./") || name.starts_with("../") {
+        return std::borrow::Cow::Borrowed(name);
+    }
+    if path.is_relative() {
+        return std::borrow::Cow::Owned(format!("./{name}"));
+    }
+    let relative = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| path.strip_prefix(cwd).ok().map(|rest| rest.to_string_lossy().into_owned()))
+        .filter(|rest| !rest.is_empty());
+    match relative {
+        Some(rest) => std::borrow::Cow::Owned(format!("./{rest}")),
+        None => std::borrow::Cow::Borrowed(name),
+    }
+}
+
+/// An error message as TeX words it, where TeXres's message adds detail:
+/// TeX shows an undefined control sequence only in the context lines.
+fn tex_error_text(message: &str) -> &str {
+    if message.starts_with("Undefined control sequence ") {
+        "Undefined control sequence"
+    } else {
+        message
     }
 }
 

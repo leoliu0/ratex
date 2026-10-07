@@ -75,6 +75,7 @@ struct Signals {
     user_warnings: Vec<String>,
 }
 
+#[derive(Clone)]
 struct Options {
     file: PathBuf,
     out_dir: Option<PathBuf>,
@@ -91,6 +92,88 @@ struct Options {
     passthrough: Vec<String>,
     /// `-pvc`/`--watch`/`-w`: rebuild whenever an input of the last build changes.
     watch: bool,
+    /// latexmk `-f`: publish the PDF of a pass with TeX errors.
+    force: bool,
+    /// latexmk `-g`: discard the cached build state before building.
+    rebuild: bool,
+    /// latexmk `-cd`: build in the directory of the main file.
+    change_directory: bool,
+    /// latexmk's `$compiling_cmd`, `$success_cmd` and `$failure_cmd`.
+    hooks: Hooks,
+}
+
+/// Shell commands that `-pvc` runs around each build, as latexmk runs its
+/// `$compiling_cmd`, `$success_cmd` and `$failure_cmd`. Editors set them
+/// with `-e` to learn when a build starts and how it ended.
+#[derive(Clone, Default, Debug, PartialEq, Eq)]
+struct Hooks {
+    compiling: Vec<String>,
+    success: Vec<String>,
+    failure: Vec<String>,
+}
+
+/// Apply one latexmk `-e` argument. latexmk evaluates it as Perl; texres
+/// understands the assignments editors pass: `$NAME = 'command'`, and the
+/// form that appends to an existing command,
+/// `$NAME = ($NAME ? $NAME . ' ; ' : '') . 'command'`.
+fn apply_latexmk_code(code: &str, hooks: &mut Hooks) -> Result<(), String> {
+    let unsupported = || {
+        format!(
+            "-e {code}: texres does not run latexmk's Perl code; it accepts only \
+             $compiling_cmd, $success_cmd and $failure_cmd assignments"
+        )
+    };
+    let statement = code.trim().trim_end_matches(';').trim_end();
+    let (name, value) = statement
+        .strip_prefix('$')
+        .and_then(|rest| rest.split_once('='))
+        .ok_or_else(unsupported)?;
+    let name = name.trim();
+    let commands = match name {
+        "compiling_cmd" => &mut hooks.compiling,
+        "success_cmd" => &mut hooks.success,
+        "failure_cmd" => &mut hooks.failure,
+        _ => return Err(unsupported()),
+    };
+    let value = value.trim();
+    if let Some(command) = perl_string_literal(value) {
+        commands.clear();
+        if !command.is_empty() {
+            commands.push(command.to_string());
+        }
+        return Ok(());
+    }
+    let appended = value
+        .strip_prefix(&format!("(${name} ?"))
+        .and_then(|rest| rest.rsplit_once(')'))
+        .and_then(|(_, tail)| tail.trim_start().strip_prefix('.'))
+        .and_then(|tail| perl_string_literal(tail.trim()))
+        .ok_or_else(unsupported)?;
+    commands.push(appended.to_string());
+    Ok(())
+}
+
+/// The text of a quoted Perl string without interpolation or escapes.
+fn perl_string_literal(text: &str) -> Option<&str> {
+    let quote = text.chars().next().filter(|c| matches!(c, '\'' | '"'))?;
+    let inner = text.strip_prefix(quote)?.strip_suffix(quote)?;
+    let interpolates = quote == '"' && inner.contains(['$', '@']);
+    (!inner.contains([quote, '\\']) && !interpolates).then_some(inner)
+}
+
+/// Run hook commands through the shell, as latexmk does, sharing texres's
+/// standard output so that an editor reading it sees what they print.
+fn run_hooks(commands: &[String]) {
+    for command in commands {
+        let status = if cfg!(windows) {
+            Command::new("cmd").arg("/C").arg(command).status()
+        } else {
+            Command::new("sh").arg("-c").arg(command).status()
+        };
+        if let Err(error) = status {
+            eprintln!("texmk: warning: cannot run `{command}`: {error}");
+        }
+    }
 }
 
 /// Packages and classes which TeX Live compiles only with a Unicode engine
@@ -197,18 +280,28 @@ fn usage() {
   --cache-directory DIR         use DIR as the private cache root
   -jobname NAME                 job name (default: file stem)
   --keep-intermediates, -k       export auxiliary files beside the PDF
-  --keep-logs                    export the transcript beside the PDF
+  --keep-logs                    export the transcript beside the PDF (also
+                                 implied by -interaction, -file-line-error
+                                 and -synctex, which editors pass)
   --optimize-pdf-size            spend more CPU minimizing converted PNG streams
   -c                             remove cached state; preserve the PDF
   -C                             remove cached state and an owned PDF
+  -g                             discard cached state, then build
   -pvc, --watch, -w              build, then rebuild whenever an input changes
                                  (Ctrl-C stops; cannot be combined with -c/-C)
+  -e '$success_cmd = \"CMD\"'      with -pvc, run CMD after each good build
+                                 (also $compiling_cmd, $failure_cmd)
+  -cd                            build in the directory of file.tex
+  -f                             publish the PDF even when TeX reports errors
   -interaction=MODE             passed to the engine (default nonstopmode)
   -halt-on-error                passed to the engine
+  -file-line-error              passed to the engine
+  -latexoption=OPTION           pass OPTION to the engine
   --silent, -q                  suppress engine output (default)
   --verbose, -V                 print detailed engine and tool output
   -h, --help                    this text
-  -v, --version                 version"
+  -v, --version                 version
+Viewer options (-view=..., -pv, -new-viewer) are accepted and ignored."
     );
 }
 
@@ -223,6 +316,10 @@ fn parse_args(argv: &[String]) -> Result<Options, String> {
     let mut keep_logs = false;
     let mut clean = CleanMode::None;
     let mut watch = false;
+    let mut force = false;
+    let mut rebuild = false;
+    let mut change_directory = false;
+    let mut hooks = Hooks::default();
     let mut engine: Option<String> = None;
     let mut passthrough: Vec<String> = Vec::new();
     let mut i = 1;
@@ -274,6 +371,48 @@ fn parse_args(argv: &[String]) -> Result<Options, String> {
             "-c" => clean = CleanMode::Aux,
             "-C" => clean = CleanMode::All,
             "-pvc" | "--pvc" | "-watch" | "--watch" | "-w" => watch = true,
+            "-pvc-" => watch = false,
+            "-f" => force = true,
+            "-f-" => force = false,
+            "-g" | "-gg" => rebuild = true,
+            "-g-" => rebuild = false,
+            "-cd" => change_directory = true,
+            "-cd-" => change_directory = false,
+            "-e" => {
+                i += 1;
+                let code = argv.get(i).ok_or_else(|| "-e needs a value".to_string())?;
+                apply_latexmk_code(code, &mut hooks)?;
+            }
+            "-latexoption" => {
+                let value = take_value(&mut i, &inline_val)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| "-latexoption needs a value".to_string())?;
+                passthrough.push(value);
+            }
+            // texres opens no viewer, has no timeout in -pvc mode, always
+            // records inputs, reads no latexmkrc and runs BibTeX or Biber
+            // whenever the document needs it.
+            "-view" | "-pv" | "-pv-" | "-new-viewer" | "-new-viewer-" | "-pvctimeout"
+            | "-pvctimeout-" | "-pvctimeoutmins" | "-emulate-aux-dir" | "-noemulate-aux-dir"
+            | "-recorder" | "-recorder-" | "-norc" | "-bibtex" | "-bibtex-cond"
+            | "-bibtex-cond1" | "-MSWinBackSlash" | "-MSWinBackSlash-" => {}
+            "-bibtex-" | "-nobibtex" => {
+                return Err(format!(
+                    "{key} is not supported: texres runs BibTeX or Biber whenever the document needs it"
+                ))
+            }
+            "-pdflatex" | "-xelatex" | "-lualatex" | "-latex" if inline_val.is_some() => {
+                return Err(format!(
+                    "{key}=COMMAND is not supported: texres always runs its built-in engine; \
+                     pass engine options with -latexoption=OPTION"
+                ))
+            }
+            "-dvi" | "-ps" | "-pdfdvi" | "-pdfps" | "-latex" => {
+                return Err(format!("{key} is not supported: texres writes PDF directly"))
+            }
+            "-r" => {
+                return Err("-r is not supported: texres does not read latexmkrc files".to_string())
+            }
             "-interaction" | "--interaction" => {
                 let mode = take_value(&mut i, &inline_val)
                     .ok_or_else(|| "-interaction needs a value".to_string())?;
@@ -316,6 +455,17 @@ fn parse_args(argv: &[String]) -> Result<Options, String> {
     if watch && clean != CleanMode::None {
         return Err("-pvc/--watch cannot be combined with -c or -C".to_string());
     }
+    // Editors read the transcript beside the PDF, as latexmk leaves it. They
+    // all pass at least one of these engine options; a plain `texres
+    // file.tex` keeps the project directory clean.
+    keep_logs |= passthrough.iter().any(|option| {
+        option.starts_with("-interaction=")
+            || option.starts_with("-synctex=")
+            || matches!(
+                option.as_str(),
+                "-file-line-error" | "--file-line-error" | "-file-line-error-style"
+            )
+    });
     match file {
         Some(file) => Ok(Options {
             file,
@@ -330,6 +480,10 @@ fn parse_args(argv: &[String]) -> Result<Options, String> {
             engine,
             passthrough,
             watch,
+            force,
+            rebuild,
+            change_directory,
+            hooks,
         }),
         None => Err("no input file".to_string()),
     }
@@ -1427,6 +1581,7 @@ fn export_artifacts(
                 .exports
                 .get(&destination)
                 .is_some_and(|expected| owned_file_matches(&destination, *expected))
+            && !is_tex_transcript(&destination)
         {
             eprintln!(
                 "texmk: warning: preserving unowned artifact {} instead of overwriting it",
@@ -1446,6 +1601,19 @@ fn export_artifacts(
             .insert(destination.clone(), file_hash(&destination).1);
     }
     Ok(())
+}
+
+/// A `.log` file that a TeX engine wrote, such as the transcript an earlier
+/// TeX Live or MiKTeX build left beside the document. Editors read the
+/// transcript there, so keeping a stale one would show old errors.
+fn is_tex_transcript(path: &Path) -> bool {
+    let mut head = [0u8; 8];
+    path.extension() == Some(OsStr::new("log"))
+        && std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_file())
+        && std::fs::File::open(path)
+            .and_then(|mut file| file.read_exact(&mut head))
+            .is_ok()
+        && &head == b"This is "
 }
 
 struct RetentionContext<'a> {
@@ -3108,7 +3276,7 @@ fn convert_eps_figures(source_dir: &Path) -> EpsFigures {
 
 fn real_main() -> i32 {
     let argv: Vec<String> = std::env::args().collect();
-    let opt = match parse_args(&argv) {
+    let mut opt = match parse_args(&argv) {
         Ok(o) => o,
         Err(e) => {
             eprintln!("texmk: {e}");
@@ -3116,6 +3284,24 @@ fn real_main() -> i32 {
             return 2;
         }
     };
+    if opt.change_directory {
+        if let (Some(directory), Some(name)) = (opt.file.parent(), opt.file.file_name()) {
+            if !directory.as_os_str().is_empty() {
+                if let Err(error) = std::env::set_current_dir(directory) {
+                    eprintln!("texmk: cannot change to {}: {error}", directory.display());
+                    return 1;
+                }
+                opt.file = PathBuf::from(name);
+            }
+        }
+    }
+    if opt.rebuild && opt.clean == CleanMode::None {
+        let discard = Options { clean: CleanMode::Aux, watch: false, ..opt.clone() };
+        let code = build(&discard, &mut BuildInfo::default());
+        if code != 0 {
+            return code;
+        }
+    }
     if opt.watch {
         return watch_main(&opt);
     }
@@ -3683,9 +3869,11 @@ fn build(opt: &Options, info: &mut BuildInfo) -> i32 {
         }
         let pass_failed = !output.success;
         if pass_failed {
-            let allow_recovery = opt.passthrough.iter().any(|a| {
-                a.starts_with("-interaction=nonstopmode") || a.starts_with("-interaction=batchmode")
-            });
+            let allow_recovery = opt.force
+                || opt.passthrough.iter().any(|a| {
+                    a.starts_with("-interaction=nonstopmode")
+                        || a.starts_with("-interaction=batchmode")
+                });
             let produced_pdf = allow_recovery
                 && std::fs::metadata(&staged_pdf_path).is_ok_and(|m| m.is_file() && m.len() > 1000)
                 && file_identity(&staged_pdf_path) != pdf_before;
@@ -4255,11 +4443,13 @@ fn watch_main(opt: &Options) -> i32 {
     loop {
         let mut info = BuildInfo::default();
         let timer = Instant::now();
+        run_hooks(&opt.hooks.compiling);
         let code = build(opt, &mut info);
         let elapsed = timer.elapsed();
         if watch::interrupted() {
             return 0;
         }
+        run_hooks(if code == 0 { &opt.hooks.success } else { &opt.hooks.failure });
         match &info.inputs {
             Some(inputs) => {
                 let dependencies = watch_dependencies(inputs, code != 0, &tracker);
@@ -4588,5 +4778,113 @@ mod io_safety_tests {
         assert!(read_to_string_bounded(&file.0, MANIFEST_MAX_BYTES)
             .unwrap()
             .is_none());
+    }
+}
+
+#[cfg(test)]
+mod latexmk_option_tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<Options, String> {
+        let argv: Vec<String> = std::iter::once("texres")
+            .chain(args.iter().copied())
+            .map(str::to_string)
+            .collect();
+        parse_args(&argv)
+    }
+
+    /// vimtex's `-e` arguments, built by `s:wrap_option_appendcmd` in
+    /// autoload/vimtex/compiler/latexmk.vim (Unix and Windows quoting).
+    #[test]
+    fn vimtex_callbacks_become_hooks() {
+        let mut hooks = Hooks::default();
+        for (name, value) in [
+            ("compiling_cmd", "vimtex_compiler_callback_compiling"),
+            ("success_cmd", "vimtex_compiler_callback_success"),
+        ] {
+            apply_latexmk_code(
+                &format!("${name} = (${name} ? ${name} . \" ; \" : \"\") . \"echo {value}\""),
+                &mut hooks,
+            )
+            .unwrap();
+        }
+        apply_latexmk_code(
+            "$failure_cmd = ($failure_cmd ? $failure_cmd . ' & ' : '') . 'echo vimtex_compiler_callback_failure'",
+            &mut hooks,
+        )
+        .unwrap();
+        apply_latexmk_code("$failure_cmd = ($failure_cmd ? $failure_cmd . ' & ' : '') . 'notify-send failed'", &mut hooks)
+            .unwrap();
+        assert_eq!(hooks.compiling, ["echo vimtex_compiler_callback_compiling"]);
+        assert_eq!(hooks.success, ["echo vimtex_compiler_callback_success"]);
+        assert_eq!(hooks.failure, ["echo vimtex_compiler_callback_failure", "notify-send failed"]);
+        apply_latexmk_code("$success_cmd = 'zathura main.pdf';", &mut hooks).unwrap();
+        assert_eq!(hooks.success, ["zathura main.pdf"]);
+    }
+
+    #[test]
+    fn other_perl_code_is_rejected() {
+        for code in [
+            "$pdflatex = 'pdflatex -shell-escape %O %S'",
+            "$success_cmd = \"echo $HOME\"",
+            "$success_cmd = 'a'; $failure_cmd = 'b'",
+            "system('rm -rf x')",
+        ] {
+            let error = apply_latexmk_code(code, &mut Hooks::default()).unwrap_err();
+            assert!(error.contains("$compiling_cmd, $success_cmd and $failure_cmd"), "{error}");
+        }
+    }
+
+    /// The latexmk command lines of vimtex (continuous mode), LaTeX
+    /// Workshop, LaTeXTools and TeXstudio, minus the engine flag.
+    #[test]
+    fn editor_command_lines_parse() {
+        let vimtex = parse(&[
+            "-verbose", "-file-line-error", "-synctex=1", "-interaction=nonstopmode",
+            "-outdir=build", "-emulate-aux-dir", "-auxdir=aux", "-pvc", "-pvctimeout-",
+            "-view=none", "-e", "$success_cmd = ($success_cmd ? $success_cmd . \" ; \" : \"\") . \"echo ok\"",
+            "main.tex",
+        ])
+        .unwrap();
+        assert!(vimtex.watch && vimtex.keep_logs && !vimtex.silent);
+        assert_eq!(vimtex.out_dir.as_deref(), Some(Path::new("build")));
+        assert_eq!(vimtex.aux_dir.as_deref(), Some(Path::new("aux")));
+        assert_eq!(vimtex.hooks.success, ["echo ok"]);
+        assert_eq!(
+            vimtex.passthrough,
+            ["-file-line-error", "-synctex=1", "-interaction=nonstopmode"]
+        );
+
+        let workshop = parse(&["-synctex=1", "-interaction=nonstopmode", "-file-line-error", "-outdir=/tmp/out", "/tmp/doc"]).unwrap();
+        assert!(workshop.keep_logs && workshop.engine.is_none());
+
+        let latextools = parse(&[
+            "-cd", "-f", "-interaction=nonstopmode", "-synctex=1", "-silent",
+            "-MSWinBackSlash", "-latexoption=-shell-escape", "-jobname=thesis", "main.tex",
+        ])
+        .unwrap();
+        assert!(latextools.change_directory && latextools.force && latextools.keep_logs);
+        assert_eq!(latextools.passthrough, ["-interaction=nonstopmode", "-synctex=1", "-shell-escape"]);
+
+        let texstudio = parse(&["-silent", "-synctex=1", "main"]).unwrap();
+        assert!(texstudio.keep_logs);
+
+        let viewer = parse(&["-pv", "-new-viewer-", "-norc", "-recorder", "-bibtex", "-g", "main.tex"]).unwrap();
+        assert!(viewer.passthrough.is_empty() && viewer.rebuild && !viewer.keep_logs);
+    }
+
+    #[test]
+    fn unsupported_latexmk_modes_name_the_reason() {
+        for (args, reason) in [
+            (&["-pdfdvi"][..], "writes PDF directly"),
+            (&["-dvi"][..], "writes PDF directly"),
+            (&["-bibtex-"][..], "whenever the document needs it"),
+            (&["-r", "latexmkrc"][..], "latexmkrc"),
+            (&["-pdflatex=pdflatex -shell-escape %O %S"][..], "-latexoption"),
+        ] {
+            let argv: Vec<&str> = args.iter().copied().chain(["main.tex"]).collect();
+            let error = parse(&argv).err().unwrap_or_else(|| panic!("{args:?} was accepted"));
+            assert!(error.contains(reason), "{args:?}: {error}");
+        }
     }
 }

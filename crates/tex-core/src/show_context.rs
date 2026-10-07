@@ -133,9 +133,11 @@ impl Engine {
     /// `show_context` as a string: what luatex stores in
     /// `status.lasterrorcontext` and the `show_error_hook` callback reads.
     ///
-    /// `insertion`: how TeX's `ins_error` put text before the token the
-    /// error was found at.
-    pub(crate) fn show_context_string(&self, insertion: Insertion) -> String {
+    /// `insertion`: how TeX's `ins_error` inserted text before the token the
+    /// error was found at. `printed`: the text goes to the terminal and the
+    /// transcript, where `tally` counts the whole location header of a
+    /// level, not only what `print_char` printed into a string.
+    pub(crate) fn show_context_string(&self, insertion: Insertion, printed: bool) -> String {
         let levels = self.context_levels(insertion);
         let limit = i64::from(self.eqtb.int_params[IntParam::ErrorContextLines.idx() as usize]);
         let mut out: Vec<u8> = Vec::new();
@@ -148,7 +150,11 @@ impl Engine {
             if top || bottom_line || nn < limit {
                 let read = matches!(level, Level::List { ty: ListType::BackedUp, toks, loc, .. } if *loc >= toks.len());
                 if top || is_file || !read {
-                    self.render_level(level).emit(&mut out);
+                    let mut rendered = self.render_level(level);
+                    if printed {
+                        rendered.l = self.code_units(&rendered.header[1..]);
+                    }
+                    rendered.emit(&mut out);
                     nn += 1;
                 }
             } else if nn == limit {

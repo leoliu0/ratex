@@ -1009,6 +1009,20 @@ impl InputStack {
             _ => None,
         }
     }
+
+    /// web2c `print_file_line`: the innermost file and its current line
+    /// for a `-file-line-error` message. A pseudo file (`\scantokens`, a
+    /// Lua chunk) has no name of its own and defers to the file below it.
+    pub(crate) fn tex_error_file(&self) -> Option<(Rc<str>, u32)> {
+        self.stack.iter().rev().find_map(|source| match source {
+            Source::File { name, origin, line_no, .. }
+                if !matches!(name.as_str(), "<scantokens>" | "<scantextokens>" | "<directlua>") =>
+            {
+                Some((origin.name.clone(), *line_no))
+            }
+            _ => None,
+        })
+    }
 }
 
 #[cfg(test)]

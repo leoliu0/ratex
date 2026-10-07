@@ -1483,6 +1483,7 @@ impl Engine {
         }
         let text = self.print_tokens_to_string(&toks);
         if err {
+            self.errmessage_text = Some(text.clone());
             let text = normalize_errmessage(&text);
             let previous = std::mem::replace(&mut self.diagnostic_use_err_help, true);
             let previous_trace = if is_latex_style_error(&text) {

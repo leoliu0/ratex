@@ -955,7 +955,7 @@ impl Engine {
             d.hidden |= HIDE_MESSAGE;
         }
         if context_hook {
-            self.lua_msgs.last_error_context = Some(self.show_context_string(inserted_text(msg)));
+            self.lua_msgs.last_error_context = Some(self.show_context_string(inserted_text(msg), false));
             let _ = self.lua_cb_call(Cb::ShowErrorHook, "show_error_hook", Vec::new());
             d.hidden |= HIDE_CONTEXT;
         }
@@ -1030,7 +1030,7 @@ enum Target {
 }
 
 /// How TeX's `ins_error` inserted text for this error message.
-fn inserted_text(msg: &str) -> crate::show_context::Insertion {
+pub(crate) fn inserted_text(msg: &str) -> crate::show_context::Insertion {
     use crate::show_context::Insertion;
     if msg.starts_with("Missing $ inserted") {
         Insertion::Dollar

@@ -271,6 +271,12 @@ pub struct Engine {
     pub format_name: String,
     pub job_name: String,
     pub halt_on_error: bool,
+    /// web2c `-file-line-error`: TeX's error lines in the transcript and on
+    /// the terminal start with `file:line:` instead of `!`.
+    pub file_line_error: bool,
+    /// The complete `\errmessage` text of the error being raised, which TeX
+    /// prints verbatim; the diagnostic keeps only its headline.
+    pub(crate) errmessage_text: Option<String>,
     pub interaction_mode: InteractionMode,
     pub max_errors: usize,
     pub error_count: i32,
@@ -1159,6 +1165,8 @@ impl Engine {
             format_name: String::new(),
             job_name: String::new(),
             halt_on_error: false,
+            file_line_error: false,
+            errmessage_text: None,
             interaction_mode: InteractionMode::ErrorStop,
             max_errors: DEFAULT_MAX_ERRORS,
             error_count: 0,

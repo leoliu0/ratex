@@ -319,6 +319,49 @@ fn a_build_error_is_reported_and_watching_continues() {
     session.assert_running();
 }
 
+/// vimtex's continuous mode passes these latexmk options and learns from
+/// its `-e` callbacks when a build starts and how it ended; it then reads
+/// the errors from `main.log` beside the PDF.
+#[test]
+fn vimtex_continuous_mode_runs_its_callbacks() {
+    let project = Project::new();
+    project.write("main.tex", &article("Fine text"));
+    // s:wrap_option_appendcmd in vimtex's autoload/vimtex/compiler/latexmk.vim
+    let callback = |name: &str, value: &str| {
+        format!("${name} = (${name} ? ${name} . \" ; \" : \"\") . \"echo {value} >&2\"")
+    };
+    let compiling = callback("compiling_cmd", "vimtex_compiler_callback_compiling");
+    let success = callback("success_cmd", "vimtex_compiler_callback_success");
+    let failure = callback("failure_cmd", "vimtex_compiler_callback_failure");
+    let mut session = Session::start(
+        &project,
+        &[
+            // vimtex also passes -interaction=nonstopmode; without it a failed
+            // build is reported as `build FAILED`, which `Session` expects.
+            "-verbose", "-file-line-error", "-synctex=1", "-pvc",
+            "-pvctimeout-", "-view=none", "-e", &compiling, "-e", &success, "-e", &failure,
+            "main.tex",
+        ],
+    );
+    let (first, _) = session.idle();
+    assert!(first.ok, "{}", first.output);
+    let started = first.output.find("vimtex_compiler_callback_compiling");
+    let passed = first.output.find("vimtex_compiler_callback_success");
+    assert!(started.is_some() && started < passed, "{}", first.output);
+    assert!(project.path("main.log").is_file());
+
+    project.save("main.tex", &article("Broken \\undefinedcommandxyz text"));
+    let broken = session.cycle();
+    assert!(!broken.build.ok);
+    assert!(broken.build.output.contains("vimtex_compiler_callback_failure"), "{}", broken.build.output);
+    let log = std::fs::read_to_string(project.path("main.log")).unwrap();
+    assert!(
+        log.contains("main.tex:3: Undefined control sequence.\nl.3 Broken \\undefinedcommandxyz\n"),
+        "{log}"
+    );
+    session.assert_running();
+}
+
 #[test]
 fn a_save_without_content_change_does_not_rebuild() {
     let project = Project::new();

@@ -1793,7 +1793,7 @@ fn usage(program: &str) {
   -etex                        accepted; e-TeX is always on
   -8bit                        print every character as itself
   -translate-file=TCXNAME      use the TCX file for character printability and translation
-  -[no-]file-line-error        accepted; rich file/line diagnostics are always enabled
+  -[no-]file-line-error        start error lines with file:line: instead of !
   -[no-]shell-escape           enable or disable \\write18 shell commands
   -shell-restricted            allow only the shell_escape_commands (the default)
   -[no-]mktex=FMT              accepted; missing files are never generated
@@ -2195,10 +2195,12 @@ fn use_initex_parameters(engine: &mut Engine) {
 fn configure_engine(
     engine: &mut Engine,
     halt_on_error: bool,
+    file_line_error: bool,
     interaction_mode: InteractionMode,
     max_errors: usize,
 ) {
     engine.halt_on_error = halt_on_error;
+    engine.file_line_error = file_line_error;
     engine.set_interaction_mode(interaction_mode);
     engine.max_errors = max_errors;
 }
@@ -2398,6 +2400,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     let mut plain = false;
     let mut recorder = false;
     let mut halt_on_error = false;
+    let mut file_line_error = false;
     let mut interaction_mode = InteractionMode::ErrorStop;
     let mut max_errors = DEFAULT_MAX_ERRORS;
     // TeXres writes SyncTeX by default (as if `-synctex=1`); `-synctex=0`
@@ -2503,7 +2506,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
         } else if opt == "-8bit" {
             eight_bit = true;
         } else if opt == "-no-file-line-error" {
-            // Diagnostics always carry their file and line.
+            file_line_error = false;
         } else if opt == "-parse-first-line" {
             parse_first_line = true;
         } else if opt == "-no-parse-first-line" {
@@ -2618,7 +2621,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
         } else if opt == "-draftmode" {
             draftmode = true;
         } else if matches!(opt, "-file-line-error" | "-file-line-error-style") {
-            // Rich file/line diagnostics are always enabled.
+            file_line_error = true;
         } else if matches!(opt, "-no-shell-escape" | "-disable-write18") {
             tex_core::set_shell_escape(tex_core::ShellEscape::Disabled);
         } else if matches!(opt, "-shell-escape" | "-enable-write18") {
@@ -2815,7 +2818,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     let mut eng = Engine::new_with_kind(engine_kind, ini || !plain);
     eng.init_primitives();
     eng.allow_missing_main_aux = !plain && !ini;
-    configure_engine(&mut eng, halt_on_error, interaction_mode, max_errors);
+    configure_engine(&mut eng, halt_on_error, file_line_error, interaction_mode, max_errors);
     phase_timer.mark("startup");
     eng.out_dir = out_dir.clone();
     eng.aux_dir = requested_aux_dir.clone();
@@ -2900,7 +2903,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
                             );
                             eng = Engine::new_with_kind(engine_kind, ini || !plain);
                             eng.init_primitives();
-                            configure_engine(&mut eng, halt_on_error, interaction_mode, max_errors);
+                            configure_engine(&mut eng, halt_on_error, file_line_error, interaction_mode, max_errors);
                             eng.out_dir = out_dir.clone();
                             eng.aux_dir = requested_aux_dir.clone();
                             if let Some(dir) = std::path::Path::new(&file).parent() {
@@ -3033,7 +3036,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             }
         }
         tex_core::driver::prepare_latex_job(&mut eng);
-        configure_engine(&mut eng, halt_on_error, interaction_mode, max_errors);
+        configure_engine(&mut eng, halt_on_error, file_line_error, interaction_mode, max_errors);
     } else if plain {
         // TeX Live's pdftex format is built with -translate-file=cp227.tcx
         eng.xprn = tex_core::tex_bytes::cp227_xprn();
@@ -3092,17 +3095,19 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     if draftmode {
         eng.eqtb.int_params[IntParam::PdfDraftMode.idx() as usize] = 1;
     }
+    // The banners keep TeX Live's `This is <engine>, Version` shape: editors
+    // find the start of each run in a multi-pass build by it.
     let engine_banner = match program.as_str() {
         "xelatex" => format!(
             "This is XeTeX, Version {XETEX_VERSION} (TeXres {})\n",
             env!("CARGO_PKG_VERSION")
         ),
         "lualatex" => format!(
-            "This is LuaTeX, Version 1.24.0 (TeXres {})\n",
+            "This is LuaHBTeX, Version 1.24.0 (TeXres {})\n",
             env!("CARGO_PKG_VERSION")
         ),
         _ => format!(
-            "This is pdfTeX-2h 1.40.29-rs (TeXres {})\n",
+            "This is pdfTeX, Version 3.141592653-2.6-1.40.29 (TeXres {})\n",
             env!("CARGO_PKG_VERSION")
         ),
     };

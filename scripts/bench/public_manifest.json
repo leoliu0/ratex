@@ -1,0 +1,310 @@
+{
+ "docs": [
+  {
+   "name": "arxiv_attention",
+   "kind": "arxiv",
+   "id": "1706.03762v7",
+   "main": "ms.tex",
+   "engine": "pdf",
+   "field": "cs.CL",
+   "tree_sha256": "fc91269e658660cb957d8964a93176de3237629a2bbf059dfb874002df2eb0fa",
+   "license": "arXiv e-print; not redistributed (fetched at run time)"
+  },
+  {
+   "name": "arxiv_bert",
+   "kind": "arxiv",
+   "id": "1810.04805v2",
+   "main": "main.tex",
+   "engine": "pdf",
+   "field": "cs.CL",
+   "tree_sha256": "23065bb61a162d60fa653f1d3c7f3a3a31b561c81e5c0b31afcfa66798779bed",
+   "license": "arXiv e-print; not redistributed (fetched at run time)"
+  },
+  {
+   "name": "arxiv_vae",
+   "kind": "arxiv",
+   "id": "1312.6114v11",
+   "main": "iclr14_sva.tex",
+   "engine": "pdf",
+   "field": "stat.ML",
+   "tree_sha256": "ef4c6b86ba16743cde1dbeb4dce2b0a9e427398e0bebd07c48413b8437df82be",
+   "license": "arXiv e-print; not redistributed (fetched at run time)"
+  },
+  {
+   "name": "arxiv_resnet",
+   "kind": "arxiv",
+   "id": "1512.03385v1",
+   "main": "residual_v1_arxiv_release.tex",
+   "engine": "pdf",
+   "field": "cs.CV",
+   "tree_sha256": "4f1dbac6e9b2c5ba049fe755a18d6481e5f36616ff65088d74741e6d637b6962",
+   "license": "arXiv e-print; not redistributed (fetched at run time)"
+  },
+  {
+   "name": "arxiv_svjour3_paper",
+   "kind": "arxiv",
+   "id": "1902.11147v2",
+   "main": "ms.tex",
+   "engine": "pdf",
+   "field": "stat",
+   "tree_sha256": "6dba2d267d0519bbf9ea24defbfd8842d271ebb760a433086c963a19954de476",
+   "license": "arXiv e-print; not redistributed (fetched at run time)"
+  },
+  {
+   "name": "arxiv_dml_econometrics_journal",
+   "kind": "arxiv",
+   "id": "1608.00060v6",
+   "main": "Post-ML-32_arxiv.tex",
+   "engine": "pdf",
+   "field": "econ.EM",
+   "tree_sha256": "b3b58e4b3a42cf3a75a5dcb831565e29dc8464a0daa04caf087134c510077179",
+   "license": "arXiv e-print; not redistributed (fetched at run time)"
+  },
+  {
+   "name": "arxiv_recursive_partitioning",
+   "kind": "arxiv",
+   "id": "1510.04342v4",
+   "main": "rf_inference.tex",
+   "engine": "pdf",
+   "field": "econ.EM",
+   "tree_sha256": "38cd418aa4fbc487363342211a90b4f4b8b6787b5a277f3a5406ea29d93c6a1e",
+   "license": "arXiv e-print; not redistributed (fetched at run time)"
+  },
+  {
+   "name": "arxiv_ecta_paper",
+   "kind": "arxiv",
+   "id": "1902.11181v1",
+   "main": "ManuscriptEcta_31Jan2019.tex",
+   "engine": "pdf",
+   "field": "econ.EM",
+   "tree_sha256": "5493fcadf776716fe6b54322d021bfce8d062b8576214af6d9e5a2cae3984daa",
+   "license": "arXiv e-print; not redistributed (fetched at run time)"
+  },
+  {
+   "name": "arxiv_ehmp_econ",
+   "kind": "arxiv",
+   "id": "1902.10405v3",
+   "main": "EHMP_09-03-2020.tex",
+   "engine": "pdf",
+   "field": "econ.GN",
+   "tree_sha256": "3b17c664847481475ebb6f5223b0c05461f414cd082599405793f7eea20d3f4b",
+   "license": "arXiv e-print; not redistributed (fetched at run time)"
+  },
+  {
+   "name": "arxiv_econ_gn_bibtex",
+   "kind": "arxiv",
+   "id": "1902.10021v5",
+   "main": "main.tex",
+   "engine": "pdf",
+   "field": "econ.GN",
+   "tree_sha256": "2451cb9342973fdefb7e0338121b5cd1662938a44318d47d4f0edf58e6c2a587",
+   "license": "arXiv e-print; not redistributed (fetched at run time)"
+  },
+  {
+   "name": "arxiv_perelman_ricci_flow",
+   "kind": "arxiv",
+   "id": "math/0211159v1",
+   "main": "main.tex",
+   "engine": "pdf",
+   "field": "math.DG",
+   "tree_sha256": "856557bbe2b390b4abd7299f6d0c7a5a273edf3abc6325c2aff0c9476263c704",
+   "license": "arXiv e-print; not redistributed (fetched at run time)"
+  },
+  {
+   "name": "arxiv_divisor2squares",
+   "kind": "arxiv",
+   "id": "1902.11171v1",
+   "main": "divisor2squares.tex",
+   "engine": "pdf",
+   "field": "math.NT",
+   "tree_sha256": "a7e77047a73f6118f3c821b9f7bdb37f39c068239350653a52599aba6892b8b8",
+   "license": "arXiv e-print; not redistributed (fetched at run time)"
+  },
+  {
+   "name": "arxiv_graded_xy",
+   "kind": "arxiv",
+   "id": "1902.11190v3",
+   "main": "main.tex",
+   "engine": "pdf",
+   "field": "math.AG",
+   "tree_sha256": "34a0f62de5705012ec78475f0e8ed4975d716efdcb113bdaaee8f69c1f228f3c",
+   "license": "arXiv e-print; not redistributed (fetched at run time)"
+  },
+  {
+   "name": "arxiv_sparse_cb_tikz",
+   "kind": "arxiv",
+   "id": "1903.00075v1",
+   "main": "sparseCB.tex",
+   "engine": "pdf",
+   "field": "math.CO",
+   "tree_sha256": "25282dbff46a0afe9a596edc1e278017cd0ef6d7c0c6cfd2d6a47de3d8582959",
+   "license": "arXiv e-print; not redistributed (fetched at run time)"
+  },
+  {
+   "name": "arxiv_math_nt_amsart",
+   "kind": "arxiv",
+   "id": "1902.11283v3",
+   "main": "main.tex",
+   "engine": "pdf",
+   "field": "math.NT",
+   "tree_sha256": "9dc09f5aadaae59ba86e2f8a7fbcba6595ee90c1d11163515fceb165f5e6c248",
+   "license": "arXiv e-print; not redistributed (fetched at run time)"
+  },
+  {
+   "name": "arxiv_revtex41_neuro",
+   "kind": "arxiv",
+   "id": "1902.11239v1",
+   "main": "Rosas.tex",
+   "engine": "pdf",
+   "field": "q-bio.NC",
+   "tree_sha256": "40229a2370faa0a502fe5307712aaab09e3c99b29afddea53263aa358c627852",
+   "license": "arXiv e-print; not redistributed (fetched at run time)"
+  },
+  {
+   "name": "arxiv_revtex42_unruh",
+   "kind": "arxiv",
+   "id": "1903.00043v7",
+   "main": "PRD_Unruh_combined.tex",
+   "engine": "pdf",
+   "field": "hep-th",
+   "tree_sha256": "2c0be13e7a9376049d5757cc1b071f4e25399b69940cf360a110dc9dc6892274",
+   "license": "arXiv e-print; not redistributed (fetched at run time)"
+  },
+  {
+   "name": "arxiv_jcap_cmb",
+   "kind": "arxiv",
+   "id": "1902.11298v2",
+   "main": "cmbhomogeneity_polarization.tex",
+   "engine": "pdf",
+   "field": "astro-ph",
+   "tree_sha256": "34356b1bd08e0e6e3609f01d2f8389e6316962d8aae9bc6bb77074d49e1a2237",
+   "license": "arXiv e-print; not redistributed (fetched at run time)"
+  },
+  {
+   "name": "arxiv_jhep_6d_scft",
+   "kind": "arxiv",
+   "id": "1903.00079v2",
+   "main": "Pairing_6D_SCFTs_PRM_v2.tex",
+   "engine": "pdf",
+   "field": "hep-th",
+   "tree_sha256": "ab1b105fc54d495ffb943604957f23ca42766d11202c65cd5cb1d91dd0263f29",
+   "license": "arXiv e-print; not redistributed (fetched at run time)"
+  },
+  {
+   "name": "arxiv_lmcs_eating",
+   "kind": "arxiv",
+   "id": "1902.10971v4",
+   "main": "eating.tex",
+   "engine": "pdf",
+   "field": "cs.LO",
+   "tree_sha256": "4132879ebcfd98581d7d843fdeea7c805e103f82f5040f22aa35b5e8114c8475",
+   "license": "arXiv e-print; not redistributed (fetched at run time)"
+  },
+  {
+   "name": "arxiv_lipics_paper",
+   "kind": "arxiv",
+   "id": "1902.11263v1",
+   "main": "main.tex",
+   "engine": "pdf",
+   "field": "cs.LO",
+   "tree_sha256": "91f95381604eaa191c0cd787aaa86fe4bde9a86ba5bac39ce6d71399791a7fbc",
+   "license": "arXiv e-print; not redistributed (fetched at run time)"
+  },
+  {
+   "name": "arxiv_ieeetran_kozen",
+   "kind": "arxiv",
+   "id": "1902.11189v1",
+   "main": "dahlqvist_kozen_arxiv.tex",
+   "engine": "pdf",
+   "field": "cs.LO",
+   "tree_sha256": "cec265fd1315fb13d095a4a61473223d92915388d1b6011ae75a418438f826c3",
+   "license": "arXiv e-print; not redistributed (fetched at run time)"
+  },
+  {
+   "name": "arxiv_sex_chr_bio",
+   "kind": "arxiv",
+   "id": "1902.06654v1",
+   "main": "sex-chr-final.tex",
+   "engine": "pdf",
+   "field": "q-bio.GN",
+   "tree_sha256": "1fcbd94d4eb8c5ad9131aff2add6ac173ba90df4f20b8c76fc90f2982025a126",
+   "license": "arXiv e-print; not redistributed (fetched at run time)"
+  },
+  {
+   "name": "arxiv_stat_me_39pp",
+   "kind": "arxiv",
+   "id": "1903.00037v3",
+   "main": "main.tex",
+   "engine": "pdf",
+   "field": "stat.ME",
+   "tree_sha256": "58e629b4c0708d0ad900a62df8b55412f4f2a090d2198b85b714bb2c706b722e",
+   "license": "arXiv e-print; not redistributed (fetched at run time)"
+  },
+  {
+   "name": "gh_tufte_handout",
+   "kind": "github",
+   "repo": "Tufte-LaTeX/tufte-latex",
+   "commit": "efb8c8e836890bad71fb5834acdd316ebde6db12",
+   "main": "sample-handout.tex",
+   "engine": "pdf",
+   "field": "",
+   "tree_sha256": "277662d0345395590223fa301fa579cd8e7ea74024419ec8de2dbd35f232a422",
+   "license": "see repository; not redistributed"
+  },
+  {
+   "name": "gh_tufte_book",
+   "kind": "github",
+   "repo": "Tufte-LaTeX/tufte-latex",
+   "commit": "efb8c8e836890bad71fb5834acdd316ebde6db12",
+   "main": "sample-book.tex",
+   "engine": "pdf",
+   "field": "",
+   "tree_sha256": "277662d0345395590223fa301fa579cd8e7ea74024419ec8de2dbd35f232a422",
+   "license": "see repository; not redistributed"
+  },
+  {
+   "name": "gh_phd_thesis_template",
+   "kind": "github",
+   "repo": "kks32/phd-thesis-template",
+   "commit": "8d6c2d59790d93ef58e50f908d98d49e00b4fb1d",
+   "main": "thesis.tex",
+   "engine": "pdf",
+   "field": "",
+   "tree_sha256": "a64206f703498981023a85ac2fd406413ea224f2d2392332de49223d93553f3b",
+   "license": "see repository; not redistributed"
+  },
+  {
+   "name": "gh_lkmpg_book",
+   "kind": "github",
+   "repo": "sysprog21/lkmpg",
+   "commit": "5854698bc4535357d9c40d4eefa5241ef3bd814e",
+   "main": "lkmpg.tex",
+   "engine": "pdf",
+   "field": "",
+   "tree_sha256": "0575a3c5b579453bac443a8e0d4de458069a5441437eec88a84272a83fe1c3c8",
+   "license": "see repository; not redistributed"
+  },
+  {
+   "name": "gh_mtheme_demo",
+   "kind": "github",
+   "repo": "matze/mtheme",
+   "commit": "2fa6084b9d34fec9d2d5470eb9a17d0bf712b6c8",
+   "main": "demo/demo.tex",
+   "engine": "pdf",
+   "field": "",
+   "tree_sha256": "3a79f36c378aea48afccf58d72424c89db62611169096003e2362e7744fe92b6",
+   "license": "see repository; not redistributed"
+  },
+  {
+   "name": "gh_mtheme_demo_xelatex",
+   "kind": "github",
+   "repo": "matze/mtheme",
+   "commit": "2fa6084b9d34fec9d2d5470eb9a17d0bf712b6c8",
+   "main": "demo/demo.tex",
+   "engine": "xe",
+   "field": "",
+   "tree_sha256": "3a79f36c378aea48afccf58d72424c89db62611169096003e2362e7744fe92b6",
+   "license": "see repository; not redistributed"
+  }
+ ]
+}

@@ -1087,13 +1087,16 @@ fn lua_lookup_of_a_private_aux_file_keeps_lualatex_rebuilds_cached() {
     )
     .unwrap();
     let build = || {
-        let output = Command::new(env!("CARGO_BIN_EXE_texres"))
-            .args(["-lualatex", "main.tex"])
-            .current_dir(&fixture.0)
-            .env("TEX_RS_CACHE_DIR", fixture.0.join("cache"))
-            .env("SOURCE_DATE_EPOCH", "1700000000")
-            .output()
-            .unwrap();
+        let output = support::bundled_fonts_only(
+            Command::new(env!("CARGO_BIN_EXE_texres"))
+                .args(["-lualatex", "main.tex"])
+                .current_dir(&fixture.0)
+                .env("TEX_RS_CACHE_DIR", fixture.0.join("cache"))
+                .env("SOURCE_DATE_EPOCH", "1700000000"),
+            &fixture.0,
+        )
+        .output()
+        .unwrap();
         assert!(
             output.status.success(),
             "{}\n{}",

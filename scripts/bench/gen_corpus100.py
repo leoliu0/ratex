@@ -30,6 +30,14 @@ MARK = r"The benchmark edit marker reads BENCH-A."
 
 FLAG = {"pdf": "-pdf", "xe": "-xelatex", "lua": "-lualatex"}
 
+
+def text_gen(seed):
+    """Text for a fixed place of a document (a slide), shifted like every
+    other generator by --seed-offset, so that a training variant of a slide
+    deck differs from the measured deck."""
+    return Gen(seed + SEED_OFFSET)
+
+
 # ------------------------------------------------------------- foreign text
 
 LANG_TEXT = {
@@ -600,8 +608,8 @@ def define_docs():
           front="\\title{A Metropolis Deck}\n\\author{A. Author}\n\\date{1 January 2026}\n\\begin{document}\n\\begin{frame}\\titlepage\\end{frame}\n",
           nsec=0, tags=["beamer", "metropolis"],
           tail="\n".join(
-              rf"\begin{{frame}}{{{Gen(k).phrase().title()}}}{chr(10)}\begin{{itemize}}{chr(10)}"
-              + "\n".join(rf"\item<{i}-> {Gen(k * 10 + i).sentence()}" for i in range(1, 4))
+              rf"\begin{{frame}}{{{text_gen(k).phrase().title()}}}{chr(10)}\begin{{itemize}}{chr(10)}"
+              + "\n".join(rf"\item<{i}-> {text_gen(k * 10 + i).sentence()}" for i in range(1, 4))
               + (("\n" + MARK) if k == 12 else "")
               + rf"{chr(10)}\end{{itemize}}{chr(10)}\end{{frame}}"
               for k in range(1, 25)) + "\n")
@@ -633,7 +641,7 @@ def define_docs():
           front="\\title{Beamer under XeLaTeX}\n\\author{A. Author}\n\\date{1 January 2026}\n\\begin{document}\n\\begin{frame}\\titlepage\\end{frame}\n",
           nsec=0, tags=["beamer", "xelatex", "fontspec"],
           tail="\n".join(
-              rf"\begin{{frame}}{{{Gen(k).phrase().title()}}}{chr(10)}{Gen(k + 100).para(3)}"
+              rf"\begin{{frame}}{{{text_gen(k).phrase().title()}}}{chr(10)}{text_gen(k + 100).para(3)}"
               + (("\n" + MARK) if k == 10 else "") + rf"{chr(10)}\end{{frame}}" for k in range(1, 21)) + "\n")
     for lang, pg_name, fam in (("german", "german", "termes"), ("french", "french", "pagella"), ("spanish", "spanish", "termes"),
                                 ("polish", "polish", "bonum"), ("russian", "russian", "cmu"), ("greek", "greek", "cmu")):
@@ -691,7 +699,7 @@ def define_docs():
           front="\\title{Beamer under LuaLaTeX}\n\\author{A. Author}\n\\date{1 January 2026}\n\\begin{document}\n\\begin{frame}\\titlepage\\end{frame}\n",
           nsec=0, tags=["beamer", "lualatex", "fontspec"],
           tail="\n".join(
-              rf"\begin{{frame}}{{{Gen(k).phrase().title()}}}{chr(10)}{Gen(k + 200).para(3)}"
+              rf"\begin{{frame}}{{{text_gen(k).phrase().title()}}}{chr(10)}{text_gen(k + 200).para(3)}"
               + (("\n" + MARK) if k == 10 else "") + rf"{chr(10)}\end{{frame}}" for k in range(1, 21)) + "\n")
     build("lua_book", "lua", cls="book", opts="11pt", pre="\\usepackage{amsmath}\n" + font_preamble("pagella", math=False),
           nsec=36, chapters=9, feats={"math": 3, "fig": 5, "tab": 6}, tags=["book", "lualatex", "fontspec"], tail_para=7)

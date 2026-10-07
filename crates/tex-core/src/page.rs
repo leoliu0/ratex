@@ -1657,6 +1657,7 @@ impl Engine {
             self.lua_page_order_index(self.pdf_doc.pages.len());
             self.lua_page_number_callback(crate::lua_callbacks::Cb::StopPageNumber);
         }
+        crate::boxes::drop_node(Some(boxn));
     }
 
     /// pdfTeX `fix_pdfoutput` + `check_pdfversion`: the first page (or the

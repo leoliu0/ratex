@@ -259,6 +259,18 @@ uses (`rustup component add llvm-tools` or the distribution's `llvm`
 package). Nothing it generates is committed: the profile belongs to the exact
 sources it was recorded from.
 
+Both builds of the script link with fat LTO in a single codegen unit
+(`--config` overrides; the plain release profile keeps thin LTO, which needs
+far less memory). The settings enter cargo's symbol hashes, so the
+instrumented and the optimized build must use the same ones, or the profile
+silently goes unused. One pdfLaTeX pass over the converged TeX Live aux files,
+same profile data, thin vs fat: `gh_lkmpg_book` 32.9G vs 31.6G cycles,
+`pdf_siunitx_tables` 5.13G vs 4.86G, `pdf_beamer_metropolis` 6.08G vs 5.80G
+(branch misses and instruction-cache misses drop by 10 to 45%). Slide decks
+of the training variant differ from the measured decks in their text
+(`gen_corpus100.py` shifts every text generator by `--seed-offset`), so they
+are trained on too.
+
 Why it pays: the engine is a token interpreter whose hot paths (token fetch,
 macro expansion, `\def`, conditionals) run through a dozen large functions,
 about 100 KiB of machine code interleaved with cold paths. Without a profile

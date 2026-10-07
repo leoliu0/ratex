@@ -28,6 +28,7 @@ pub(crate) enum LigKernOp {
 
 /// tex.web §1039/§909: the instruction of `cur_l`'s lig/kern program (None:
 /// the font's left boundary program) whose next char is `cur_r`.
+#[inline]
 pub(crate) fn lig_kern_step(font: &Font, cur_l: Option<u8>, cur_r: u8) -> Option<LigKernOp> {
     let prog = &font.lig_kern;
     let mut k = match cur_l {
@@ -206,8 +207,12 @@ impl Engine {
                 g.width += fd(6).unwrap_or_else(|| font.extra_space());
             }
         }
-        g.stretch = crate::scaled::xn_over_d(g.stretch, sf as i32, 1000);
-        g.shrink = crate::scaled::xn_over_d(g.shrink, 1000, sf as i32);
+        // xn_over_d(x, 1000, 1000) is x: skip the divisions at the
+        // ordinary space factor
+        if sf != 1000 {
+            g.stretch = crate::scaled::xn_over_d(g.stretch, sf as i32, 1000);
+            g.shrink = crate::scaled::xn_over_d(g.shrink, 1000, sf as i32);
+        }
         // luatex run_app_space / app_space: every text space is typed
         // `spaceskip` (`space_skip_code + 1`)
         if self.engine_kind == crate::engine::EngineKind::LuaTeX {
@@ -411,7 +416,12 @@ impl Engine {
     /// crosses 1000 upward: after an uppercase letter (sf=999) a period
     /// yields sf=1000, i.e. NO sentence boost after capitals.
     pub fn space_factor_of(&self, c: u32) -> i32 {
-        let main_s = i32::from(self.eqtb.space_factor_code(c));
+        // Codes below 256 live only in the byte table (the sparse map holds
+        // larger characters), so ordinary text skips the hash lookup.
+        let main_s = i32::from(match self.eqtb.sf_code.get(c as usize) {
+            Some(&code) if c < 256 => code,
+            _ => self.eqtb.space_factor_code(c),
+        });
         if main_s == 1000 {
             1000
         } else if main_s < 1000 {
@@ -750,6 +760,9 @@ impl Engine {
         if self.engine_kind == crate::engine::EngineKind::LuaTeX {
             self.lua_note_text_language();
         }
+        if self.append_chained_char(c) {
+            return;
+        }
         // tex.web §1034: a character starting a chain in unrestricted
         // horizontal mode first checks the paragraph's language
         if self.mode == Mode::Horizontal && self.native_text.lig_chain.is_none() {
@@ -808,6 +821,46 @@ impl Engine {
             }
         }
         self.append_char_lig(c, f);
+    }
+
+    /// The common step of the main loop (tex.web §1036-1040) inside a
+    /// character chain: the tail is the chain's last character or ligature
+    /// of the current font, `c` exists in it, and the program of the tail
+    /// gives nothing or a kern for `c`. Appends exactly what `lig_kern_run`
+    /// would; returns false (having changed nothing) when a ligature, a
+    /// trailing hyphen or any other case needs the general path.
+    #[inline]
+    fn append_chained_char(&mut self, c: u8) -> bool {
+        let f = self.eqtb.cur_font_val;
+        if self.native_text.lig_chain != Some(f) || self.native_text.suppress_left_boundary {
+            return false;
+        }
+        let cur_l = match self.cur_list.last() {
+            Some(Node::Char { c, font, .. } | Node::Ligature { c, font, .. }) if *font == f => *c,
+            _ => return false,
+        };
+        let Some(font) = self.eqtb.fonts.get(f as usize) else {
+            return false;
+        };
+        // An existing `c` is never the font's false boundary character.
+        if !font.char_present(c) {
+            return false;
+        }
+        let kern = match lig_kern_step(font, Some(cur_l), c) {
+            None => None,
+            Some(LigKernOp::Kern(w)) => Some(w),
+            Some(LigKernOp::Lig { .. }) => return false,
+        };
+        // wrapup of cur_l: an explicit hyphen leaves a discretionary
+        if self.mode == Mode::Horizontal && self.tail_ends_hyphen(f) {
+            return false;
+        }
+        let attr = self.eqtb.cur_attr;
+        if let Some(w) = kern {
+            self.cur_list.push(Node::Kern(w, attr));
+        }
+        self.cur_list.push(Node::Char { c, font: f, attr });
+        true
     }
 
     /// tex.web wrapup (§1035): when the last character consumed is the
@@ -1490,8 +1543,8 @@ impl Engine {
             .diagnostic_group_openings
             .iter()
             .rev()
-            .find(|(level, _)| *level == box_level)
-            .map(|(_, source)| source.clone());
+            .find(|opening| opening.level == box_level)
+            .map(|opening| opening.mark.clone());
         let kind = self.box_kinds.pop().unwrap_or(0);
         // packed lines join the vbox instead of being vpack-discarded
 
@@ -1879,22 +1932,31 @@ impl Engine {
             self.error("Incompatible list can't be unboxed");
             return;
         }
-        let node = if copy {
-            self.eqtb.boxed.get(n as usize).cloned().flatten()
-        } else {
-            // tex.web's box(n):=null consumes the value without changing its
-            // eqtb level. A locally assigned box can therefore restore the
-            // saved outer value when the current group closes.
-            let old = self.eqtb.take_box(n);
-            self.global_flag = false;
-            old
-        };
+        // tex.web §1110 copy_node_list: a copy leaves the register intact and
+        // splices fresh copies of its items
+        let is_vmode = self.mode == Mode::Vertical;
+        if copy {
+            if let Some(Some(crate::boxes::Node::Box { list, .. })) = self.eqtb.boxed.get(n as usize) {
+                if is_vmode {
+                    for item in boxes::clone_node_list(list) {
+                        self.page_append(item);
+                    }
+                } else {
+                    self.cur_list.extend(list.iter().map(boxes::clone_node));
+                }
+            }
+            return;
+        }
+        // tex.web's box(n):=null consumes the value without changing its
+        // eqtb level. A locally assigned box can therefore restore the
+        // saved outer value when the current group closes.
+        let node = self.eqtb.take_box(n);
+        self.global_flag = false;
         let Some(crate::boxes::Node::Box { list, .. }) = node else { return };
         // tex.web unpackage (§21327-21331): the splice is pure link
         // surgery (`link(tail):=list_ptr(p)` then advance `tail`) —
         // append_to_vlist never runs, so NO interline glue is
         // recomputed AND \prevdepth keeps its pre-splice value.
-        let is_vmode = self.mode == Mode::Vertical;
         for item in list {
             if is_vmode {
                 self.page_append(item);
@@ -1902,6 +1964,11 @@ impl Engine {
                 self.cur_list.push(item);
             }
         }
+    }
+
+    /// A copy of box register `idx` (tex.web `copy_node_list(box(n))`).
+    pub(crate) fn copy_box_register(&self, idx: u16) -> Option<Node> {
+        self.eqtb.boxed.get(idx as usize).and_then(Option::as_ref).map(boxes::clone_node)
     }
 
     fn box_prim_or_name(&self, t: Token) -> Option<Prim> {
@@ -1991,7 +2058,7 @@ impl Engine {
             }
             Some(Prim::Copy) => {
                 let idx = self.scan_reg_num();
-                let b = self.eqtb.boxed[idx as usize].clone();
+                let b = self.copy_box_register(idx);
                 if let Some(b) = b {
                     self.finish_leaders(kind, LeaderBody::Box(Box::new(b)));
                 }
@@ -2316,7 +2383,7 @@ impl Engine {
             }
             Some(Prim::Copy) => {
                 let idx = self.scan_reg_num();
-                let b = self.eqtb.boxed[idx as usize].clone();
+                let b = self.copy_box_register(idx);
                 let b = b.map(|mut n| {
                     if let Node::Box { shift, .. } = &mut n {
                         if let Some((d, _)) = self.pending_box_shift {
@@ -2793,7 +2860,9 @@ impl Engine {
 
     pub fn scan_keyword(&mut self, kw: &[u8]) -> bool {
         self.skip_spaces_relax();
-        let mut collected: Vec<Token> = Vec::new();
+        // the tokens read so far, put back in reverse when the keyword fails
+        // (keywords are short; no allocation on the common miss)
+        let mut collected = smallvec::SmallVec::<[Token; 12]>::new();
         for &expected in kw {
             let t = self.get_token();
             collected.push(t);
@@ -2918,7 +2987,7 @@ impl Engine {
                     }
                     crate::prim::Prim::Copy => {
                         let idx = self.scan_reg_num();
-                        let b = self.eqtb.boxed.get(idx as usize).cloned().flatten();
+                        let b = self.copy_box_register(idx);
                         self.ship_box(b);
                         return;
                     }
@@ -3371,12 +3440,17 @@ impl Engine {
         // A soft page break that SHIPPED this paragraph's lines interrupts
         // it: the resumed content has no complete line yet, so just_box
         // must stay empty until the next real break refreshes it.
+        // Only init_math reads it, right after breaking the interrupted
+        // paragraph here (outside LuaTeX, every display init that reads it
+        // passes this line first), so other paragraphs skip the copy.
+        let keep_just_box =
+            self.in_display_init || self.engine_kind == crate::engine::EngineKind::LuaTeX;
         self.last_par_line = match &lines {
-            Node::Box { list, .. } => list
+            Node::Box { list, .. } if keep_just_box => list
                 .iter()
                 .rev()
                 .find(|n| matches!(n, Node::Box { kind, .. } if *kind == crate::boxes::HBOX))
-                .cloned(),
+                .map(boxes::clone_node),
             _ => None,
         };
 

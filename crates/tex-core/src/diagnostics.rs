@@ -5,6 +5,8 @@ use crate::input::{Source, SourceContext, SourceMark};
 use crate::prim::{IntParam, ToksParam};
 
 const MAX_CONTEXT_FRAMES: usize = 20;
+/// Entries kept in the macro trace of a diagnostic.
+const MAX_MACRO_TRACE: usize = 20;
 const DEFAULT_CONTEXT_FRAMES: usize = 5;
 const MAX_SOURCE_COLUMNS: usize = 120;
 const MAX_MESSAGE_BYTES: usize = 16 * 1024;
@@ -22,6 +24,17 @@ const OMITTED_DIAGNOSTICS_MESSAGE: &str =
 /// the source context of the display.
 pub(crate) const HIDE_MESSAGE: u8 = 1;
 pub(crate) const HIDE_CONTEXT: u8 = 2;
+
+/// Where a user-visible group (`{`, `\begingroup`, a box, ...) was opened.
+/// `repr(C)` keeps the mark first and aligned: in a `(u16, SourceMark)` tuple
+/// the copy into the vector straddled the stores that built the mark and
+/// stalled store forwarding on every group.
+#[derive(Clone, Debug)]
+#[repr(C)]
+pub(crate) struct GroupOpening {
+    pub(crate) mark: SourceMark,
+    pub(crate) level: u16,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DiagnosticSeverity {
@@ -563,21 +576,31 @@ impl Engine {
         self.last_pack = None;
     }
 
+    /// Record a macro expansion in the macro trace of later diagnostics.
+    #[inline(always)]
     pub(crate) fn enter_macro_diagnostic(
         &mut self,
         owner: crate::token::CsId,
         invocation: crate::token::CsId,
     ) {
-        const MAX_TRACE: usize = 20;
-        let (synthetic, physical) = if self.diagnostic_sources_live {
-            let synthetic = self
-                .diagnostic_synthetic_source
-                .take()
-                .filter(|(token, _, _)| *token == invocation);
-            (synthetic, self.physical_source_for_cs(invocation))
-        } else {
-            (None, None)
-        };
+        if self.diagnostic_sources_live {
+            self.enter_macro_call_site(invocation);
+        }
+        self.push_macro_trace(invocation);
+        if owner != invocation {
+            self.push_macro_trace(owner);
+        }
+    }
+
+    /// A call read from a recorded source position becomes the outer call
+    /// of the trace.
+    #[inline(never)]
+    fn enter_macro_call_site(&mut self, invocation: crate::token::CsId) {
+        let synthetic = self
+            .diagnostic_synthetic_source
+            .take()
+            .filter(|(token, _, _)| *token == invocation);
+        let physical = self.physical_source_for_cs(invocation);
         // Reset the outer call only for a token whose exact physical spelling
         // matches this invocation. Scanning a macro's physical argument can
         // leave a physical source set while an internal wrapper is expanded;
@@ -592,18 +615,26 @@ impl Engine {
             self.diagnostic_macro_call_site = Some(mark);
             self.diagnostic_macro_call_span = span.max(1);
         }
-        for id in [invocation, owner] {
-            if self.diagnostic_macro_trace.last() != Some(&id) {
-                if self.diagnostic_macro_trace.len() == MAX_TRACE {
-                    // Entry zero names the physical call highlighted by the
-                    // source excerpt. Keep it and discard the oldest inner
-                    // frame so a deep trace cannot disagree with its caret.
-                    self.diagnostic_macro_trace.remove(1);
-                    self.diagnostic_macro_trace_truncated = true;
-                }
-                self.diagnostic_macro_trace.push(id);
+    }
+
+    #[inline(always)]
+    fn push_macro_trace(&mut self, id: crate::token::CsId) {
+        if self.diagnostic_macro_trace.last() != Some(&id) {
+            if self.diagnostic_macro_trace.len() == MAX_MACRO_TRACE {
+                self.drop_inner_macro_trace_entry();
             }
+            self.diagnostic_macro_trace.push(id);
         }
+    }
+
+    /// Entry zero names the physical call highlighted by the source
+    /// excerpt. Keep it and discard the oldest inner frame so a deep trace
+    /// cannot disagree with its caret.
+    #[cold]
+    #[inline(never)]
+    fn drop_inner_macro_trace_entry(&mut self) {
+        self.diagnostic_macro_trace.remove(1);
+        self.diagnostic_macro_trace_truncated = true;
     }
 
     fn physical_source_for_cs(&self, id: crate::token::CsId) -> Option<(SourceMark, usize)> {
@@ -697,8 +728,10 @@ impl Engine {
         self.eqtb.push_level_with(kind, meta, line);
         if self.eqtb.cur_level > prev_level {
             if let Some(mark) = source {
-                self.diagnostic_group_openings
-                    .push((self.eqtb.cur_level, mark));
+                self.diagnostic_group_openings.push(GroupOpening {
+                    mark,
+                    level: self.eqtb.cur_level,
+                });
             }
         }
     }
@@ -723,9 +756,11 @@ impl Engine {
         for item in self.eqtb.save_stack.iter().rev() {
             if let crate::eqtb::SaveItem::Level(level, ty) = item {
                 if *ty == kind {
-                    let mark = self.diagnostic_group_openings.iter().rev().find_map(
-                        |(opening_level, mark)| (*opening_level == *level).then_some(mark),
-                    );
+                    let mark = self
+                        .diagnostic_group_openings
+                        .iter()
+                        .rev()
+                        .find_map(|opening| (opening.level == *level).then_some(&opening.mark));
                     return mark.map(|m| (*level, m));
                 }
             }
@@ -743,7 +778,7 @@ impl Engine {
                     let level = self.eqtb.definition_level(id)?;
                     if level > crate::eqtb::LEVEL_ONE {
                         return self.diagnostic_group_openings.iter().rev().find_map(
-                            |(opening_level, mark)| (*opening_level == level).then_some(mark),
+                            |opening| (opening.level == level).then_some(&opening.mark),
                         );
                     }
                 }
@@ -763,12 +798,12 @@ impl Engine {
         if self
             .diagnostic_group_openings
             .last()
-            .is_some_and(|(opening_level, _)| *opening_level == level)
+            .is_some_and(|opening| opening.level == level)
         {
             self.diagnostic_group_openings.pop();
         } else {
             self.diagnostic_group_openings
-                .retain(|(opening_level, _)| *opening_level != level);
+                .retain(|opening| opening.level != level);
         }
     }
 
@@ -1534,10 +1569,10 @@ impl Engine {
                 } else {
                     self.display_cs(state.loc_cs)
                 };
-                let opened = if state.loc_file.is_empty() {
+                let opened = if state.loc_file().is_empty() {
                     format!("line {}", state.loc_line)
                 } else {
-                    format!("{}:{}", state.loc_file, state.loc_line)
+                    format!("{}:{}", state.loc_file(), state.loc_line)
                 };
                 let source = state.loc.as_ref().map(SourceMark::to_context);
                 self.warning_at(
@@ -1556,8 +1591,8 @@ impl Engine {
                 let opening = open_groups.iter().find_map(|(level, _)| {
                     self.diagnostic_group_openings
                         .iter()
-                        .find(|(opening_level, _)| opening_level == level)
-                        .map(|(_, source)| source.to_context())
+                        .find(|opening| opening.level == *level)
+                        .map(|opening| opening.mark.to_context())
                 });
                 let description = if self.scanner_status == crate::engine::ScannerStatus::Aligning {
                     "Unfinished alignment at \\end; add the missing \\cr and }"
@@ -1596,10 +1631,10 @@ impl Engine {
                 .rev()
                 .take(3)
                 .map(|state| {
-                    if state.loc_file.is_empty() {
+                    if state.loc_file().is_empty() {
                         format!("line {}", state.loc_line)
                     } else {
-                        format!("{}:{}", state.loc_file, state.loc_line)
+                        format!("{}:{}", state.loc_file(), state.loc_line)
                     }
                 })
                 .collect::<Vec<_>>()
@@ -1628,8 +1663,8 @@ impl Engine {
             let opening = open_groups.iter().find_map(|(level, _)| {
                 self.diagnostic_group_openings
                     .iter()
-                    .find(|(opening_level, _)| opening_level == level)
-                    .map(|(_, source)| source.to_context())
+                    .find(|opening| opening.level == *level)
+                    .map(|opening| opening.mark.to_context())
             });
             let description = if self.scanner_status == crate::engine::ScannerStatus::Aligning {
                 "Unfinished alignment; add the missing \\cr and }"

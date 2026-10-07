@@ -111,6 +111,59 @@ impl Engine {
 
     pub fn dispatch(&mut self, t: Token) {
         self.enter_pending_output();
+        if !t.is_cs() {
+            return self.dispatch_non_cs(t);
+        }
+        let id = t.cs_id();
+        if (id as usize) >= self.cs.len() {
+            return;
+        }
+        // The meaning of a control sequence, resolved once for the whole
+        // command (tex.web's cur_cmd/cur_chr). A primitive, by far the most
+        // common meaning, is copied out directly. Every path below ends in a
+        // tail call, which keeps this function frameless.
+        let Some(&Equiv::Prim(p)) = self.eqtb.resolve(id) else {
+            return self.dispatch_cs_meaning(t, id);
+        };
+        // tex.web main-loop wrapup: any command other than a character,
+        // \char or \noboundary ends the character/ligature chain (settling a
+        // trailing explicit hyphen and the right boundary).
+        if matches!(self.mode, Mode::Horizontal | Mode::RestrictedHorizontal)
+            && !matches!(
+                p,
+                Prim::Char
+                    | Prim::NoBoundary
+                    | Prim::U(crate::uprim::UPrim::LeftGhost | crate::uprim::UPrim::RightGhost)
+            )
+        {
+            return self.dispatch_prim_ending_chain(t, p, id);
+        }
+        // The commonest commands that are neither assignments nor math-only
+        // skip the assignment table; a prefix before them is dropped.
+        match p {
+            Prim::Relax => {}
+            Prim::BeginGroup => {
+                self.clear_prefixes();
+                self.begin_semi_simple();
+            }
+            Prim::EndGroup => {
+                self.clear_prefixes();
+                self.end_semi_simple();
+            }
+            _ => self.dispatch_prim(p, id),
+        }
+    }
+
+    #[inline(never)]
+    fn dispatch_prim_ending_chain(&mut self, t: Token, p: Prim, id: CsId) {
+        if !self.end_character_chain(t) {
+            self.dispatch_prim(p, id);
+        }
+    }
+
+    /// A token that is not a control sequence: a character or a sentinel.
+    #[inline(never)]
+    fn dispatch_non_cs(&mut self, t: Token) {
         if t == crate::input::EOF_MARKER {
             return;
         }
@@ -118,321 +171,308 @@ impl Engine {
             self.finish_output();
             return;
         }
-        if t.is_cs() && (t.cs_id() as usize) >= self.cs.len() {
+        let cc = t.cc();
+        // Letters and other characters dominate; they continue a character
+        // chain.
+        if matches!(cc, 11 | 12) {
+            self.clear_prefixes();
+            self.text_character_token(t);
             return;
         }
-        // The meaning of a control sequence, resolved once for the whole
-        // command (tex.web's cur_cmd/cur_chr). Ending a character chain below
-        // only appends nodes or inserts tokens, so the meaning stays valid.
-        let meaning = if t.is_cs() {
-            self.eqtb.resolve(t.cs_id()).cloned()
-        } else {
-            None
-        };
-        // tex.web main-loop wrapup: any command other than a character,
-        // \char or \noboundary ends the character/ligature chain (settling a
-        // trailing explicit hyphen and the right boundary).
-        if matches!(self.mode, Mode::Horizontal | Mode::RestrictedHorizontal) {
-            let continues_character = if t.is_cs() {
-                match &meaning {
-                    Some(Equiv::CharDef(_) | Equiv::Prim(Prim::Char | Prim::NoBoundary)) => true,
-                    Some(Equiv::Prim(Prim::U(crate::uprim::UPrim::LeftGhost | crate::uprim::UPrim::RightGhost))) => true,
-                    Some(Equiv::CharTok(raw)) => matches!(Token(*raw).cc(), 11 | 12),
-                    _ => false,
+        if matches!(self.mode, Mode::Horizontal | Mode::RestrictedHorizontal)
+            && self.end_character_chain(t)
+        {
+            return;
+        }
+        self.clear_prefixes();
+        let scalar = t.chr();
+        let c = scalar as u8;
+        match cc {
+            1 => {
+                // tex.web: a `{` in math mode opens a subformula whose
+                // mlist boundary limits \over's numerator; the engine
+                // keeps one flat list per math level and records the
+                // boundary as a position mark
+                if self.mode.is_m() {
+                    let saved_mode = self.mode;
+                    self.math_group_marks.push((
+                        self.math_lists.len(),
+                        self.math_lists.last().map(|l| l.len()).unwrap_or(0),
+                        saved_mode,
+                    ));
+                    self.show.brace_lines.push(self.nest_line());
+                    // tex.web §1197 / §21691 push_math: a subformula group in
+                    // math mode enters -mmode (inner math mode, so \ifinner is true).
+                    self.mode = Mode::Math;
+                    // tex.web math_group: the group is a plain brace
+                    // group to the ending logic and `math group` (9)
+                    // to \currentgrouptype and the group traces
+                    self.push_group_level_coded(
+                        LevelType::Simple,
+                        crate::eqtb::GroupMeta::new(crate::eqtb::group_code::MATH),
+                    );
+                } else {
+                    self.begin_group(true);
                 }
-            } else {
-                matches!(t.cc(), 11 | 12)
-            };
-            if !continues_character {
-                if self.engine_kind == crate::engine::EngineKind::XeTeX {
-                    if self.xe_check_post_char(t) {
-                        self.flush_native_text();
-                        self.end_char_chain();
-                        self.xe_end_run();
-                        return;
+            }
+            2 => {
+                if self.mode.is_m() {
+                    if let Some((depth, start_mark, saved_mode)) = self.math_group_marks.pop() {
+                        self.show.brace_lines.pop();
+                        self.mode = saved_mode;
+                        if depth == self.math_lists.len() {
+                            let flatten = self.math_flatten_mode();
+                            if let Some(l) = self.math_lists.last_mut() {
+                                if start_mark <= l.len() {
+                                    let inner = l.split_off(start_mark);
+                                    l.push(crate::math::finish_math_group(inner, flatten, self.eqtb.cur_attr));
+                                }
+                            }
+                        }
                     }
-                    self.xe_end_run();
                 }
+                self.end_group();
+            }
+            3 => {
+                // math shift
+                if self.mode.is_m() {
+                    self.close_math_shift(t);
+                } else if self.mode.is_v() {
+                    // tex.web §1090: math_shift in vertical mode starts a paragraph;
+                    // the math_shift is put back on input so it executes AFTER \everypar.
+                    self.push_token(t);
+                    self.start_paragraph(true);
+                } else {
+                    self.enter_math(false);
+                }
+            }
+            4 => self.error("Misplaced alignment tab character &"),
+            10 => self.hspace_token(),
+            13 => self.active_char(scalar),
+            5 | 7 | 8 => {
+                if (cc == 7 || cc == 8) && !self.mode.is_m() {
+                    self.insert_dollar_sign(t);
+                } else if cc == 7 {
+                    self.super_token(c);
+                } else if cc == 8 {
+                    self.sub_token(c);
+                } else {
+                    // endline in odd places: treat as space
+                    self.hspace_token();
+                }
+            }
+            6 => {
+                // tex.web §1045 any_mode(mac_param): report_illegal_case.
+                let mut shown = Vec::new();
+                match u8::try_from(scalar) {
+                    Ok(byte) => {
+                        crate::tex_bytes::push_printable(&self.xprn, &mut shown, &[byte])
+                    }
+                    Err(_) => t.append_character_bytes(&mut shown),
+                }
+                self.error(&format!(
+                    "You can't use `macro parameter character {}' in {}",
+                    String::from_utf8_lossy(&shown),
+                    self.mode.name()
+                ));
+            }
+            0 | 9 | 14 | 15 => {
+                // escape/ignored/comment/invalid should not appear raw
+            }
+            _ => {}
+        }
+    }
+
+    /// End the character/ligature chain before a command that does not
+    /// continue it; true when XeTeX consumed `t` as the end of a native run.
+    #[inline(never)]
+    fn end_character_chain(&mut self, t: Token) -> bool {
+        if self.engine_kind == crate::engine::EngineKind::XeTeX {
+            if self.xe_check_post_char(t) {
                 self.flush_native_text();
                 self.end_char_chain();
+                self.xe_end_run();
+                return true;
             }
+            self.xe_end_run();
         }
+        self.flush_native_text();
+        self.end_char_chain();
+        false
+    }
 
-        if t.is_cs() {
-            let id = t.cs_id();
-
-            match meaning {
-                Some(Equiv::FontRef(f)) => {
-                    // tex.web set_font: a group-scoped assignment that also
-                    // consumes any \global prefix
-                    let g = self.take_global();
-                    self.eqtb.define_cur_font(f, g);
-                    self.clear_prefixes();
-                    self.space_factor = 1000;
-                    return;
-                }
-                // register alias assignment target (\countdef'd cs etc.)
-                Some(
-                    Equiv::CountReg(_)
-                    | Equiv::AttributeReg(_)
-                    | Equiv::DimenReg(_)
-                    | Equiv::SkipReg(_)
-                    | Equiv::MuSkipReg(_)
-                    | Equiv::ToksReg(_),
-                ) => {
-                    self.cs_assign(id);
-                    self.trigger_after_assignment();
-                    return;
-                }
-                _ => {}
+    /// A primitive command: assignments (with their prefixes), then main
+    /// control.
+    #[inline(never)]
+    fn dispatch_prim(&mut self, p: Prim, id: CsId) {
+        if p == Prim::Relax {
+            return;
+        }
+        if self.try_assignment(p, id) {
+            if !matches!(
+                p,
+                Prim::Global | Prim::Long | Prim::Outer | Prim::Protected | Prim::AfterAssignment
+            ) {
+                self.trigger_after_assignment();
             }
-            // assignment prefixes
-            if let Some(Equiv::Prim(p)) = meaning {
-                if p == Prim::Relax {
-                    return;
-                }
-                match self.try_assignment(p, id) {
-                    true => {
-                        if !matches!(
-                            p,
-                            Prim::Global
-                                | Prim::Long
-                                | Prim::Outer
-                                | Prim::Protected
-                                | Prim::AfterAssignment
-                        ) {
-                            self.trigger_after_assignment();
-                        }
-                        return;
-                    }
-                    false => {}
-                }
-                if self.global_flag || self.long_flag || self.outer_flag || self.protected_flag {
-                    // These assignments are executed by main_dispatch but
-                    // still honor \global/\long/... prefixes (tex.web §407:
-                    // prefixes persist until the assignment consumes them).
-                    // Clearing here dropped \global\font inside NFSS
-                    // \define@newfont groups, so \endgroup reverted font
-                    // CSes to \relax.
-                    if !matches!(
-                        p,
-                        Prim::Font
-                            | Prim::Letterspacefont
-                            | Prim::PdfFontExpand
-                            | Prim::PdfNoLigatures
-                            | Prim::TextFont
-                            | Prim::ScriptFont
-                            | Prim::ScriptScriptFont
-                            | Prim::CatCode
-                            | Prim::MathCode
-                            | Prim::DelCode
-                            | Prim::LcCodeP
-                            | Prim::SfCodeP
-                            | Prim::UcCodeP
-                            | Prim::CatCodeTable
-                            | Prim::InitCatCodeTable
-                            | Prim::SaveCatCodeTable
-                    ) {
-                        self.clear_prefixes();
-                    }
-                }
-                self.main_dispatch(p, id);
-            } else {
-                // non-primitive cs used as value: usually error
-                match meaning {
-                    None => {
-                        // tex.web §358: a \noexpand-marked undefined control
-                        // sequence means \relax.
-                        if self.no_expand_tok == Some(t) {
-                            return;
-                        }
-                        let name_bytes = self.cs.name(id).to_vec();
-                        if name_bytes == b"@@italiccorr" || name_bytes == b"/" {
-                            self.eqtb.assign(id, Equiv::Prim(Prim::Relax), true);
-                            return;
-                        }
-                        // Control space `\ ` (ex_space in tex.web): plain
-                        // interword glue, no space-factor scaling. Formats
-                        // dumped before the primitive was registered carry
-                        // `\ ` as an (undefined) cs [0x20]; dispatch it to
-                        // the same handler.
-                        if name_bytes == [0x20] {
-                            match self.mode {
-                                Mode::Vertical | Mode::InternalVertical => {
-                                    self.push_token(Token::from_cs(id));
-                                    self.start_paragraph(true);
-                                }
-                                _ => self.ex_space(),
-                            }
-                            return;
-                        }
-
-                        let source = self
-                            .current_token_source_mark()
-                            .map(|mark| mark.to_context());
-                        let message = format!("Undefined control sequence {}", self.display_cs(id));
-                        self.error_at(&message, source);
-                    }
-                    Some(Equiv::Macro(_)) => {
-
-                        // get_token already declined to expand this (\noexpand
-                        // freeze, \protected in an edef scan, self-quark stop
-                        // marker). Knuth treats frozen dont_expand as \relax.
-                        // Re-expanding here loops: self-quark terminators
-                        // (\q__tl_recursion_tail) never stop expl3 maps.
-                    }
-                    Some(Equiv::CharDef(v)) => {
-                        self.reject_assignment_prefixes(&format!("\\char\"{v:X}"));
-                        self.unicode_char_token(v, false);
-                    }
-
-                    // tex.web math_given (\S1177) recovers a text-mode
-                    // \mathchardef by opening math ("Missing $ inserted").
-                    // Our exit_math replays converted tokens back into the
-                    // input, which re-feeds the \mathchardef token and loops
-                    // forever. Appending the MathChar node to the current
-                    // list renders the glyph directly (visually equivalent
-                    // for the \fnsymbol/\ast cases) without the replay.
-                    Some(Equiv::MathCharDef(v)) if self.engine_kind == crate::engine::EngineKind::LuaTeX => {
-                        self.reject_assignment_prefixes(&format!("\\mathchar\"{v:X}"));
-                        self.math_given_command(i32::from(v), false, id);
-                    }
-                    Some(Equiv::UMathCharDef(v)) if self.engine_kind == crate::engine::EngineKind::XeTeX => {
-                        // xetex.web `mmode+XeTeX_math_given: set_math_char(cur_chr)`
-                        self.reject_assignment_prefixes("\\Umathchar");
-                        if self.mode.is_m() {
-                            let source = self.current_token_source_mark();
-                            self.xe_set_math_char_at(i64::from(v as u32), v as u32, source);
-                        } else {
-                            self.insert_dollar_sign(Token::from_cs(id));
-                        }
-                    }
-                    Some(Equiv::UMathCharDef(v)) => {
-                        self.reject_assignment_prefixes("\\Umathchar");
-                        self.math_given_command(v, true, id);
-                    }
-                    Some(Equiv::MathCharDef(v)) => {
-                        self.reject_assignment_prefixes(&format!("\\mathchar\"{v:X}"));
-                        if self.mode.is_m() {
-                            self.append_mathchar(v as u16);
-                        } else {
-                            self.insert_dollar_sign(Token::from_cs(id));
-                        }
-                    }
-                    Some(Equiv::CharTok(v)) => {
-                        self.dispatch(Token(v));
-                    }
-                    // maincontrol.c run_lua_call. An expandable lua call
-                    // reaches main control only \noexpand-frozen (\relax).
-                    Some(Equiv::LuaCall { slot, protected: true }) => {
-                        self.reject_assignment_prefixes("\\luacall");
-                        self.call_lua_function(slot as i32);
-                    }
-                    _ => {}
-                }
-            }
-        } else {
-            if self.global_flag || self.long_flag || self.outer_flag || self.protected_flag {
+            return;
+        }
+        if self.global_flag || self.long_flag || self.outer_flag || self.protected_flag {
+            // These assignments are executed by main_dispatch but
+            // still honor \global/\long/... prefixes (tex.web §407:
+            // prefixes persist until the assignment consumes them).
+            // Clearing here dropped \global\font inside NFSS
+            // \define@newfont groups, so \endgroup reverted font
+            // CSes to \relax.
+            if !matches!(
+                p,
+                Prim::Font
+                    | Prim::Letterspacefont
+                    | Prim::PdfFontExpand
+                    | Prim::PdfNoLigatures
+                    | Prim::TextFont
+                    | Prim::ScriptFont
+                    | Prim::ScriptScriptFont
+                    | Prim::CatCode
+                    | Prim::MathCode
+                    | Prim::DelCode
+                    | Prim::LcCodeP
+                    | Prim::SfCodeP
+                    | Prim::UcCodeP
+                    | Prim::CatCodeTable
+                    | Prim::InitCatCodeTable
+                    | Prim::SaveCatCodeTable
+            ) {
                 self.clear_prefixes();
             }
-            let cc = t.cc();
-            let scalar = t.chr();
-            let c = scalar as u8;
-            match cc {
-                1 => {
-                    // tex.web: a `{` in math mode opens a subformula whose
-                    // mlist boundary limits \over's numerator; the engine
-                    // keeps one flat list per math level and records the
-                    // boundary as a position mark
-                    if self.mode.is_m() {
-                        let saved_mode = self.mode;
-                        self.math_group_marks.push((
-                            self.math_lists.len(),
-                            self.math_lists.last().map(|l| l.len()).unwrap_or(0),
-                            saved_mode,
-                        ));
-                        self.show.brace_lines.push(self.nest_line());
-                        // tex.web §1197 / §21691 push_math: a subformula group in
-                        // math mode enters -mmode (inner math mode, so \ifinner is true).
-                        self.mode = Mode::Math;
-                        // tex.web math_group: the group is a plain brace
-                        // group to the ending logic and `math group` (9)
-                        // to \currentgrouptype and the group traces
-                        self.push_group_level_coded(
-                            LevelType::Simple,
-                            crate::eqtb::GroupMeta::new(crate::eqtb::group_code::MATH),
-                        );
-                    } else {
-                        self.begin_group(true);
-                    }
-                }
-                2 => {
-                    if self.mode.is_m() {
-                        if let Some((depth, start_mark, saved_mode)) = self.math_group_marks.pop() {
-                            self.show.brace_lines.pop();
-                            self.mode = saved_mode;
-                            if depth == self.math_lists.len() {
-                                let flatten = self.math_flatten_mode();
-                                if let Some(l) = self.math_lists.last_mut() {
-                                    if start_mark <= l.len() {
-                                        let inner = l.split_off(start_mark);
-                                        l.push(crate::math::finish_math_group(inner, flatten, self.eqtb.cur_attr));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    self.end_group();
-                }
-                3 => {
-                    // math shift
-                    if self.mode.is_m() {
-                        self.close_math_shift(t);
-                    } else if self.mode.is_v() {
-                        // tex.web §1090: math_shift in vertical mode starts a paragraph;
-                        // the math_shift is put back on input so it executes AFTER \everypar.
-                        self.push_token(t);
-                        self.start_paragraph(true);
-                    } else {
-                        self.enter_math(false);
-                    }
-                }
-                4 => self.error("Misplaced alignment tab character &"),
-                10 => self.hspace_token(),
-                13 => self.active_char(scalar),
-                11 | 12 => self.text_character_token(t),
-                5 | 7 | 8 => {
-                    if (cc == 7 || cc == 8) && !self.mode.is_m() {
-                        self.insert_dollar_sign(t);
-                    } else if cc == 7 {
-                        self.super_token(c);
-                    } else if cc == 8 {
-                        self.sub_token(c);
-                    } else {
-                        // endline in odd places: treat as space
-                        self.hspace_token();
-                    }
-                }
-                6 => {
-                    // tex.web §1045 any_mode(mac_param): report_illegal_case.
-                    let mut shown = Vec::new();
-                    match u8::try_from(scalar) {
-                        Ok(byte) => {
-                            crate::tex_bytes::push_printable(&self.xprn, &mut shown, &[byte])
-                        }
-                        Err(_) => t.append_character_bytes(&mut shown),
-                    }
-                    self.error(&format!(
-                        "You can't use `macro parameter character {}' in {}",
-                        String::from_utf8_lossy(&shown),
-                        self.mode.name()
-                    ));
-                }
-                0 | 9 | 14 | 15 => {
-                    // escape/ignored/comment/invalid should not appear raw
-                }
-                _ => {}
+        }
+        self.main_dispatch(p, id);
+    }
+
+    /// A control sequence whose meaning is not a primitive.
+    #[inline(never)]
+    fn dispatch_cs_meaning(&mut self, t: Token, id: CsId) {
+        let meaning = self.eqtb.resolve(id).cloned();
+        if matches!(self.mode, Mode::Horizontal | Mode::RestrictedHorizontal) {
+            let continues_character = match &meaning {
+                Some(Equiv::CharDef(_)) => true,
+                Some(Equiv::CharTok(raw)) => matches!(Token(*raw).cc(), 11 | 12),
+                _ => false,
+            };
+            if !continues_character && self.end_character_chain(t) {
+                return;
             }
+        }
+        match meaning {
+            Some(Equiv::FontRef(f)) => {
+                // tex.web set_font: a group-scoped assignment that also
+                // consumes any \global prefix
+                let g = self.take_global();
+                self.eqtb.define_cur_font(f, g);
+                self.clear_prefixes();
+                self.space_factor = 1000;
+            }
+            // register alias assignment target (\countdef'd cs etc.)
+            Some(
+                Equiv::CountReg(_)
+                | Equiv::AttributeReg(_)
+                | Equiv::DimenReg(_)
+                | Equiv::SkipReg(_)
+                | Equiv::MuSkipReg(_)
+                | Equiv::ToksReg(_),
+            ) => {
+                self.cs_assign(id);
+                self.trigger_after_assignment();
+            }
+            // non-primitive cs used as value: usually error
+            None => {
+                // tex.web §358: a \noexpand-marked undefined control
+                // sequence means \relax.
+                if self.no_expand_tok == Some(t) {
+                    return;
+                }
+                let name_bytes = self.cs.name(id).to_vec();
+                if name_bytes == b"@@italiccorr" || name_bytes == b"/" {
+                    self.eqtb.assign(id, Equiv::Prim(Prim::Relax), true);
+                    return;
+                }
+                // Control space `\ ` (ex_space in tex.web): plain
+                // interword glue, no space-factor scaling. Formats
+                // dumped before the primitive was registered carry
+                // `\ ` as an (undefined) cs [0x20]; dispatch it to
+                // the same handler.
+                if name_bytes == [0x20] {
+                    match self.mode {
+                        Mode::Vertical | Mode::InternalVertical => {
+                            self.push_token(Token::from_cs(id));
+                            self.start_paragraph(true);
+                        }
+                        _ => self.ex_space(),
+                    }
+                    return;
+                }
+
+                let source = self
+                    .current_token_source_mark()
+                    .map(|mark| mark.to_context());
+                let message = format!("Undefined control sequence {}", self.display_cs(id));
+                self.error_at(&message, source);
+            }
+            Some(Equiv::Macro(_)) => {
+                // get_token already declined to expand this (\noexpand
+                // freeze, \protected in an edef scan, self-quark stop
+                // marker). Knuth treats frozen dont_expand as \relax.
+                // Re-expanding here loops: self-quark terminators
+                // (\q__tl_recursion_tail) never stop expl3 maps.
+            }
+            Some(Equiv::CharDef(v)) => {
+                self.reject_assignment_prefixes(&format!("\\char\"{v:X}"));
+                self.unicode_char_token(v, false);
+            }
+
+            // tex.web math_given (\S1177) recovers a text-mode
+            // \mathchardef by opening math ("Missing $ inserted").
+            // Our exit_math replays converted tokens back into the
+            // input, which re-feeds the \mathchardef token and loops
+            // forever. Appending the MathChar node to the current
+            // list renders the glyph directly (visually equivalent
+            // for the \fnsymbol/\ast cases) without the replay.
+            Some(Equiv::MathCharDef(v)) if self.engine_kind == crate::engine::EngineKind::LuaTeX => {
+                self.reject_assignment_prefixes(&format!("\\mathchar\"{v:X}"));
+                self.math_given_command(i32::from(v), false, id);
+            }
+            Some(Equiv::UMathCharDef(v)) if self.engine_kind == crate::engine::EngineKind::XeTeX => {
+                // xetex.web `mmode+XeTeX_math_given: set_math_char(cur_chr)`
+                self.reject_assignment_prefixes("\\Umathchar");
+                if self.mode.is_m() {
+                    let source = self.current_token_source_mark();
+                    self.xe_set_math_char_at(i64::from(v as u32), v as u32, source);
+                } else {
+                    self.insert_dollar_sign(Token::from_cs(id));
+                }
+            }
+            Some(Equiv::UMathCharDef(v)) => {
+                self.reject_assignment_prefixes("\\Umathchar");
+                self.math_given_command(v, true, id);
+            }
+            Some(Equiv::MathCharDef(v)) => {
+                self.reject_assignment_prefixes(&format!("\\mathchar\"{v:X}"));
+                if self.mode.is_m() {
+                    self.append_mathchar(v as u16);
+                } else {
+                    self.insert_dollar_sign(Token::from_cs(id));
+                }
+            }
+            Some(Equiv::CharTok(v)) => {
+                self.dispatch(Token(v));
+            }
+            // maincontrol.c run_lua_call. An expandable lua call
+            // reaches main control only \noexpand-frozen (\relax).
+            Some(Equiv::LuaCall { slot, protected: true }) => {
+                self.reject_assignment_prefixes("\\luacall");
+                self.call_lua_function(slot as i32);
+            }
+            _ => {}
         }
     }
 
@@ -446,6 +486,16 @@ impl Engine {
     }
 
     pub(crate) fn unicode_char_token(&mut self, scalar: u32, is_letter: bool) {
+        // pdfTeX text: a byte character in horizontal mode goes straight
+        // to the main loop (the case `char_token` reaches below)
+        if self.engine_kind == crate::engine::EngineKind::PdfTeX
+            && scalar < 256
+            && matches!(self.mode, Mode::Horizontal | Mode::RestrictedHorizontal)
+        {
+            self.append_char(scalar as u8);
+            self.space_factor = self.space_factor_of(scalar);
+            return;
+        }
         if self.mode.is_v() {
             self.push_token(Token::unicode_char(if is_letter { 11 } else { 12 }, scalar));
             self.start_paragraph(true);
@@ -1377,7 +1427,16 @@ impl Engine {
                 break;
             }
             if t.is_char() && t.cc() == 1 {
-                self.push_token(t);
+                // The body starts inside this brace: collect_def_body
+                // continues from here instead of backing the brace up and
+                // reading it again. The state that re-read left (the
+                // backed-up token last read and the current token, which
+                // later source marks depend on) is set the same way.
+                self.pushed_read = t;
+                if self.lua_cb[crate::lua_callbacks::Cb::ShowErrorHook as usize] > 0 {
+                    self.recent_pushed = Some((t, self.input.signature()));
+                }
+                self.get_token_from(t);
                 break;
             }
             if t.is_char() && t.cc() == 2 {
@@ -1468,11 +1527,11 @@ impl Engine {
                     break;
                 }
                 let n = if t2.is_char() { t2.chr() } else { u32::MAX };
-                let parameter_source = self.current_token_source_mark();
                 num_params += 1;
                 params.push(Vec::new());
                 let expected = u32::from(b'0') + u32::from(num_params.min(9));
                 if num_params > 9 || n != expected {
+                    let parameter_source = self.current_token_source_mark();
                     let found = if t2.is_char() {
                         char::from_u32(n).unwrap_or('�').to_string()
                     } else {
@@ -1513,11 +1572,10 @@ impl Engine {
                 None => self.def_prefix.push(t),
             }
         }
-        let has_brace = hash_brace.is_some();
         let mut body = if missing_brace {
             Vec::new()
         } else {
-            self.collect_def_body(target, num_params, expanded, has_brace, definition_start.clone())
+            self.collect_def_body(target, num_params, expanded, definition_start.as_ref())
         };
         if preserve_trace {
             self.diagnostic_trace_hold -= 1;
@@ -1611,14 +1669,14 @@ impl Engine {
         true
     }
 
-    /// collect macro body until the closing brace at depth 0
+    /// Collect a macro body until the closing brace at depth 0; the opening
+    /// brace (or the `{` of a `#{` parameter text) has already been read.
     fn collect_def_body(
         &mut self,
         target: CsId,
         num_params: u8,
         expanded: bool,
-        brace_consumed: bool,
-        definition_start: Option<crate::input::SourceMark>,
+        definition_start: Option<&crate::input::SourceMark>,
     ) -> Vec<Token> {
         let prev_expanded_scan = self.in_expanded_scan;
         if expanded {
@@ -1626,20 +1684,6 @@ impl Engine {
         }
         let mut out = self.token_vec_pool.pop().unwrap_or_default();
         let mut depth = 1i32;
-        if !brace_consumed {
-            self.skip_spaces_relax();
-            let t = self.get_token();
-            if !(t.is_char() && t.cc() == 1) {
-                let got = if t.is_cs() {
-                    self.display_cs(t.cs_id())
-                } else {
-                    format!("cc{}:{}", t.cc(), t.chr())
-                };
-                self.error(&format!("Missing {{ inserted (def body, got {})", got));
-                self.in_expanded_scan = prev_expanded_scan;
-                return out;
-            }
-        }
         loop {
             if let Some(closed) = self.take_def_body_run(&mut out, &mut depth, expanded) {
                 if closed {
@@ -1668,7 +1712,7 @@ impl Engine {
                                 if !self.store_unexpanded_in_edef(
                                     &mut out,
                                     &toks,
-                                    definition_start.as_ref(),
+                                    definition_start,
                                 ) {
                                     self.in_expanded_scan = prev_expanded_scan;
                                     return out;
@@ -1682,7 +1726,7 @@ impl Engine {
                             || !self.store_unexpanded_in_edef(
                                 &mut out,
                                 &toks,
-                                definition_start.as_ref(),
+                                definition_start,
                             )
                         {
                             self.in_expanded_scan = prev_expanded_scan;
@@ -1707,7 +1751,7 @@ impl Engine {
             }
             if t == crate::input::EOF_MARKER {
                 // tex.web §336: the inserted `}` ends the body.
-                self.outer_scan_file_ended(definition_start.as_ref());
+                self.outer_scan_file_ended(definition_start);
                 self.in_expanded_scan = prev_expanded_scan;
                 return out;
             }
@@ -1720,7 +1764,7 @@ impl Engine {
                         if !self.store_unexpanded_in_edef(
                             &mut out,
                             &toks,
-                            definition_start.as_ref(),
+                            definition_start,
                         ) {
                             self.in_expanded_scan = prev_expanded_scan;
                             return out;
@@ -1731,7 +1775,7 @@ impl Engine {
                 self.push_token(nxt);
                 let toks = self.scan_general_text_of(Some(t.cs_id()));
                 if self.stopped_on_error
-                    || !self.store_unexpanded_in_edef(&mut out, &toks, definition_start.as_ref())
+                    || !self.store_unexpanded_in_edef(&mut out, &toks, definition_start)
                 {
                     self.in_expanded_scan = prev_expanded_scan;
                     return out;
@@ -1743,7 +1787,7 @@ impl Engine {
                     out.len(),
                     1,
                     "macro definition size",
-                    definition_start.as_ref(),
+                    definition_start,
                 ) {
                     self.in_expanded_scan = prev_expanded_scan;
                     return out;
@@ -1765,9 +1809,8 @@ impl Engine {
                 if !expanded && self.is_outer_macro_token(t2) {
                     t2 = self.forbidden_outer(t2);
                 }
-                let parameter_source = self.current_token_source_mark();
                 if t2 == crate::input::EOF_MARKER {
-                    self.outer_scan_file_ended(definition_start.as_ref());
+                    self.outer_scan_file_ended(definition_start);
                     self.in_expanded_scan = prev_expanded_scan;
                     return out;
                 }
@@ -1787,6 +1830,9 @@ impl Engine {
                     if parameter <= num_params {
                         out.push(Token(PAR_REF_FLAG | u32::from(parameter)));
                     } else {
+                        // Nothing has been read since `t2`, so the mark is
+                        // the one its scan left.
+                        let parameter_source = self.current_token_source_mark();
                         let declared = if num_params == 0 {
                             "this macro declares no parameters".to_string()
                         } else {
@@ -1806,6 +1852,7 @@ impl Engine {
                     }
                     continue;
                 }
+                let parameter_source = self.current_token_source_mark();
                 let found = if t2.is_char() {
                     char::from_u32(t2.chr()).unwrap_or('?').to_string()
                 } else {
@@ -1839,7 +1886,7 @@ impl Engine {
                 out.len(),
                 1,
                 "macro definition size",
-                definition_start.as_ref(),
+                definition_start,
             ) {
                 self.in_expanded_scan = prev_expanded_scan;
                 return out;
@@ -2102,14 +2149,11 @@ impl Engine {
 
     /// tex.web semi_simple_group: \\begingroup/\\endgroup save-stack only
     pub fn begin_semi_simple(&mut self) {
-        let location = self.input.current_file_location();
-        self.ss_trace.push(location);
         self.push_group_level(crate::eqtb::LevelType::SemiSimple);
         self.reset_local_counters();
     }
     pub fn end_semi_simple(&mut self) {
         if self.eqtb.cur_group_code() == crate::eqtb::group_code::SEMI_SIMPLE {
-            self.ss_trace.pop();
             let _ = self.pop_group_fixup();
         } else {
             self.off_save(self.cur_tok);

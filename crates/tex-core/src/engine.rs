@@ -29,10 +29,24 @@ pub struct IfState {
     pub unless: bool,
     /// tex.web `if_limit = fi_code`: the `\else` branch is running
     pub in_else: bool,
-    pub loc_file: std::rc::Rc<str>,
+    /// The file open when the conditional began; `None` when that is the
+    /// file of `loc` (the usual case, sparing a reference count per
+    /// conditional). Read it with [`IfState::loc_file`].
+    pub(crate) loc_file: Option<std::rc::Rc<str>>,
     pub loc_line: u32,
     pub loc_cs: u32,
     pub(crate) loc: Option<crate::input::SourceMark>,
+}
+
+impl IfState {
+    /// The name of the file open when the conditional began ("" if none).
+    pub fn loc_file(&self) -> &str {
+        match (&self.loc_file, &self.loc) {
+            (Some(name), _) => name,
+            (None, Some(mark)) => mark.file_name(),
+            (None, None) => "",
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -302,7 +316,11 @@ pub struct Engine {
     /// keyed by the returned token so it cannot leak to a later command.
     pub(crate) diagnostic_synthetic_source: Option<(CsId, crate::input::SourceMark, usize)>,
     /// Opening locations for user-visible brace and `\\begingroup` levels.
-    pub(crate) diagnostic_group_openings: Vec<(u16, crate::input::SourceMark)>,
+    pub(crate) diagnostic_group_openings: Vec<crate::diagnostics::GroupOpening>,
+    /// Scratch for `pop_group`: the \aftergroup tokens and e-TeX penalty
+    /// shapes of the group being closed (empty between calls).
+    pub(crate) group_after_tokens: Vec<Token>,
+    pub(crate) group_penalty_shapes: Vec<(u8, std::rc::Rc<[i32]>, u16)>,
     /// TeX applies `\\errhelp` to an explicit `\\errmessage`, rather than to
     /// unrelated engine errors that happen to follow the assignment.
     pub(crate) diagnostic_use_err_help: bool,
@@ -401,8 +419,6 @@ pub struct Engine {
     pub align_state: i32, // & nesting balance for runaway detection
     /// A macro parameter scanner is reading at alignment brace depth zero.
     pub align_macro_arg: bool,
-    /// File and line of each open \begingroup, for dump diagnostics.
-    pub ss_trace: Vec<(std::rc::Rc<str>, u32)>,
     pub format_done: bool,
     pub trace_ltx: u32,
     /// \pdfpageattr / \pdfpagesattr dict bodies (global in pdfTeX)
@@ -541,11 +557,6 @@ pub struct Engine {
     /// Expansions after that point outrank the toklist; older `pushed`
     /// tokens (e.g. a \\futurelet peek) wait until the toklist finishes.
     pub align_pushed_base: usize,
-    /// Brace-balance baseline of active token-list sources after the current
-    /// alignment u-template completes.
-    pub(crate) align_delimiter_balance_base: i32,
-    /// eqtb group level after the current alignment u-template completes.
-    pub(crate) align_cell_level: u16,
     /// tex.web align_state (tex.web @6745): net brace depth relative to the
     /// current alignment entry. A row delimiter ends the entry only at 0.
     /// Maintained cumulatively at token fetch (tex.web @7335/@7492); reset
@@ -985,29 +996,37 @@ impl Engine {
     /// Check limits that can be crossed while fetching or dispatching one
     /// token. Unlike RSS accounting, these checks are cheap enough to run at
     /// every main-control boundary.
+    #[inline(always)]
     pub(crate) fn structural_capacity_exceeded(&mut self) -> bool {
+        if self.cs.capacity_exceeded()
+            || self.eqtb.save_stack_capacity_exceeded()
+            || self.eqtb.group_level_capacity_exceeded()
+        {
+            self.report_structural_capacity();
+            return true;
+        }
+        false
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn report_structural_capacity(&mut self) {
         if self.cs.capacity_exceeded() {
             self.capacity_error(&format!(
                 "TeX capacity exceeded, sorry [hash size={}]",
                 crate::token::MAX_HASH_NAMES
             ));
-            return true;
-        }
-        if self.eqtb.save_stack_capacity_exceeded() {
+        } else if self.eqtb.save_stack_capacity_exceeded() {
             self.capacity_error(&format!(
                 "TeX capacity exceeded, sorry [save size={}]",
                 crate::eqtb::MAX_SAVE_STACK
             ));
-            return true;
-        }
-        if self.eqtb.group_level_capacity_exceeded() {
+        } else {
             self.capacity_error(&format!(
                 "TeX capacity exceeded, sorry [grouping levels={}]",
                 crate::eqtb::MAX_GROUP_LEVEL
             ));
-            return true;
         }
-        false
     }
 
     /// Set both representations of TeX's interaction mode. The eqtb value is
@@ -1022,7 +1041,16 @@ impl Engine {
 
     /// Apply a completed \interactionmode assignment at the main-control
     /// boundary, while its source token is still available for diagnostics.
+    #[inline(always)]
     pub(crate) fn apply_pending_interaction_mode(&mut self) {
+        if self.eqtb.has_pending_interaction_mode() {
+            self.apply_interaction_mode_assignment();
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn apply_interaction_mode_assignment(&mut self) {
         let Some(value) = self.eqtb.take_pending_interaction_mode() else {
             return;
         };
@@ -1150,6 +1178,8 @@ impl Engine {
             diagnostic_macro_call_span: 1,
             diagnostic_synthetic_source: None,
             diagnostic_group_openings: Vec::new(),
+            group_after_tokens: Vec::new(),
+            group_penalty_shapes: Vec::new(),
             diagnostic_use_err_help: false,
             write_streams: (0..16).map(|_| None).collect(),
             write_stream_paths: (0..16).map(|_| None).collect(),
@@ -1209,7 +1239,6 @@ impl Engine {
             no_expand_tok: None,
             align_state: 0,
             align_macro_arg: false,
-            ss_trace: Vec::new(),
             format_done: false,
             trace_ltx: 0,
             pdf_page_attr: String::new(),
@@ -1288,8 +1317,6 @@ impl Engine {
             align_scanning_cell: false,
             align_close_reason: crate::align::AlignCloseReason::default(),
             align_pushed_base: 0,
-            align_delimiter_balance_base: 0,
-            align_cell_level: 0,
             align_brace_depth: 0,
             middle_delimiter_size: 0,
             align_is_valign: false,
@@ -2158,9 +2185,7 @@ impl Engine {
 
     pub fn pop_group(&mut self) -> crate::eqtb::LevelType {
         let closing_level = self.eqtb.cur_level;
-        let mut ag = Vec::new();
         let mut ps = None;
-        let mut penalty_shapes = Vec::new();
         let first_event = self.eqtb.trace_events.len();
         // e-TeX group_warning needs the closing group's identity, which
         // unsave is about to forget
@@ -2175,9 +2200,13 @@ impl Engine {
         } else {
             None
         };
-        let ty = self
-            .eqtb
-            .pop_level_full(&mut ag, &mut ps, &mut penalty_shapes);
+        // The after-group tokens and penalty shapes go to buffers kept on the
+        // engine, so closing a group allocates nothing.
+        let ty = self.eqtb.pop_level_full(
+            &mut self.group_after_tokens,
+            &mut ps,
+            &mut self.group_penalty_shapes,
+        );
         // Shape pointers are level-tracked like eqtb entries. A later global
         // assignment suppresses restoration from an older local save item.
         if let Some((old, old_lvl)) = ps {
@@ -2188,20 +2217,28 @@ impl Engine {
             }
             self.complete_shape_event(first_event, None, restored);
         }
-        for (kind, old, old_lvl) in penalty_shapes {
-            let kind = kind as usize;
-            let restored = self.penalty_shape_levels[kind] > crate::eqtb::LEVEL_ONE;
-            if restored {
-                self.penalty_shapes[kind] = old;
-                self.penalty_shape_levels[kind] = old_lvl;
+        if !self.group_penalty_shapes.is_empty() {
+            let mut penalty_shapes = std::mem::take(&mut self.group_penalty_shapes);
+            for (kind, old, old_lvl) in penalty_shapes.drain(..) {
+                let kind = kind as usize;
+                let restored = self.penalty_shape_levels[kind] > crate::eqtb::LEVEL_ONE;
+                if restored {
+                    self.penalty_shapes[kind] = old;
+                    self.penalty_shape_levels[kind] = old_lvl;
+                }
+                self.complete_shape_event(first_event, Some(kind), restored);
             }
-            self.complete_shape_event(first_event, Some(kind), restored);
+            self.group_penalty_shapes = penalty_shapes;
         }
         if let Some((outer, group)) = closing {
             self.group_warning(closing_boundary, outer, group);
         }
-        for t in ag {
-            self.push_token(t);
+        if !self.group_after_tokens.is_empty() {
+            let mut after = std::mem::take(&mut self.group_after_tokens);
+            for t in after.drain(..) {
+                self.push_token(t);
+            }
+            self.group_after_tokens = after;
         }
         self.forget_group_opening(closing_level);
         ty
@@ -2397,6 +2434,7 @@ impl Engine {
             }
         }
     }
+    #[inline]
     pub fn trigger_after_assignment(&mut self) {
         if let Some(t) = self.after_assignment.take() {
             self.push_token(t);

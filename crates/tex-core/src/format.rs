@@ -356,9 +356,21 @@ pub fn check_dumpable(eng: &Engine) -> Result<(), String> {
                 n_ag,
                 n_other,
                 eng.eqtb.cur_level,
-                eng.ss_trace
+                eng.eqtb
+                    .groups
                     .iter()
-                    .map(|(file, line)| format!("{}:{line}", file.split('/').last().unwrap_or("?")))
+                    .enumerate()
+                    .filter(|(_, group)| group.meta.code == crate::eqtb::group_code::SEMI_SIMPLE)
+                    .map(|(index, group)| {
+                        let level = crate::eqtb::LEVEL_ONE + 1 + index as u16;
+                        let file = eng
+                            .diagnostic_group_openings
+                            .iter()
+                            .find(|opening| opening.level == level)
+                            .map(|opening| opening.mark.to_context().name)
+                            .unwrap_or_default();
+                        format!("{}:{}", file.split('/').last().unwrap_or("?"), group.line)
+                    })
                     .collect::<Vec<_>>()
                     .join(" | "),
                 types.join(",")

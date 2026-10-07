@@ -1490,8 +1490,8 @@ impl Engine {
             .diagnostic_group_openings
             .iter()
             .rev()
-            .find(|(level, _)| *level == box_level)
-            .map(|(_, source)| source.clone());
+            .find(|opening| opening.level == box_level)
+            .map(|opening| opening.mark.clone());
         let kind = self.box_kinds.pop().unwrap_or(0);
         // packed lines join the vbox instead of being vpack-discarded
 

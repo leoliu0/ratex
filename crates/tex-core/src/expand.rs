@@ -1391,7 +1391,7 @@ impl Engine {
                                 self.eqtb
                                     .fonts
                                     .get(f as usize)
-                                    .is_some_and(|font| font.exists_char(byte))
+                                    .is_some_and(|font| font.char_present(byte))
                             })
                         })
                     }

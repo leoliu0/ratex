@@ -1710,3 +1710,35 @@ fn hbox_starts_at_space_factor_1000() {
         assert!(e.term.contains(expected), "{expected}: {}", e.term);
     }
 }
+
+/// tex.web `char_exists` (§554) tests the TFM width index, not the metrics:
+/// xy-pic's arrow-tip font xyatip10 maps every character to a zero width
+/// entry, and pdftex (TeX Live 2026) sets `\x\char47 \char15` as two
+/// character nodes in a 0pt box. lasy10 has width index 0 at code 5, inside
+/// its 1..61 range, so `\iffontchar` is false there.
+#[test]
+fn zero_metric_characters_exist_and_width_index_zero_slots_do_not() {
+    let e = engine(
+        r"\font\x=xyatip10 \setbox0\hbox{\x\char47 \char15}
+\font\l=lasy10
+\message{[X47 \iffontchar\x47 Y\else N\fi]}
+\message{[L5 \iffontchar\l5 Y\else N\fi]}
+\message{[L1 \iffontchar\l1 Y\else N\fi]}
+\end",
+    );
+    let chars: Vec<u8> = match e.eqtb.boxed[0].as_ref() {
+        Some(tex_core::boxes::Node::Box { w: 0, list, .. }) => list
+            .iter()
+            .filter_map(|n| match n {
+                tex_core::boxes::Node::Char { c, .. } => Some(*c),
+                _ => None,
+            })
+            .collect(),
+        other => panic!("box0: {other:?}"),
+    };
+    assert_eq!(chars, [47, 15], "{}", e.term);
+    let values = message_values(&e);
+    for expected in ["[X47Y]", "[L5N]", "[L1Y]"] {
+        assert!(values.contains(expected), "{expected}: {}", e.term);
+    }
+}

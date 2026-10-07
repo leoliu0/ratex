@@ -3618,7 +3618,7 @@ impl Engine {
             if let Some(ci) = f.chars.get(c as usize) {
                 if ci.tag == TAG_LIST {
                     let next = ci.remainder;
-                    if next != c && f.exists_char(next) {
+                    if next != c && f.char_present(next) {
                         c = next;
                     }
                 }

@@ -4100,9 +4100,11 @@ impl Engine {
 
     /// put a byte string into the expansion stream; spaces become cat-10
     /// spacer tokens (tex.web str_toks), everything else cat-12
-    /// (chronologically on top: newer than any earlier pushback)
+    /// (chronologically on top: newer than any earlier pushback). The
+    /// Unicode engines decode UTF-8 (xetex.web and luatex textoken.c
+    /// `str_toks`), so `\detokenize{–}` is one character token there.
     pub fn exp_string(&mut self, bytes: &[u8]) {
-        if self.engine_kind == crate::engine::EngineKind::XeTeX && !bytes.is_ascii() {
+        if self.engine_kind != crate::engine::EngineKind::PdfTeX && !bytes.is_ascii() {
             self.exp_string_scalars(bytes);
             return;
         }
@@ -4119,9 +4121,9 @@ impl Engine {
         self.push_tokens_named(toks, "<inserted>");
     }
 
-    /// xetex.web `str_toks`: UTF-8 text becomes one token per scalar value
-    /// (a byte outside any UTF-8 sequence stands for the character of that
-    /// code).
+    /// xetex.web / luatex `str_toks`: UTF-8 text becomes one token per scalar
+    /// value (a byte outside any UTF-8 sequence stands for the character of
+    /// that code).
     #[inline(never)]
     fn exp_string_scalars(&mut self, bytes: &[u8]) {
         let mut toks: Vec<Token> = Vec::with_capacity(bytes.len());
@@ -4198,12 +4200,24 @@ impl Engine {
                 out.extend_from_slice(name);
                 // tex.web print_cs / show_token_list (§5605): control word
                 // (name length > 1 or single character with letter catcode)
-                // is followed by a space.
-                if name.len() > 1
-                    || name
-                        .first()
-                        .is_some_and(|&c| self.eqtb.cat[c as usize] == crate::token::CAT_LETTER)
-                {
+                // is followed by a space. The Unicode engines store a
+                // single-character name as one UTF-8 scalar.
+                let trailing_space = match name {
+                    [] => false,
+                    [c] => self.eqtb.cat[*c as usize] == crate::token::CAT_LETTER,
+                    _ if self.engine_kind != crate::engine::EngineKind::PdfTeX && name.len() <= 4 => {
+                        match std::str::from_utf8(name).ok().and_then(|s| {
+                            let mut chars = s.chars();
+                            let first = chars.next()?;
+                            chars.next().is_none().then_some(u32::from(first))
+                        }) {
+                            Some(c) => self.eqtb.cat_code(c) == crate::token::CAT_LETTER,
+                            None => true,
+                        }
+                    }
+                    _ => true,
+                };
+                if trailing_space {
                     out.push(b' ');
                 }
             } else {

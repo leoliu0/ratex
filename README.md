@@ -65,26 +65,25 @@ cargo build --release --locked --bin texres   # needs stable Rust (1.88+)
 
 ## Usage
 
+**Build a document.** `texres paper.tex` writes `paper.pdf` and
+`paper.synctex.gz` next to the source. It runs LaTeX, BibTeX or Biber and the
+index tools as often as needed. A second run with no changes takes a few
+milliseconds.
+
+**Choose the engine.** Documents that load `fontspec`, `xeCJK`, `ctex`,
+`unicode-math` or `polyglossia` run as XeLaTeX, everything else as pdfLaTeX.
+To choose yourself, add `-pdf`, `-xelatex` or `-lualatex`:
+
 ```bash
-texres paper.tex                         # engine picked from the preamble
-texres -xelatex paper.tex                # or -pdf, -lualatex
-texres -output-directory=build paper.tex # write output to build/
-texres -pvc paper.tex                    # rebuild whenever an input changes
-texres -c paper.tex                      # remove cached build files
-texres latexdiff old.tex new.tex diff.tex && texres diff.tex
+texres -lualatex paper.tex
 ```
 
-Documents loading `fontspec`, `xeCJK`, `ctex`, `unicode-math` or `polyglossia`
-run as XeLaTeX automatically; everything else runs as pdfLaTeX.
-`texres --help` lists all options. Exit status: 0 converged, 1 build failed,
-2 usage error.
+**Write the output elsewhere.** `texres -outdir=build paper.tex` puts the PDF
+in `build/`. Auxiliary files (`.aux`, `.bbl`, `.toc`) live in a private cache,
+not in your project. `-k` copies them next to the PDF.
 
-**Watch mode:** `-pvc` (also `--watch`, `-w`) builds once, then rebuilds
-whenever a file the last build read changes: the main file, `\input` and
-`\include` files, `.bib` files, images, local packages and fonts. It combines
-with every build option except `-c`/`-C`. Saves that leave the content
-unchanged are ignored, and one editor save gives one rebuild. A failed
-rebuild prints its errors and keeps watching; Ctrl-C stops with status 0.
+**Rebuild on every save.** `texres -pvc paper.tex` builds, then rebuilds when a
+file the build read changes. Ctrl-C stops it.
 
 ```text
 $ texres -pvc paper.tex
@@ -92,22 +91,50 @@ texmk: [14:02:11] build OK (3 pages, 1.42 s)
 texmk: watching 4 files (Ctrl-C to stop)
 texmk: [14:02:40] changed: intro.tex
 texmk: [14:02:41] build OK (3 pages, 0.36 s)
-texmk: watching 4 files (Ctrl-C to stop)
 ```
 
-**Bibliographies:** `\bibliography` runs BibTeX. `biblatex` (default
-`backend=biber`) runs the built-in Biber, which writes the same `.bbl` as
-Biber 2.22.
+**Clean up.** `texres -c paper.tex` removes the cached build state and keeps
+the PDF. `texres -C paper.tex` also removes the PDF and SyncTeX file.
 
-**Fonts:** fonts are looked up in your project folder and in the bundled set
-(Latin Modern, TeX Gyre, STIX Two, Libertinus, IPAex, Harano Aji, Fandol and
-others). System fonts are not used. To use another font, put the file next to
-your document and load it with `Path=./`.
+**Read errors.** Errors print with the file, line and a hint:
 
-**Single tools:** a symlink to `texres` named `pdflatex`, `xelatex`,
-`lualatex`, `bibtex` or `biber` runs one pass of that tool; named `latexmk` it
-behaves like `texres`. The packages install only `texres`, so an existing
-TeX Live is left alone.
+```text
+error: Undefined control sequence \printtotl
+  --> chapters/results.tex:1:9
+  |
+1 | Result: \printtotl
+  |         ^^^^^^^^^^
+  = help: check the command spelling; if a package defines it, load that package before use
+```
+
+The full TeX log stays in the cache; `texres` prints its path when a build
+fails. `--keep-logs` copies it to `paper.log` next to the PDF. So do the
+options editors pass: `-interaction=...`, `-file-line-error` and
+`-synctex=...`. `-verbose` also prints TeX's own output. With
+`-interaction=nonstopmode` a document with errors still gets a PDF, and the
+exit status is 1. See [DIAGNOSTICS.md](DIAGNOSTICS.md).
+
+**Bibliographies.** `\bibliography` runs the built-in BibTeX. `biblatex`
+(default `backend=biber`) runs the built-in Biber, which writes the same
+`.bbl` as Biber 2.22.
+
+**Fonts.** Fonts come from your project folder and the bundled set (Latin
+Modern, TeX Gyre, STIX Two, Libertinus, IPAex, Harano Aji, Fandol and others).
+System fonts are not used. To use another font, put the file next to your
+document and load it with `Path=./`.
+
+**Compare versions.** `texres latexdiff old.tex new.tex diff.tex` writes a
+marked-up `diff.tex`; build it with `texres diff.tex`.
+
+**Single tools.** A link to `texres` named `pdflatex`, `xelatex`, `lualatex`,
+`bibtex` or `biber` runs one pass of that tool. Named `latexmk`, it behaves
+like `texres`. The packages install only `texres`, so an existing TeX Live is
+left alone.
+
+**Exit status.** 0: the build finished. 1: TeX, BibTeX or Biber reported an
+error, or the build did not settle. 2: bad command line.
+
+`texres --help` lists all options.
 
 ## Speed
 
@@ -135,29 +162,154 @@ per-group numbers and a script to rerun it are in
 
 ## Editor setup
 
-Find the path with `command -v texres` (Homebrew: `"$(brew --prefix)/bin/texres"`).
+Any editor that can run `latexmk` can run `texres`; it accepts latexmk's
+options. Three rules apply to every editor:
 
-**TeXstudio:** in *Options > Configure TeXstudio > Commands*, set **Latexmk**
-to the following, using your path:
+1. Use the full path to `texres`. Find it with `command -v texres` (Homebrew:
+   `"$(brew --prefix)/bin/texres"`, usually `/opt/homebrew/bin/texres` on
+   Apple Silicon). Apps started from the Dock or a desktop menu do not see the
+   `PATH` of your shell.
+2. Leave out `-pdf`. It forces pdfLaTeX and turns off the XeLaTeX detection.
+   Use `-xelatex` or `-lualatex` only to force those engines.
+3. Keep `-interaction=nonstopmode` (or `-file-line-error`, or
+   `-synctex=1`). With one of them `texres` writes `paper.log` next to the PDF,
+   where editors look for errors.
 
-```text
-"/opt/homebrew/bin/texres" -pdf -interaction=nonstopmode "%.tex"
-```
+`texres` writes `paper.synctex.gz` on every build, so jumping between source
+and PDF works with any SyncTeX viewer. It does not read `latexmkrc` files, and
+it ignores latexmk's viewer options (`-pv`, `-view=...`).
 
-Then under *Build* choose **Latexmk** as the default compiler. Use the full
-path, because macOS apps started from the Dock don't see your shell `PATH`.
+### VS Code (LaTeX Workshop)
 
-**VS Code (LaTeX Workshop):** add to `settings.json`:
+Open the settings JSON (Command Palette, *Preferences: Open User Settings
+(JSON)*) and add:
 
 ```json
 "latex-workshop.latex.tools": [
-  { "name": "texres", "command": "texres", "args": ["-pdf", "-interaction=nonstopmode", "%DOC%"] }
+  {
+    "name": "texres",
+    "command": "/opt/homebrew/bin/texres",
+    "args": ["-verbose", "-synctex=1", "-interaction=nonstopmode", "-file-line-error", "-outdir=%OUTDIR%", "%DOC%"]
+  }
 ],
-"latex-workshop.latex.recipes": [{ "name": "texres", "tools": ["texres"] }]
+"latex-workshop.latex.recipes": [
+  { "name": "texres", "tools": ["texres"] }
+]
 ```
 
-The `.synctex.gz` file next to the PDF lets the editor jump between source
-and PDF.
+Replace the command with your path. LaTeX Workshop reads errors and warnings
+from what the tool prints, so keep `-verbose`. Build with Ctrl+Alt+B (or
+save the file). The built-in PDF viewer (*View LaTeX PDF*) uses
+`paper.synctex.gz`: Ctrl+Alt+J jumps from the source to the PDF, and
+Ctrl+click in the PDF jumps back to the source.
+
+### TeXstudio
+
+1. Open *Options > Configure TeXstudio > Commands*. Set **Latexmk** to (with
+   your path):
+   ```text
+   "/opt/homebrew/bin/texres" -synctex=1 -interaction=nonstopmode %.tex
+   ```
+2. On the *Build* page, set **Default Compiler** to *Latexmk*.
+
+TeXstudio reads errors from `paper.log`. Do not add `-file-line-error`;
+TeXstudio expects TeX's `!` lines. The internal viewer jumps to the PDF
+position after each build, and Ctrl+click in the PDF goes to the source.
+
+### Vim and Neovim (vimtex)
+
+vimtex runs latexmk; point it at `texres` and drop its default `-pdf`.
+In `init.lua`:
+
+```lua
+vim.g.vimtex_compiler_latexmk = { executable = "texres" }
+vim.g.vimtex_compiler_latexmk_engines = { _ = "" }
+vim.g.vimtex_view_method = "zathura"
+```
+
+Or in `.vimrc`:
+
+```vim
+let g:vimtex_compiler_latexmk = {'executable': 'texres'}
+let g:vimtex_compiler_latexmk_engines = {'_': ''}
+let g:vimtex_view_method = 'zathura'
+```
+
+`\ll` starts continuous mode (`texres -pvc`), and errors appear in the
+quickfix list after each build. `% !TeX program = xelatex` on the first line
+of a document still selects `-xelatex`. With zathura, `\lv` jumps to the PDF
+and Ctrl+click in zathura jumps back to Vim. vimtex also reads `$pdf_mode`
+from `~/.latexmkrc`; if that file sets `$pdf_mode = 1`, vimtex adds `-pdf`
+again, so remove the line.
+
+For Okular instead of zathura:
+
+```lua
+vim.g.vimtex_view_general_viewer = "okular"
+vim.g.vimtex_view_general_options = "--unique file:@pdf\\#src:@line@tex"
+```
+
+In Okular, set *Settings > Configure Okular > Editor* to *Custom Text Editor*
+with the command `nvim --headless -c "VimtexInverseSearch %l '%f'"`, then
+Shift+click in the PDF to jump to the source.
+
+### Emacs (AUCTeX)
+
+Add a TeXres command and make it the default:
+
+```elisp
+(with-eval-after-load 'tex
+  (add-to-list 'TeX-command-list
+               '("TeXres" "texres -verbose %S%(mode)%(file-line-error) %t"
+                 TeX-run-TeX nil (latex-mode LaTeX-mode) :help "Build with TeXres")))
+(add-hook 'LaTeX-mode-hook (lambda () (setq TeX-command-default "TeXres")))
+```
+
+`C-c C-c` then builds, and `` C-c ` `` steps through the errors. AUCTeX reads
+them from the output, so keep `-verbose`. With `TeX-source-correlate-mode`
+on, `%S` adds `-synctex=1` and forward search works with the viewer set in
+`TeX-view-program-selection`.
+
+### Sublime Text (LaTeXTools)
+
+In *Preferences > Package Settings > LaTeXTools > Settings – User*:
+
+```json
+"builder": "traditional",
+"builder_settings": {
+  "command": ["/opt/homebrew/bin/texres", "-cd", "-f", "-interaction=nonstopmode", "-synctex=1"]
+}
+```
+
+LaTeXTools prints a note that the command does not select the engine; that is
+expected, `texres` picks it. Errors come from `paper.log`. Forward and inverse
+search use the viewer LaTeXTools is set up for (Skim, SumatraPDF, Okular,
+zathura or Evince).
+
+### TeXShop (macOS)
+
+Create `~/Library/TeXShop/Engines/TeXres.engine` with:
+
+```bash
+#!/bin/bash
+/opt/homebrew/bin/texres -synctex=1 -interaction=nonstopmode "$1"
+```
+
+Make it executable (`chmod +x ~/Library/TeXShop/Engines/TeXres.engine`),
+restart TeXShop and pick *TeXres* in the engine menu next to *Typeset*. Or put
+`% !TEX TS-program = TeXres` on the first line of the document.
+
+### Other editors
+
+If the editor has a latexmk setting, replace `latexmk` with the full path to
+`texres` and remove `-pdf`. If it can only run a program called `latexmk`,
+make a link: `ln -s "$(command -v texres)" ~/bin/latexmk`, with `~/bin` early
+in the editor's `PATH`.
+
+With `-pvc`, `texres` runs the `$compiling_cmd`, `$success_cmd` and
+`$failure_cmd` commands that editors set with `-e`, as latexmk does. Other
+`-e` code and `-r` are refused with a message, and so are DVI and PostScript
+modes (`-dvi`, `-ps`, `-pdfdvi`, `-pdfps`).
 
 ## Switching from an older install to Homebrew (macOS)
 
@@ -184,7 +336,7 @@ switching editors.
    `brew link --overwrite`. `pkgutil --forget` alone does not remove files.
 4. Install the maintained tap using the commands above. Open a new Terminal,
    run `type -a texres` and `"$(brew --prefix)/bin/texres" --version`, then configure
-   TeXstudio with that absolute Homebrew path as described below.
+   TeXstudio with that absolute Homebrew path as described in [Editor setup](#editor-setup).
 
 If core's `texres` is already installed, use `brew uninstall texres` before
 installing `leoliu0/texres/texres`. Neither uninstall your documents nor TeX Live

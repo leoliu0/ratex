@@ -23,8 +23,27 @@ error: Undefined control sequence \printtotl
   = while expanding: \resultsrow
 ```
 
-The transcript (`.log`) contains the same blocks with TeX's `!` prefix in place
-of `error:`. Colors are used on a terminal unless `NO_COLOR` is set or
+The transcript (`.log`) contains the same blocks. Each error block comes after
+the lines TeX Live writes for that error, which editors parse: the message
+after `!` (or after `./file.tex:LINE:` with `-file-line-error`) and the `l.N`
+context lines. With `-file-line-error` and in nonstop or scroll mode, these
+TeX lines also go to standard output. For the first error above, the
+transcript reads:
+
+```text
+! Undefined control sequence.
+l.1 Result: \printtotl
+
+error: Undefined control sequence \printtotl
+  --> chapters/results.tex:1:9
+  |
+1 | Result: \printtotl
+  |         ^^^^^^^^^^
+  = help: check the command spelling; if a package defines it, load that package before use
+  = included from main.tex:4:20
+```
+
+Colors are used on a terminal unless `NO_COLOR` is set or
 `CLICOLOR=0`; `CLICOLOR_FORCE=1` forces them.
 
 Locations refer to the bytes TeX actually read. The scanner records the start
@@ -95,8 +114,8 @@ earlier output. The command-line controls are:
 - `-halt-on-error` stops after the first error in every interaction mode.
 - `--max-errors=N` (or `--max-errors N`) bounds recovery in the continuing
   modes; the default is 100.
-- `-file-line-error` is accepted for compatibility; rich file and line output is
-  always enabled.
+- `-file-line-error` starts TeX's error lines with `./file.tex:LINE:` instead
+  of `!`, as in TeX Live. The structured blocks always carry file and line.
 
 `\errorcontextlines` limits macro and include notes without changing the primary
 source location. Macro history and include ancestry each receive that bounded

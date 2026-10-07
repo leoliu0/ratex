@@ -39,7 +39,10 @@ aborts if that tree cannot be read or changes while it is being hashed. This
 keeps convergence checks complete and prevents preexisting state links from
 redirecting a managed build outside the selected auxiliary directory.
 
-Use `texres --keep-logs document.tex` to copy the transcript beside the PDF,
+Use `texres --keep-logs document.tex` to copy the transcript beside the PDF
+(the engine options editors pass, `-interaction=...`, `-file-line-error` and
+`-synctex=...`, do the same; a transcript that an earlier TeX build left there
+is replaced, any other file of that name is kept),
 or `texres --keep-intermediates document.tex` (short form `-k`) to copy all
 auxiliary files. `texres -c document.tex` removes the matching private cache
 and exported files that have not been modified. `texres -C document.tex` also

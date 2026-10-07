@@ -541,7 +541,9 @@ fn recursive_input_capacity_is_a_logged_fatal_error_in_batch_mode() {
 
     let log = job.log();
     let marker = "TeX capacity exceeded, sorry [input stack size=5000]";
-    assert_eq!(occurrences(&log, marker), 1, "{log}");
+    // TeX's error line, then the structured block
+    assert_eq!(occurrences(&log, &format!("! {marker}.")), 1, "{log}");
+    assert_eq!(occurrences(&log, &format!("error: {marker}")), 1, "{log}");
     assert!(log.contains("main.tex:1:1"), "{log}");
     assert!(!log.contains("panicked at"), "{log}");
     assert!(!log.contains("stack backtrace"), "{log}");
@@ -562,7 +564,8 @@ fn recursive_macro_capacity_is_a_logged_fatal_error_in_batch_mode() {
 
     let log = job.log();
     let marker = "TeX capacity exceeded, sorry [input stack size=5000]";
-    assert_eq!(occurrences(&log, marker), 1, "{log}");
+    assert_eq!(occurrences(&log, &format!("! {marker}.")), 1, "{log}");
+    assert_eq!(occurrences(&log, &format!("error: {marker}")), 1, "{log}");
     assert!(log.contains("main.tex:1:"), "{log}");
     assert!(log.contains("while expanding"), "{log}");
     assert!(!log.contains("panicked at"), "{log}");
@@ -668,8 +671,11 @@ fn end_of_input_reports_unclosed_conditional_and_group() {
     assert!(stderr.contains("main.tex:1"), "{stderr}");
 
     let log = job.log();
-    assert_eq!(occurrences(&log, "Unclosed conditional"), 1, "{log}");
-    assert_eq!(occurrences(&log, "Unclosed group"), 1, "{log}");
+    // TeX's error line, then the structured block
+    assert_eq!(occurrences(&log, "! Unclosed conditional"), 1, "{log}");
+    assert_eq!(occurrences(&log, "error: Unclosed conditional"), 1, "{log}");
+    assert_eq!(occurrences(&log, "! Unclosed group"), 1, "{log}");
+    assert_eq!(occurrences(&log, "error: Unclosed group"), 1, "{log}");
 }
 
 #[test]
@@ -1927,11 +1933,11 @@ fn long_csname_obeys_batch_mode_and_emits_one_bounded_error() {
     assert!(output.stdout.is_empty(), "{}", failure_output(&output));
     assert!(output.stderr.is_empty(), "{}", failure_output(&output));
     let log = job.log();
-    assert_eq!(
-        occurrences(&log, "control sequence name exceeds 2000 bytes"),
-        1,
-        "{log}"
-    );
+    let marker = "control sequence name exceeds 2000 bytes";
+    // TeX's error line, then the structured block
+    assert_eq!(occurrences(&log, &format!("! TeX capacity exceeded [{marker}].")), 1, "{log}");
+    assert_eq!(occurrences(&log, &format!("error: TeX capacity exceeded [{marker}]")), 1, "{log}");
+    assert_eq!(occurrences(&log, marker), 2, "{log}");
     assert!(log.len() < 16 * 1024, "log grew to {} bytes", log.len());
 }
 
@@ -2118,7 +2124,9 @@ fn raw_eof_without_end_is_a_fatal_error() {
     let marker = "Emergency stop: no legal \\end found";
     assert_eq!(occurrences(&stderr, marker), 1, "{stderr}");
     assert!(stderr.contains("main.tex:1:"), "{stderr}");
-    assert_eq!(occurrences(&job.log(), marker), 1);
+    let log = job.log();
+    assert_eq!(occurrences(&log, &format!("! {marker}.")), 1, "{log}");
+    assert_eq!(occurrences(&log, &format!("error: {marker}")), 1, "{log}");
     assert!(!job.dir.join("main.pdf").exists());
 }
 
@@ -2202,7 +2210,9 @@ fn max_errors_stops_once_at_the_requested_count() {
     assert!(stderr.contains("Undefined control sequence \\undefinedErrorOne"));
     assert!(stderr.contains("Undefined control sequence \\undefinedErrorTwo"));
     assert!(!stderr.contains("undefinedErrorThree"), "{stderr}");
-    assert_eq!(occurrences(&job.log(), marker), 1);
+    let log = job.log();
+    assert_eq!(occurrences(&log, &format!("! {marker}")), 1, "{log}");
+    assert_eq!(occurrences(&log, &format!("error: {marker}")), 1, "{log}");
 }
 
 #[test]
@@ -2861,4 +2871,64 @@ fn cnf_line_sets_search_variables() {
     );
     assert!(output.status.success(), "{}", failure_output(&output));
     assert!(text(&output.stdout).contains("LIBFILE"), "{}", failure_output(&output));
+}
+
+const EDITOR_ERRORS_DOCUMENT: &str = "\\documentclass{article}\n\\begin{document}\nHi \\undefinedcs\n\n\\begin{itemize}\n\\item x\n\\end{enumerate}\nSee \\ref{nope}.\n\\hbox to 10pt{wwwwwwwwwwwwwwwwwwwwwwwwwww}\n\\end{document}\n";
+
+/// Editors (LaTeX Workshop, vimtex, TeXstudio, AUCTeX, LaTeXTools) locate
+/// errors by TeX's own lines: `! message.` followed by the `l.N` context
+/// line. The expected text is what TeX Live 2026's pdflatex writes for this
+/// document, in the transcript and, in nonstop mode, on the terminal. The
+/// structured TeXres report follows in the transcript.
+#[test]
+fn errors_keep_tex_standard_lines_for_editors() {
+    let job = Job::new("tex-standard-errors");
+    job.write("main.tex", EDITOR_ERRORS_DOCUMENT);
+    let output = job.compile(&["-interaction=nonstopmode"]);
+    let log = job.log();
+    let undefined = "! Undefined control sequence.\nl.3 Hi \\undefinedcs\n                   \n";
+    let latex_error = "! LaTeX Error: \\begin{itemize} on input line 5 ended by \\end{enumerate}.\n\nSee the LaTeX manual or LaTeX Companion for explanation.\nType  H <return>  for immediate help.\n";
+    for expected in [undefined, latex_error, "\nl.7 \\end{enumerate}\n"] {
+        assert!(log.contains(expected), "transcript lacks {expected:?}:\n{log}");
+    }
+    // Without -file-line-error the terminal keeps only the structured report.
+    assert!(!text(&output.stdout).contains("! Undefined"), "{}", failure_output(&output));
+    // Warnings were already in TeX's form; editors parse these lines too.
+    for expected in [
+        "\nLaTeX Warning: Reference `nope' on page 1 undefined on input line 8.\n",
+        "\nOverfull \\hbox (185.00018pt too wide) detected at line 9\n",
+    ] {
+        assert!(log.contains(expected), "transcript lacks {expected:?}:\n{log}");
+    }
+    for expected in ["error: Undefined control sequence \\undefinedcs\n", "  --> ", "cannot close enumerate while itemize is still open"] {
+        assert!(log.contains(expected), "transcript lacks the structured report {expected:?}:\n{log}");
+    }
+    // Editors attribute warnings to the innermost open file, which they
+    // follow by TeX's `(name` and `)`.
+    assert!(log.contains("main.aux)"), "the .aux file is never shown as closed:\n{log}");
+}
+
+/// `-file-line-error` replaces `!` by `file:line:`, as in TeX Live, which
+/// writes these lines for this document, breaking them at 79 columns.
+#[test]
+fn file_line_error_names_the_file_and_line() {
+    let job = Job::new("file-line-error");
+    job.write("main.tex", EDITOR_ERRORS_DOCUMENT);
+    let output = job.compile(&["-interaction=nonstopmode", "-file-line-error"]);
+    let log = job.log();
+    let latex_error = "./main.tex:7: LaTeX Error: \\begin{itemize} on input line 5 ended by \\end{enumerate}.";
+    let (first, rest) = latex_error.split_at(79);
+    for expected in [
+        "\n./main.tex:3: Undefined control sequence.\nl.3 Hi \\undefinedcs\n".to_string(),
+        format!("\n{first}\n{rest}\n"),
+        "\nl.7 \\end{enumerate}\n".to_string(),
+    ] {
+        assert!(log.contains(&expected), "transcript lacks {expected:?}:\n{log}");
+    }
+    assert!(!log.contains("\n! "), "{log}");
+    assert!(
+        text(&output.stdout).contains("./main.tex:3: Undefined control sequence.\nl.3 Hi \\undefinedcs\n"),
+        "{}",
+        failure_output(&output)
+    );
 }

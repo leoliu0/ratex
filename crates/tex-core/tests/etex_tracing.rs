@@ -305,7 +305,7 @@ fn stray_right_and_middle_are_extra_and_keep_the_formula_open() {
         "{leaving hbox group (level 1) entered at line 4}",
     ];
     assert_eq!(group_events(&e.log), expected, "{}", e.log);
-    assert_eq!(e.log.matches("Extra \\right").count(), 2, "{}", e.log);
+    assert_eq!(e.log.matches("! Extra \\right.").count(), 2, "{}", e.log);
     assert!(e.log.contains("Extra \\middle"), "{}", e.log);
     assert!(e.log.contains("Missing } inserted"), "{}", e.log);
     assert!(e.log.contains("[0]"), "{}", e.log);
@@ -346,7 +346,7 @@ fn mathchoice_parts_open_their_group_before_reading_the_brace() {
     expected.push("{leaving math shift group (level 2) entered at line 5}".into());
     expected.push("{leaving hbox group (level 1) entered at line 5}".into());
     assert_eq!(group_events(&e.log), expected, "{}", e.log);
-    assert_eq!(e.log.matches("Missing { inserted").count(), 1, "{}", e.log);
+    assert_eq!(e.log.matches("! Missing { inserted.").count(), 1, "{}", e.log);
 
     let e = run(concat!(
         "\\scrollmode\\catcode`\\$=3 \\tracinggroups=1 \\tracingonline=1\n",
@@ -452,7 +452,7 @@ fn eqno_and_middle_have_their_own_groups() {
     // the tag's and the \left segments' assignments are local to them
     assert_eq!(e.log.matches("[1]").count(), 3, "{}", e.log);
     assert!(!e.log.contains("[2]") && !e.log.contains("[5]"), "{}", e.log);
-    assert_eq!(e.log.matches("You can't use `\\eqno' in math mode").count(), 2, "{}", e.log);
+    assert_eq!(e.log.matches("! You can't use `\\eqno' in math mode.").count(), 2, "{}", e.log);
     assert!(e.log.contains("You can't use `\\halign' in math mode"), "{}", e.log);
 }
 

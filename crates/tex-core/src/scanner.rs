@@ -96,6 +96,7 @@ impl Engine {
                 lua_lines,
                 lua_reader,
                 name,
+                announced,
                 ..
             } = &self.input.stack[si]
             else {
@@ -109,6 +110,7 @@ impl Engine {
                 let lua = lua_lines.is_some();
                 let reader = *lua_reader;
                 let real_file = !name.starts_with('<') || name.starts_with("<embedded:");
+                let announced = *announced;
                 if matches!(
                     self.input.stack.get(si),
                     Some(Source::File { tracked: true, .. })
@@ -119,14 +121,20 @@ impl Engine {
                 if lua {
                     return None;
                 }
+                let mut reported = false;
                 if self.engine_kind == EngineKind::LuaTeX {
                     // textoken.c force_eof: `stop_file`, then the reader's close
                     if real_file || reader != 0 {
-                        self.lua_report_stop_file(crate::lua_cb_files::filetype::TEX);
+                        reported = self.lua_report_stop_file(crate::lua_cb_files::filetype::TEX);
                     }
                     if reader != 0 {
                         self.lua_reader_close(reader);
                     }
+                }
+                // tex.web §362: TeX shows that the file has been read. Editors
+                // follow the open files by these parentheses.
+                if announced && !reported {
+                    self.tex_print_str(true, true, ")");
                 }
                 let eof_toks = (*self.eqtb.tok_params
                     [crate::prim::ToksParam::EveryEOF.idx() as usize])

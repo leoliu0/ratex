@@ -601,9 +601,7 @@ impl Engine {
                     self.build_page();
                     return;
                 }
-                if self.engine_kind == crate::engine::EngineKind::LuaTeX {
-                    self.lua_stop_open_files();
-                }
+                self.close_open_files_at_end();
                 self.explicit_end_seen = true;
                 self.end_occurred = true;
             }

@@ -2926,3 +2926,80 @@ fn imakeidx_runs_the_embedded_makeindex_with_its_options_for_each_index() {
     let names = std::fs::read_to_string(find_file(&jobs, "names.ind").unwrap()).unwrap();
     assert!(names.contains("\\item Knuth, Donald, 1, 2\n\n  \\indexspace\n\n  \\item Turing, Alan, 1"), "{names}");
 }
+
+/// A stand-in engine that records its arguments and writes a transcript.
+const RECORDING_ENGINE: &str = r#"printf '%s\n' "$@" >> "$TEXMK_LIB/engine-args"
+out=.; aux=.; job=main
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -output-directory) out=$2; shift 2 ;;
+    -aux-directory|-auxdir) aux=$2; shift 2 ;;
+    -jobname) job=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+mkdir -p "$out" "$aux"
+printf 'This is pdfTeX, Version 3.141592653-2.6-1.40.29 (TeXres)\nnew transcript\n' > "$aux/$job.log"
+echo '\relax' > "$aux/$job.aux"
+printf '%%PDF-1.4 /Type /Page ' > "$out/$job.pdf""#;
+
+/// Editors read `main.log` beside the PDF. The engine options they pass
+/// export it, replacing a transcript left by an earlier TeX Live build;
+/// a plain build keeps the project clean, and a `.log` that no TeX wrote
+/// is preserved.
+#[test]
+fn editor_engine_options_export_the_transcript() {
+    let plain = Fixture::new("editor-log-plain", "");
+    plain.tool("pdflatex", RECORDING_ENGINE);
+    plain.run();
+    assert!(!plain.0.join("main.log").exists());
+
+    for flag in ["-interaction=nonstopmode", "-file-line-error", "-synctex=1"] {
+        let f = Fixture::new(&format!("editor-log{flag}"), "");
+        f.tool("pdflatex", RECORDING_ENGINE);
+        f.write("main.log", "This is pdfTeX, Version 3.141592653-2.6-1.40.29 (TeX Live 2026)\nold error\n");
+        let out = f.output(&[flag]);
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let log = std::fs::read_to_string(f.0.join("main.log")).unwrap();
+        assert!(log.contains("new transcript"), "{flag}: {log}");
+    }
+
+    let f = Fixture::new("editor-log-foreign", "");
+    f.tool("pdflatex", RECORDING_ENGINE);
+    f.write("main.log", "my notes\n");
+    let out = f.output(&["-interaction=nonstopmode"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(std::fs::read_to_string(f.0.join("main.log")).unwrap(), "my notes\n");
+}
+
+/// latexmk options that editors pass and that concern latexmk itself (the
+/// viewer, rc files, `-cd`, `-latexoption`) do not reach the engine.
+#[test]
+fn latexmk_options_from_editors_stay_out_of_the_engine() {
+    let f = Fixture::new("latexmk-options", "");
+    f.tool("pdflatex", RECORDING_ENGINE);
+    std::fs::create_dir_all(f.0.join("project")).unwrap();
+    std::fs::create_dir_all(f.0.join("elsewhere")).unwrap();
+    f.write("project/main.tex", "test");
+    let out = Command::new(env!("CARGO_BIN_EXE_texmk"))
+        .args([
+            "-cd", "-f", "-outdir=build", "-interaction=nonstopmode", "-synctex=1",
+            "-view=none", "-pv", "-new-viewer-", "-pvctimeout-", "-emulate-aux-dir", "-norc",
+            "-recorder", "-bibtex", "-MSWinBackSlash", "-latexoption=-shell-escape",
+        ])
+        .arg(f.0.join("project/main"))
+        .current_dir(f.0.join("elsewhere"))
+        .env("TEXMK_LIB", &f.0)
+        .env("TEX_RS_CACHE_DIR", f.0.join("cache"))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(f.0.join("project/build/main.pdf").is_file(), "-cd makes -outdir relative to the source");
+    assert!(f.0.join("project/build/main.log").is_file());
+    let args = std::fs::read_to_string(f.0.join("engine-args")).unwrap();
+    let args: Vec<&str> = args.lines().collect();
+    assert!(args.contains(&"-shell-escape"), "{args:?}");
+    for latexmk_only in ["-view=none", "-pv", "-cd", "-f", "-norc", "-pvctimeout-", "-MSWinBackSlash", "-bibtex"] {
+        assert!(!args.contains(&latexmk_only), "{latexmk_only} reached the engine: {args:?}");
+    }
+}

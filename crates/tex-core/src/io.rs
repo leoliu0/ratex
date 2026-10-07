@@ -449,6 +449,7 @@ impl Engine {
                 }
             }
             self.input.push_file_from(key, data, included_from);
+            self.input.announce_top_file();
             self.mark_file_nesting();
             return true;
         }
@@ -504,6 +505,7 @@ impl Engine {
                 }
                 let data = self.from_external(data);
                 self.input.push_file_from(key, data, included_from);
+                self.input.announce_top_file();
                 self.mark_file_nesting();
                 true
             }
@@ -550,6 +552,7 @@ impl Engine {
                         }
                     }
                     self.input.push_file_from(key, data, included_from);
+                    self.input.announce_top_file();
                     self.mark_file_nesting();
                     return true;
                 }
@@ -626,6 +629,7 @@ impl Engine {
             Content::Reader(id) => self.input.push_reader_file(fnam, id, included_from),
             Content::Bytes(data) => self.input.push_file_from(fnam, data, included_from),
         }
+        self.input.announce_top_file();
         Some(true)
     }
 
@@ -1483,6 +1487,7 @@ impl Engine {
         }
         let text = self.print_tokens_to_string(&toks);
         if err {
+            self.errmessage_text = Some(text.clone());
             let text = normalize_errmessage(&text);
             let previous = std::mem::replace(&mut self.diagnostic_use_err_help, true);
             let previous_trace = if is_latex_style_error(&text) {

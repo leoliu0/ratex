@@ -53,7 +53,19 @@ not supported.
 
 ### Windows
 
-Download `texres-setup-…-windows-x64.exe` from the [latest release](https://github.com/leoliu0/texres/releases/latest).
+1. Download `texres-setup-…-windows-x64.exe` from the
+   [latest release](https://github.com/leoliu0/texres/releases/latest) and run it.
+2. Keep **Add texres to environment PATH** ticked. It installs to
+   `C:\Program Files\texres\bin\texres.exe`.
+3. Open a new PowerShell or Command Prompt window (old windows don't see the
+   new `PATH`) and check:
+
+   ```powershell
+   texres --version
+   ```
+
+For a portable copy without the installer, unzip
+`tex-suite-…-windows-x86_64.zip` and run `bin\texres.exe` from there.
 
 ### From source
 
@@ -129,12 +141,21 @@ marked-up `diff.tex`; build it with `texres diff.tex`.
 **Single tools.** A link to `texres` named `pdflatex`, `xelatex`, `lualatex`,
 `bibtex` or `biber` runs one pass of that tool. Named `latexmk`, it behaves
 like `texres`. The packages install only `texres`, so an existing TeX Live is
-left alone.
+left alone. On Windows, run this in a PowerShell opened with *Run as
+administrator*; the hard link takes no extra disk space. Without admin
+rights, copy `texres.exe` to a folder of yours on `PATH` under the new name
+instead (about 800 MB).
+
+```powershell
+New-Item -ItemType HardLink -Path "C:\Program Files\texres\bin\latexmk.exe" -Target "C:\Program Files\texres\bin\texres.exe"
+```
 
 **Exit status.** 0: the build finished. 1: TeX, BibTeX or Biber reported an
 error, or the build did not settle. 2: bad command line.
 
-`texres --help` lists all options.
+`texres --help` lists all options. All commands above work the same in
+PowerShell, Command Prompt and macOS/Linux shells; on Windows, `texres` is
+`texres.exe`, and Ctrl-C stops `-pvc`.
 
 ## Speed
 
@@ -165,10 +186,16 @@ per-group numbers and a script to rerun it are in
 Any editor that can run `latexmk` can run `texres`; it accepts latexmk's
 options. Three rules apply to every editor:
 
-1. Use the full path to `texres`. Find it with `command -v texres` (Homebrew:
-   `"$(brew --prefix)/bin/texres"`, usually `/opt/homebrew/bin/texres` on
-   Apple Silicon). Apps started from the Dock or a desktop menu do not see the
-   `PATH` of your shell.
+1. Point the editor at `texres`.
+   - **Windows:** the installer puts `texres` on your `PATH`, so plain `texres`
+     works in editors started after the install (restart any that were
+     open). The full path is `C:\Program Files\texres\bin\texres.exe`; check
+     with `(Get-Command texres).Source` in PowerShell or `where texres` in
+     Command Prompt.
+   - **macOS and Linux:** use the full path. Find it with `command -v texres`
+     (Homebrew: `"$(brew --prefix)/bin/texres"`, usually
+     `/opt/homebrew/bin/texres` on Apple Silicon). Apps started from the Dock
+     or a desktop menu do not see the `PATH` of your shell.
 2. Leave out `-pdf`. It forces pdfLaTeX and turns off the XeLaTeX detection.
    Use `-xelatex` or `-lualatex` only to force those engines.
 3. Keep `-interaction=nonstopmode` (or `-file-line-error`, or
@@ -197,10 +224,12 @@ Open the settings JSON (Command Palette, *Preferences: Open User Settings
 ]
 ```
 
-Replace the command with your path. LaTeX Workshop reads errors and warnings
-from what the tool prints, so keep `-verbose`. Build with Ctrl+Alt+B (or
-save the file). The built-in PDF viewer (*View LaTeX PDF*) uses
-`paper.synctex.gz`: Ctrl+Alt+J jumps from the source to the PDF, and
+Replace the command with your path. On Windows use
+`"command": "texres"`, or the full path with doubled backslashes:
+`"C:\\Program Files\\texres\\bin\\texres.exe"`. LaTeX Workshop reads errors
+and warnings from what the tool prints, so keep `-verbose`. Build with
+Ctrl+Alt+B (or save the file). The built-in PDF viewer (*View LaTeX PDF*)
+uses `paper.synctex.gz`: Ctrl+Alt+J jumps from the source to the PDF, and
 Ctrl+click in the PDF jumps back to the source.
 
 ### TeXstudio
@@ -209,6 +238,10 @@ Ctrl+click in the PDF jumps back to the source.
    your path):
    ```text
    "/opt/homebrew/bin/texres" -synctex=1 -interaction=nonstopmode %.tex
+   ```
+   On Windows:
+   ```text
+   "C:/Program Files/texres/bin/texres.exe" -synctex=1 -interaction=nonstopmode %.tex
    ```
 2. On the *Build* page, set **Default Compiler** to *Latexmk*.
 
@@ -253,6 +286,17 @@ In Okular, set *Settings > Configure Okular > Editor* to *Custom Text Editor*
 with the command `nvim --headless -c "VimtexInverseSearch %l '%f'"`, then
 Shift+click in the PDF to jump to the source.
 
+On Windows, use SumatraPDF:
+
+```lua
+vim.g.vimtex_view_general_viewer = "SumatraPDF"
+vim.g.vimtex_view_general_options = "-reuse-instance -forward-search @tex @line @pdf"
+```
+
+In SumatraPDF, *Settings > Options > Set inverse search command line*:
+`nvim --headless -c "VimtexInverseSearch %l '%f'"`, then double-click in the
+PDF to jump to the source.
+
 ### Emacs (AUCTeX)
 
 Add a TeXres command and make it the default:
@@ -281,6 +325,9 @@ In *Preferences > Package Settings > LaTeXTools > Settings – User*:
 }
 ```
 
+On Windows, the first entry is `"texres"` or
+`"C:\\Program Files\\texres\\bin\\texres.exe"`.
+
 LaTeXTools prints a note that the command does not select the engine; that is
 expected, `texres` picks it. Errors come from `paper.log`. Forward and inverse
 search use the viewer LaTeXTools is set up for (Skim, SumatraPDF, Okular,
@@ -303,8 +350,10 @@ restart TeXShop and pick *TeXres* in the engine menu next to *Typeset*. Or put
 
 If the editor has a latexmk setting, replace `latexmk` with the full path to
 `texres` and remove `-pdf`. If it can only run a program called `latexmk`,
-make a link: `ln -s "$(command -v texres)" ~/bin/latexmk`, with `~/bin` early
-in the editor's `PATH`.
+make a link: `ln -s "$(command -v texres)" ~/bin/latexmk` on macOS and Linux,
+or the `New-Item -ItemType HardLink` command under *Single tools* on Windows
+(the link then sits next to `texres.exe`, already on `PATH`).
+On macOS and Linux, put `~/bin` early in the editor's `PATH`.
 
 With `-pvc`, `texres` runs the `$compiling_cmd`, `$success_cmd` and
 `$failure_cmd` commands that editors set with `-e`, as latexmk does. Other

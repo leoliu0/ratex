@@ -198,6 +198,17 @@ impl MacroArgs {
         (index < self.count as usize).then(|| &self.toks[self.start(index)..self.ends[index] as usize])
     }
 
+    /// The lengths of the collected arguments, in order.
+    #[inline]
+    pub(crate) fn arg_lengths(&self) -> impl Iterator<Item = usize> + '_ {
+        let mut start = 0;
+        self.ends[..self.count as usize].iter().map(move |&end| {
+            let length = end - start;
+            start = end;
+            length as usize
+        })
+    }
+
     pub(crate) fn into_buffer(self) -> Vec<Token> {
         self.toks
     }
@@ -208,9 +219,8 @@ impl MacroArgs {
 /// substituted list.
 #[derive(Clone, Debug)]
 pub struct MacroFrame {
-    body: Rc<[Token]>,
-    /// (body position, argument index) for every parameter reference.
-    references: Rc<[(usize, usize)]>,
+    /// The body and its parameter references.
+    plan: Rc<crate::eqtb::MacroReplacement>,
     args: MacroArgs,
     /// Cursor into the current segment: `body` or, when `in_arg`, `args`.
     pos: u32,
@@ -225,16 +235,17 @@ pub struct MacroFrame {
 
 impl MacroFrame {
     pub(crate) fn new(
-        body: Rc<[Token]>,
-        references: Rc<[(usize, usize)]>,
+        plan: Rc<crate::eqtb::MacroReplacement>,
         args: MacroArgs,
         owner: Option<CsId>,
         trace_depth: u8,
     ) -> Self {
-        let end = references.first().map_or(body.len(), |&(position, _)| position) as u32;
+        let end = plan
+            .references
+            .first()
+            .map_or(plan.body.len(), |&(position, _)| position) as u32;
         MacroFrame {
-            body,
-            references,
+            plan,
             args,
             pos: 0,
             end,
@@ -250,7 +261,7 @@ impl MacroFrame {
     /// keeps the frame alive, like the parameter list above a TeX macro.
     #[inline(always)]
     pub fn is_exhausted(&self) -> bool {
-        !self.in_arg && self.pos >= self.end && self.next_ref as usize >= self.references.len()
+        !self.in_arg && self.pos >= self.end && self.next_ref as usize >= self.plan.references.len()
     }
 
     #[inline(always)]
@@ -262,7 +273,7 @@ impl MacroFrame {
                 return Some(if self.in_arg {
                     self.args.toks[index]
                 } else {
-                    self.body[index]
+                    self.plan.body[index]
                 });
             }
             if !self.next_segment() {
@@ -282,7 +293,7 @@ impl MacroFrame {
         Some(if self.in_arg {
             self.args.toks[index]
         } else {
-            self.body[index]
+            self.plan.body[index]
         })
     }
 
@@ -307,7 +318,7 @@ impl MacroFrame {
         let source = if self.in_arg {
             &self.args.toks[..]
         } else {
-            &self.body[..]
+            &self.plan.body[..]
         };
         &source[self.pos as usize..self.end as usize]
     }
@@ -324,7 +335,7 @@ impl MacroFrame {
         let body_from = if self.in_arg {
             self.in_arg = false;
             self.resume as usize
-        } else if let Some(&(position, index)) = self.references.get(self.next_ref as usize) {
+        } else if let Some(&(position, index)) = self.plan.references.get(self.next_ref as usize) {
             self.next_ref += 1;
             self.resume = position as u32 + 1;
             if index < self.args.count as usize {
@@ -340,9 +351,10 @@ impl MacroFrame {
         };
         self.pos = body_from as u32;
         self.end = self
+            .plan
             .references
             .get(self.next_ref as usize)
-            .map_or(self.body.len(), |&(position, _)| position) as u32;
+            .map_or(self.plan.body.len(), |&(position, _)| position) as u32;
         true
     }
 
@@ -357,12 +369,12 @@ impl MacroFrame {
     /// `parameter` level above the macro).
     pub(crate) fn context_view(&self) -> (&Rc<[Token]>, usize, Option<(&[Token], usize)>) {
         if !self.in_arg {
-            return (&self.body, self.pos as usize, None);
+            return (&self.plan.body, self.pos as usize, None);
         }
-        let index = self.references[self.next_ref as usize - 1].1;
+        let index = self.plan.references[self.next_ref as usize - 1].1;
         let start = self.args.start(index);
         let arg = &self.args.toks[start..self.end as usize];
-        (&self.body, self.resume as usize, Some((arg, self.pos as usize - start)))
+        (&self.plan.body, self.resume as usize, Some((arg, self.pos as usize - start)))
     }
 
     /// Net brace depth of the tokens delivered so far (alignment scanning
@@ -386,9 +398,9 @@ impl MacroFrame {
         } else {
             self.pos as usize
         };
-        let mut depth = balance(&self.body[..body_end]);
+        let mut depth = balance(&self.plan.body[..body_end]);
         let passed = self.next_ref as usize;
-        for (n, &(_, index)) in self.references[..passed].iter().enumerate() {
+        for (n, &(_, index)) in self.plan.references[..passed].iter().enumerate() {
             if let Some(arg) = self.args.get(index) {
                 if self.in_arg && n + 1 == passed {
                     depth += balance(&self.args.toks[self.args.start(index)..self.pos as usize]);

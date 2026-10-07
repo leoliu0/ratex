@@ -1,0 +1,7 @@
+headings_flag 1
+heading_prefix "<H:"
+heading_suffix ":>\n"
+item_x1 "\n<x1>"
+item_01 "\n<01>"
+delim_n " ; "
+suffix_2p "\\ff"

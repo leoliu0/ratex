@@ -100,6 +100,18 @@ pub trait IntoLua {
     {
         self.into_lua(state).map_err(|msg| state.error(msg))
     }
+
+    /// The value as a single Lua value made without the stack, for the
+    /// types that need neither allocation nor a state (nil, booleans,
+    /// numbers); `Err(self)` for the others.
+    #[doc(hidden)]
+    #[inline]
+    fn into_plain(self) -> Result<LuaValue, Self>
+    where
+        Self: Sized,
+    {
+        Err(self)
+    }
 }
 
 // ==================== Identity: LuaValue ====================
@@ -116,6 +128,11 @@ impl IntoLua for LuaValue {
     fn into_lua(self, state: &mut LuaState) -> Result<usize, String> {
         state.push_value(self).map_err(|e| format!("{:?}", e))?;
         Ok(1)
+    }
+
+    #[inline]
+    fn into_plain(self) -> Result<LuaValue, Self> {
+        Ok(self)
     }
 }
 
@@ -200,6 +217,18 @@ impl IntoLua for crate::UdValue {
         state.push_value(value).map_err(|e| format!("{:?}", e))?;
         Ok(1)
     }
+
+    #[inline]
+    fn into_plain(self) -> Result<LuaValue, Self> {
+        use crate::UdValue;
+        match self {
+            UdValue::Nil => Ok(LuaValue::nil()),
+            UdValue::Boolean(b) => Ok(LuaValue::boolean(b)),
+            UdValue::Integer(i) => Ok(LuaValue::integer(i)),
+            UdValue::Number(n) => Ok(LuaValue::float(n)),
+            other => Err(other),
+        }
+    }
 }
 
 // ==================== Boolean ====================
@@ -219,6 +248,11 @@ impl IntoLua for bool {
             .push_value(LuaValue::boolean(self))
             .map_err(|e| format!("{:?}", e))?;
         Ok(1)
+    }
+
+    #[inline]
+    fn into_plain(self) -> Result<LuaValue, Self> {
+        Ok(LuaValue::boolean(self))
     }
 }
 
@@ -257,12 +291,31 @@ macro_rules! impl_from_lua_int {
                         .map_err(|e| format!("{:?}", e))?;
                     Ok(1)
                 }
+
+                #[inline]
+                #[allow(clippy::useless_conversion)]
+                fn into_plain(self) -> Result<LuaValue, Self> {
+                    i64::try_from(self).map(LuaValue::integer).map_err(|_| self)
+                }
             }
         )*
     };
 }
 
 impl_from_lua_int!(i8, i16, i32, i64, isize, u8, u16, u32, u64, usize);
+
+/// `lua_tointeger`: the value of an integer, of a float with an exact integer
+/// value or of a string convertible to such a number, and 0 for anything else.
+/// Never an argument error.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ToInteger(pub i64);
+
+impl FromLua for ToInteger {
+    #[inline]
+    fn from_lua(value: LuaValue, _state: &mut LuaState) -> Result<Self, String> {
+        Ok(ToInteger(tointeger(&value).unwrap_or(0)))
+    }
+}
 
 // ==================== Float types ====================
 
@@ -285,6 +338,11 @@ macro_rules! impl_from_lua_float {
                         .push_value(LuaValue::float(self as f64))
                         .map_err(|e| format!("{:?}", e))?;
                     Ok(1)
+                }
+
+                #[inline]
+                fn into_plain(self) -> Result<LuaValue, Self> {
+                    Ok(LuaValue::float(self as f64))
                 }
             }
         )*
@@ -357,6 +415,14 @@ impl<T: IntoLua> IntoLua for Option<T> {
             }
         }
     }
+
+    #[inline]
+    fn into_plain(self) -> Result<LuaValue, Self> {
+        match self {
+            Some(v) => v.into_plain().map_err(Some),
+            None => Ok(LuaValue::nil()),
+        }
+    }
 }
 
 // ==================== Result<T, E> ====================
@@ -391,6 +457,56 @@ impl<T: IntoLua> IntoLua for Vec<T> {
             pushed += item.into_lua(state)?;
         }
         Ok(pushed)
+    }
+}
+
+/// At most `N` results, kept inline: for callbacks whose number of results
+/// depends on the case (C functions returning 0, 1 or 3 values) without
+/// collecting them in a `Vec`.
+pub struct Multi<const N: usize> {
+    vals: [crate::UdValue; N],
+    len: usize,
+}
+
+impl<const N: usize> Multi<N> {
+    /// No results.
+    #[inline]
+    pub fn new() -> Self {
+        Multi { vals: std::array::from_fn(|_| crate::UdValue::Nil), len: 0 }
+    }
+
+    /// The results `vals` (at most `N` of them).
+    #[inline]
+    pub fn from<const M: usize>(vals: [crate::UdValue; M]) -> Self {
+        let mut m = Self::new();
+        for v in vals {
+            m.push(v);
+        }
+        m
+    }
+
+    /// Append a result; panics past `N`.
+    #[inline]
+    pub fn push(&mut self, v: crate::UdValue) {
+        self.vals[self.len] = v;
+        self.len += 1;
+    }
+}
+
+impl<const N: usize> Default for Multi<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<const N: usize> IntoLua for Multi<N> {
+    #[inline]
+    fn into_lua(self, state: &mut LuaState) -> Result<usize, String> {
+        let len = self.len;
+        for v in self.vals.into_iter().take(len) {
+            v.into_lua(state)?;
+        }
+        Ok(len)
     }
 }
 

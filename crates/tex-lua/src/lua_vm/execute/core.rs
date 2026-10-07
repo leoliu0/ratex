@@ -19,7 +19,7 @@
 ----------------------------------------------------------------------*/
 
 use crate::{
-    Instruction, LUA_MASKCALL, LUA_MASKCOUNT, LUA_MASKLINE, LUA_MASKRET, LuaResult, LuaState,
+    Instruction, LUA_MASKCALL, LUA_MASKLINE, LUA_MASKRET, LuaResult, LuaState,
     LuaValue, OpCode,
     lua_value::{BIT_ISCOLLECTABLE, LuaProto},
     lua_vm::{
@@ -119,9 +119,6 @@ pub fn lua_execute(lua_state: &mut LuaState, target_depth: usize) -> LuaResult<(
                 ci.save_pc(pc);
                 hook_on_call(lua_state, hook_mask, ci.call_status, chunk)?;
             }
-            if hook_mask & LUA_MASKCOUNT != 0 {
-                lua_state.hook_count = lua_state.base_hook_count;
-            }
         }
 
         // Lean reload after RETURN (Return0/Return1/Return).
@@ -168,9 +165,6 @@ pub fn lua_execute(lua_state: &mut LuaState, target_depth: usize) -> LuaResult<(
                     if hook_mask & LUA_MASKCALL != 0 && lua_state.allow_hook {
                         ci.save_pc(0);
                         hook_on_call(lua_state, hook_mask, ci.call_status, chunk)?;
-                    }
-                    if hook_mask & LUA_MASKCOUNT != 0 {
-                        lua_state.hook_count = lua_state.base_hook_count;
                     }
                 }
                 init_oldpc(lua_state, 0, chunk);
@@ -1222,9 +1216,6 @@ pub fn lua_execute(lua_state: &mut LuaState, target_depth: usize) -> LuaResult<(
                                 if hook_mask & LUA_MASKCALL != 0 && lua_state.allow_hook {
                                     ci.save_pc(0);
                                     hook_on_call(lua_state, hook_mask, ci.call_status, chunk)?;
-                                }
-                                if hook_mask & LUA_MASKCOUNT != 0 {
-                                    lua_state.hook_count = lua_state.base_hook_count;
                                 }
                             }
                             init_oldpc(lua_state, 0, chunk);

@@ -32,7 +32,7 @@ use crate::tfm::{CharInfo, ExtRecipe, Font, LigStep};
 use crate::token::{CsTable, Token};
 
 const MAGIC: &[u8; 8] = b"RUSTEXFM";
-const VERSION: u16 = 25;
+const VERSION: u16 = 26;
 /// A production format is currently about 8 MiB decoded. Keep corrupt or
 /// unrelated external files from turning format probing into an unbounded
 /// allocation while leaving ample room for future format growth.
@@ -356,9 +356,21 @@ pub fn check_dumpable(eng: &Engine) -> Result<(), String> {
                 n_ag,
                 n_other,
                 eng.eqtb.cur_level,
-                eng.ss_trace
+                eng.eqtb
+                    .groups
                     .iter()
-                    .map(|(file, line)| format!("{}:{line}", file.split('/').last().unwrap_or("?")))
+                    .enumerate()
+                    .filter(|(_, group)| group.meta.code == crate::eqtb::group_code::SEMI_SIMPLE)
+                    .map(|(index, group)| {
+                        let level = crate::eqtb::LEVEL_ONE + 1 + index as u16;
+                        let file = eng
+                            .diagnostic_group_openings
+                            .iter()
+                            .find(|opening| opening.level == level)
+                            .map(|opening| opening.mark.to_context().name)
+                            .unwrap_or_default();
+                        format!("{}:{}", file.split('/').last().unwrap_or("?"), group.line)
+                    })
                     .collect::<Vec<_>>()
                     .join(" | "),
                 types.join(",")
@@ -748,10 +760,9 @@ pub fn save_format_with_encoding(
 
     let payload = match encoding {
         FormatEncoding::Raw => w.buf,
-        FormatEncoding::Zstd(_level) => ruzstd::encoding::compress_to_vec(
-            &w.buf[..],
-            ruzstd::encoding::CompressionLevel::Fastest,
-        ),
+        FormatEncoding::Zstd(_level) => compress_format_frames(&w.buf, |chunk| {
+            ruzstd::encoding::compress_to_vec(chunk, ruzstd::encoding::CompressionLevel::Fastest)
+        }),
     };
     tex_kpse::fs::write(path, &payload)
         .map_err(|e| format!("cannot write {}: {}", path.display(), e))?;
@@ -920,6 +931,7 @@ fn write_font(w: &mut W, f: &Font) {
         w.i32(c.italic);
         w.u8(c.tag);
         w.u8(c.remainder);
+        w.u8(u8::from(c.exists));
     }
     w.u32(f.lig_kern.len() as u32);
     for l in &f.lig_kern {
@@ -1025,6 +1037,7 @@ fn read_code_map<T>(
 ) -> io::Result<crate::FxHashMap<u32, (T, u16)>> {
     let n = r.count()?;
     let mut map = crate::FxHashMap::default();
+    map.reserve(n);
     for _ in 0..n {
         let key = r.u32()?;
         let value = read(r)?;
@@ -1100,6 +1113,132 @@ fn parse_header(data: &[u8]) -> Result<R<'_>, String> {
 }
 
 const ZSTD_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
+/// A zstd skippable frame (magic 0x184D2A5E) that every decoder passes
+/// over. A compressed format starts with one holding [`FRAME_INDEX_TAG`] and
+/// the compressed and decompressed size of each of the zstd frames after
+/// it, so that they can be decoded in parallel (`scripts/build_formats.py`
+/// writes the embedded formats the same way).
+const SKIPPABLE_INDEX_MAGIC: [u8; 4] = [0x5e, 0x2a, 0x4d, 0x18];
+const FRAME_INDEX_TAG: &[u8; 8] = b"TeXresFI";
+/// Bytes of dump compressed into one frame.
+const FORMAT_FRAME_BYTES: usize = 1 << 20;
+/// Threads decoding a format at once. Each new thread gets its own malloc
+/// arena, a reservation of address space that the engine's address-space
+/// limit (`TEX_MEM_LIMIT_MIB`) has to cover, so their number stays small.
+const MAX_FORMAT_DECODE_THREADS: usize = 4;
+
+/// `raw` as the frame index followed by one zstd frame (made by
+/// `compress`) per [`FORMAT_FRAME_BYTES`] of it.
+fn compress_format_frames(raw: &[u8], compress: impl Fn(&[u8]) -> Vec<u8>) -> Vec<u8> {
+    let frames: Vec<(Vec<u8>, usize)> = raw
+        .chunks(FORMAT_FRAME_BYTES)
+        .map(|chunk| (compress(chunk), chunk.len()))
+        .collect();
+    let index_len = FRAME_INDEX_TAG.len() + 4 + 8 * frames.len();
+    let compressed: usize = frames.iter().map(|f| f.0.len()).sum();
+    let mut out = Vec::with_capacity(8 + index_len + compressed);
+    out.extend_from_slice(&SKIPPABLE_INDEX_MAGIC);
+    out.extend_from_slice(&(index_len as u32).to_le_bytes());
+    out.extend_from_slice(FRAME_INDEX_TAG);
+    out.extend_from_slice(&(frames.len() as u32).to_le_bytes());
+    for (frame, len) in &frames {
+        out.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(*len as u32).to_le_bytes());
+    }
+    for (frame, _) in &frames {
+        out.extend_from_slice(frame);
+    }
+    out
+}
+
+/// The (compressed frame, decompressed length) pairs of an indexed format,
+/// or `None` when `data` does not start with a frame index.
+fn indexed_format_frames(data: &[u8]) -> Option<Result<Vec<(&[u8], usize)>, String>> {
+    let header = data.get(..8)?;
+    if header[..4] != SKIPPABLE_INDEX_MAGIC {
+        return None;
+    }
+    let index_len = u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize;
+    let entries = data.get(8..8 + index_len)?.strip_prefix(FRAME_INDEX_TAG.as_slice())?;
+    let word = |at: usize| {
+        entries
+            .get(at..at + 4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize)
+    };
+    let invalid = || Some(Err("format frame index is invalid".to_string()));
+    let count = word(0)?;
+    if entries.len() != 4 + 8 * count {
+        return invalid();
+    }
+    let mut frames = Vec::with_capacity(count);
+    let mut rest = &data[8 + index_len..];
+    let mut total = 0usize;
+    for i in 0..count {
+        let (compressed, len) = (word(4 + 8 * i)?, word(8 + 8 * i)?);
+        total = total.saturating_add(len);
+        if compressed > rest.len() || total > MAX_FORMAT_BYTES {
+            return invalid();
+        }
+        let (frame, tail) = rest.split_at(compressed);
+        frames.push((frame, len));
+        rest = tail;
+    }
+    if !rest.is_empty() {
+        return invalid();
+    }
+    Some(Ok(frames))
+}
+
+/// Decode the frames of an indexed format into one buffer, on as many
+/// threads as the process may run on.
+fn decode_format_frames(frames: &[(&[u8], usize)]) -> Result<Vec<u8>, String> {
+    fn decode((input, target): (&[u8], &mut [u8])) -> bool {
+        let mut decoder = ruzstd::decoding::FrameDecoder::new();
+        decoder.set_max_window_size(MAX_FORMAT_BYTES as u64);
+        // Fails with `TargetTooSmall` when the frame holds more than indexed.
+        matches!(decoder.decode_all(input, target), Ok(n) if n == target.len())
+    }
+    let mut out = vec![0u8; frames.iter().map(|f| f.1).sum()];
+    let mut jobs = Vec::with_capacity(frames.len());
+    let mut free = &mut out[..];
+    for &(input, len) in frames {
+        let (target, tail) = free.split_at_mut(len);
+        jobs.push((input, target));
+        free = tail;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let threads = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .min(MAX_FORMAT_DECODE_THREADS)
+        .min(jobs.len());
+    #[cfg(target_arch = "wasm32")]
+    let threads = 1;
+    let ok = if threads <= 1 {
+        jobs.into_iter().all(decode)
+    } else {
+        // Lane `k` takes frames k, k + threads, ...; this thread runs lane 0.
+        let mut lanes: Vec<Vec<(&[u8], &mut [u8])>> = (0..threads).map(|_| Vec::new()).collect();
+        for (i, job) in jobs.into_iter().enumerate() {
+            lanes[i % threads].push(job);
+        }
+        let mut lanes = lanes.into_iter();
+        let own = lanes.next().unwrap_or_default();
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = lanes
+                .map(|lane| scope.spawn(move || lane.into_iter().all(decode)))
+                .collect();
+            let mine = own.into_iter().all(decode);
+            workers
+                .into_iter()
+                .fold(mine, |ok, worker| worker.join().unwrap_or(false) && ok)
+        })
+    };
+    if ok {
+        Ok(out)
+    } else {
+        Err("zstd decompression failed".to_string())
+    }
+}
 
 pub fn load_format_from(data: &[u8]) -> Result<Engine, String> {
     if data.len() > MAX_FORMAT_BYTES {
@@ -1108,6 +1247,9 @@ pub fn load_format_from(data: &[u8]) -> Result<Engine, String> {
             data.len(),
             MAX_FORMAT_BYTES
         ));
+    }
+    if let Some(frames) = indexed_format_frames(data) {
+        return load_format_uncompressed(&decode_format_frames(&frames?)?);
     }
     if data.len() >= 4 && data[..4] == ZSTD_MAGIC {
         let decoder = ruzstd::decoding::StreamingDecoder::new_with_max_window_size(
@@ -1234,6 +1376,10 @@ pub fn load_format_bytes_into(data: &[u8], eng: &mut Engine) -> Result<(), Strin
     // \interactionmode reflects the caller's runtime mode, not the dump's
     eng.eqtb.set_runtime_interaction_mode(eng.interaction_mode.number());
     eng.engine_kind = scratch.engine_kind;
+    // llualib.c undump_luac_registers: bytecode registers and chunk names
+    // are part of the format.
+    eng.lua_bytecodes = scratch.lua_bytecodes;
+    eng.lua_names = scratch.lua_names;
     // luatex keeps the Lua state of the `--lua` script (and the callbacks it
     // registered) across the format load.
     if eng.lua.is_none() {
@@ -1256,7 +1402,7 @@ fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
     };
 
     let n = r.count()?;
-    let mut cs = CsTable::new();
+    let mut cs = CsTable::with_capacity(n);
     for _ in 0..n {
         let tagged = r.varint()?;
         let name = r.take((tagged >> 2) as usize)?;
@@ -1403,6 +1549,7 @@ fn load_state(r: &mut R, eng: &mut Engine) -> io::Result<()> {
         *shape = Rc::from(r.vec_i32()?);
     }
     let count = r.count()?;
+    eng.eqtb.unicode_case_codes.reserve(count);
     for _ in 0..count {
         let uppercase = match r.u8()? {
             0 => false,
@@ -1696,6 +1843,7 @@ fn read_font(r: &mut R) -> io::Result<Font> {
             italic: r.i32()?,
             tag: r.u8()?,
             remainder: r.u8()?,
+            exists: r.u8()? != 0,
         });
     }
     let n = r.count()?;
@@ -1912,6 +2060,7 @@ mod tests {
                     italic: 3,
                     tag: 1,
                     remainder: 7,
+                    exists: true,
                 },
                 CharInfo {
                     width: -5,
@@ -1920,6 +2069,7 @@ mod tests {
                     italic: 0,
                     tag: 0,
                     remainder: 0,
+                    exists: false,
                 },
             ],
             bc: 0,
@@ -2414,10 +2564,35 @@ mod tests {
         let path = dir.join("pdflatex.fmt");
         save_format_compressed(&eng, &path).expect("save compressed .fmt");
         let bytes = std::fs::read(&path).unwrap();
-        assert_eq!(&bytes[..4], &ZSTD_MAGIC);
+        assert_eq!(&bytes[..4], &SKIPPABLE_INDEX_MAGIC);
         let loaded = load_format(&path).expect("load compressed .fmt");
         assert_eq!(loaded.cs.len(), eng.cs.len());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn indexed_frames_decode_in_parallel_to_the_dump() {
+        // Three frames, the last one partial; every byte depends on its offset.
+        let raw: Vec<u8> = (0..FORMAT_FRAME_BYTES * 2 + 12345)
+            .map(|i| (i * 7 + i / 977) as u8)
+            .collect();
+        let compress = |chunk: &[u8]| {
+            ruzstd::encoding::compress_to_vec(chunk, ruzstd::encoding::CompressionLevel::Fastest)
+        };
+        let packed = compress_format_frames(&raw, compress);
+        let frames = indexed_format_frames(&packed).expect("indexed").expect("valid index");
+        assert_eq!(frames.len(), 3);
+        assert_eq!(decode_format_frames(&frames).unwrap(), raw);
+        // A frame that holds more than its indexed length is refused.
+        let mut lying = packed.clone();
+        let len_at = 8 + FRAME_INDEX_TAG.len() + 4 + 4;
+        lying[len_at..len_at + 4].copy_from_slice(&1000u32.to_le_bytes());
+        let frames = indexed_format_frames(&lying).unwrap().unwrap();
+        assert!(decode_format_frames(&frames).is_err());
+        // Bytes after the indexed frames are refused.
+        let mut trailing = packed;
+        trailing.push(0);
+        assert!(indexed_format_frames(&trailing).unwrap().is_err());
     }
 
     #[test]

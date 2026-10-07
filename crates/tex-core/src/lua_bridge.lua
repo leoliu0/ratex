@@ -524,6 +524,60 @@ function __texres_reader_call(id, key)
 end
 function __texres_reader_free(id) readers[id] = nil end
 
+-- luaotfload's names database reads each font with the fontloader's
+-- fonts.handlers.otf.readers.getinfo (fontloader-font-otr.lua) twice -- once
+-- in read_font_file, again in ot_fullinfo -- and a collection once more per
+-- subfont. getinfo is a function of the file and its options, and a subfont's
+-- result is the subfont's entry of the whole-file result (or, for a file that
+-- is no collection, the whole-file result itself), so while the database is
+-- loaded the results for the file read last are kept and handed out again.
+-- Every caller gets its own copy, as from a fresh read.
+local function deep_copy(t, seen)
+  if type(t) ~= "table" then return t end
+  local c = seen[t]
+  if c then return c end
+  c = {}
+  seen[t] = c
+  for k, v in next, t do c[deep_copy(k, seen)] = deep_copy(v, seen) end
+  return setmetatable(c, getmetatable(t))
+end
+local function memoize_getinfo()
+  local fonts = _G.fonts
+  local otf = type(fonts) == "table" and type(fonts.handlers) == "table" and fonts.handlers.otf
+  local readers = type(otf) == "table" and otf.readers
+  local getinfo = type(readers) == "table" and readers.getinfo
+  if type(getinfo) ~= "function" then return end
+  -- the whole-file result for (file, platformnames, rawfamilynames, tableoffsets)
+  local file, pn, rf, to, whole
+  readers.getinfo = function(filename, specification)
+    local subfont, p, r, o
+    if type(specification) == "table" then
+      subfont = tonumber(specification.subfont)
+      p, r, o = specification.platformnames, specification.rawfamilynames, specification.tableoffsets
+    else
+      subfont = tonumber(specification)
+      p, r, o = false, false, false
+    end
+    if not (whole and filename == file and p == pn and r == rf and o == to) then
+      if type(filename) ~= "string" then return getinfo(filename, specification) end
+      whole = getinfo(filename, { platformnames = p, rawfamilynames = r, tableoffsets = o })
+      file, pn, rf, to = filename, p, r, o
+    end
+    local result
+    if subfont == nil then
+      result = whole
+    elseif #whole >= 1 then
+      -- a collection: its subfonts' entries
+      result = subfont >= 1 and subfont <= #whole and whole[subfont]
+    elseif next(whole) ~= nil then
+      -- no collection (or no font): the same for every subfont
+      result = whole
+    end
+    if not result then return getinfo(filename, specification) end
+    return deep_copy(result, {})
+  end
+end
+
 -- luainit.c: package.searchers = { preload, kpse lua searcher }.
 local function preload_searcher(name)
   local f = package.preload[name]
@@ -550,6 +604,13 @@ local function kpse_lua_searcher(name)
   local f, err = load(code, "@" .. path)
   if not f then
     error("error loading module " .. name .. " from file " .. path .. ":\n\t" .. err)
+  end
+  if name == "luaotfload-database" or name == "luaotfload-database.lua" then
+    local load_database = f
+    f = function(...)
+      memoize_getinfo()
+      return load_database(...)
+    end
   end
   return f
 end

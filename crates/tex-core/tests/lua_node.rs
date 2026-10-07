@@ -140,6 +140,13 @@ fn node_ligaturing_and_kerning() {
     check_case("ligkern");
 }
 
+/// The traversal iterators (results, nil and 0 heads, lists changed while
+/// traversed) and the plain direct / proxy userdata properties tables.
+#[test]
+fn node_traversal_and_properties_tables() {
+    check_case("traverse");
+}
+
 #[test]
 fn node_properties_are_cleared_on_free_and_recursive_release() {
     let out = run_lua(

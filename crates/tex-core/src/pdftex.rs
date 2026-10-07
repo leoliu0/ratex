@@ -243,6 +243,8 @@ impl Engine {
             crate::FxHashMap::default();
         let mut raw_group_index: crate::FxHashMap<String, usize> = crate::FxHashMap::default();
         let mut raw_group_members: Vec<(u16, String)> = Vec::new();
+        // Lua CID fonts: glyph texts of each shared font dictionary's owner
+        let mut cid_texts: crate::FxHashMap<u16, crate::FxHashMap<u16, String>> = crate::FxHashMap::default();
         for &fid in &used {
             let Some(font) = self.eqtb.fonts.get(fid as usize).cloned() else {
                 continue;
@@ -295,14 +297,45 @@ impl Engine {
                     t1_preset: Default::default(),
                     t1_keys: Default::default(),
                     init_order: 0,
+                    t1_slant: 0,
+                    t1_extend: 0,
                     desc_obj: 0,
                     pdftex: None,
                     xe: Some(crate::pdfout::XeFont {
                         vertical: nf.vertical,
                         used: self.pdf_doc.xe_use.get(&fid).cloned().unwrap_or_default(),
                     }),
+                    type3: None,
                 });
                 remap.insert(crate::pdfout::FontBinding::remapped(0).resource_key(fid), cur_idx);
+                continue;
+            }
+            if self.pdf_font_is_pk(fid) {
+                // writefont.c `dopdffont` -> writet3.c `writepk`
+                let chars = self.pdf_doc.font_chars.get(&(fid as usize)).copied().unwrap_or([0; 4]);
+                let scale = self.pk_scale(fid).ok_or("PK font without metrics")?;
+                let dpi = scale.dpi();
+                let file = format!("{}.{dpi}pk", font.tfm_name);
+                let data = self
+                    .font_loader
+                    .read_dependency(&file, tex_kpse::Format::Pk)
+                    .ok_or_else(|| format!("pdfTeX error: Font {} at {dpi} not found", font.tfm_name))?;
+                let pk = crate::writet3::read_pk(&data).map_err(|error| format!("pdfTeX error: {error} (file {file})"))?;
+                let mut type3 = crate::writet3::build_type3(
+                    &pk,
+                    &scale,
+                    &|c| i64::from(font.char_width(c)),
+                    &chars,
+                    (font.bc, font.ec),
+                );
+                type3.name = u32::from(fid);
+                type3.font_attr = self.font_loader.pdf_font_attrs.get(&fid).cloned().unwrap_or_default();
+                let mut embedded = crate::pdffile::make_embed_font(font.tfm_name.clone(), None, None, Vec::new(), chars);
+                embedded.type3 = Some(type3);
+                embedded.obj_font = self.pdf_backend.font_objs.get(&fid).copied().unwrap_or(0);
+                embedded.init_order = self.pdf_backend.init_order(fid);
+                remap.insert(crate::pdfout::FontBinding::RAW.resource_key(fid), self.pdf_doc.fonts.len());
+                self.pdf_doc.fonts.push(embedded);
                 continue;
             }
             let prog = self.font_loader.program_for_font(&font)?;
@@ -407,6 +440,7 @@ impl Engine {
                             );
                             embedded.to_unicode = to_unicode;
                             embedded.t1_preset = self.preset_fontmetrics(fid);
+                            (embedded.t1_slant, embedded.t1_extend) = self.font_loader.map_transform_millis(&font);
                             embedded.init_order = self.pdf_backend.init_order(fid);
                             self.pdf_doc.fonts.push(embedded);
                             remap.insert(
@@ -502,6 +536,7 @@ impl Engine {
                         embedded.obj_font =
                             self.pdf_backend.font_objs.get(&ff).copied().unwrap_or(0);
                         embedded.t1_preset = self.preset_fontmetrics(fid);
+                        (embedded.t1_slant, embedded.t1_extend) = self.font_loader.map_transform_millis(&font);
                         embedded.init_order = self.pdf_backend.init_order(fid);
                         self.pdf_doc.fonts.push(embedded);
                         remap.insert(
@@ -525,6 +560,12 @@ impl Engine {
                     if is_native {
                         let ascent = (f64::from(face.ascender()) * scale).round();
                         let descent = (f64::from(face.descender()) * scale).round();
+                        let master = self.pdf_backend.font_ff.get(&fid).copied().unwrap_or(fid);
+                        if !cid_texts.contains_key(&master) {
+                            let texts = self.lua_cid_tounicode(master);
+                            cid_texts.insert(master, texts);
+                        }
+                        let texts = &cid_texts[&master];
                         let bindings = self
                             .pdf_doc
                             .native_bindings
@@ -535,15 +576,14 @@ impl Engine {
                         for (b_idx, binding) in bindings.iter().enumerate() {
                             let cur_idx = self.pdf_doc.fonts.len();
                             let mut used_gids = std::collections::BTreeSet::new();
-                            let mut native_cids = Vec::new();
                             let mut to_unicode_2byte = Vec::new();
-                            for &(code, gid, ref txt) in &binding.entries {
+                            for &(code, gid) in &binding.entries {
                                 used_gids.insert(gid);
-                                native_cids.push((code, gid, txt.clone()));
-                                if !txt.is_empty() {
-                                    to_unicode_2byte.push((code, txt.clone()));
+                                if let Some(text) = texts.get(&gid).filter(|text| !text.is_empty()) {
+                                    to_unicode_2byte.push((code, text.clone()));
                                 }
                             }
+                            let native_cids = binding.entries.clone();
                             let ef = crate::pdfout::EmbedFont {
                                 obj_font: 0,
                                 base_font: base_font.clone(),
@@ -591,9 +631,12 @@ impl Engine {
                                 t1_preset: Default::default(),
                                 t1_keys: Default::default(),
                                 init_order: 0,
+                                t1_slant: 0,
+                                t1_extend: 0,
                                 desc_obj: 0,
                                 pdftex: None,
                                 xe: None,
+                                type3: None,
                             };
                             self.pdf_doc.fonts.push(ef);
                             remap.insert(
@@ -736,9 +779,12 @@ impl Engine {
                                 t1_preset: Default::default(),
                                 t1_keys: Default::default(),
                                 init_order: 0,
+                                t1_slant: 0,
+                                t1_extend: 0,
                                 desc_obj: 0,
                                 pdftex: None,
                                 xe: None,
+                                type3: None,
                             };
                             let document_index = self.pdf_doc.fonts.len();
                             self.pdf_doc.fonts.push(embedded);
@@ -823,6 +869,11 @@ pub(crate) struct PdfBackend {
     /// `\pdfglyphtounicode` entries (tounicode.c `glyph_unicode_tree`),
     /// dumped with the format.
     pub(crate) glyph_unicode: crate::pdf_fonts::GlyphUnicodeTable,
+    /// pdftex.web `fixed_pk_resolution`, fixed by `init_pdf_output`.
+    pub(crate) pk_resolution: i32,
+    /// mapfile.c `isscalable(f)` negated: the fonts written from PK
+    /// bitmaps as Type 3 fonts (no map entry), decided on first use.
+    pub(crate) pk_fonts: crate::FxHashMap<u16, bool>,
 }
 
 impl Default for PdfBackend {
@@ -837,16 +888,13 @@ impl Default for PdfBackend {
             last_ximage_colordepth: 0,
             space_font_name: DEFAULT_SPACE_FONT.to_string(),
             glyph_unicode: Default::default(),
+            pk_resolution: 0,
+            pk_fonts: Default::default(),
         }
     }
 }
 
 impl PdfBackend {
-    /// Number of font objects created so far.
-    pub(crate) fn initialized_fonts(&self) -> usize {
-        self.font_reps.len()
-    }
-
     /// Creation order of the font object of owner `f` (`pdf_create_obj`).
     pub(crate) fn init_order(&self, f: u16) -> usize {
         self.font_reps.iter().position(|&k| k == f).unwrap_or(usize::MAX)
@@ -895,6 +943,13 @@ impl Engine {
         if std::mem::replace(&mut self.pdf_backend.output_initialized, true) {
             return;
         }
+        // `pdf_pk_resolution := pk_dpi` (texmf.cnf's unset pk_dpi is 72)
+        // when neither the format nor the user set it
+        let pk_resolution = crate::prim::IntParam::PdfPkResolution.idx() as usize;
+        if self.eqtb.int_params[pk_resolution] == 0 {
+            self.eqtb.int_params[pk_resolution] = 72;
+        }
+        self.pdf_backend.pk_resolution = self.eqtb.int_params[pk_resolution].clamp(72, 8000);
         if self.pdf_int(crate::prim::IntParam::PdfUniqueResname) <= 0
             || !self.pdf_doc.resname_prefix.is_empty()
         {
@@ -982,6 +1037,44 @@ impl Engine {
         );
     }
 
+    /// mapfile.c `isscalable(f)` negated, for pdfTeX: font `f` is written
+    /// from PK bitmaps because no map entry names it (writefont.c
+    /// `dopdffont` calls `writet3`). Decided once per font, like
+    /// `pdffontmap[f]`.
+    pub(crate) fn pdf_font_is_pk(&mut self, f: u16) -> bool {
+        if self.engine_kind != crate::engine::EngineKind::PdfTeX {
+            return false;
+        }
+        if let Some(&pk) = self.pdf_backend.pk_fonts.get(&f) {
+            return pk;
+        }
+        let pk = self.eqtb.fonts.get(usize::from(f)).is_some_and(|font| {
+            font.at_size > 0
+                && font.native.is_none()
+                && font.lua.is_none()
+                && font.type1_path.is_none()
+                && !self.font_loader.vf_fonts.contains_key(&(font.tfm_name.clone(), font.at_size))
+                && {
+                    self.font_loader.ensure_map();
+                    self.font_loader.map.get(&font.tfm_name).is_none()
+                }
+        });
+        self.pdf_backend.pk_fonts.insert(f, pk);
+        pk
+    }
+
+    /// The PK geometry of font `f` (writet3.c): its `pdf_font_size`,
+    /// design size, `fixed_pk_resolution` and `fixed_decimal_digits`.
+    pub(crate) fn pk_scale(&self, f: u16) -> Option<crate::writet3::PkScale> {
+        let font = self.eqtb.fonts.get(usize::from(f))?;
+        Some(crate::writet3::PkScale {
+            font_size: crate::pdfrender::pdf_font_size(font.at_size),
+            design_size: i64::from(font.dsize),
+            resolution: self.pdf_backend.pk_resolution.max(72),
+            decimal_digits: self.pdf_fixed.map_or(3, |fixed| fixed.decimal_digits),
+        })
+    }
+
     /// pdftex.web `pdf_init_font` / `pdf_use_font`: give font `f` its PDF
     /// font resource, shared with an earlier initialized font of the same
     /// TFM (or of its expansion base), and return that owner `ff`.
@@ -1005,14 +1098,20 @@ impl Engine {
             .map_or(0, |x| x.blink);
         let ff = if blink != 0 {
             self.pdf_init_font(blink)
+        } else if self.pdf_font_is_pk(f) {
+            // `isscalable(f)` fails: every size has its own Type 3 font
+            f
         } else {
-            let name = self.eqtb.fonts.get(f as usize).map(|font| font.tfm_name.clone());
             let fonts = &self.eqtb.fonts;
+            let font = fonts.get(f as usize);
             self.pdf_backend
                 .font_reps
                 .iter()
                 .copied()
-                .find(|&k| fonts.get(k as usize).map(|font| &font.tfm_name) == name.as_ref())
+                .find(|&k| {
+                    font.zip(fonts.get(k as usize))
+                        .is_some_and(|(font, other)| fonts_shareable(font, other))
+                })
                 .unwrap_or(f)
         };
         if ff == f {
@@ -1076,7 +1175,7 @@ impl Engine {
     pub(crate) fn pdf_page_ref(&mut self) -> Option<i32> {
         let (page, source) = self.scan_int_with_source();
         if page <= 0 {
-            self.fatal_error_at("pdfTeX error (pageref): invalid page number", source);
+            self.fatal_error_at("pdfTeX error (pageref): invalid page number", source.map(|mark| mark.to_context()));
             return None;
         }
         if let Some(&obj) = self.pdf_backend.page_objs.get(&page) {
@@ -1093,7 +1192,7 @@ impl Engine {
         match self.pdf_doc.form_names.get(&obj) {
             Some(&name) => Some(name),
             None => {
-                self.fatal_error_at("pdfTeX error (ext1): cannot find referenced object", source);
+                self.fatal_error_at("pdfTeX error (ext1): cannot find referenced object", source.map(|mark| mark.to_context()));
                 None
             }
         }
@@ -1104,14 +1203,14 @@ impl Engine {
     pub(crate) fn pdf_ximage_bbox(&mut self) -> Option<i32> {
         let (obj, source) = self.scan_int_with_source();
         let Some(bbox) = self.pdf_images.get(&obj).map(|image| image.bbox) else {
-            self.fatal_error_at("pdfTeX error (ext1): cannot find referenced object", source);
+            self.fatal_error_at("pdfTeX error (ext1): cannot find referenced object", source.map(|mark| mark.to_context()));
             return None;
         };
         let (corner, source) = self.scan_int_with_source();
         match usize::try_from(i64::from(corner) - 1).ok().and_then(|index| bbox.get(index)) {
             Some(&value) => Some(value),
             None => {
-                self.fatal_error_at("pdfTeX error (pdfximagebbox): invalid parameter", source);
+                self.fatal_error_at("pdfTeX error (pdfximagebbox): invalid parameter", source.map(|mark| mark.to_context()));
                 None
             }
         }
@@ -1198,6 +1297,24 @@ impl Engine {
         self.eqtb.hyphen_char[k] = self.eqtb.hyphen_char[f];
         self.eqtb.skew_char[k] = self.eqtb.skew_char[f];
         self.eqtb.assign(u, crate::eqtb::Equiv::FontRef(k as u16), global);
+    }
+}
+
+/// Whether font `f` shares the PDF font dictionary of the initialized font
+/// `k`: pdfTeX's same TFM, and luatex pdffont.c `font_shareable`, under which
+/// fonts with a CID registry or two-byte encoding (the OpenType fonts that
+/// Lua defines) share by the same `filename` and `fullname`.
+fn fonts_shareable(f: &crate::tfm::Font, k: &crate::tfm::Font) -> bool {
+    let wide = |font: &crate::tfm::Font| {
+        font.lua.as_ref().is_some_and(|lf| lf.cidinfo.is_some() || lf.encodingbytes == 2)
+    };
+    if !wide(f) && !wide(k) {
+        return f.tfm_name == k.tfm_name;
+    }
+    let same = |a: &Option<Vec<u8>>, b: &Option<Vec<u8>>| a.is_some() && a == b;
+    match (&f.lua, &k.lua) {
+        (Some(a), Some(b)) => same(&a.filename, &b.filename) && same(&a.fullname, &b.fullname),
+        _ => false,
     }
 }
 

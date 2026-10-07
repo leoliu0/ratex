@@ -1,0 +1,1 @@
+-q -r -t run.log2 -o out.ind in.idx

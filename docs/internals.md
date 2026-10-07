@@ -26,7 +26,8 @@ Typesetting algorithms are documented in the module comments of
 | `pdffile.rs`, `pdf_fonts.rs` | PDF serialization, Type 1 parsing and embedding |
 | `pdftex.rs`, `pdfrender.rs` | pdfTeX backend state: resource names (`/F`, `/Fm`, `/Im` and the `\pdfuniqueresname` tag), form shipping on first paint, query primitives, Info/trailer inputs |
 | `writet1.rs` | writet1.c port: Type 1 FontFile cleartext/`/Encoding`/eexec/Subrs rewrite, `/Length1-3` |
-| `pdf_images.rs`, `pdf_encodings.rs` | pdftoepdf port: one shared `PdfSource` per included file; with `\pdfinclusioncopyfonts=0` Type 1/Type1C fonts the font map knows are replaced by the map's program (xpdf base-encoding tables) |
+| `writet3.rs` | pkin.c/writet3.c port: a TFM without a pdftex.map entry is a PK font (pdfTeX only) — the bundled `fonts/pk/ljfour` files mktexpk would make at `\pdfpkresolution`, read as bitmaps and written as a Type 3 font (one per size, `d1` inline-image glyphs, `/a<code>` names); text advances by `getpkcharwidth` |
+| `pdf_images.rs`, `pdf_encodings.rs` | pdftoepdf port: one shared `PdfSource` per included file; with `\pdfinclusioncopyfonts=0` Type 1/Type1C fonts the font map knows are replaced by the map's program (xpdf base-encoding tables) and their descriptor is never preset from a TFM; every other object is copied as it is, unembedded standard fonts included — only the EPS converter's PDFs (`tex_ps::EPS_PDF_PRODUCER`) get the standard-font programs Ghostscript would embed |
 | `pdfrender/dpx.rs`, `pdfrender/dpx_text.rs` | XeTeX's xdvipdfmx-compatible PDF driver: separate cached DVI and reader positions, text matrices and glyph runs; raw TFM metric words use the driver's `sqxfw` rounding for annotation bounds |
 | `dpx_font.rs`, `dpx_cff.rs`, `dpx_tt.rs`, `dpx_t1.rs` | xdvipdfmx native font objects, Unicode CMaps, TrueType/CFF subsetting and TFM Type 1 → Type1C conversion |
 | `diagnostics.rs` | structured diagnostics and their output bounds |
@@ -68,6 +69,16 @@ Lua PDF text follows [upstream positioning](https://github.com/TeX-Live/texlive-
 font changes establish an absolute text matrix. The glyph pen retains
 1/10000-em units and truncates when emitting coarser TJ adjustments; pdfTeX
 keeps its integer-sp raster and relative text moves.
+
+OpenType Lua fonts share a PDF font owner when their `filename` and `fullname`
+match ([`font_shareable`](https://github.com/TeX-Live/texlive-source/blob/trunk/texk/web2c/luatexdir/pdf/pdffont.c));
+`pdf.getfontname` reports that owner. Their two-byte codes are allocated per
+glyph and the ToUnicode text is settled when fonts are written, after
+`finish_pdffile` (where luaotfload's harf mode assigns final `tounicode`
+values), following `write_cid_tounicode`: the sharers are visited by id and
+their marked characters by code (the owner also holds every sharer's marks),
+and a glyph takes its first value from the showing font's `tounicode`, then
+the owner's, or the character code when neither font enables `tounicode`.
 
 Lua characters keep scalar metrics inline; kerning, ligatures, math variants
 and kerns, successors, extensible recipes and virtual packets live in optional
@@ -117,8 +128,9 @@ only as links to `texres` (or `texmk`). Releases ship only `texres`.
      `TEX_SUITE_PROGRAM_NAME`, default `pdflatex`);
   2. a first argument `latexdiff`;
   3. the invoked file name: `pdflatex`, `xelatex`, `lualatex` run one engine
-     pass, `bibtex`/`tex-bibtex` run BibTeX, `latexdiff` runs the diff, and
-     anything else (`texres`, `texmk`, `latexmk`) runs the build driver.
+     pass, `bibtex`/`tex-bibtex` run BibTeX, `makeindex` runs makeindex,
+     `latexdiff` runs the diff, and anything else (`texres`, `texmk`,
+     `latexmk`) runs the build driver.
 
   Engine and BibTeX personalities started this way set `TEX_RS_HERMETIC=1`,
   so they resolve TeX files only from the embedded archive (see below).
@@ -170,6 +182,13 @@ to inject tools.
    project-supplied `<job>.bbl` is adopted instead of running BibTeX; if
    BibTeX fails and the project has a `.bbl`, that file is used. After a
    successful BibTeX run another pass follows.
+   Then, as latexmk does, makeindex (`makeindex -o X.ind X.idx`, run in the
+   auxiliary directory) processes each `.idx` file the pass announced with
+   `Writing index file X.idx` (makeidx, multind, imakeidx, index.sty), unless
+   its input and `X.mst` style are those of the run that wrote the existing
+   `X.ind`. An `X.ind` rewritten since by imakeidx (which runs makeindex
+   itself through `\write18`, with its `options=`) is left alone, so the next
+   pass reads imakeidx's output as in TeX Live.
 6. The build is stable when the auxiliary snapshot did not change during the
    pass, or on a first pass that started from existing auxiliary state when
    there are no pending signals and the only auxiliary files are `.aux` files containing nothing but inert lines
@@ -319,6 +338,33 @@ user's `HOME`:
   other test threads fork, and executing it before they `exec` fails with
   ETXTBSY ("Text file busy").
 
+## makeindex (`crates/tex-makeindex`)
+
+A line-by-line port of TeX Live's makeindex 2.18: `scan.rs` (`scanid.c`),
+`style.rs` (`scanst.c`), `sort.rs` (`sortid.c` and Nelson Beebe's `qsort.c`,
+whose comparison order decides which of two identical entries is dropped and
+the comparison count in the transcript) and `gen.rs` (`genind.c`).
+`tex_makeindex::run_cli(args, host)` is the entry point; `DirHost` maps
+relative names to a job's directories and finds style files as kpathsea does
+(`./name`, then the TeX tree).
+
+- Ground truth is `/usr/bin/makeindex`: the `.ind`, the `.ilg` and the exit
+  status match byte for byte. The `.ilg` banner names TeXres.
+- Options: `-c -g -i -l -L -q -r -T -o -p -s -t`; `-p even|odd|any` reads
+  the page from `X.log`; a lone `X.idx` takes `X.mst` as its style; `-L` and
+  `-T` collate with the environment's locale.
+- Undefined behaviour of the C code that TeX Live's binary shows is
+  reproduced where it is deterministic: a page number with more than ten
+  fields overwrites the `level`, `actual` and `encap` characters, `-l`
+  comparisons may read past keys that end in a blank, and an unterminated
+  style string reports the remains of the previous one.
+- Tests: `crates/tex-makeindex/tests/oracle.rs` runs every directory under
+  `tests/oracle/` (inputs and `args`) against `expected/` (the files
+  `/usr/bin/makeindex` wrote when run with `args` in a copy of the directory,
+  and `status`). To add a case, create the directory, run TeX Live's
+  makeindex in a copy, keep the new files in `expected/`, and list the case
+  in `oracle_cases!`.
+
 ## BibTeX (`crates/tex-bibtex`)
 
 One engine, a module-by-module port of `bibtex.web` 0.99e plus TeX Live's
@@ -447,7 +493,14 @@ banner reads `This is XeTeX, Version 3.141592653-2.6-0.999998 (TeXres x.y.z)`.
 Output goes to the PDF directly, without an XDV file: `\special`s are
 interpreted as `xdvipdfmx` does, pages default to A4 unless `\pdfpagewidth`
 and `\pdfpageheight` are set, and the PDF carries xdvipdfmx's producer data.
-Shell escape (`\write18`) is never run. pdfLaTeX has no native fonts: loading
+Shell escape (`\write18`) follows web2c: restricted by default (only the
+`shell_escape_commands` list, such as `latexminted` for `minted`, run; they are
+found on `PATH` and started with `/bin/sh -c` in the working directory with
+`TEXMF_OUTPUT_DIRECTORY` set to the auxiliary or output directory and
+`SELFAUTOLOC` to the directory of a `kpsewhich`; `makeindex` commands that
+need no shell features run the embedded makeindex in-process instead, on the
+job's files in that directory), `-shell-escape` allows any
+command and `-no-shell-escape` none. pdfLaTeX has no native fonts: loading
 `fontspec` there fails with fontspec's own engine error, as in TeX Live.
 `-lualatex` runs the LuaTeX-compatible mode with the embedded LuaLaTeX format
 and an in-tree Lua VM, so `\directlua` works. `luatexja` and a few LuaTeX-only

@@ -27,6 +27,7 @@ pub mod lpeg;
 mod lua_api;
 mod lua_value;
 mod lua_vm;
+mod host_access;
 mod platform_time;
 mod stdlib;
 
@@ -38,10 +39,11 @@ pub use compiler::LuaLanguageLevel;
 // `GlobalState`, C functions) holds unrooted GC pointers and stays crate-private.
 pub use lua_value::userdata_trait::{LuaCFunction, OpaqueUserData, UdValue, UserDataTrait};
 
+pub use host_access::{set_host_observer, HostAccess, HostObserver};
 pub use lib_registry::LuaLibrary;
 pub use lua_api::*;
 pub use lua_value::LuaValueKind;
-pub use lua_value::lua_convert::{FromLua, FromLuaMulti, IntoLua};
+pub use lua_value::lua_convert::{FromLua, FromLuaMulti, IntoLua, Multi, ToInteger};
 pub use lua_vm::SafeOption;
 #[cfg(feature = "sandbox")]
 pub use lua_vm::SandboxConfig;

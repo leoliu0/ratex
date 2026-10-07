@@ -1,0 +1,11 @@
+\documentclass[border=5pt,tikz]{standalone}
+\usepackage{pgfplots}\pgfplotsset{compat=1.18}
+\begin{document}
+
+
+\begin{tikzpicture}
+\foreach \i in {0,...,11} {\draw[fill=blue!\i0] (\i*30:2) circle (.4);}
+\draw[thick,->] (0,0) -- (3,0) node[right]{$x$};
+\node at (0,-3) {BENCH-A};
+\end{tikzpicture}
+\end{document}

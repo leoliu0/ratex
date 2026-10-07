@@ -7,7 +7,6 @@
 //! XeTeX shares with pdfTeX get their XeTeX spelling. Each slice registers
 //! the names it implements in its own `register_xetex_*_primitives`.
 
-use std::rc::Rc;
 use crate::engine::{Engine, EngineKind};
 use crate::eqtb::Equiv;
 use crate::prim::{GlueParam, IntParam, Prim};
@@ -247,7 +246,7 @@ impl Engine {
         let c1 = self.scan_char_class();
         let c2 = self.scan_char_class();
         self.scan_optional_equals();
-        let toks = Rc::new(self.scan_token_list_of(Some(owner)));
+        let toks = self.scan_toks_value(Some(owner));
         self.eqtb.assign_inter_char_toks(c1, c2, toks, global);
     }
 

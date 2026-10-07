@@ -1,0 +1,12 @@
+[package]
+name = "tex-makeindex"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "tex_makeindex"
+path = "src/lib.rs"
+
+[[bin]]
+name = "makeindex"
+path = "src/bin/makeindex.rs"

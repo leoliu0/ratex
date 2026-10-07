@@ -1,6 +1,5 @@
 //! Node lists, glue, boxes, and packing algorithms (hpack/vpack).
 
-use crate::fonts::FontResolver;
 use crate::scaled::{self, ONE};
 use crate::tfm::FontId;
 
@@ -1134,9 +1133,6 @@ pub enum Node {
         /// luatex `noad_fam`: [`NO_FAM`] unless a Lua noad sets `fam`; with
         /// `\mathrulethicknessmode` its font gives the bar thickness
         fam: u8,
-        /// the already-packed bar-and-body box the conversion yields; `body`
-        /// is the original field, kept for `\showlists` (tex.web §692)
-        packed: Box<Node>,
         attr: Attr,
     },
     VCenter {
@@ -1235,6 +1231,131 @@ impl Node {
 
 pub type NodeList = Vec<Node>;
 
+impl Node {
+    /// The node holds only plain data (no list, box, string or shared
+    /// pointer): a bitwise copy is a clone and dropping it does nothing.
+    /// Text is made of these, so list copies and drops test this first
+    /// instead of going through the per-variant clone and drop code.
+    #[inline(always)]
+    fn is_plain(&self) -> bool {
+        matches!(
+            self,
+            Node::Char { .. }
+                | Node::Ligature { .. }
+                | Node::Glue(..)
+                | Node::Kern(..)
+                | Node::ExplicitKern(..)
+                | Node::AccentKern(..)
+                | Node::ItalicKern(..)
+                | Node::SpaceAdjKern(..)
+                | Node::MarginKern { .. }
+                | Node::ExKern { .. }
+                | Node::Penalty(..)
+                | Node::Rule { .. }
+                | Node::MathKern(..)
+        )
+    }
+}
+
+/// Compile-time witness for [`Node::is_plain`]: each variant it accepts is
+/// matched without `..` and every field is copied out, so adding a field
+/// that is not `Copy` (or any field) to one of them fails to build here.
+#[allow(dead_code)]
+fn plain_node_fields_are_copy(n: &Node) {
+    fn copy<T: Copy>(_: &T) {}
+    match n {
+        Node::Char { c, font, attr } => (copy(c), copy(font), copy(attr)).0,
+        Node::Ligature { c, font, lig_width, lig_height, lig_depth, letters, n_letters, subtype, attr } => {
+            (copy(c), copy(font), copy(lig_width), copy(lig_height), copy(lig_depth));
+            (copy(letters), copy(n_letters), copy(subtype), copy(attr)).0
+        }
+        Node::Glue(g, a) => (copy(g), copy(a)).0,
+        Node::Kern(k, a)
+        | Node::ExplicitKern(k, a)
+        | Node::AccentKern(k, a)
+        | Node::ItalicKern(k, a)
+        | Node::SpaceAdjKern(k, a)
+        | Node::Penalty(k, a) => (copy(k), copy(a)).0,
+        Node::MarginKern { side, width, c, font, ex, attr } => {
+            (copy(side), copy(width), copy(c), copy(font), copy(ex), copy(attr)).0
+        }
+        Node::ExKern { width, ex, attr } => (copy(width), copy(ex), copy(attr)).0,
+        Node::Rule { width, height, depth, subtype, index, attr } => {
+            (copy(width), copy(height), copy(depth), copy(subtype), copy(index), copy(attr)).0
+        }
+        Node::MathKern(k, kind, a) => (copy(k), copy(kind), copy(a)).0,
+        _ => {}
+    }
+}
+
+/// `n.clone()`, with plain nodes copied bitwise and box contents copied by
+/// [`clone_node_list`] (tex.web copy_node_list).
+#[inline]
+pub fn clone_node(n: &Node) -> Node {
+    if n.is_plain() {
+        // SAFETY: `is_plain` variants own nothing (see
+        // `plain_node_fields_are_copy`), so the copy shares no resource.
+        return unsafe { std::ptr::read(n) };
+    }
+    match n {
+        Node::Box { kind, w, h, d, shift, list, glue_sign, glue_order, glue_set, lr, dir, subtype, attr } => {
+            Node::Box {
+                kind: *kind,
+                w: *w,
+                h: *h,
+                d: *d,
+                shift: *shift,
+                list: clone_node_list(list),
+                glue_sign: *glue_sign,
+                glue_order: *glue_order,
+                glue_set: *glue_set,
+                lr: *lr,
+                dir: *dir,
+                subtype: *subtype,
+                attr: *attr,
+            }
+        }
+        _ => n.clone(),
+    }
+}
+
+/// `list.to_vec()` through [`clone_node`].
+pub fn clone_node_list(list: &[Node]) -> NodeList {
+    let mut out = Vec::with_capacity(list.len());
+    out.extend(list.iter().map(clone_node));
+    out
+}
+
+/// Drop a node list, skipping the drop code of plain nodes and freeing box
+/// contents the same way.
+pub fn drop_node_list(mut list: NodeList) {
+    let len = list.len();
+    let p = list.as_mut_ptr();
+    // SAFETY: the length is cleared first, so each element is dropped
+    // exactly once below and `list` then frees only its buffer.
+    unsafe {
+        list.set_len(0);
+        for i in 0..len {
+            let n = &mut *p.add(i);
+            if n.is_plain() {
+                continue;
+            }
+            if let Node::Box { list: inner, .. } = n {
+                drop_node_list(std::mem::take(inner));
+            }
+            std::ptr::drop_in_place(n);
+        }
+    }
+}
+
+/// Drop a node the way [`drop_node_list`] drops list items.
+#[inline]
+pub fn drop_node(n: Option<Node>) {
+    if let Some(Node::Box { list, .. }) = n {
+        drop_node_list(list);
+    }
+}
+
 /// (width, height, depth) of a glyph of a Lua font as hpack counts them
 /// (texnodes.c `glyph_width`, `glyph_height`, `glyph_depth` with
 /// `\glyphdimensionsmode`): the character record's metrics with the height
@@ -1275,14 +1396,20 @@ pub fn lua_glyph_dims(eqtb: &crate::eqtb::Eqtb, g: &LuaGlyph) -> (i32, i32, i32)
     (crate::luaexp::expanded_width(w, g.expansion_factor), h, d)
 }
 
+/// width, height and depth of character `c` of font `f` (zero when either
+/// is unknown)
+#[inline]
+fn char_whd(eqtb: &crate::eqtb::Eqtb, f: FontId, c: u8) -> (i32, i32, i32) {
+    match eqtb.fonts.get(f as usize).and_then(|font| font.chars.get(c as usize)) {
+        Some(ci) => (ci.width, ci.height, ci.depth),
+        None => (0, 0, 0),
+    }
+}
+
 /// dimensions of a single node in a horizontal list
 fn single_dims(n: &Node, eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
     match n {
-        Node::Char { c, font, .. } => (
-            eqtb_fonts(eqtb).char_width(*font, *c),
-            eqtb_fonts(eqtb).char_height(*font, *c),
-            eqtb_fonts(eqtb).char_depth(*font, *c),
-        ),
+        Node::Char { c, font, .. } => char_whd(eqtb, *font, *c),
         Node::LuaGlyph(g) => lua_glyph_dims(eqtb, g),
         Node::Ligature {
             lig_width,
@@ -1317,7 +1444,7 @@ fn single_dims(n: &Node, eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
             (wn.max(wd), hn + hd, 0)
         }
         Node::Radical { body, .. } => hlist_dims(body, eqtb),
-        Node::Overline { packed, .. } => single_dims(packed, eqtb),
+        Node::Overline { body, .. } => hlist_dims(body, eqtb),
         Node::OpLimits { op, .. } => hlist_dims(op, eqtb),
         Node::VCenter { box_node } => single_dims(box_node, eqtb),
         Node::Whatsit(WhatIt::PdfRefXImage { w, h, d, .. }, _)
@@ -1351,33 +1478,79 @@ fn single_dims(n: &Node, eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
 
 /// natural dimensions of a horizontal list. Returns (width, height, max_depth)
 pub fn hlist_dims(list: &[Node], eqtb: &crate::eqtb::Eqtb) -> (i32, i32, i32) {
+    let (w, h, d, _, _) = hlist_scan::<false>(list, eqtb);
+    (w, h, d)
+}
+
+/// [`hlist_dims`] and, with `GLUE`, the [`glue_sums`] of the same list in
+/// one pass (hpack's two scans of the list).
+#[inline]
+fn hlist_scan<const GLUE: bool>(
+    list: &[Node],
+    eqtb: &crate::eqtb::Eqtb,
+) -> (i32, i32, i32, [i64; 5], [i64; 5]) {
+    let mut stretch = [0i64; 5];
+    let mut shrink = [0i64; 5];
+    let mut add_glue = |n: &Node| {
+        if GLUE {
+            if let Node::Glue(g, _) | Node::Leaders { glue: g, .. } = n {
+                stretch[g.stretch_order as usize] += g.stretch as i64;
+                shrink[g.shrink_order as usize] += g.shrink as i64;
+            }
+        }
+    };
     let mut w = 0i64;
     let mut h = 0i64;
     let mut d = 0i64;
     let mut i = 0usize;
     while i < list.len() {
         let n = &list[i];
-        if let Node::Disc(dc) = n {
-            for n2 in &dc.no_break {
-                let (w2, h2, d2) = single_dims(n2, eqtb);
-                w += w2 as i64;
-                h = h.max(h2 as i64);
-                d = d.max(d2 as i64);
+        let (w2, h2, d2) = match n {
+            // the common nodes of text, without the general dispatch
+            Node::Char { c, font, .. } => char_whd(eqtb, *font, *c),
+            Node::Kern(k, _) => {
+                w += *k as i64;
+                i += 1;
+                continue;
             }
-            i += 1 + dc.replace_count;
-            continue;
-        }
-        if matches!(n, Node::Choice) {
-            i += 1;
-            continue;
-        }
-        let (w2, h2, d2) = single_dims(n, eqtb);
+            Node::Glue(g, _) => {
+                add_glue(n);
+                w += g.width as i64;
+                i += 1;
+                continue;
+            }
+            Node::Disc(dc) => {
+                for n2 in &dc.no_break {
+                    let (w2, h2, d2) = single_dims(n2, eqtb);
+                    w += w2 as i64;
+                    h = h.max(h2 as i64);
+                    d = d.max(d2 as i64);
+                }
+                // the replaced nodes count for the glue totals only
+                if GLUE {
+                    let end = list.len().min(i + 1 + dc.replace_count);
+                    for n2 in &list[i + 1..end] {
+                        add_glue(n2);
+                    }
+                }
+                i += 1 + dc.replace_count;
+                continue;
+            }
+            Node::Choice => {
+                i += 1;
+                continue;
+            }
+            _ => {
+                add_glue(n);
+                single_dims(n, eqtb)
+            }
+        };
         w += w2 as i64;
         h = h.max(h2 as i64);
         d = d.max(d2 as i64);
         i += 1;
     }
-    (w as i32, h as i32, d as i32)
+    (w as i32, h as i32, d as i32, stretch, shrink)
 }
 
 /// natural dimensions of a vertical list: (width, height, depth), per
@@ -1619,9 +1792,8 @@ pub fn hpack_add(
     if eqtb.has_native_fonts {
         crate::xetex_text::merge_native_fragments(&mut list, eqtb);
     }
-    let (nat_w, h, d) = hlist_dims(&list, eqtb);
+    let (nat_w, h, d, stretch, shrink) = hlist_scan::<true>(&list, eqtb);
     let nat = nat_w as i64;
-    let (stretch, shrink) = glue_sums(&list);
     let mut target = w.map(|v| v as i64).unwrap_or(nat);
     if additional {
         target = nat + target;
@@ -1681,6 +1853,16 @@ pub fn hpack_migrate(
     kind: u8,
     eqtb: &crate::eqtb::Eqtb,
 ) -> (PackResult, NodeList) {
+    let (kept, mut migrated, mut pre) = split_adjust_material(list);
+    migrated.append(&mut pre);
+    (hpack(kept, w, kind, eqtb), migrated)
+}
+
+/// The `adjust_tail<>null` part of hpack: the hlist without its top-level
+/// `Ins`/`Mark`/`VAdjust` nodes, those nodes in source order (a `VAdjust`
+/// contributes its own vlist), and the `\vadjust pre` material
+/// (pdftex.web `pre_adjust_tail`), which belongs before the packed box.
+pub fn split_adjust_material(list: NodeList) -> (NodeList, NodeList, NodeList) {
     let mut migrated: NodeList = Vec::new();
     let mut pre: NodeList = Vec::new();
     let mut kept: NodeList = Vec::with_capacity(list.len());
@@ -1694,8 +1876,7 @@ pub fn hpack_migrate(
             other => kept.push(other),
         }
     }
-    migrated.append(&mut pre);
-    (hpack(kept, w, kind, eqtb), migrated)
+    (kept, migrated, pre)
 }
 
 /// \vbox/\vtop packing with explicit max depth (tex.web vpackage's `l`):

@@ -43,3 +43,22 @@ pub fn copy_executable(source: &Path, destination: &Path) {
         destination.display()
     );
 }
+
+/// Restrict luaotfload's font names database to the bundled fonts. On the
+/// first LuaLaTeX run luaotfload scans `$OSFONTDIR` and the directories of
+/// the system's `fonts.conf`; over a desktop's thousands of fonts that takes
+/// minutes in the debug profile and makes the test depend on the machine.
+/// TeX Live's own switches do it: `$OSFONTDIR` names an empty directory and a
+/// `luaotfload.conf` in `$XDG_CONFIG_HOME` keeps only the `texmf` location.
+pub fn bundled_fonts_only<'a>(command: &'a mut Command, dir: &Path) -> &'a mut Command {
+    let config = dir.join("xdg-config");
+    std::fs::create_dir_all(config.join("luaotfload")).unwrap();
+    std::fs::write(
+        config.join("luaotfload/luaotfload.conf"),
+        "[db]\n    location-precedence = texmf\n",
+    )
+    .unwrap();
+    let no_fonts = dir.join("no-os-fonts");
+    std::fs::create_dir_all(&no_fonts).unwrap();
+    command.env("OSFONTDIR", no_fonts).env("XDG_CONFIG_HOME", config)
+}

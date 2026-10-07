@@ -1,0 +1,21 @@
+% long delimiters
+delim_0 " \\dotfill\\ "
+delim_1 " \\dotfill\\ "
+delim_2 " \\dotfill\\ "
+delim_n ",\\enspace "
+delim_r "\\nobreakdash--\\nolinebreak"
+delim_t "\\relax."
+suffix_2p "\\,f."
+suffix_3p "\\,ff."
+item_0 "\n\\item\\leavevmode\\hbox{} "
+item_1 "\n  \\subitem\\leavevmode\\hbox{} "
+item_x1 "\n  \\subitem[x] "
+item_01 "\n  \\subitem[01] "
+item_12 "\n    \\subsubitem[12] "
+item_x2 "\n    \\subsubitem[x2] "
+encap_prefix "\\IndexEncapsulator{"
+encap_infix "}{"
+encap_suffix "}%\n"
+line_max 50
+indent_space "\t\t\t"
+indent_length 24

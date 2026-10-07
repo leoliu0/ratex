@@ -781,7 +781,10 @@ impl ToksParam {
     }
 }
 
+/// `repr(u16)` fixes the layout (RFC 2195: the discriminant is the leading
+/// `u16`), so [`Prim::tag`] can index the bit sets of [`PrimSet`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u16)]
 pub enum Prim {
     // ---- expansion ----
     Relax,
@@ -1340,12 +1343,51 @@ pub enum Prim {
     XeTeXPdfPageCount,
 }
 
+/// A set of primitives as a bitmap over [`Prim::tag`]: membership is one load
+/// and a bit test, where a large `matches!` compiles to an indirect jump.
+/// Variants with a payload are members for every payload.
+pub struct PrimSet([u64; 8]);
+
+impl PrimSet {
+    pub const fn of(prims: &[Prim]) -> PrimSet {
+        let mut bits = [0u64; 8];
+        let mut i = 0;
+        while i < prims.len() {
+            let tag = prims[i].tag() as usize;
+            bits[tag >> 6] |= 1 << (tag & 63);
+            i += 1;
+        }
+        PrimSet(bits)
+    }
+
+    #[inline(always)]
+    pub fn contains(&self, p: Prim) -> bool {
+        let tag = p.tag() as usize;
+        (self.0[(tag >> 6) & 7] >> (tag & 63)) & 1 != 0
+    }
+}
+
+const _: () = assert!((Prim::XeTeXPdfPageCount.tag() as usize) < 512);
+// `repr(u16)` must not grow the hot engine and eqtb fields that hold a Prim.
+const _: () = assert!(std::mem::size_of::<Prim>() == 4);
+const _: () = assert!(std::mem::size_of::<Option<Prim>>() == 4);
+const _: () = assert!(std::mem::size_of::<crate::eqtb::Equiv>() == 16);
+const _: () = assert!(std::mem::size_of::<Option<crate::eqtb::Equiv>>() == 16);
+
 /// Stable wire codes for the format dump (`crate::format`). Unit variants
 /// take 0..0x0fff in declaration order — exhaustiveness is compiler-checked
 /// in `code`; new unit variants MUST be appended at the enum tail so earlier
 /// codes keep their values. The four parameter families occupy dedicated
 /// high ranges that carry the parameter index directly.
 impl Prim {
+    /// The discriminant: variants are numbered in declaration order.
+    #[inline(always)]
+    pub const fn tag(self) -> u16 {
+        // SAFETY: `Prim` is `repr(u16)`, so its first two bytes hold the
+        // discriminant (RFC 2195), for every variant.
+        unsafe { *(&self as *const Prim as *const u16) }
+    }
+
     /// The TeX82 box command a LuaTeX `\hpack`/`\vpack`/`\tpack` stands
     /// for (they only skip the packaging callbacks); other commands as is.
     pub fn box_spec(self) -> Prim {

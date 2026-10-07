@@ -660,8 +660,7 @@ impl GlobalState {
     }
 
     pub fn to_ref(&mut self, value: LuaValue) -> LuaAnyRef {
-        let ref_id = store_in_registry(self, value);
-        LuaAnyRef::from_raw(ref_id, GlobalStateHandle::from_global(self))
+        LuaAnyRef::new(self, value)
     }
 
     pub fn to_table_ref(&mut self, value: LuaValue) -> Option<LuaTableRef> {
@@ -775,8 +774,9 @@ impl GlobalState {
     pub(crate) fn read_chunk_file(&self, path: &str) -> Result<Vec<u8>, String> {
         use std::io::Read;
         let reason = |error: &std::io::Error| crate::stdlib::io::file::error_message(error);
-        let mut file =
-            std::fs::File::open(path).map_err(|e| format!("cannot open {path}: {}", reason(&e)))?;
+        let opened = std::fs::File::open(path);
+        crate::host_access::notify(&crate::host_access::HostAccess::Chunk { path, ok: opened.is_ok() });
+        let mut file = opened.map_err(|e| format!("cannot open {path}: {}", reason(&e)))?;
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes).map_err(|e| {
             if self.version == LuaLanguageLevel::Lua55 {

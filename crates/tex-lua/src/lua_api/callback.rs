@@ -34,6 +34,14 @@ impl CallbackLua<'_> {
         self.state.get_arg(index).map(|value| value.kind())
     }
 
+    /// Run `f` on the bytes of argument `index` (1-based) if it is a string
+    /// (numbers are not converted), without copying them; `None` otherwise.
+    #[inline]
+    pub fn arg_bytes<R>(&self, index: usize, f: impl FnOnce(&[u8]) -> R) -> Option<R> {
+        let value = self.state.get_arg(index)?;
+        value.as_bytes().map(f)
+    }
+
     /// Argument `index` (1-based) converted to `T`; an absent argument is nil.
     /// A failed conversion raises Lua's "bad argument #n to 'f' (...)" error.
     pub fn arg<T: FromLua>(&mut self, index: usize) -> LuaResult<T> {

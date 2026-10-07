@@ -464,7 +464,9 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
     // zip archives (read only)
     sys_reg!(lua, s, "zip_open", |path: LuaString| -> (Option<i64>, Option<LuaBytes>) {
         let bytes = bytes_of(&path);
-        let data = match fs::read(path_of(&bytes)) {
+        let read = fs::read(path_of(&bytes));
+        let _ = crate::lua_bridge::with_engine(|e| e.lua_dep_read(&path_of(&bytes), read.is_ok()));
+        let data = match read {
             Ok(data) => data,
             Err(e) => return (None, Some(LuaBytes(format!("{}: {}", String::from_utf8_lossy(&bytes), strerror(&e)).into_bytes()))),
         };

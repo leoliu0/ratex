@@ -636,38 +636,36 @@ impl Engine {
                 }
             }
         }
-        if let Some((file_id, line)) = source {
-            self.cur_list.push(Node::Whatsit(
-                crate::boxes::WhatIt::SyncPoint { file_id, line },
-                crate::boxes::Attr::NONE,
-            ));
-        }
+        // TeXres's SyncTeX mark of the new text: it is not a node of the
+        // TeX Live list, so it must not keep the text from merging with a
+        // preceding word (which would split it for hyphenation); a merged
+        // word keeps the mark behind it, as `merge_native_fragments` does
+        let mut sync = source.map(|(file_id, line)| {
+            Node::Whatsit(crate::boxes::WhatIt::SyncPoint { file_id, line }, crate::boxes::Attr::NONE)
+        });
         let main_k_total = text.len();
         let mut temp_ptr = 0usize;
         let mut main_k = main_k_total;
-        let attr = self.eqtb.cur_attr;
-        let _ = attr;
         if self.mode == Mode::Horizontal {
             loop {
                 if main_h == 0 {
                     main_h = main_k;
                 }
-                let tail_is_word = matches!(self.cur_list.last().and_then(|n| n.native_word()), Some((tf, _, _)) if tf == f);
-                let prev_ok = {
-                    let n = self.cur_list.len();
-                    n < 2 || !matches!(self.cur_list[n - 2], Node::Disc(_))
-                };
-                if tail_is_word && prev_ok {
+                if let Some(k) = self.xe_tail_word(f) {
                     // merge with the preceding word
-                    let old = self.cur_list.pop().unwrap();
+                    let old = self.cur_list.remove(k);
+                    let marks = self.cur_list.split_off(k);
                     let (_, old_text, _) = old.native_word().unwrap();
                     let mut combined: Vec<u16> = old_text.encode_utf16().collect();
                     combined.extend_from_slice(&text[temp_ptr..temp_ptr + main_h]);
                     self.do_locale_linebreaks(f, &combined);
+                    self.cur_list.extend(marks);
+                    self.cur_list.extend(sync.take());
                     main_k = main_k_total - main_h - temp_ptr;
                     temp_ptr = main_h;
                     main_h = 0;
                 } else {
+                    self.cur_list.extend(sync.take());
                     let frag = text[temp_ptr..temp_ptr + main_h].to_vec();
                     self.do_locale_linebreaks(f, &frag);
                     temp_ptr += main_h;
@@ -690,19 +688,18 @@ impl Engine {
             }
         } else {
             // restricted horizontal mode: no breaks, but merge with a preceding word
-            let tail_is_word = matches!(self.cur_list.last().and_then(|n| n.native_word()), Some((tf, _, _)) if tf == f);
-            let prev_ok = {
-                let n = self.cur_list.len();
-                n < 2 || !matches!(self.cur_list[n - 2], Node::Disc(_))
-            };
-            if tail_is_word && prev_ok {
-                let old = self.cur_list.pop().unwrap();
+            if let Some(k) = self.xe_tail_word(f) {
+                let old = self.cur_list.remove(k);
+                let marks = self.cur_list.split_off(k);
                 let (_, old_text, at) = old.native_word().unwrap();
                 let mut s = old_text.to_string();
                 s.push_str(&string_of(&text));
                 let node = native_word(&self.eqtb, f, &s, at, self.xe_use_glyph_metrics());
                 self.cur_list.push(node);
+                self.cur_list.extend(marks);
+                self.cur_list.extend(sync);
             } else {
+                self.cur_list.extend(sync);
                 let node = self.xetex_native_word(f, &string_of(&text));
                 self.cur_list.push(node);
             }
@@ -710,6 +707,20 @@ impl Engine {
         if self.xe_int(XeParam::InterwordSpaceShaping) > 0 {
             self.xe_interword_space_shaping(f);
         }
+    }
+
+    /// xetex.web `collected`: new text in font `f` joins the tail of the list
+    /// when that is a native word of `f` not preceded by a discretionary.
+    /// SyncTeX marks are not nodes of the TeX Live list: the word may be
+    /// followed by the marks of earlier merged text. Returns its index.
+    fn xe_tail_word(&self, f: FontId) -> Option<usize> {
+        let is_mark = |n: &Node| matches!(n, Node::Whatsit(crate::boxes::WhatIt::SyncPoint { .. }, _));
+        let k = self.cur_list.iter().rposition(|n| !is_mark(n))?;
+        if !matches!(self.cur_list[k].native_word(), Some((tf, _, _)) if tf == f) {
+            return None;
+        }
+        let before = self.cur_list[..k].iter().rev().find(|n| !is_mark(n));
+        (!matches!(before, Some(Node::Disc(_)))).then_some(k)
     }
 
     /// `do_locale_linebreaks(s, len)`: append the text as one word, or as

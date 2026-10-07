@@ -193,45 +193,83 @@ pub struct Macro {
     pub outer: bool,
     pub protected: bool,
     /// Derived replacement plan; excluded from format serialization and \ifx.
-    pub replacement: std::cell::RefCell<Option<MacroReplacement>>,
+    pub replacement: std::cell::RefCell<Option<Rc<MacroReplacement>>>,
 }
 
-#[derive(Clone, Debug)]
+/// How a macro body is replaced: the body and its parameter references,
+/// shared by the call frames reading it.
+#[derive(Debug)]
 pub struct MacroReplacement {
     pub(crate) body: Rc<[Token]>,
-    pub(crate) references: Rc<[(usize, usize)]>,
+    /// (body position, argument index) for every parameter reference.
+    pub(crate) references: Box<[(usize, usize)]>,
+    /// Number of references to each of the parameters #1 to #9.
+    uses: [u32; 9],
 }
 impl Macro {
-    pub(crate) fn ensure_replacement_plan(&self) -> Rc<[(usize, usize)]> {
-        let mut cached = self.replacement.borrow_mut();
-        if cached
-            .as_ref()
-            .is_none_or(|plan| !Rc::ptr_eq(&plan.body, &self.body))
-        {
-            let is_reference = |token: &Token| (0x4000_0001..0x8000_0000).contains(&token.0);
-            let count = self.body.iter().filter(|token| is_reference(token)).count();
-            let mut found = self
-                .body
-                .iter()
-                .enumerate()
-                .filter(|(_, token)| is_reference(token))
-                .map(|(position, token)| (position, (token.0 & 0x3FFF_FFFF).wrapping_sub(1) as usize));
-            // A counted (trusted-length) source fills the slice in place.
-            let references: Rc<[(usize, usize)]> =
-                (0..count).map(|_| found.next().expect("counted reference")).collect();
-            *cached = Some(MacroReplacement {
-                body: self.body.clone(),
-                references: references.clone(),
+    /// The replacement plan of the current body and the length of the
+    /// replacement for `args`, or None beyond `limit`.
+    pub(crate) fn replacement_plan(
+        &self,
+        args: &crate::input::MacroArgs,
+        limit: usize,
+    ) -> (Rc<MacroReplacement>, Option<usize>) {
+        let plan = {
+            let mut cached = self.replacement.borrow_mut();
+            match &*cached {
+                Some(plan) if Rc::ptr_eq(&plan.body, &self.body) => plan.clone(),
+                _ => cached.insert(Rc::new(self.build_replacement_plan())).clone(),
+            }
+        };
+        // The arguments the references add; saturating, so that a sum beyond
+        // any limit stays beyond it.
+        let added = plan
+            .uses
+            .iter()
+            .zip(args.arg_lengths())
+            .fold(0usize, |sum, (&uses, length)| {
+                sum.saturating_add((uses as usize).saturating_mul(length))
             });
-            references
+        // Every partial sum of the replacement is at most `bound`; only a
+        // bound beyond `limit` needs the reference-by-reference check.
+        let bound = self.body.len().saturating_add(added);
+        let length = if bound <= limit {
+            Some(bound - plan.references.len())
         } else {
-            cached.as_ref().unwrap().references.clone()
+            self.replacement_length(&plan.references, args, limit)
+        };
+        (plan, length)
+    }
+
+    fn build_replacement_plan(&self) -> MacroReplacement {
+        let is_reference = |token: &Token| (0x4000_0001..0x8000_0000).contains(&token.0);
+        let count = self.body.iter().filter(|token| is_reference(token)).count();
+        let mut found = self
+            .body
+            .iter()
+            .enumerate()
+            .filter(|(_, token)| is_reference(token))
+            .map(|(position, token)| (position, (token.0 & 0x3FFF_FFFF).wrapping_sub(1) as usize));
+        // A counted (trusted-length) source fills the slice in place.
+        let references: Box<[(usize, usize)]> =
+            (0..count).map(|_| found.next().expect("counted reference")).collect();
+        let mut uses = [0u32; 9];
+        for &(_, parameter) in references.iter() {
+            // A reference beyond the nine parameters never has an argument.
+            if let Some(n) = uses.get_mut(parameter) {
+                *n += 1;
+            }
+        }
+        MacroReplacement {
+            body: self.body.clone(),
+            references,
+            uses,
         }
     }
 
     /// Length of the replacement for `args` under this macro's replacement
     /// plan `references`, or None beyond `limit`.
-    pub(crate) fn replacement_length(
+    fn replacement_length(
         &self,
         references: &[(usize, usize)],
         args: &crate::input::MacroArgs,
@@ -332,12 +370,14 @@ impl GroupMeta {
     }
 }
 
-/// One open group: its metadata, the input line it began on (`saved(-1)`)
-/// and the save-stack position of its boundary (`cur_boundary`).
+/// One open group: its metadata, the input line it began on (`saved(-1)`),
+/// the save-stack position of its boundary (`cur_boundary`) and the kind of
+/// level its boundary item records.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct GroupRec {
     pub meta: GroupMeta,
     pub line: i32,
+    pub ty: LevelType,
     pub boundary: usize,
 }
 
@@ -389,7 +429,9 @@ pub enum SaveItem {
     Skip(u16, Glue, u16),
     MuSkip(u16, Glue, u16),
     Toks(u16, Rc<Vec<Token>>, u16),
-    Box(u16, Option<Node>, u16),
+    /// The previous box register value, boxed so that every save-stack
+    /// entry stays small (a node is about 100 bytes).
+    Box(u16, Option<std::boxed::Box<Node>>, u16),
     /// (catcode table, character, old value, old level)
     Cat(i32, u8, u8, u16),
     MathCode(u8, u16, u16),
@@ -417,7 +459,7 @@ pub enum SaveItem {
     /// LuaTeX `\Udelcode` entry (packed, see [`Eqtb::lua_del_code`]).
     LuaDelCode(u32, Option<(u64, u16)>),
     /// LuaTeX `\Umath` mu-glue parameter before a local assignment.
-    MathGlueParam(u32, Option<([i32; 6], u16)>),
+    MathGlueParam(u32, Option<std::boxed::Box<([i32; 6], u16)>>),
     /// LuaTeX `\catcodetable` before a local assignment: (table, level).
     CatCodeTable(i32, u16),
     StyleFont(u8, u16, u16, u16), // (0=textfont,1=scriptfont,2=ssfont, fam, fontid, level)
@@ -434,6 +476,9 @@ pub enum SaveItem {
     PenaltyShape(u8, Rc<[i32]>, u16),
     AfterGroup(Token),
 }
+
+// Every group pushes and pops save-stack entries; keep them to half a cache line.
+const _: () = assert!(std::mem::size_of::<SaveItem>() <= 32);
 
 /// An eqtb location named by e-TeX's assignment and restore tracing
 /// (tex.web show_eqtb regions; e-TeX show_sa for registers above 255).
@@ -503,6 +548,34 @@ pub(crate) enum TraceEvent {
 struct EqEntry {
     equiv: Option<Equiv>,
     level: u16,
+    /// The meaning is an \outer macro (tex.web's eq_type `outer_call`):
+    /// argument and text scanners test every token for it without loading
+    /// the macro.
+    outer: bool,
+}
+
+impl EqEntry {
+    const UNDEFINED: EqEntry = EqEntry {
+        equiv: None,
+        level: LEVEL_ONE,
+        outer: false,
+    };
+
+    /// Install `equiv` as the meaning, returning the previous one.
+    /// `outer_entries` counts the entries whose meaning is \outer.
+    #[inline]
+    fn set(&mut self, equiv: Option<Equiv>, outer_entries: &mut u32) -> Option<Equiv> {
+        let outer = matches!(&equiv, Some(Equiv::Macro(m)) if m.outer);
+        if outer != self.outer {
+            if outer {
+                *outer_entries += 1;
+            } else {
+                *outer_entries -= 1;
+            }
+            self.outer = outer;
+        }
+        std::mem::replace(&mut self.equiv, equiv)
+    }
 }
 
 /// Deduplicated LuaTeX attribute lists: `Attr(n)` names the n-th distinct
@@ -557,10 +630,11 @@ pub struct Eqtb {
     pub cur_level: u16,
     group_level_capacity_exceeded: bool,
     pending_interaction_mode: Option<i32>,
-    /// Set once any control sequence has been given an \outer macro meaning
-    /// and never cleared: until then no token can be \outer, so scanners
-    /// skip the per-token meaning lookup of tex.web §336.
-    outer_macros: bool,
+    /// How many control sequences have an \outer macro meaning now. While
+    /// none has, no token can be \outer, so scanners skip the per-token
+    /// meaning lookup of tex.web §336 (an \outer meaning given inside a
+    /// group, like fancyvrb's end of line, is gone after the group).
+    outer_entries: u32,
 
     /// tex.web cur_font_loc: current font, group-scoped via SaveItem::CurFont
     pub cur_font_val: u16,
@@ -909,7 +983,7 @@ impl Eqtb {
             save_stack: Vec::new(),
             cur_level: LEVEL_ONE,
             group_level_capacity_exceeded: false,
-            outer_macros: false,
+            outer_entries: 0,
             pending_interaction_mode: None,
             cur_font_val: 0,
             cur_font_level: LEVEL_ONE,
@@ -987,13 +1061,7 @@ impl Eqtb {
     fn ensure_entry(&mut self, id: CsId) -> &mut EqEntry {
         let idx = id as usize;
         if idx >= self.entries.len() {
-            self.entries.resize(
-                idx + 1,
-                EqEntry {
-                    equiv: None,
-                    level: LEVEL_ONE,
-                },
-            );
+            self.entries.resize(idx + 1, EqEntry::UNDEFINED);
         }
         &mut self.entries[idx]
     }
@@ -1009,14 +1077,26 @@ impl Eqtb {
 
     /// follow \let aliases to the effective meaning
     #[inline(always)]
-    pub fn resolve(&self, mut id: CsId) -> Option<&Equiv> {
+    pub fn resolve(&self, id: CsId) -> Option<&Equiv> {
+        self.resolve_entry(id).and_then(|e| e.equiv.as_ref())
+    }
+
+    #[inline(always)]
+    fn resolve_entry(&self, mut id: CsId) -> Option<&EqEntry> {
         for _ in 0..1024 {
-            match self.get(id) {
+            let entry = self.entries.get(id as usize)?;
+            match &entry.equiv {
                 Some(Equiv::Alias(next)) => id = *next,
-                other => return other,
+                _ => return Some(entry),
             }
         }
         None
+    }
+
+    /// True when the effective meaning of `id` is an \outer macro.
+    #[inline(always)]
+    pub(crate) fn is_outer_cs(&self, id: CsId) -> bool {
+        self.resolve_entry(id).is_some_and(|e| e.outer)
     }
     #[inline]
     pub fn push_save(&mut self, item: SaveItem) {
@@ -1046,14 +1126,16 @@ impl Eqtb {
         self.pending_interaction_mode = None;
     }
 
+    #[inline(always)]
+    pub(crate) fn has_pending_interaction_mode(&self) -> bool {
+        self.pending_interaction_mode.is_some()
+    }
+
     pub(crate) fn take_pending_interaction_mode(&mut self) -> Option<i32> {
         self.pending_interaction_mode.take()
     }
 
     pub fn assign(&mut self, id: CsId, equiv: Equiv, global: bool) {
-        if matches!(&equiv, Equiv::Macro(m) if m.outer) {
-            self.outer_macros = true;
-        }
         self.define_eq(id, Some(equiv), global);
     }
 
@@ -1066,13 +1148,7 @@ impl Eqtb {
         let idx = id as usize;
         let cur_level = self.cur_level;
         if idx >= self.entries.len() {
-            self.entries.resize(
-                idx + 1,
-                EqEntry {
-                    equiv: None,
-                    level: LEVEL_ONE,
-                },
-            );
+            self.entries.resize(idx + 1, EqEntry::UNDEFINED);
         }
         let same = Equiv::same(self.entries[idx].equiv.as_ref(), equiv.as_ref());
         if !self.begin_assign(global, same, TraceSlot::Eq(id)) {
@@ -1080,12 +1156,12 @@ impl Eqtb {
         }
         let entry = &mut self.entries[idx];
         if !global && entry.level < cur_level {
-            let old = std::mem::replace(&mut entry.equiv, equiv);
+            let old = entry.set(equiv, &mut self.outer_entries);
             let ol = entry.level;
             entry.level = cur_level;
             self.push_save(SaveItem::Eq(id, old, ol));
         } else {
-            entry.equiv = equiv;
+            entry.set(equiv, &mut self.outer_entries);
             entry.level = if global { LEVEL_ONE } else { cur_level };
         }
         self.end_assign(TraceSlot::Eq(id));
@@ -1498,7 +1574,7 @@ impl Eqtb {
             false,
             self.cur_level,
             &mut self.save_stack,
-            |old, ol| SaveItem::Box(idx, old, ol),
+            |old, ol| SaveItem::Box(idx, old.map(std::boxed::Box::new), ol),
         );
     }
     pub fn assign_box(&mut self, idx: u16, v: Option<Node>, global: bool) {
@@ -1508,16 +1584,16 @@ impl Eqtb {
         if !self.begin_assign(global, same, TraceSlot::Box(idx)) {
             return;
         }
-        Self::slot(
-            &mut self.boxed,
-            &mut self.box_levels,
-            i,
-            v,
-            global,
-            self.cur_level,
-            &mut self.save_stack,
-            |old, ol| SaveItem::Box(idx, old, ol),
-        );
+        // `Self::slot`, except that a replaced value that is not saved is
+        // freed by `drop_node` (no per-node drop code for plain nodes)
+        let old = std::mem::replace(&mut self.boxed[i], v);
+        let old_level = self.box_levels[i];
+        if !global && old_level < self.cur_level {
+            self.save_stack.push(SaveItem::Box(idx, old.map(std::boxed::Box::new), old_level));
+        } else {
+            crate::boxes::drop_node(old);
+        }
+        self.box_levels[i] = if global { LEVEL_ONE } else { self.cur_level };
         self.end_assign(TraceSlot::Box(idx));
     }
     /// Replace a box register's value without changing its assignment level.
@@ -1858,7 +1934,7 @@ impl Eqtb {
             global,
             self.cur_level,
             &mut self.save_stack,
-            |old| SaveItem::MathGlueParam(key, old),
+            |old| SaveItem::MathGlueParam(key, old.map(std::boxed::Box::new)),
         );
     }
 
@@ -2337,19 +2413,17 @@ impl Eqtb {
         self.groups.push(GroupRec {
             meta,
             line,
+            ty,
             boundary: self.save_stack.len(),
         });
         self.cur_level = next_level;
 
         self.push_save(SaveItem::Level(self.cur_level, ty));
     }
+    /// The kind of the innermost open level (the newest `SaveItem::Level`).
+    #[inline]
     pub fn cur_group_type(&self) -> Option<LevelType> {
-        for item in self.save_stack.iter().rev() {
-            if let SaveItem::Level(_, t) = item {
-                return Some(*t);
-            }
-        }
-        None
+        self.groups.last().map(|group| group.ty)
     }
 
     /// tex.web `cur_group`.
@@ -2392,6 +2466,62 @@ impl Eqtb {
         par_shape_sink: &mut Option<(Vec<(i32, i32)>, u16)>,
         penalty_shape_sink: &mut Vec<(u8, Rc<[i32]>, u16)>,
     ) -> LevelType {
+        // The entries nearly every group holds are restored here; the first
+        // other entry hands the rest of the group to the general loop, kept
+        // out of line so that this one stays small.
+        loop {
+            match self.save_stack.last() {
+                Some(&SaveItem::Level(lvl, t)) => {
+                    self.save_stack.pop();
+                    self.leave_level(lvl);
+                    return t;
+                }
+                Some(&SaveItem::AfterGroup(tok)) => {
+                    self.save_stack.pop();
+                    after_group.push(tok);
+                }
+                Some(SaveItem::Eq(..)) => {
+                    if let Some(SaveItem::Eq(id, old, ol)) = self.save_stack.pop() {
+                        self.unsave_eq(id, old, ol);
+                    }
+                }
+                _ => return self.pop_level_general(after_group, par_shape_sink, penalty_shape_sink),
+            }
+        }
+    }
+
+    /// unsave's end: the level boundary `lvl` has been popped.
+    #[inline]
+    fn leave_level(&mut self, lvl: u16) {
+        self.cur_level = lvl - 1;
+        if let Some(group) = self.groups.pop() {
+            if self.int_params[IntParam::TracingGroups as usize] > 0 {
+                self.trace_group(true, group.meta.code, lvl - 1, group.line);
+            }
+        }
+    }
+
+    /// Restore a control sequence's meaning unless a global assignment
+    /// made it survive the group.
+    #[inline]
+    fn unsave_eq(&mut self, id: CsId, old: Option<Equiv>, ol: u16) {
+        self.ensure_entry(id);
+        let e = &mut self.entries[id as usize];
+        let restored = e.level > LEVEL_ONE;
+        if restored {
+            e.set(old, &mut self.outer_entries);
+            e.level = ol;
+        }
+        self.trace_restore(restored, TraceSlot::Eq(id));
+    }
+
+    #[inline(never)]
+    fn pop_level_general(
+        &mut self,
+        after_group: &mut Vec<Token>,
+        par_shape_sink: &mut Option<(Vec<(i32, i32)>, u16)>,
+        penalty_shape_sink: &mut Vec<(u8, Rc<[i32]>, u16)>,
+    ) -> LevelType {
         let mut ty = LevelType::Group;
 
         while let Some(item) = self.save_stack.pop() {
@@ -2419,24 +2549,11 @@ impl Eqtb {
                     self.trace_shape(TraceSlot::PenaltyShape(kind));
                 }
                 SaveItem::Level(lvl, t) => {
-                    self.cur_level = lvl - 1;
                     ty = t;
-                    if let Some(group) = self.groups.pop() {
-                        if self.int_params[IntParam::TracingGroups as usize] > 0 {
-                            self.trace_group(true, group.meta.code, lvl - 1, group.line);
-                        }
-                    }
+                    self.leave_level(lvl);
                     break;
                 }
-                SaveItem::Eq(id, old, ol) => {
-                    let e = self.ensure_entry(id);
-                    let restored = e.level > LEVEL_ONE;
-                    if restored {
-                        e.equiv = old;
-                        e.level = ol;
-                    }
-                    self.trace_restore(restored, TraceSlot::Eq(id));
-                }
+                SaveItem::Eq(id, old, ol) => self.unsave_eq(id, old, ol),
                 SaveItem::IntParam(i, v, l) => {
                     let restored = self.int_levels[i as usize] > LEVEL_ONE;
                     if restored {
@@ -2524,7 +2641,7 @@ impl Eqtb {
                     // value, voiding microtype's \MT@tempbox lastbox.
                     let restored = self.box_levels[i as usize] > LEVEL_ONE;
                     if restored {
-                        self.boxed[i as usize] = v;
+                        self.boxed[i as usize] = v.map(|node| *node);
                         self.box_levels[i as usize] = l;
                     }
                     self.trace_restore(restored, TraceSlot::Box(i));
@@ -2636,7 +2753,7 @@ impl Eqtb {
                     Self::restore_sparse(&mut self.lua_del_codes, key, old);
                 }
                 SaveItem::MathGlueParam(key, old) => {
-                    Self::restore_sparse(&mut self.math_glue_params, key, old);
+                    Self::restore_sparse(&mut self.math_glue_params, key, old.map(|value| *value));
                 }
                 SaveItem::CatCodeTable(table, level) => {
                     if self.cat_table_level > LEVEL_ONE {
@@ -2717,23 +2834,22 @@ impl Eqtb {
 
     /// Restore one control-sequence entry from a format dump.
     pub(crate) fn restore_eq(&mut self, id: CsId, equiv: Option<Equiv>, level: u16) {
-        if matches!(&equiv, Some(Equiv::Macro(m)) if m.outer) {
-            self.outer_macros = true;
-        }
-        let e = self.ensure_entry(id);
-        e.equiv = equiv;
+        self.ensure_entry(id);
+        let e = &mut self.entries[id as usize];
+        e.set(equiv, &mut self.outer_entries);
         e.level = level;
     }
 
     /// Clear all control-sequence entries before restoring from a format dump.
     pub(crate) fn clear_entries(&mut self) {
         self.entries.clear();
+        self.outer_entries = 0;
     }
 
-    /// False while no \outer macro has ever been defined.
+    /// False while no control sequence has an \outer macro meaning.
     #[inline(always)]
     pub(crate) fn has_outer_macros(&self) -> bool {
-        self.outer_macros
+        self.outer_entries != 0
     }
 }
 
@@ -2796,8 +2912,7 @@ mod tests {
     fn replacement_plan_preserves_repeated_parameters_and_rebuilds_after_body_change() {
         fn expand(m: &Macro, args: &crate::input::MacroArgs) -> Vec<Token> {
             let mut frame = crate::input::MacroFrame::new(
-                m.body.clone(),
-                m.ensure_replacement_plan(),
+                m.replacement_plan(args, usize::MAX).0,
                 args.clone(),
                 None,
                 0,
@@ -2840,16 +2955,15 @@ mod tests {
                 Token::letter(b'Z'),
             ]
         );
-        assert_eq!(m.replacement_length(&m.ensure_replacement_plan(), &args, usize::MAX), Some(6));
+        assert_eq!(m.replacement_plan(&args, usize::MAX).1, Some(6));
         Rc::make_mut(&mut m.body)[0] = Token::letter(b'B');
         assert_eq!(expand(&m, &args)[0], Token::letter(b'B'));
         m.body = vec![Token(0x4000_0001)].into();
         assert_eq!(expand(&m, &args), vec![Token::letter(b'X')]);
 
         m.body = vec![Token(0x4000_0002), Token(0x4000_0002)].into();
-        let plan = m.ensure_replacement_plan();
-        assert_eq!(m.replacement_length(&plan, &args, 3), None);
-        assert_eq!(m.replacement_length(&plan, &args, 4), Some(4));
+        assert_eq!(m.replacement_plan(&args, 3).1, None);
+        assert_eq!(m.replacement_plan(&args, 4).1, Some(4));
     }
 
     fn prim_of(eq: &Eqtb, id: CsId) -> Option<Prim> {

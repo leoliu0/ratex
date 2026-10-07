@@ -278,14 +278,11 @@ fn layout_chars(nf: &NativeFont, face: &crate::font_program::ShapeFace, text: &s
     } else {
         rustybuzz::Direction::LeftToRight
     });
-    if let Some(script) = crate::native_font::ot_tag_to_script(nf.script) {
-        buffer.set_script(script);
-    }
+    let script = crate::native_font::ot_tag_to_script(nf.script);
     if let Some(lang) = nf.language.and_then(crate::native_font::ot_tag_to_language) {
         buffer.set_language(lang);
     }
-    buffer.guess_segment_properties();
-    let out = rustybuzz::shape(face, &nf.features, buffer);
+    let out = face.shape(&nf.features, script, buffer);
     out.glyph_infos()
         .iter()
         .zip(out.glyph_positions())

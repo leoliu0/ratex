@@ -65,3 +65,20 @@ fn minimum_hangafter_is_located_and_recovered_before_line_breaking() {
         .is_some_and(|help| help.contains("-2147483647 through 2147483647")));
     assert!(engine.explicit_end_seen, "{}", engine.diagnostic_output);
 }
+
+/// tex.web §851/§854: the overfull line the final pass breaks with
+/// artificial demerits is tight_fit, so a loose next line pays
+/// \adjdemerits. pdftex -ini sets the second line tight (b=24) instead of
+/// loose (b=14): [3:127.22258pt].
+#[test]
+fn artificial_demerits_break_keeps_its_tight_fitness() {
+    let source = r"\catcode`\{=1 \catcode`\}=2
+\font\tenrm=cmr10 \tenrm
+\hsize=145pt \parindent=0pt \parfillskip=0pt plus 1fil \pretolerance=-1 \tolerance=1000 \adjdemerits=10000 \linepenalty=10
+\setbox0\vbox{\noindent\hbox to 155pt{} aaa bbb ccc ddd eee fff ggg hhh iii jjj kkk lll mmm nnn ooo ppp\par
+\global\count1=\prevgraf \setbox2\lastbox \global\setbox4\hbox{\unhbox2}}
+\message{[\the\count1:\the\wd4]}
+\end";
+    let engine = run(source, true);
+    assert!(engine.term.contains("[3:127.22258pt]"), "{}", engine.term);
+}

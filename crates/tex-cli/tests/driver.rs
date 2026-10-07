@@ -1060,6 +1060,65 @@ fn publishing_outputs_does_not_defer_the_first_engine_cache_hit() {
     );
 }
 
+/// texmk keeps the job's `.aux` in a private directory, where a Lua
+/// `kpse.find_file` finds it (as luaotfload and LaTeX's Lua code look up
+/// job files). That lookup is a dependency like TeX's own `\input` of the
+/// file, so an unchanged LuaLaTeX document is answered from the cache
+/// instead of running the engine again. FORCE_SOURCE_DATE=1 makes
+/// SOURCE_DATE_EPOCH fix `\time` as well; otherwise the cache is keyed by the
+/// minute the first build started, and that build's one pass, which creates
+/// the font names database, often ends in the next minute.
+#[test]
+fn lua_lookup_of_a_private_aux_file_keeps_lualatex_rebuilds_cached() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let fixture = Fixture(std::env::temp_dir().join(format!(
+        "texmk-lua-private-aux-{}-{nonce}",
+        std::process::id()
+    )));
+    std::fs::create_dir_all(&fixture.0).unwrap();
+    std::fs::write(
+        fixture.0.join("main.tex"),
+        concat!(
+            "\\documentclass{article}\n",
+            "\\begin{document}\n",
+            "Stable \\directlua{tex.print(kpse.find_file('main.aux') and 'present' or 'absent')}.\n",
+            "\\end{document}\n"
+        ),
+    )
+    .unwrap();
+    let build = || {
+        let output = support::bundled_fonts_only(
+            Command::new(env!("CARGO_BIN_EXE_texres"))
+                .args(["-lualatex", "main.tex"])
+                .current_dir(&fixture.0)
+                .env("TEX_RS_CACHE_DIR", fixture.0.join("cache"))
+                .env("SOURCE_DATE_EPOCH", "1700000000")
+                .env("FORCE_SOURCE_DATE", "1"),
+            &fixture.0,
+        )
+        .output()
+        .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    build();
+    let private_log = find_file(&fixture.0.join("cache/texmk/jobs"), "main.log").unwrap();
+    std::fs::write(&private_log, "no-change cache sentinel").unwrap();
+    build();
+    assert_eq!(
+        std::fs::read_to_string(private_log).unwrap(),
+        "no-change cache sentinel",
+        "an unchanged LuaLaTeX document ran the engine again"
+    );
+}
+
 #[test]
 fn redefined_at_input_observes_created_aux_before_texmk_converges() {
     let nonce = std::time::SystemTime::now()
@@ -1655,13 +1714,39 @@ printf '%%PDF-1.4 /Type /Page ' > "$out/$job.pdf"
 }
 
 #[test]
-fn newly_created_aux_always_requires_a_second_pass() {
+fn first_pass_rewriting_latexmks_trivial_aux_converges_in_one_pass() {
+    // latexmk writes this .aux before the first pdflatex run of a build
+    // (set_trivial_aux_fdb); TeX Live's latexmk -pdf runs pdflatex once on a
+    // one-page document without cross-references (standalone + TikZ).
     let f = Fixture::new(
         "boilerplate-aux",
         r#"
 n=0; if [ -f passes ]; then read -r n < passes; fi
 n=$((n + 1)); echo "$n" > passes
-printf '%s\n' '\relax' '\gdef \@abspage@last{1}' > "$aux/$job.aux"
+cat "$aux/$job.aux" > "first-read.aux"
+printf '%s\n' '\relax ' '\gdef \@abspage@last{1}' > "$aux/$job.aux"
+printf '%%PDF-1.4 /Type /Page ' > "$out/$job.pdf"
+"#,
+    );
+    f.run();
+    assert_eq!(
+        std::fs::read_to_string(f.0.join("passes")).unwrap().trim(),
+        "1"
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.0.join("first-read.aux")).unwrap(),
+        "\\relax \n\\gdef \\@abspage@last{1}\n"
+    );
+}
+
+#[test]
+fn first_pass_aux_other_than_the_trivial_one_requires_a_second_pass() {
+    let f = Fixture::new(
+        "two-page-aux",
+        r#"
+n=0; if [ -f passes ]; then read -r n < passes; fi
+n=$((n + 1)); echo "$n" > passes
+printf '%s\n' '\relax ' '\gdef \@abspage@last{2}' > "$aux/$job.aux"
 printf '%%PDF-1.4 /Type /Page ' > "$out/$job.pdf"
 "#,
     );
@@ -2668,4 +2753,107 @@ printf '%%PDF-1.4 /Type /Pages /Count 1 /Type /Page ' > "$out/$job.pdf"
         stderr.contains("2 TeXres pass(es)") || stderr.contains("2 pdflatex pass(es)"),
         "Expected 2 passes for cross-reference document, got: {stderr}"
     );
+}
+
+#[test]
+fn copied_texres_generates_indexes_with_embedded_makeindex() {
+    let fixture = Fixture(std::env::temp_dir().join(format!(
+        "texres-makeindex-{}", std::process::id()
+    )));
+    std::fs::create_dir_all(&fixture.0).unwrap();
+    let executable = fixture.0.join("texres");
+    support::copy_executable(
+        std::path::Path::new(env!("CARGO_BIN_EXE_texres")), &executable,
+    );
+    // makeidx (latexmk's `makeindex -o main.ind main.idx`) and imakeidx (which
+    // runs makeindex itself through `\write18`) both need the index.
+    fixture.write("plain.tex", concat!(
+        "\\documentclass{article}\n\\usepackage{makeidx}\\makeindex\n",
+        "\\begin{document}Zebra\\index{zebra}\\index{Apple!red}\\index{Apple}\n",
+        "\\newpage Apple\\index{Apple|textbf}\\printindex\\end{document}\n",
+    ));
+    fixture.write("imakeidx.tex", concat!(
+        "\\documentclass{article}\n\\usepackage{imakeidx}\\makeindex[intoc]\n",
+        "\\begin{document}Zebra\\index{zebra}\\index{Apple}\\printindex\\end{document}\n",
+    ));
+    for source in ["plain.tex", "imakeidx.tex"] {
+        let output = Command::new(&executable)
+            .arg(source).current_dir(&fixture.0).env_clear()
+            .env("HOME", fixture.0.join("home"))
+            .env("TEX_RS_CACHE_DIR", fixture.0.join("cache"))
+            .env("SOURCE_DATE_EPOCH", "1700000000")
+            .output().unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{source}: {stderr}");
+        assert!(stderr.contains("makeindex run"), "{source}: {stderr}");
+        let pdf = lopdf::Document::load(fixture.0.join(source.replace(".tex", ".pdf"))).unwrap();
+        let pages: Vec<u32> = pdf.get_pages().keys().copied().collect();
+        let text = pdf.extract_text(&pages).unwrap();
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(text.contains("Index"), "{source}: {text}");
+        assert!(text.contains("Apple"), "{source}: {text}");
+    }
+    // The page ranges and sub-entries come from makeindex's own algorithm.
+    let ind = std::fs::read_to_string(
+        find_file(&fixture.0.join("cache/texmk/jobs"), "plain.ind").unwrap()
+    ).unwrap();
+    assert!(ind.contains("\\item Apple, 1, \\textbf{2}\n    \\subitem red, 1"), "{ind}");
+    // Invoked under its own name the binary is makeindex.
+    let link = fixture.0.join("makeindex");
+    std::os::unix::fs::symlink("texres", &link).unwrap();
+    std::fs::write(fixture.0.join("x.idx"), "\\indexentry{b}{2}\n\\indexentry{a}{1}\n").unwrap();
+    let output = Command::new(&link).args(["-q", "x.idx"]).current_dir(&fixture.0).env_clear().output().unwrap();
+    assert!(output.status.success());
+    let x = std::fs::read_to_string(fixture.0.join("x.ind")).unwrap();
+    assert!(x.contains("\\item a, 1") && x.contains("\\item b, 2"), "{x}");
+}
+
+#[test]
+fn imakeidx_runs_the_embedded_makeindex_with_its_options_for_each_index() {
+    let fixture = Fixture(std::env::temp_dir().join(format!(
+        "texres-imakeidx-{}", std::process::id()
+    )));
+    std::fs::create_dir_all(&fixture.0).unwrap();
+    let executable = fixture.0.join("texres");
+    support::copy_executable(
+        std::path::Path::new(env!("CARGO_BIN_EXE_texres")), &executable,
+    );
+    // TeX Live: imakeidx runs `makeindex -s headings.ist doc.idx` and
+    // `makeindex names.idx` under the restricted shell escape; latexmk's own
+    // unstyled run on doc.idx is superseded by imakeidx's in the last pass.
+    fixture.write("headings.ist", concat!(
+        "headings_flag 1\nheading_prefix \"\\n\\\\item\\\\textbf{\"\n",
+        "heading_suffix \"}\"\ndelim_0 \" \\\\dotfill\\\\ \"\n",
+    ));
+    fixture.write("doc.tex", concat!(
+        "\\documentclass{article}\n\\usepackage{imakeidx}\n",
+        "\\makeindex[options=-s headings.ist]\n",
+        "\\makeindex[name=names,title=Index of Names,columns=1]\n",
+        "\\begin{document}\n",
+        "Zebra\\index{zebra}\\index{Apple!red}\\index{apple}\\index[names]{Turing, Alan}\n",
+        "\\index{2nd}\\index{$\\alpha$@alpha}\\index[names]{Knuth, Donald}\n",
+        "\\newpage Apple\\index{Apple|textbf}\\index[names]{Knuth, Donald}\n",
+        "\\printindex\n\\printindex[names]\n\\end{document}\n",
+    ));
+    let output = Command::new(&executable)
+        .arg("doc.tex").current_dir(&fixture.0).env_clear()
+        .env("HOME", fixture.0.join("home"))
+        .env("TEX_RS_CACHE_DIR", fixture.0.join("cache"))
+        .env("SOURCE_DATE_EPOCH", "1700000000")
+        .output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    let pdf = lopdf::Document::load(fixture.0.join("doc.pdf")).unwrap();
+    let pages: Vec<u32> = pdf.get_pages().keys().copied().collect();
+    assert_eq!(pages.len(), 4, "{stderr}");
+    let text = pdf.extract_text(&pages).unwrap();
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    for expected in ["Symbols", "Index of Names", "Knuth, Donald, 1, 2", "Turing, Alan, 1"] {
+        assert!(text.contains(expected), "{expected}: {text}");
+    }
+    let jobs = fixture.0.join("cache/texmk/jobs");
+    let ind = std::fs::read_to_string(find_file(&jobs, "doc.ind").unwrap()).unwrap();
+    assert!(ind.contains("\\item\\textbf{A}\n  \\item Apple \\dotfill\\ \\textbf{2}"), "{ind}");
+    let names = std::fs::read_to_string(find_file(&jobs, "names.ind").unwrap()).unwrap();
+    assert!(names.contains("\\item Knuth, Donald, 1, 2\n\n  \\indexspace\n\n  \\item Turing, Alan, 1"), "{names}");
 }

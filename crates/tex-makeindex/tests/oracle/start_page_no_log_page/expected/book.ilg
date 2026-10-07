@@ -1,0 +1,7 @@
+Couldn't find any page number in book.log...ignored
+This is makeindex, version 2.18 [TeX Live 2026] (kpathsea + Thai support).
+Scanning input file book.idx....done (3 entries accepted, 0 rejected).
+Sorting entries....done (5 comparisons).
+Generating output file book.ind....done (9 lines written, 0 warnings).
+Output written in book.ind.
+Transcript written in book.ilg.

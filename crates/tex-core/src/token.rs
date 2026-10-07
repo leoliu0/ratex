@@ -125,7 +125,13 @@ pub struct NameHasher(u64);
 impl std::hash::Hasher for NameHasher {
     #[inline]
     fn finish(&self) -> u64 {
-        self.0
+        // The low bits of a product depend only on the low bits of its
+        // factors, and the last byte of a word only reaches the top bits,
+        // but the table indexes with the low ones: names that differ only
+        // late (`\csname foo\number\n\endcsname`) would pile into a few
+        // buckets. Fold the high half down and mix once more.
+        let h = (self.0 ^ (self.0 >> 32)).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        h ^ (h >> 29)
     }
     #[inline]
     fn write(&mut self, bytes: &[u8]) {
@@ -158,9 +164,11 @@ pub struct CsTable {
     capacity_exceeded: bool,
     /// Ids of the 8-bit active characters, filled on first use.
     active_ids: Box<[CsId; 256]>,
-    /// One bit per id: the name is an active-character placeholder. Token
-    /// list scanners test this per control-sequence token.
-    active_names: Vec<u64>,
+    /// Per id, `NAME_*` bits that hot paths test instead of comparing the
+    /// name: whether it is an active-character placeholder (token list
+    /// scanners test this per control-sequence token) and whether
+    /// expansion treats the name specially.
+    name_flags: Vec<u8>,
     /// tex.web frozen control sequences: ids that print with their name but
     /// cannot be reached by name. The value is `true` for pdfTeX's hidden
     /// primitive copies (`prim_eqtb`), which `frozen_lookup` finds by name.
@@ -170,12 +178,17 @@ pub struct CsTable {
 
 impl CsTable {
     pub fn new() -> Self {
+        Self::with_capacity(0)
+    }
+
+    /// An empty table with room for `names` names.
+    pub fn with_capacity(names: usize) -> Self {
         CsTable {
-            names: Vec::new(),
-            map: Default::default(),
+            names: Vec::with_capacity(names),
+            map: std::collections::HashMap::with_capacity_and_hasher(names, Default::default()),
             capacity_exceeded: false,
             active_ids: Box::new([NO_ACTIVE_ID; 256]),
-            active_names: Vec::new(),
+            name_flags: Vec::new(),
             frozen: Default::default(),
             frozen_by_name: Default::default(),
         }
@@ -186,6 +199,7 @@ impl CsTable {
     pub fn push_frozen(&mut self, name: &[u8], by_name: bool) -> CsId {
         let id = self.names.len() as CsId;
         self.names.push(name.to_vec());
+        self.name_flags.push(0);
         self.frozen.insert(id, by_name);
         if by_name {
             self.frozen_by_name.insert(name.to_vec(), id);
@@ -233,26 +247,49 @@ impl CsTable {
             self.capacity_exceeded = true;
         }
         let id = self.names.len() as CsId;
-        if crate::engine::Engine::active_cs_scalar(name).is_some() {
-            let word = id as usize / 64;
-            if self.active_names.len() <= word {
-                self.active_names.resize(word + 1, 0);
-            }
-            self.active_names[word] |= 1 << (id % 64);
-        }
         self.names.push(name.to_vec());
+        self.name_flags.push(name_flags_of(name));
         self.map.insert(name.to_vec(), id);
         id
+    }
+
+    /// The `NAME_*` bits of `id`.
+    #[inline(always)]
+    pub(crate) fn name_flags(&self, id: CsId) -> u8 {
+        self.name_flags.get(id as usize).copied().unwrap_or(0)
     }
 
     /// True when `id` names an active character.
     #[inline]
     pub(crate) fn is_active(&self, id: CsId) -> bool {
-        self.active_names
-            .get(id as usize / 64)
-            .is_some_and(|word| word & (1 << (id % 64)) != 0)
+        self.name_flags(id) & NAME_ACTIVE != 0
     }
+}
 
+/// The name is an active-character placeholder.
+pub(crate) const NAME_ACTIVE: u8 = 1;
+/// titlesec's `\GetTitleString` helpers, which an expanding scan stores
+/// instead of expanding (see `Engine::freeze_gts_in_edef`).
+pub(crate) const NAME_FROZEN_IN_EDEF: u8 = 2;
+/// `\f@encoding`/`\cf@encoding`, which read as `OT1` while empty.
+pub(crate) const NAME_FONT_ENCODING: u8 = 4;
+
+fn name_flags_of(name: &[u8]) -> u8 {
+    if crate::engine::Engine::active_cs_scalar(name).is_some() {
+        return NAME_ACTIVE;
+    }
+    match name {
+        b"GTS@RemoveLeft"
+        | b"GTS@TestLeftEnd"
+        | b"GTS@TestLeft"
+        | b"GetTitleStringNonExpand"
+        | b"GetTitleString" => NAME_FROZEN_IN_EDEF,
+        b"f@encoding" | b"cf@encoding" => NAME_FONT_ENCODING,
+        _ => 0,
+    }
+}
+
+impl CsTable {
     /// The table deliberately accepts the first entry beyond TeX's logical
     /// limit. This keeps the returned id valid until the engine reaches its
     /// next safe diagnostic boundary instead of panicking inside tokenization.
@@ -282,6 +319,26 @@ impl CsTable {
 
     pub fn all_ids(&self) -> impl Iterator<Item = CsId> {
         0..self.names.len() as CsId
+    }
+}
+
+#[cfg(test)]
+mod name_hash_tests {
+    use super::NameHasher;
+    use std::hash::{Hash, Hasher};
+
+    /// Names that differ only after their first bytes (`\csname foo\number\n
+    /// \endcsname`) must still spread over the low bits the table indexes with.
+    #[test]
+    fn names_with_a_late_difference_use_the_low_bits() {
+        let mut used = std::collections::HashSet::new();
+        for n in 0..50_000 {
+            let mut hasher = NameHasher::default();
+            format!("foo{n}").into_bytes().hash(&mut hasher);
+            used.insert(hasher.finish() & 0xFFFF);
+        }
+        // Random hashing fills about 35,000 of the 65,536 buckets.
+        assert!(used.len() > 30_000, "only {} buckets used", used.len());
     }
 }
 

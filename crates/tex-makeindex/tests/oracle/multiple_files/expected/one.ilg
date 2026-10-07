@@ -1,0 +1,12 @@
+This is makeindex, version 2.18 [TeX Live 2026] (kpathsea + Thai support).
+Scanning input file one.idx....done (3 entries accepted, 0 rejected).
+Scanning input file two.idx....
+!! Input index error (file = two.idx, line = 3):
+   -- Missing arguments -- need two (premature LFD).
+done (2 entries accepted, 1 rejected).
+Scanning input file three.idx....done (2 entries accepted, 0 rejected).
+Overall 3 files read (7 entries accepted, 1 rejected).
+Sorting entries....done (20 comparisons).
+Generating output file all.ind....done (13 lines written, 0 warnings).
+Output written in all.ind.
+Transcript written in one.ilg.

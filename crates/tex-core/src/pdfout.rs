@@ -293,10 +293,14 @@ pub enum EmbedFontSubtype {
     Cff,
 }
 
+/// The two-byte code space of a Lua CID font: one code per glyph, whose
+/// /ToUnicode text luatex settles when the fonts are written
+/// (`write_cid_tounicode`), not when the glyph is shipped.
 #[derive(Clone, Debug)]
 pub struct NativeBindingInfo {
-    pub code_map: std::collections::HashMap<u16, smallvec::SmallVec<[usize; 1]>>,
-    pub entries: Vec<(u16, u16, String)>,
+    pub code_map: std::collections::HashMap<u16, u16>,
+    /// (code, glyph) in allocation order.
+    pub entries: Vec<(u16, u16)>,
     pub next_code: u32,
 }
 #[derive(Clone, Debug)]
@@ -371,7 +375,7 @@ pub struct EmbedFont {
     pub is_cid: bool,
     pub is_native: bool,
     pub legacy_cids: Vec<(u8, u16, String)>,
-    pub native_cids: Vec<(u16, u16, String)>,
+    pub native_cids: Vec<(u16, u16)>,
     pub used_gids: std::collections::BTreeSet<u16>,
     pub to_unicode_2byte: Vec<(u16, String)>,
     /// `\pdffontattr` text appended to the font dictionary.
@@ -381,6 +385,11 @@ pub struct EmbedFont {
     /// program share a descriptor preset from the newest-initialized TFM.
     pub t1_preset: [i32; crate::pdf_fonts::INT_KEYS_NUM],
     pub t1_keys: std::rc::Rc<crate::pdf_fonts::Type1Keys>,
+    /// The map entry's `SlantFont` and `ExtendFont` in thousandths (`fm_slant`,
+    /// `fm_extend`; an extension of exactly 1 is 0), applied to the program's
+    /// `/FontMatrix` when it is written.
+    pub t1_slant: i32,
+    pub t1_extend: i32,
     /// `pdf_init_font` order of the engine font.
     pub init_order: usize,
     /// The object number `font_descriptor_objnum_provider` chose for the
@@ -391,6 +400,8 @@ pub struct EmbedFont {
     pub pdftex: Option<PdfTexFont>,
     /// XeTeX native font data (xdvipdfmx Identity-H/V CID font).
     pub xe: Option<XeFont>,
+    /// writet3.c's Type 3 font of a PK bitmap font (no map entry).
+    pub type3: Option<crate::writet3::Type3Font>,
 }
 
 /// What the writer needs of a XeTeX native font beyond the program.
@@ -470,10 +481,6 @@ pub struct ImportedFont {
     /// `fn_objnum` (0 until a font dictionary needs it): the object that
     /// holds the tagged /BaseFont name.
     pub name_obj: i32,
-    /// Number of document fonts already initialized when the font was first
-    /// included: it created the shared descriptor, so those initialized
-    /// later find it and preset nothing from their TFM.
-    pub init_order: usize,
 }
 
 impl PdfDoc {
@@ -558,20 +565,11 @@ impl PdfDoc {
         words[character as usize / 64] |= 1_u64 << (character as usize % 64);
     }
 
-    pub fn get_or_alloc_native_code(
-        &mut self,
-        font_id: usize,
-        glyph_id: u16,
-        text: &str,
-    ) -> (FontBinding, u16) {
+    pub fn get_or_alloc_native_code(&mut self, font_id: usize, glyph_id: u16) -> (FontBinding, u16) {
         let bindings = self.native_bindings.entry(font_id).or_default();
         for (index, binding) in bindings.iter().enumerate() {
-            if let Some(indices) = binding.code_map.get(&glyph_id) {
-                for &entry in indices {
-                    if binding.entries[entry].2 == text {
-                        return (FontBinding::remapped(index), binding.entries[entry].0);
-                    }
-                }
+            if let Some(&code) = binding.code_map.get(&glyph_id) {
+                return (FontBinding::remapped(index), code);
             }
         }
         if bindings
@@ -588,12 +586,8 @@ impl PdfDoc {
         let binding = &mut bindings[binding_index];
         let code = binding.next_code as u16;
         binding.next_code += 1;
-        binding
-            .code_map
-            .entry(glyph_id)
-            .or_default()
-            .push(binding.entries.len());
-        binding.entries.push((code, glyph_id, text.to_owned()));
+        binding.code_map.insert(glyph_id, code);
+        binding.entries.push((code, glyph_id));
         (FontBinding::remapped(binding_index), code)
     }
     pub fn get_or_alloc_legacy_code(

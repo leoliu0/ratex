@@ -38,47 +38,83 @@ pub struct SourceContext {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[doc(hidden)]
 pub struct SourceMark {
-    name: Rc<str>,
-    data: Rc<[u8]>,
+    /// The file the position lies in, shared by every bookmark of it so that
+    /// capturing one costs a single reference count.
+    origin: Rc<MarkOrigin>,
     line: u32,
     /// Byte offset of `line` in `data`. Keeping this in the bookmark avoids
     /// rescanning the file from byte zero whenever a diagnostic is rendered.
     line_start: usize,
     byte_column: usize,
+}
+
+/// What a [`SourceMark`] needs to know about its file.
+#[derive(Debug, PartialEq, Eq)]
+#[doc(hidden)]
+pub struct MarkOrigin {
+    name: Rc<str>,
+    data: Rc<[u8]>,
+    /// Location in the parent source that opened this file.
     included_from: Option<Rc<SourceMark>>,
+}
+
+impl MarkOrigin {
+    fn new(name: Rc<str>, data: Rc<[u8]>, included_from: Option<SourceMark>) -> Rc<MarkOrigin> {
+        Rc::new(MarkOrigin {
+            name,
+            data,
+            included_from: included_from.map(Rc::new),
+        })
+    }
 }
 
 impl SourceMark {
     pub(crate) fn to_context(&self) -> SourceContext {
+        let data = &self.origin.data;
         let bytes = if self.line == 0 {
             &[][..]
         } else {
-            let (end, _) = physical_line_bounds(&self.data, self.line_start);
-            &self.data[self.line_start.min(end)..end]
+            let (end, _) = physical_line_bounds(data, self.line_start);
+            &data[self.line_start.min(end)..end]
         };
         let mut context = InputStack::context_from_line(
-            self.name.to_string(),
+            self.origin.name.to_string(),
             self.line,
             bytes,
             self.byte_column.min(bytes.len()),
         );
-        context.included_from = self.included_from.clone();
+        context.included_from = self.origin.included_from.clone();
         context
     }
 
     pub(crate) fn rewind(&mut self, bytes: usize) {
         self.byte_column = self.byte_column.saturating_sub(bytes);
     }
+
+    /// The name of the file the position lies in.
+    pub(crate) fn file_name(&self) -> &Rc<str> {
+        &self.origin.name
+    }
+
+    /// The position lies in the file `origin` stands for.
+    pub(crate) fn in_origin(&self, origin: &Rc<MarkOrigin>) -> bool {
+        Rc::ptr_eq(&self.origin, origin)
+    }
 }
 
-#[derive(Clone, Debug)]
+/// An input source. `repr(C)` lays out the fields of each variant in
+/// declaration order, so the token cursor (`seg`, `pos`, `end`) that a token
+/// list and a macro frame begin with sits at the same place in both, and
+/// `raw_token` reads either without telling them apart.
+#[derive(Debug)]
+#[repr(C)]
 pub enum Source {
     File {
         name: String,
-        diagnostic_name: Rc<str>,
+        /// Shared by the bookmarks taken in this file: its diagnostic name, a
+        /// handle on `data` and the location in the parent source that opened it.
+        origin: Rc<MarkOrigin>,
         data: Rc<[u8]>,
-        /// Location in the parent source that opened this file.
-        included_from: Option<Rc<SourceMark>>,
         pos: usize,
         line_no: u32,
         /// Byte offset of the current physical line in `data`.
@@ -115,12 +151,16 @@ pub enum Source {
         xetex_enc: crate::xetex_input::Enc,
     },
     TokList {
-        toks: TokTokens,
+        /// `toks.as_ptr()`: the cursor's view of the list.
+        seg: *const Token,
         pos: usize,
-        name: &'static str,
-        owner: Option<CsId>,
+        /// `toks.len()`.
+        end: usize,
         /// Number of macro ancestry entries that belong to this list.
         trace_depth: u8,
+        toks: TokTokens,
+        name: &'static str,
+        owner: Option<CsId>,
     },
     MacroFrame(MacroFrame),
 }
@@ -177,6 +217,17 @@ impl MacroArgs {
         (index < self.count as usize).then(|| &self.toks[self.start(index)..self.ends[index] as usize])
     }
 
+    /// The lengths of the collected arguments, in order.
+    #[inline]
+    pub(crate) fn arg_lengths(&self) -> impl Iterator<Item = usize> + '_ {
+        let mut start = 0;
+        self.ends[..self.count as usize].iter().map(move |&end| {
+            let length = end - start;
+            start = end;
+            length as usize
+        })
+    }
+
     pub(crate) fn into_buffer(self) -> Vec<Token> {
         self.toks
     }
@@ -185,38 +236,46 @@ impl MacroArgs {
 /// A macro replacement read lazily: body tokens interleaved with the
 /// arguments their parameter references name, without materializing the
 /// substituted list.
-#[derive(Clone, Debug)]
+///
+/// `repr(C)`: the cursor comes first, in the layout of `Source::TokList`'s
+/// (see `Source`).
+#[derive(Debug)]
+#[repr(C)]
 pub struct MacroFrame {
-    body: Rc<[Token]>,
-    /// (body position, argument index) for every parameter reference.
-    references: Rc<[(usize, usize)]>,
-    args: MacroArgs,
     /// Cursor into the current segment: `body` or, when `in_arg`, `args`.
-    pos: u32,
-    end: u32,
+    /// `seg` is the start of that segment's buffer, which neither moves nor
+    /// changes while the frame exists.
+    pub(crate) seg: *const Token,
+    pub(crate) pos: usize,
+    pub(crate) end: usize,
+    pub trace_depth: u8,
+    in_arg: bool,
     /// Body position after the reference whose argument is being read.
     resume: u32,
     next_ref: u32,
-    in_arg: bool,
+    /// The body and its parameter references.
+    plan: Rc<crate::eqtb::MacroReplacement>,
+    args: MacroArgs,
     pub owner: Option<CsId>,
-    pub trace_depth: u8,
 }
 
 impl MacroFrame {
     pub(crate) fn new(
-        body: Rc<[Token]>,
-        references: Rc<[(usize, usize)]>,
+        plan: Rc<crate::eqtb::MacroReplacement>,
         args: MacroArgs,
         owner: Option<CsId>,
         trace_depth: u8,
     ) -> Self {
-        let end = references.first().map_or(body.len(), |&(position, _)| position) as u32;
+        let end = plan
+            .references
+            .first()
+            .map_or(plan.body.len(), |&(position, _)| position);
         MacroFrame {
-            body,
-            references,
-            args,
+            seg: plan.body.as_ptr(),
             pos: 0,
             end,
+            plan,
+            args,
             resume: 0,
             next_ref: 0,
             in_arg: false,
@@ -229,20 +288,15 @@ impl MacroFrame {
     /// keeps the frame alive, like the parameter list above a TeX macro.
     #[inline(always)]
     pub fn is_exhausted(&self) -> bool {
-        !self.in_arg && self.pos >= self.end && self.next_ref as usize >= self.references.len()
+        !self.in_arg && self.pos >= self.end && self.next_ref as usize >= self.plan.references.len()
     }
 
     #[inline(always)]
     pub fn next_token(&mut self) -> Option<Token> {
         loop {
-            if self.pos < self.end {
-                let index = self.pos as usize;
+            if let Some(t) = self.peek_token() {
                 self.pos += 1;
-                return Some(if self.in_arg {
-                    self.args.toks[index]
-                } else {
-                    self.body[index]
-                });
+                return Some(t);
             }
             if !self.next_segment() {
                 return None;
@@ -250,22 +304,42 @@ impl MacroFrame {
         }
     }
 
-    /// The undelivered rest of the current body or argument segment.
+    /// The next token of the current segment, without consuming it; `None`
+    /// at a segment boundary.
+    #[inline(always)]
+    pub(crate) fn peek_token(&self) -> Option<Token> {
+        self.segment().first().copied()
+    }
+
+    /// Move on to the next segment that has a token left; false once the
+    /// frame is exhausted.
     #[inline]
+    pub(crate) fn advance_segment(&mut self) -> bool {
+        while self.pos >= self.end {
+            if !self.next_segment() {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// The undelivered rest of the current body or argument segment.
+    #[inline(always)]
     pub(crate) fn segment(&self) -> &[Token] {
-        let source = if self.in_arg {
-            &self.args.toks[..]
-        } else {
-            &self.body[..]
-        };
-        &source[self.pos as usize..self.end as usize]
+        if self.pos >= self.end {
+            return &[];
+        }
+        // SAFETY: `seg` is the start of `body` or `args.toks` (see
+        // `next_segment`), both owned by the frame and never changed while
+        // it exists, and `pos < end <= ` that buffer's length.
+        unsafe { std::slice::from_raw_parts(self.seg.add(self.pos), self.end - self.pos) }
     }
 
     /// Consume `count` tokens of `segment()`.
     #[inline]
     pub(crate) fn skip(&mut self, count: usize) {
-        debug_assert!(self.pos as usize + count <= self.end as usize);
-        self.pos += count as u32;
+        debug_assert!(self.pos + count <= self.end);
+        self.pos += count;
     }
 
     /// Move to the segment after the current one; false at the end.
@@ -273,13 +347,14 @@ impl MacroFrame {
         let body_from = if self.in_arg {
             self.in_arg = false;
             self.resume as usize
-        } else if let Some(&(position, index)) = self.references.get(self.next_ref as usize) {
+        } else if let Some(&(position, index)) = self.plan.references.get(self.next_ref as usize) {
             self.next_ref += 1;
             self.resume = position as u32 + 1;
             if index < self.args.count as usize {
                 self.in_arg = true;
-                self.pos = self.args.start(index) as u32;
-                self.end = self.args.ends[index];
+                self.seg = self.args.toks.as_ptr();
+                self.pos = self.args.start(index);
+                self.end = self.args.ends[index] as usize;
                 return true;
             }
             // A reference beyond the supplied arguments contributes nothing.
@@ -287,17 +362,19 @@ impl MacroFrame {
         } else {
             return false;
         };
-        self.pos = body_from as u32;
+        self.seg = self.plan.body.as_ptr();
+        self.pos = body_from;
         self.end = self
+            .plan
             .references
             .get(self.next_ref as usize)
-            .map_or(self.body.len(), |&(position, _)| position) as u32;
+            .map_or(self.plan.body.len(), |&(position, _)| position);
         true
     }
 
     /// A number that changes whenever a token is delivered.
     pub(crate) fn signature(&self) -> usize {
-        (self.pos as usize) << 8 ^ (self.next_ref as usize) << 1 ^ usize::from(self.in_arg)
+        self.pos << 8 ^ (self.next_ref as usize) << 1 ^ usize::from(self.in_arg)
     }
 
     /// Where `show_context` finds this call: the replacement text with the
@@ -306,47 +383,17 @@ impl MacroFrame {
     /// `parameter` level above the macro).
     pub(crate) fn context_view(&self) -> (&Rc<[Token]>, usize, Option<(&[Token], usize)>) {
         if !self.in_arg {
-            return (&self.body, self.pos as usize, None);
+            return (&self.plan.body, self.pos, None);
         }
-        let index = self.references[self.next_ref as usize - 1].1;
+        let index = self.plan.references[self.next_ref as usize - 1].1;
         let start = self.args.start(index);
-        let arg = &self.args.toks[start..self.end as usize];
-        (&self.body, self.resume as usize, Some((arg, self.pos as usize - start)))
+        let arg = &self.args.toks[start..self.end];
+        (&self.plan.body, self.resume as usize, Some((arg, self.pos - start)))
     }
 
-    /// Net brace depth of the tokens delivered so far (alignment scanning
-    /// needs the braces that real input sources have already produced).
-    pub fn delivered_brace_balance(&self) -> i32 {
-        fn balance(tokens: &[Token]) -> i32 {
-            tokens.iter().fold(0, |depth, t| {
-                if t.is_char() && t.cc() == 1 {
-                    depth + 1
-                } else if t.is_char() && t.cc() == 2 {
-                    depth - 1
-                } else {
-                    depth
-                }
-            })
-        }
-        // Parameter references are not braces, so the delivered body prefix
-        // can be counted whole.
-        let body_end = if self.in_arg {
-            self.resume as usize - 1
-        } else {
-            self.pos as usize
-        };
-        let mut depth = balance(&self.body[..body_end]);
-        let passed = self.next_ref as usize;
-        for (n, &(_, index)) in self.references[..passed].iter().enumerate() {
-            if let Some(arg) = self.args.get(index) {
-                if self.in_arg && n + 1 == passed {
-                    depth += balance(&self.args.toks[self.args.start(index)..self.pos as usize]);
-                } else {
-                    depth += balance(arg);
-                }
-            }
-        }
-        depth
+    /// Take the argument buffer of a frame that is about to be dropped.
+    pub(crate) fn take_arg_buffer(&mut self) -> Vec<Token> {
+        std::mem::take(&mut self.args.toks)
     }
 
     pub(crate) fn into_arg_buffer(self) -> Vec<Token> {
@@ -474,9 +521,8 @@ impl InputStack {
     fn context_for_at(source: &Source, byte_column: Option<usize>) -> Option<SourceContext> {
         let Source::File {
             name,
-            diagnostic_name: _,
+            origin,
             data,
-            included_from,
             line_no,
             line_start,
             line_buf,
@@ -508,7 +554,7 @@ impl InputStack {
             })
             .min(bytes.len());
         let mut context = Self::context_from_line(name.clone(), *line_no, bytes, byte_column);
-        context.included_from = included_from.clone();
+        context.included_from = origin.included_from.clone();
         Some(context)
     }
 
@@ -557,9 +603,8 @@ impl InputStack {
         byte_column: usize,
     ) -> Option<SourceMark> {
         let Source::File {
-            diagnostic_name,
+            origin,
             data,
-            included_from,
             line_no,
             line_start,
             ..
@@ -573,12 +618,10 @@ impl InputStack {
             Self::raw_line_at(data, line).0
         };
         Some(SourceMark {
-            name: diagnostic_name.clone(),
-            data: data.clone(),
+            origin: origin.clone(),
             line,
             line_start,
             byte_column,
-            included_from: included_from.clone(),
         })
     }
 
@@ -590,19 +633,17 @@ impl InputStack {
     }
 
     pub(crate) fn current_source_mark(&self) -> Option<SourceMark> {
-        self.stack.iter().rev().find_map(|source| match source {
+        match self.top_file()? {
             Source::File {
-                diagnostic_name,
+                origin,
                 data,
                 line_no,
                 line_start,
                 line_buf,
                 line_pos,
-                included_from,
                 ..
             } => Some(SourceMark {
-                name: diagnostic_name.clone(),
-                data: data.clone(),
+                origin: origin.clone(),
                 line: *line_no,
                 line_start: *line_start,
                 byte_column: if line_buf.is_some() {
@@ -613,10 +654,9 @@ impl InputStack {
                     let (end, _) = physical_line_bounds(data, *line_start);
                     end.saturating_sub(*line_start)
                 },
-                included_from: included_from.clone(),
             }),
             _ => None,
-        })
+        }
     }
 
     /// Find the most recent physical spelling of text in an active source.
@@ -630,9 +670,8 @@ impl InputStack {
         }
         self.stack.iter().rev().find_map(|source| {
             let Source::File {
-                diagnostic_name,
+                origin,
                 data,
-                included_from,
                 pos,
                 line_no,
                 line_buf,
@@ -670,12 +709,10 @@ impl InputStack {
                 line = line.saturating_add(1);
             }
             Some(SourceMark {
-                name: diagnostic_name.clone(),
-                data: data.clone(),
+                origin: origin.clone(),
                 line,
                 line_start,
                 byte_column: index - line_start,
-                included_from: included_from.clone(),
             })
         })
     }
@@ -795,12 +832,12 @@ impl InputStack {
         included_from: Option<SourceMark>,
     ) {
         self.ensure_stack_room();
-        let diagnostic_name: Rc<str> = Rc::from(name.as_str());
+        let data: Rc<[u8]> = data.into();
+        let origin = MarkOrigin::new(Rc::from(name.as_str()), data.clone(), included_from);
         self.stack.push(Source::File {
             name,
-            diagnostic_name,
-            data: data.into(),
-            included_from: included_from.map(Rc::new),
+            origin,
+            data,
             pos: 0,
             line_no: 0,
             line_start: 0,
@@ -832,11 +869,12 @@ impl InputStack {
     pub(crate) fn push_lua_lines(&mut self, lines: crate::engine_lua::LuaLines) {
         let included_from = self.current_source_mark();
         self.ensure_stack_room();
+        let data: Rc<[u8]> = Rc::from(&b""[..]);
+        let origin = MarkOrigin::new(Rc::from("<directlua>"), data.clone(), included_from);
         self.stack.push(Source::File {
             name: "<directlua>".to_string(),
-            diagnostic_name: Rc::from("<directlua>"),
-            data: Rc::from(&b""[..]),
-            included_from: included_from.map(Rc::new),
+            origin,
+            data,
             pos: 0,
             line_no: 0,
             line_start: 0,
@@ -872,8 +910,10 @@ impl InputStack {
             "TeX capacity exceeded, sorry [token list size={MAX_TOKEN_LIST_TOKENS}]"
         );
         self.stack.push(Source::TokList {
-            toks,
+            seg: toks.as_ptr(),
             pos: 0,
+            end: toks.len(),
+            toks,
             name,
             owner,
             trace_depth,
@@ -905,15 +945,26 @@ impl InputStack {
             .unwrap_or_default()
     }
 
-    pub fn current_file_line(&self) -> u32 {
-        if let Some(Source::File { line_no, .. }) = self.stack.get(self.top_file.get()) {
-            return *line_no;
+    /// The innermost open file. Pushing a file records its index, so the
+    /// stack is only searched after that file was closed.
+    #[inline]
+    fn top_file(&self) -> Option<&Source> {
+        if let Some(source @ Source::File { .. }) = self.stack.get(self.top_file.get()) {
+            return Some(source);
         }
-        for (index, s) in self.stack.iter().enumerate().rev() {
-            if let Source::File { line_no, .. } = s {
-                self.top_file.set(index);
-                return *line_no;
-            }
+        let (index, source) = self
+            .stack
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, s)| matches!(s, Source::File { .. }))?;
+        self.top_file.set(index);
+        Some(source)
+    }
+
+    pub fn current_file_line(&self) -> u32 {
+        if let Some(Source::File { line_no, .. }) = self.top_file() {
+            return *line_no;
         }
         self.last_finished_file
             .as_ref()
@@ -924,27 +975,24 @@ impl InputStack {
     /// name of an open file instead of copying it.
     pub(crate) fn current_file_location(&self) -> (Rc<str>, u32) {
         if let Some(Source::File {
-            diagnostic_name,
-            line_no,
-            ..
-        }) = self.stack.get(self.top_file.get())
+            origin, line_no, ..
+        }) = self.top_file()
         {
-            return (diagnostic_name.clone(), *line_no);
-        }
-        for (index, s) in self.stack.iter().enumerate().rev() {
-            if let Source::File {
-                diagnostic_name,
-                line_no,
-                ..
-            } = s
-            {
-                self.top_file.set(index);
-                return (diagnostic_name.clone(), *line_no);
-            }
+            return (origin.name.clone(), *line_no);
         }
         self.last_finished_file
             .as_ref()
             .map_or_else(|| (Rc::from(""), 0), |context| (Rc::from(context.name.as_str()), context.line))
+    }
+
+    /// The innermost open file's bookmark origin and current line, without
+    /// touching its name (see `current_file_location`).
+    #[inline]
+    pub(crate) fn top_file_origin(&self) -> Option<(&Rc<MarkOrigin>, u32)> {
+        match self.top_file()? {
+            Source::File { origin, line_no, .. } => Some((origin, *line_no)),
+            _ => None,
+        }
     }
 }
 
@@ -961,9 +1009,9 @@ mod tests {
         for _ in 0..4_000 {
             s.push_file(key.clone(), rc.clone());
         }
-        // Each source owns the shared bytes; every nested include bookmark
-        // after the first owns one more reference for its parent location.
-        assert_eq!(Rc::strong_count(&rc), 2 + 4_000 + 3_999);
+        // Each source owns the shared bytes twice (the scanner's handle and
+        // its bookmark origin); the include bookmarks share the parent's origin.
+        assert_eq!(Rc::strong_count(&rc), 2 + 2 * 4_000);
         assert_eq!(s.file_bytes.len(), 1);
     }
 
@@ -989,9 +1037,8 @@ mod tests {
         let mut input = InputStack::new();
         input.stack.push(Source::File {
             name: "legacy-cr.tex".into(),
-            diagnostic_name: Rc::from("legacy-cr.tex"),
+            origin: MarkOrigin::new(Rc::from("legacy-cr.tex"), bytes.clone(), None),
             data: bytes,
-            included_from: None,
             pos: 0,
             line_no: 2,
             line_start: b"first\r".len(),

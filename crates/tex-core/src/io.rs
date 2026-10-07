@@ -305,8 +305,27 @@ fn compatibility_input(name: &str, kind: crate::engine::EngineKind) -> Option<&'
     })
 }
 
+/// pdftex.web new_write_whatsit: negative streams are 17 (log only), those
+/// above 15 are 16 (terminal and log) except 18, which runs a shell command.
+fn write_stream_number(n: i32) -> u16 {
+    match n {
+        n if n < 0 => 17,
+        18 => 18,
+        n => n.min(16) as u16,
+    }
+}
+
 impl Engine {
     pub fn record_loaded_bytes(&mut self, path: &std::path::Path, bytes: &[u8]) {
+        // A file this run already wrote through `\openout` (beamer's `.vrb`,
+        // `filecontents`-style scratch files) holds what the run itself put
+        // there, not state from outside: the result cache must not record
+        // each of its successive contents as an input. The caller still lists
+        // the path among the loaded files, so the record keeps its final
+        // content, which the next run starts from.
+        if self.written_before(path) {
+            return;
+        }
         let mut h1: u64 = 0xcbf2_9ce4_8422_2325;
         let mut h2: u64 = 0x9e37_79b9_7f4a_7c15;
         for (index, byte) in bytes.iter().enumerate() {
@@ -316,6 +335,21 @@ impl Engine {
         }
         self.loaded_file_digests
             .push((path.to_path_buf(), bytes.len() as u64, h1 ^ h2));
+    }
+
+    /// Whether this run opened `path` for writing through `\openout` before
+    /// now. Spellings are compared after anchoring them to the working
+    /// directory, without resolving symlinks.
+    pub(crate) fn written_before(&self, path: &std::path::Path) -> bool {
+        if self.written_files.is_empty() {
+            return false;
+        }
+        let Ok(path) = std::path::absolute(path) else {
+            return false;
+        };
+        self.written_files
+            .iter()
+            .any(|written| std::path::absolute(written).is_ok_and(|written| written == path))
     }
 
     fn scanner_diagnostic_state(&self) -> ScannerDiagnosticState {
@@ -600,17 +634,21 @@ impl Engine {
     /// `kpse.find_file`, `require`, `io.open`) must see it there once TeX has
     /// closed it, exactly as `\input`/`\openin` do. `names` are the candidate
     /// spellings of the request, most specific first; absolute requests are
-    /// not job files.
-    pub(crate) fn find_job_output_file<S: AsRef<str>>(&self, names: &[S]) -> Option<std::path::PathBuf> {
-        let out = (!self.out_dir.is_empty()).then(|| std::path::Path::new(&self.out_dir));
-        for dir in self.aux_dir.as_deref().into_iter().chain(out) {
+    /// not job files. Every probe is a dependency of the build: the hit is
+    /// read, and each candidate tried before it must stay absent.
+    pub(crate) fn find_job_output_file<S: AsRef<str>>(&mut self, names: &[S]) -> Option<std::path::PathBuf> {
+        let out = (!self.out_dir.is_empty()).then(|| std::path::PathBuf::from(&self.out_dir));
+        let dirs: Vec<std::path::PathBuf> = self.aux_dir.clone().into_iter().chain(out).collect();
+        for dir in dirs {
             for name in names {
                 let name = name.as_ref();
                 if name.is_empty() || std::path::Path::new(name).is_absolute() {
                     continue;
                 }
                 let path = dir.join(crate::tex_bytes::text_to_path(name));
-                if path.tex_is_file() {
+                let present = path.tex_is_file();
+                self.lua_dep_read(&path, present);
+                if present {
                     return Some(path);
                 }
             }
@@ -1145,7 +1183,7 @@ impl Engine {
         // TeX maps negative streams to 17 and streams above 15 to 16.
         if !immediate {
             self.append_whatsit(Node::Whatsit(crate::boxes::WhatIt::Write {
-                stream: if n < 0 { 17 } else { n.min(16) as u16 },
+                stream: write_stream_number(n),
                 tokens: toks,
                 source: source.map(Box::new),
             }, self.eqtb.cur_attr));
@@ -1153,7 +1191,8 @@ impl Engine {
         }
         let text = self.expand_write_list(&toks, source.as_ref());
         if !self.stopped_on_error {
-            self.write_out(if n < 0 { -1 } else { n.min(16) }, &text, source.as_ref());
+            let stream = i32::from(write_stream_number(n));
+            self.write_out(if stream == 17 { -1 } else { stream }, &text, source.as_ref());
         }
     }
     /// tex.web §1395 out_what: a Write whatsit fires at ship time, expanding
@@ -1328,7 +1367,8 @@ impl Engine {
                 self.tex_print_chars(true, false, raw);
                 self.tex_print_ln(true, false);
             }
-            16 | 17 | 18 => {
+            18 => self.run_system_write(raw),
+            16 | 17 => {
                 self.tex_print_nl(true, true);
                 self.tex_print_chars(true, true, raw);
                 self.tex_print_ln(true, true);
@@ -1384,6 +1424,47 @@ impl Engine {
                 }
             }
         }
+    }
+
+    /// pdftex.web write_out for stream 18: log what `runsystem` is asked to
+    /// do, run it when the shell escape policy allows, and log the outcome.
+    fn run_system_write(&mut self, raw: &[u8]) {
+        let term = self.eqtb.int_params[IntParam::TracingOnline.idx() as usize] > 0;
+        self.tex_print_nl(term, true);
+        self.tex_print_str(term, true, "runsystem(");
+        self.tex_print_chars(term, true, raw);
+        self.tex_print_str(term, true, ")...");
+        if crate::lua_sys::shell_escape() == crate::lua_sys::ShellEscape::Disabled {
+            self.tex_print_str(term, true, "disabled");
+        } else if raw.contains(&0) {
+            self.tex_print_str(term, true, "clobbered");
+        } else {
+            let out_dir = self
+                .aux_dir
+                .clone()
+                .or_else(|| (!self.out_dir.is_empty()).then(|| std::path::PathBuf::from(&self.out_dir)));
+            let mut external = raw.to_vec();
+            if let Some(tcx) = &self.tcx {
+                for byte in &mut external {
+                    *byte = tcx.xchr[usize::from(*byte)];
+                }
+            }
+            let code = crate::lua_sys_kpse::run_system(&external, out_dir.as_deref());
+            if code > 0 {
+                self.observations_before_shell_escape
+                    .get_or_insert((self.loaded_file_digests.len(), self.loaded_file_sizes.len()));
+            }
+            let outcome = match code {
+                -1 => "quotation error in system command",
+                0 => "disabled (restricted)",
+                1 => "executed",
+                _ => "executed safely (allowed)",
+            };
+            self.tex_print_str(term, true, outcome);
+        }
+        self.tex_print_str(term, true, ".");
+        self.tex_print_nl(term, true);
+        self.tex_print_ln(term, true);
     }
 
     pub fn do_special(&mut self) {
@@ -2304,7 +2385,7 @@ impl Engine {
                 }
                 Prim::Copy => {
                     let n = self.scan_reg_num();
-                    let b = self.eqtb.boxed.get(n as usize).cloned().flatten();
+                    let b = self.copy_box_register(n);
                     self.eqtb.assign_box(idx, b, global);
                     return;
                 }
@@ -2344,7 +2425,7 @@ impl Engine {
             }
             b"copy" => {
                 let n = self.scan_reg_num();
-                let b = self.eqtb.boxed[n as usize].clone();
+                let b = self.copy_box_register(n);
                 self.eqtb.assign_box(idx, b, global);
             }
             b"lastbox" => {

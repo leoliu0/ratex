@@ -276,6 +276,7 @@ impl Engine {
             line_no,
             line_start,
             state,
+            name,
             ..
         } = &mut self.input.stack[si]
         else {
@@ -287,6 +288,9 @@ impl Engine {
         }
         let start = *pos;
         let (end, next) = physical_line_bounds(data, start);
+        // luatex `\scantextokens` ends without an end-of-line character
+        // (which is why luacode compares its lines with such a token list).
+        let last_text_line = next >= data.len() && name.as_str() == "<scantextokens>";
         let mut content_end = end;
         while content_end > start && data[content_end - 1] == b' ' {
             content_end -= 1;
@@ -302,7 +306,7 @@ impl Engine {
             self.lua_process_input_line(&mut buf);
         }
         let before = buf.len();
-        if let Ok(character) = u8::try_from(end_line_char) {
+        if let Some(character) = u8::try_from(end_line_char).ok().filter(|_| !last_text_line) {
             if unicode && !character.is_ascii() {
                 let mut encoded = [0u8; 4];
                 buf.extend_from_slice(char::from(character).encode_utf8(&mut encoded).as_bytes());

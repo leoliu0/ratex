@@ -9,8 +9,8 @@ use crate::lua_vm::call_info::call_status::CIST_TAIL;
 use crate::lua_vm::{LUA_HOOKCALL, LUA_HOOKTAILCALL, LUA_MASKCALL, LUA_MASKCOUNT};
 
 /// Fire call hook at function entry (normal call or tail call).
-/// Called when pc == 0 and LUA_MASKCALL is set.
-/// Also initialises hook_count when LUA_MASKCOUNT is set.
+/// Called when pc == 0 and LUA_MASKCALL is set. The count hook keeps
+/// counting across calls (C Lua resets `hookcount` only when it fires).
 #[cold]
 #[inline(never)]
 pub fn hook_on_call(
@@ -27,10 +27,6 @@ pub fn hook_on_call(
         };
         // ftransfer=1 (first param), ntransfer=numparams (like C Lua's luaD_hookcall)
         lua_state.run_hook(event, -1, 1, chunk.param_count as i32)?;
-    }
-    // Initialise per-thread hook_count from per-thread base_hook_count
-    if hook_mask & LUA_MASKCOUNT != 0 {
-        lua_state.hook_count = lua_state.base_hook_count;
     }
     Ok(())
 }

@@ -1,0 +1,9 @@
+This is makeindex, version 2.18 [TeX Live 2026] (kpathsea + Thai support).
+Scanning input file pages.idx....done (39 entries accepted, 0 rejected).
+Sorting entries....done (197 comparisons).
+Generating output file pages.ind....
+## Warning (input = pages.idx, line = 39; output = pages.ind, line = 23):
+   -- Illegal range formation: starting & ending pages are of different types.
+done (25 lines written, 1 warning).
+Output written in pages.ind.
+Transcript written in pages.ilg.

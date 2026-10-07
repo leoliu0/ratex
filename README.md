@@ -109,6 +109,30 @@ your document and load it with `Path=./`.
 behaves like `texres`. The packages install only `texres`, so an existing
 TeX Live is left alone.
 
+## Speed
+
+TeXres 0.7.2 was measured against TeX Live 2026 (`latexmk`) on 100 documents:
+70 generated and 30 public papers, books and slide decks. pdfLaTeX, XeLaTeX
+and LuaLaTeX are all included. The binary is the profile-guided build that
+the Linux x86_64 and macOS releases ship. The machine is one Linux
+workstation (64-core Threadripper PRO). Each cell is the median of 5 runs.
+Both tools run every pass and the bibliography tool, and the PDFs were
+checked to have the same pages and text.
+
+| Scenario | TeXres faster | Median TeXres / TeX Live | Closest document |
+| --- | ---: | ---: | --- |
+| Cold build | 100 of 100 | 0.60 | 0.98, siunitx tables (3.54 s / 3.63 s) |
+| No-change rebuild | 100 of 100 | 0.13 | 0.26, 193-page book (0.030 s / 0.114 s) |
+| One-line edit | 100 of 100 | 0.57 | 0.98, 193-page book (6.62 s / 6.77 s) |
+
+On most documents TeXres needs a little over half of TeX Live's time, but on
+the slowest two it is only 2-4% ahead. Both cold builds started with the
+machine's font database already built. On a new machine the first LuaLaTeX
+build scans the fonts for both tools, which takes about a minute either way.
+TeXres also writes SyncTeX by default, and that cost is included. Method,
+per-group numbers and a script to rerun it are in
+[PERFORMANCE.md](PERFORMANCE.md).
+
 ## Editor setup
 
 Find the path with `command -v texres` (Homebrew: `"$(brew --prefix)/bin/texres"`).

@@ -444,6 +444,7 @@ fn os_execute(l: &mut LuaState) -> LuaResult<usize> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         use std::io::Write;
+        crate::host_access::notify(&crate::host_access::HostAccess::Spawn);
         let command = String::from_utf8_lossy(&command).into_owned();
         let _ = std::io::stdout().flush();
         #[cfg(windows)]
@@ -474,6 +475,7 @@ fn os_exit(l: &mut LuaState) -> LuaResult<usize> {
 
 fn os_getenv(l: &mut LuaState) -> LuaResult<usize> {
     let name = lauxlib::check_lstring(l, 1)?;
+    crate::host_access::notify(&crate::host_access::HostAccess::Getenv { name: &name });
     #[cfg(unix)]
     let value = {
         use std::os::unix::ffi::{OsStrExt, OsStringExt};
@@ -497,6 +499,7 @@ fn c_path(bytes: &[u8]) -> std::io::Result<std::ffi::CString> {
 
 fn os_remove(l: &mut LuaState) -> LuaResult<usize> {
     let filename = lauxlib::check_lstring(l, 1)?;
+    crate::host_access::notify(&crate::host_access::HostAccess::Remove { path: &filename });
     // remove(3) deletes files and empty directories.
     #[cfg(unix)]
     let result = c_path(&filename).and_then(|path| {
@@ -523,6 +526,7 @@ fn os_remove(l: &mut LuaState) -> LuaResult<usize> {
 fn os_rename(l: &mut LuaState) -> LuaResult<usize> {
     let from = lauxlib::check_lstring(l, 1)?;
     let to = lauxlib::check_lstring(l, 2)?;
+    crate::host_access::notify(&crate::host_access::HostAccess::Rename { from: &from, to: &to });
     #[cfg(unix)]
     let result = {
         use std::os::unix::ffi::OsStrExt;

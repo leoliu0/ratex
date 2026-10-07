@@ -1,5 +1,7 @@
 #[path = "../allocator.rs"]
 mod allocator;
+#[path = "../index/tree.rs"]
+mod index_tree;
 #[global_allocator]
 static GLOBAL: allocator::EngineAllocator = allocator::EngineAllocator;
 
@@ -32,6 +34,7 @@ const DEPCACHE_RECORD_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const TEXMK_CACHE_HIT_MARKER_ENV: &str = "TEX_RS_CACHE_HIT_MARKER";
 const TEXMK_PUBLISHED_OUTPUT_ENV: &str = "TEX_RS_TEXMK_PUBLISHED_OUTPUT";
 const TEXMK_WATCH_DEPENDENCIES_ENV: &str = "TEX_RS_TEXMK_WATCH_DEPENDENCIES";
+const TEXMK_FONT_CACHE_ENV: &str = "TEX_RS_TEXMK_FONT_CACHE";
 const DEPCACHE_END_DOMAIN: &[u8] = b"TEX-DEPCACHE-7-END";
 
 use tex_kpse::platform_cache_dir;
@@ -864,6 +867,25 @@ fn check_depcache(
             }
             continue;
         }
+        if let Some(path) = line.strip_prefix("DIRPRESENT\t") {
+            if !decode_record_path(path)?.is_dir() {
+                return None;
+            }
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("ENV\t") {
+            let (name, value) = rest.split_once('\t')?;
+            let name = decode_record_path(name)?.into_os_string();
+            let expected = match value.strip_prefix('=') {
+                Some(value) => Some(decode_record_path(value)?.into_os_string()),
+                None if value == "-" => None,
+                None => return None,
+            };
+            if std::env::var_os(name) != expected {
+                return None;
+            }
+            continue;
+        }
         if let Some(rest) = line.strip_prefix("AUX\t") {
             let (path, stamp, hash) = parse_stamped_entry(rest)?;
             if content_identity_matches(&path, stamp, hash, &cache_meta) {
@@ -903,6 +925,14 @@ fn check_depcache(
                 .map(|metadata| metadata.len())
                 != Some(expected_size)
             {
+                return None;
+            }
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("MODDATE\t") {
+            let (path, date) = rest.split_once('\t')?;
+            let path = decode_record_path(path)?;
+            if tex_core::expand::disk_file_mod_date(&path).as_deref() != Some(date) {
                 return None;
             }
             continue;
@@ -1073,12 +1103,54 @@ struct DepcacheInputs<'a> {
     deps: &'a [std::path::PathBuf],
     directories: &'a [(std::path::PathBuf, u64)],
     reads: &'a [(std::path::PathBuf, u64, u64)],
+    /// The `reads` TeX made after the run first executed a shell command.
+    reads_after_shell_escape: std::ops::Range<usize>,
     sizes: &'a [(std::path::PathBuf, u64)],
+    /// The `sizes` TeX observed after the run first executed a shell command.
+    sizes_after_shell_escape: std::ops::Range<usize>,
+    /// `\pdffilemoddate` results the run expanded.
+    mod_dates: &'a [(std::path::PathBuf, String)],
     missing: &'a [std::path::PathBuf],
     missing_directories: &'a [std::path::PathBuf],
+    present_directories: &'a [std::path::PathBuf],
+    environment: &'a [(String, Option<std::ffi::OsString>)],
     outputs_missing_at_start: &'a [std::path::PathBuf],
     published_outputs: Option<&'a TexmkPublishedOutputs>,
     aux_start: &'a [(std::path::PathBuf, u64, u64)],
+}
+
+/// Files first observed (read or sized) after a `\write18` command ran and
+/// gone again at the end of the run: the run's own commands created and
+/// removed them (minted's `latexminted config` and `cleanconfig`). The next
+/// run starts without them as this one ended; like latexmk, which compares a
+/// vanished input with its state after the run, the record keeps their
+/// absence rather than the contents the command produced.
+fn vanished_shell_outputs(
+    inputs: &DepcacheInputs<'_>,
+) -> std::collections::BTreeSet<std::path::PathBuf> {
+    let reads = inputs.reads_after_shell_escape.clone();
+    let sizes = inputs.sizes_after_shell_escape.clone();
+    let (Some(reads_after), Some(sizes_after)) =
+        (inputs.reads.get(reads.clone()), inputs.sizes.get(sizes.clone()))
+    else {
+        return Default::default();
+    };
+    if reads_after.is_empty() && sizes_after.is_empty() {
+        return Default::default();
+    }
+    let observed_otherwise: std::collections::BTreeSet<_> = inputs.reads[..reads.start]
+        .iter()
+        .chain(&inputs.reads[reads.end..])
+        .map(|(path, _, _)| anchored_path(path))
+        .chain(inputs.sizes[..sizes.start].iter().map(|(path, _)| anchored_path(path)))
+        .collect();
+    reads_after
+        .iter()
+        .map(|(path, _, _)| path)
+        .chain(sizes_after.iter().map(|(path, _)| path))
+        .map(|path| anchored_path(path))
+        .filter(|path| !observed_otherwise.contains(path) && std::fs::symlink_metadata(path).is_err())
+        .collect()
 }
 
 fn write_depcache(cache_path: &std::path::Path, inputs: DepcacheInputs<'_>) {
@@ -1134,7 +1206,11 @@ fn write_depcache(cache_path: &std::path::Path, inputs: DepcacheInputs<'_>) {
             }
         }
     }
+    let vanished_shell_outputs = vanished_shell_outputs(&inputs);
     for (path, (size, hash)) in &read_identities {
+        if vanished_shell_outputs.contains(path) {
+            continue;
+        }
         let Some((stamp, digest)) = stable_content_identity(path) else {
             return;
         };
@@ -1162,6 +1238,9 @@ fn write_depcache(cache_path: &std::path::Path, inputs: DepcacheInputs<'_>) {
     }
     let mut recorded_sizes = Vec::with_capacity(size_identities.len());
     for (path, size) in &size_identities {
+        if vanished_shell_outputs.contains(path) {
+            continue;
+        }
         if std::fs::metadata(path)
             .ok()
             .filter(|metadata| metadata.is_file())
@@ -1175,6 +1254,28 @@ fn write_depcache(cache_path: &std::path::Path, inputs: DepcacheInputs<'_>) {
             return;
         }
         recorded_sizes.push((path.clone(), *size));
+    }
+    let mut mod_dates = std::collections::BTreeMap::new();
+    for (path, date) in inputs.mod_dates {
+        match mod_dates.entry(anchored_path(path)) {
+            Entry::Vacant(entry) => {
+                entry.insert(date.as_str());
+            }
+            Entry::Occupied(entry) => {
+                if *entry.get() != date {
+                    return;
+                }
+            }
+        }
+    }
+    for (path, date) in &mod_dates {
+        if tex_core::expand::disk_file_mod_date(path).as_deref() != Some(*date) {
+            return;
+        }
+        let _ = writeln!(out, "MODDATE\t{}\t{date}", encode_record_path(path));
+        if out.len() as u64 > DEPCACHE_RECORD_MAX_BYTES {
+            return;
+        }
     }
     let mut unique: BTreeSet<std::path::PathBuf> =
         inputs.deps.iter().map(|path| anchored_path(path)).collect();
@@ -1196,6 +1297,7 @@ fn write_depcache(cache_path: &std::path::Path, inputs: DepcacheInputs<'_>) {
         .missing
         .iter()
         .map(|path| anchored_path(path))
+        .chain(vanished_shell_outputs)
         .collect();
     let missing_directories: BTreeSet<std::path::PathBuf> = inputs
         .missing_directories
@@ -1297,6 +1399,40 @@ fn write_depcache(cache_path: &std::path::Path, inputs: DepcacheInputs<'_>) {
         }
         missing_directory_paths.push(path.clone());
     }
+    let present_directories: BTreeSet<std::path::PathBuf> = inputs
+        .present_directories
+        .iter()
+        .map(|path| anchored_path(path))
+        .collect();
+    for path in &present_directories {
+        if !path.is_dir() {
+            return;
+        }
+        out.push_str(&format!("DIRPRESENT\t{}\n", encode_record_path(path)));
+        if out.len() as u64 > DEPCACHE_RECORD_MAX_BYTES {
+            return;
+        }
+    }
+    let environment: std::collections::BTreeMap<&str, &Option<std::ffi::OsString>> = inputs
+        .environment
+        .iter()
+        .map(|(name, value)| (name.as_str(), value))
+        .collect();
+    for (name, value) in &environment {
+        // The value was read during the run; a script that set it itself
+        // leaves a different starting state, so require the current one.
+        if std::env::var_os(name) != **value {
+            return;
+        }
+        let value = match value {
+            Some(value) => format!("={}", encode_record_path(std::path::Path::new(value))),
+            None => "-".to_string(),
+        };
+        out.push_str(&format!("ENV\t{}\t{value}\n", encode_record_path(std::path::Path::new(name))));
+        if out.len() as u64 > DEPCACHE_RECORD_MAX_BYTES {
+            return;
+        }
+    }
     for (p, len, h) in inputs.aux_start {
         let path = absolute_path(p);
         if *len == u64::MAX {
@@ -1359,7 +1495,11 @@ fn write_depcache(cache_path: &std::path::Path, inputs: DepcacheInputs<'_>) {
             .map(|metadata| FileStamp::from_metadata(&metadata))
             == Some(*stamp)
     }) && missing_file_paths.iter().all(|path| !path.is_file())
-        && missing_directory_paths.iter().all(|path| !path.is_dir());
+        && missing_directory_paths.iter().all(|path| !path.is_dir())
+        && present_directories.iter().all(|path| path.is_dir())
+        && mod_dates
+            .iter()
+            .all(|(path, date)| tex_core::expand::disk_file_mod_date(path).as_deref() == Some(*date));
     if written.is_ok() && inputs_unchanged {
         let _ = replace_file(&temporary, cache_path);
     }
@@ -1627,7 +1767,8 @@ fn usage(program: &str) {
   -8bit                        print every character as itself
   -translate-file=TCXNAME      use the TCX file for character printability and translation
   -[no-]file-line-error        accepted; rich file/line diagnostics are always enabled
-  -[no-]shell-escape           accepted; shell execution is always disabled
+  -[no-]shell-escape           enable or disable \\write18 shell commands
+  -shell-restricted            allow only the shell_escape_commands (the default)
   -[no-]mktex=FMT              accepted; missing files are never generated
   -src-specials[=WHERE], -output-comment=STRING
                                accepted; they affect only DVI output
@@ -2189,8 +2330,23 @@ pub(crate) fn main() {
     main_with_args(std::env::args_os().collect());
 }
 
+/// `\write18{makeindex ...}` and `os.execute` (imakeidx): the embedded
+/// makeindex, run in the working directory on the job's files, which TeX
+/// writes to `output_dir`.
+fn internal_command(words: &[String], output_dir: Option<&std::path::Path>) -> Option<i32> {
+    let (program, args) = words.split_first()?;
+    if program != "makeindex" {
+        return None;
+    }
+    let cwd = std::path::Path::new(".");
+    let tree = |name: &str| index_tree::style(cwd, name);
+    let host = tex_makeindex::DirHost { work_dir: cwd, output_dir, tree: &tree, stdin: false };
+    Some(tex_makeindex::run_cli(args, &host))
+}
+
 pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     install_panic_reporter();
+    tex_core::set_internal_command(internal_command);
     let mut phase_timer = PhaseTimer::new();
     apply_mem_limit();
     let program = program_name();
@@ -2434,25 +2590,14 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             synctex_option = SynctexMode::parse_option(value);
         } else if opt == "-draftmode" {
             draftmode = true;
-        } else if matches!(
-            opt,
-            "-file-line-error" | "-file-line-error-style" | "-no-shell-escape" | "-disable-write18"
-        ) {
-            // Rich file/line diagnostics are always enabled; shell execution
-            // is never enabled.
-        } else if matches!(
-            opt,
-            "-shell-escape" | "-enable-write18" | "-shell-restricted"
-        ) {
-            // Editors commonly pass this by default. TeXres never runs shell
-            // commands, so the run proceeds as with \write18 disabled.
-            emit_cli_message(
-                interaction_mode,
-                format_args!(
-                    "{program}: warning: {} is not supported; \\write18 shell commands will not run",
-                    args[i]
-                ),
-            );
+        } else if matches!(opt, "-file-line-error" | "-file-line-error-style") {
+            // Rich file/line diagnostics are always enabled.
+        } else if matches!(opt, "-no-shell-escape" | "-disable-write18") {
+            tex_core::set_shell_escape(tex_core::ShellEscape::Disabled);
+        } else if matches!(opt, "-shell-escape" | "-enable-write18") {
+            tex_core::set_shell_escape(tex_core::ShellEscape::Enabled);
+        } else if opt == "-shell-restricted" {
+            tex_core::set_shell_escape(tex_core::ShellEscape::Restricted);
         } else if opt == "-fmt" || opt.starts_with("-fmt=") || args[i].starts_with('&') {
             let name = match opt
                 .strip_prefix("-fmt=")
@@ -2571,6 +2716,10 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     let aux_start = snapshot_aux_state(&job, &aux_dir);
     let cache_root = requested_cache_dir.unwrap_or_else(platform_cache_dir);
     tex_core::set_cache_dir(absolute_path(&cache_root));
+    // The build driver shares one font database between its jobs.
+    if let Some(dir) = std::env::var_os(TEXMK_FONT_CACHE_ENV).filter(|value| !value.is_empty()) {
+        tex_core::set_font_cache_dir(absolute_path(std::path::Path::new(&dir)));
+    }
     let published_outputs = texmk_published_outputs(&cache_root, synctex_mode.extension());
     let private_cache = depcache_path(
         &cache_root,
@@ -3074,6 +3223,14 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             && eng.font_loader.dependency_tracking_complete
             && aux_state_is_unchanged(&aux_start)
         {
+            let (reads_after_shell_escape, sizes_after_shell_escape) = eng
+                .observations_before_shell_escape
+                .map_or((0..0, 0..0), |(reads, sizes)| {
+                    (
+                        reads..eng.loaded_file_digests.len(),
+                        sizes..eng.loaded_file_sizes.len(),
+                    )
+                });
             eng.loaded_files
                 .extend(eng.font_loader.dependency_files.iter().cloned());
             eng.loaded_file_digests
@@ -3091,9 +3248,14 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
                     deps: &eng.loaded_files,
                     directories: &eng.font_loader.dependency_directories,
                     reads: &eng.loaded_file_digests,
+                    reads_after_shell_escape,
                     sizes: &eng.loaded_file_sizes,
+                    sizes_after_shell_escape,
+                    mod_dates: &eng.loaded_file_mod_dates,
                     missing: &eng.missing_files,
                     missing_directories: &eng.font_loader.dependency_missing_directories,
+                    present_directories: &eng.font_loader.dependency_present_directories,
+                    environment: &eng.font_loader.dependency_environment,
                     outputs_missing_at_start: &outputs_missing_at_start,
                     published_outputs: published_outputs.as_ref(),
                     aux_start: &aux_start,
@@ -3375,9 +3537,14 @@ mod startup_tests {
                 deps: &[],
                 directories: &[],
                 reads: &[],
+                reads_after_shell_escape: 0..0,
                 sizes: &stale_observation,
+                sizes_after_shell_escape: 0..0,
+                mod_dates: &[],
                 missing: &[],
                 missing_directories: &[],
+                present_directories: &[],
+                environment: &[],
                 outputs_missing_at_start: &[],
                 published_outputs: None,
                 aux_start: &[],
@@ -3397,9 +3564,14 @@ mod startup_tests {
                 deps: &[],
                 directories: &[],
                 reads: &[],
+                reads_after_shell_escape: 0..0,
                 sizes: &stable_observation,
+                sizes_after_shell_escape: 0..0,
+                mod_dates: &[],
                 missing: &[],
                 missing_directories: &[],
+                present_directories: &[],
+                environment: &[],
                 outputs_missing_at_start: &[],
                 published_outputs: None,
                 aux_start: &[],

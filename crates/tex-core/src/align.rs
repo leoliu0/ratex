@@ -153,10 +153,19 @@ fn split_pre_adjust(adj: NodeList) -> (NodeList, NodeList) {
 /// the dispatcher only tests `align_state > 0` for \span placement, which
 /// matches "a cell is open").
 pub const PH_IDLE: i32 = 0; // no cell open
-const PH_U: i32 = 1; // u part of the template is playing
+pub(crate) const PH_U: i32 = 1; // u part of the template is playing
 pub(crate) const PH_CONTENT: i32 = 2; // cell content phase
 const PH_OMIT: i32 = 4; // template omitted for the current cell
 pub(crate) const PH_CLOSE: i32 = 8; // close stream pushed; sentinel not yet seen
+
+/// A token that ends an alignment entry (see `Engine::row_delimiter`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum RowDelimiter {
+    /// `tab_mark`: `&` or a control sequence \let to one.
+    Tab,
+    /// `car_ret`: `\cr` or `\crcr`.
+    Cr(Prim),
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub(crate) enum AlignCloseReason {
@@ -185,8 +194,6 @@ pub(crate) struct AlignSave {
     done: bool,
     to: Option<(i32, bool)>,
     pushed_base: usize,
-    delimiter_balance_base: i32,
-    cell_level: u16,
     brace_depth: i32,
     t0: Glue,
     everycr_done: bool,
@@ -210,6 +217,39 @@ pub(crate) struct AlignView<'a> {
     pub(crate) cur_row: &'a [Cell],
 }
 
+/// tex.web §342: whether `t` is a row delimiter, a `tab_mark` (`&` or a
+/// control sequence \let to one) or a `car_ret` (`\cr`, `\crcr`).
+#[inline]
+pub(crate) fn row_delimiter(t: Token, eqtb: &crate::eqtb::Eqtb) -> Option<RowDelimiter> {
+    if t.is_char() {
+        return (t.cc() == 4).then_some(RowDelimiter::Tab);
+    }
+    if !t.is_cs() {
+        return None;
+    }
+    match eqtb.resolve(t.cs_id()) {
+        Some(Equiv::CharTok(raw)) if Token(*raw).cc() == 4 => Some(RowDelimiter::Tab),
+        Some(Equiv::Prim(p @ (Prim::Cr | Prim::CrCr))) => Some(RowDelimiter::Cr(*p)),
+        _ => None,
+    }
+}
+
+/// Whether `t` is a row delimiter (see `row_delimiter`). Inlined into the
+/// token fetch of an alignment entry, where nearly every token is a macro:
+/// one load of the meaning's tag rejects it.
+#[inline(always)]
+pub(crate) fn is_row_delimiter(t: Token, eqtb: &crate::eqtb::Eqtb) -> bool {
+    if t.is_char() {
+        return t.cc() == 4;
+    }
+    t.is_cs()
+        && match eqtb.resolve(t.cs_id()) {
+            Some(Equiv::CharTok(raw)) => Token(*raw).cc() == 4,
+            Some(Equiv::Prim(p)) => matches!(p, Prim::Cr | Prim::CrCr),
+            _ => false,
+        }
+}
+
 impl Engine {
     pub fn align_phase(&self) -> i32 {
         self.align_state & (PH_U | PH_CONTENT)
@@ -221,27 +261,6 @@ impl Engine {
 
     fn align_set_phase(&mut self, phase: i32) {
         self.align_state = (self.align_state & PH_OMIT) | phase;
-    }
-
-    fn align_token_list_brace_balance(&self) -> i32 {
-        self.input
-            .stack
-            .iter()
-            .fold(0i32, |sum, source| match source {
-                crate::input::Source::TokList { pos, toks, .. } => {
-                    sum + toks[..*pos].iter().fold(0i32, |depth, t| {
-                        if t.is_char() && t.cc() == 1 {
-                            depth + 1
-                        } else if t.is_char() && t.cc() == 2 {
-                            depth - 1
-                        } else {
-                            depth
-                        }
-                    })
-                }
-                crate::input::Source::MacroFrame(frame) => sum + frame.delivered_brace_balance(),
-                _ => sum,
-            })
     }
 
     pub(crate) fn align_delimiter_hidden(&self) -> bool {
@@ -260,8 +279,6 @@ impl Engine {
     /// expansions and commands emitted by the u-template have completed.
     pub(crate) fn align_u_template_finished(&mut self) {
         if self.align_phase() == PH_U {
-            self.align_cell_level = self.eqtb.cur_level;
-            self.align_delimiter_balance_base = self.align_token_list_brace_balance();
             self.align_brace_depth = 0;
             self.align_set_phase(PH_CONTENT);
         }
@@ -270,44 +287,37 @@ impl Engine {
     /// tex.web get_next: a row delimiter at alignment brace-depth zero
     /// cannot be consumed by a macro parameter scanner. Queue the current
     /// template's close stream so scanning proceeds through the same input
-    /// TeX would insert at the end of the cell.
+    /// TeX would insert at the end of the cell. Inlined state tests first:
+    /// the meaning of `t` is looked up only at brace depth zero of an
+    /// entry's content.
+    #[inline(always)]
     pub(crate) fn align_intercept_raw_token(&mut self, t: Token) -> bool {
         if self.scanner_status != ScannerStatus::Aligning
-            || self.align_phase() != PH_CONTENT
-            || self.align_state & PH_CLOSE != 0
+            || self.align_state & (PH_U | PH_CONTENT | PH_CLOSE) != PH_CONTENT
+            || self.align_delimiter_hidden()
         {
             return false;
         }
-        let is_tab = if t.is_char() && t.cc() == 4 {
-            true
-        } else if let Some(id) = t.is_cs().then(|| t.cs_id()) {
-            matches!(self.eqtb.resolve(id), Some(crate::eqtb::Equiv::CharTok(raw)) if Token(*raw).cc() == 4)
-        } else {
-            false
+        self.align_intercept_delimiter(t)
+    }
+
+    #[inline(never)]
+    fn align_intercept_delimiter(&mut self, t: Token) -> bool {
+        let Some(delimiter) = row_delimiter(t, &self.eqtb) else {
+            return false;
         };
-        if is_tab {
-            if self.align_delimiter_hidden() {
-                return false;
+        match delimiter {
+            RowDelimiter::Tab => self.align_tab(),
+            RowDelimiter::Cr(prim) => {
+                self.cur_tok = t;
+                self.cur_cs = Some(t.cs_id());
+                self.cur_prim = Some(prim);
+                self.align_cr();
             }
-            self.align_tab();
-            return true;
         }
-        let Some(id) = t.is_cs().then(|| t.cs_id()) else {
-            return false;
-        };
-        let prim = match self.eqtb.resolve(id) {
-            Some(Equiv::Prim(p @ (Prim::Cr | Prim::CrCr))) => *p,
-            _ => return false,
-        };
-        if self.align_delimiter_hidden() {
-            return false;
-        }
-        self.cur_tok = t;
-        self.cur_cs = Some(id);
-        self.cur_prim = Some(prim);
-        self.align_cr();
         true
     }
+
     /// true when an outer alignment state is saved for this engine (we are
     /// the inner \halign of a nesting)
     fn align_has_save(&self) -> bool {
@@ -338,8 +348,6 @@ impl Engine {
                 done: self.align_done,
                 to: self.align_to,
                 pushed_base: self.align_pushed_base,
-                delimiter_balance_base: self.align_delimiter_balance_base,
-                cell_level: self.align_cell_level,
                 brace_depth: self.align_brace_depth,
                 close_reason: self.align_close_reason,
                 everycr_done: self.align_everycr_done,
@@ -455,8 +463,6 @@ impl Engine {
                 done: self.align_done,
                 to: self.align_to,
                 pushed_base: self.align_pushed_base,
-                delimiter_balance_base: self.align_delimiter_balance_base,
-                cell_level: self.align_cell_level,
                 brace_depth: self.align_brace_depth,
                 everycr_done: self.align_everycr_done,
                 adjust: std::mem::take(&mut self.align_adjust),
@@ -544,8 +550,6 @@ impl Engine {
             self.align_done = sv.done;
             self.align_to = sv.to;
             self.align_pushed_base = sv.pushed_base;
-            self.align_delimiter_balance_base = sv.delimiter_balance_base;
-            self.align_cell_level = sv.cell_level;
             self.align_brace_depth = sv.brace_depth;
             self.align_scanning_cell = sv.scanning_cell;
             self.align_close_reason = sv.close_reason;
@@ -842,8 +846,6 @@ impl Engine {
         if self.align_is_valign {
             self.prev_depth = self.ignore_depth();
         }
-        self.align_cell_level = self.eqtb.cur_level;
-        self.align_delimiter_balance_base = self.align_token_list_brace_balance();
         while self.align_cur_row.len() <= col {
             self.align_cur_row.push(Cell::default());
         }

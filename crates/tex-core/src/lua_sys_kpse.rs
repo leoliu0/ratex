@@ -185,6 +185,7 @@ fn roots() -> Vec<PathBuf> {
 /// Raw (unexpanded) value of `name`: the environment, then the built-ins.
 fn raw_var(program: &str, name: &str) -> Option<String> {
     for key in [format!("{name}_{program}"), format!("{name}.{program}"), name.to_string()] {
+        let _ = with_engine(|e| e.lua_dep_environment(&key));
         if let Ok(value) = std::env::var(&key) {
             if !value.is_empty() {
                 return Some(value);
@@ -203,7 +204,7 @@ fn raw_var(program: &str, name: &str) -> Option<String> {
         }
         // The per-user cache: font databases and caches live below it.
         "TEXMFVAR" | "TEXMFSYSVAR" => {
-            return Some(kpse_path(&crate::lua_sys::cache_dir().join("texmf-var")))
+            return Some(kpse_path(&crate::lua_sys::font_cache_dir()))
         }
         "TEXMFCACHE" => return Some("$TEXMFVAR".to_string()),
         // The search roots of the engine, then the bundled archive.
@@ -442,7 +443,9 @@ fn child_directories(dir: &str) -> Vec<String> {
         let entries = tex_kpse::embedded_tree::read_dir(dir).unwrap_or_default();
         return entries.into_iter().filter(|(_, directory)| *directory).map(|(name, _)| name).collect();
     }
-    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let listing = std::fs::read_dir(dir);
+    let _ = with_engine(|e| e.lua_dep_directory(Path::new(dir), listing.is_ok()));
+    let Ok(entries) = listing else { return Vec::new() };
     let mut children: Vec<String> = entries
         .flatten()
         .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
@@ -479,7 +482,9 @@ fn expand_path(program: &str, path: &str) -> String {
             if trimmed.is_empty() {
                 continue;
             }
-            if !is_dir(trimmed) {
+            let present = is_dir(trimmed);
+            let _ = with_engine(|e| e.lua_dep_stat(Path::new(trimmed), present.then_some("directory")));
+            if !present {
                 continue;
             }
             if recursive {
@@ -526,6 +531,9 @@ fn candidates(name: &str, fmt: &FormatInfo) -> Vec<String> {
     out
 }
 
+/// `kpse.find_file`: the lookup is a dependency of the build. A file of the
+/// job's output directories records its own probes; a search-path lookup
+/// records the search (and an embedded fallback its failed disk search).
 fn find_one(name: &str, fmt: &FormatInfo) -> Option<PathBuf> {
     if name.is_empty() {
         return None;
@@ -533,31 +541,27 @@ fn find_one(name: &str, fmt: &FormatInfo) -> Option<PathBuf> {
     if tex_kpse::embedded_tree::is_embedded_path(name) {
         return is_file(name).then(|| PathBuf::from(name));
     }
-    let found = with_engine(|e| {
-        let names = match fmt.search {
-            Search::Format(format) => tex_kpse::Kpse::candidates(name, format),
-            Search::Any => candidates(name, fmt),
-        };
+    let names = match fmt.search {
+        Search::Format(format) => tex_kpse::Kpse::candidates(name, format),
+        Search::Any => candidates(name, fmt),
+    };
+    let embedded = || {
+        let member = names.iter().find(|c| tex_kpse::has_embedded_package(c))?;
+        tex_kpse::embedded_tree::member_path(member).map(PathBuf::from)
+    };
+    with_engine(|e| {
         if let Some(path) = e.find_job_output_file(&names) {
             return Some(path);
         }
-        match fmt.search {
-            Search::Format(format) => e.font_loader.kpse.find(name, format),
-            Search::Any => names.iter().find_map(|c| e.font_loader.kpse.find_any(c)),
-        }
+        let (format, found) = match fmt.search {
+            Search::Format(format) => (Some(format), e.font_loader.kpse.find(name, format)),
+            Search::Any => (None, names.iter().find_map(|c| e.font_loader.kpse.find_any(c))),
+        };
+        let found = found.or_else(embedded);
+        e.lua_dep_lookup(name, format, found.as_deref());
+        found
     })
-    .ok()
-    .flatten();
-    if let Some(path) = found {
-        return Some(path);
-    }
-    let member = match fmt.search {
-        Search::Format(format) => tex_kpse::Kpse::candidates(name, format)
-            .into_iter()
-            .find(|c| tex_kpse::has_embedded_package(c)),
-        Search::Any => candidates(name, fmt).into_iter().find(|c| tex_kpse::has_embedded_package(c)),
-    }?;
-    tex_kpse::embedded_tree::member_path(&member).map(PathBuf::from)
+    .unwrap_or_else(|_| embedded())
 }
 
 /// `find_format`: the format a file name suggests.
@@ -794,6 +798,142 @@ pub(crate) fn check_command(cmd: &str) -> (i32, String) {
     }
 }
 
+/// The directory kpathsea reports as `SELFAUTOLOC` to shell escape commands:
+/// where the engine lives. TeXres is not installed beside `kpsewhich`, which
+/// such tools run from there, so the directory of the TeX Live `kpsewhich`
+/// on `PATH` stands in for it when the engine's own directory has none.
+fn shell_tool_dir() -> PathBuf {
+    let own = exe_dirs().0;
+    let has_kpsewhich = |dir: &Path| dir.join(if cfg!(windows) { "kpsewhich.exe" } else { "kpsewhich" }).is_file();
+    if has_kpsewhich(&own) {
+        return own;
+    }
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path).find(|dir| has_kpsewhich(dir)).unwrap_or(own)
+}
+
+/// A program the engine runs in-process for `\write18` and `os.execute`
+/// instead of through the shell (TeXres's own makeindex, which TeX Live
+/// would find on `PATH`). It receives the words of the command line and
+/// the job's output directory, and returns the exit status, or `None` for a
+/// command it does not provide.
+pub type InternalCommand = fn(&[String], Option<&Path>) -> Option<i32>;
+
+static INTERNAL_COMMAND: std::sync::OnceLock<InternalCommand> = std::sync::OnceLock::new();
+
+/// Installs the in-process programs (once per process).
+pub fn set_internal_command(command: InternalCommand) {
+    let _ = INTERNAL_COMMAND.set(command);
+}
+
+/// The words of a command line that needs nothing of the shell but word
+/// splitting and quoting (blanks separate words; `'...'`, `"..."` and `\`
+/// quote); `None` for anything else (pipes, redirections, expansions...).
+fn simple_words(command: &str) -> Option<Vec<String>> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut in_word = false;
+    let mut chars = command.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            ' ' | '\t' => {
+                if in_word {
+                    words.push(std::mem::take(&mut word));
+                    in_word = false;
+                }
+            }
+            '\'' => {
+                in_word = true;
+                loop {
+                    match chars.next()? {
+                        '\'' => break,
+                        c => word.push(c),
+                    }
+                }
+            }
+            '"' => {
+                in_word = true;
+                loop {
+                    match chars.next()? {
+                        '"' => break,
+                        '\\' => match chars.next()? {
+                            c @ ('$' | '`' | '"' | '\\') => word.push(c),
+                            '\n' => {}
+                            c => {
+                                word.push('\\');
+                                word.push(c);
+                            }
+                        },
+                        '$' | '`' => return None,
+                        c => word.push(c),
+                    }
+                }
+            }
+            '\\' => {
+                in_word = true;
+                word.push(chars.next()?);
+            }
+            '|' | '&' | ';' | '<' | '>' | '(' | ')' | '$' | '`' | '*' | '?' | '[' | ']' | '{' | '}' | '~'
+            | '#' | '!' | '=' | '\n' | '\r' => return None,
+            c => {
+                in_word = true;
+                word.push(c);
+            }
+        }
+    }
+    if in_word {
+        words.push(word);
+    }
+    (!words.is_empty()).then_some(words)
+}
+
+/// Runs an allowed command line in-process when it names an internal
+/// program; `None` when the shell must run it.
+pub(crate) fn run_internal(command: &str, output_dir: Option<&Path>) -> Option<i32> {
+    let internal = INTERNAL_COMMAND.get()?;
+    internal(&simple_words(command)?, output_dir)
+}
+
+/// web2c's `runsystem` for `\write18`: the code that stands for what
+/// happened (-1 bad quoting, 0 refused, 1 ran, 2 ran the safely quoted
+/// command), with the command run by `/bin/sh -c` in the current directory.
+/// `output_dir` is exported as `TEXMF_OUTPUT_DIRECTORY`, so a tool such as
+/// `latexminted` finds the files the job wrote there.
+pub(crate) fn run_system(cmd: &[u8], output_dir: Option<&std::path::Path>) -> i32 {
+    let text = String::from_utf8_lossy(cmd);
+    let (allow, run) = match shell_escape() {
+        ShellEscape::Disabled => return 0,
+        ShellEscape::Enabled => (1, text.into_owned()),
+        ShellEscape::Restricted => shell_cmd_is_allowed(&text, &allowed_commands()),
+    };
+    if allow > 0 && run_internal(&run, output_dir).is_some() {
+        return allow;
+    }
+    if allow > 0 {
+        let run: std::borrow::Cow<'_, [u8]> =
+            if allow == 1 { std::borrow::Cow::Borrowed(cmd) } else { std::borrow::Cow::Owned(run.into_bytes()) };
+        let mut command = std::process::Command::new("/bin/sh");
+        command.arg("-c").arg(crate::lua_sys::os_str(&run));
+        // kpathsea exports these for every program it starts; tools such as
+        // `latexminted` locate `kpsewhich` through `SELFAUTOLOC`.
+        let loc = shell_tool_dir();
+        let dir = loc.parent().map(Path::to_path_buf).unwrap_or_default();
+        let parent = dir.parent().map(Path::to_path_buf).unwrap_or_default();
+        let grandparent = parent.parent().map(Path::to_path_buf).unwrap_or_default();
+        command
+            .env("SELFAUTOLOC", &loc)
+            .env("SELFAUTODIR", &dir)
+            .env("SELFAUTOPARENT", &parent)
+            .env("SELFAUTOGRANDPARENT", &grandparent);
+        if let Some(dir) = output_dir {
+            let dir = if dir.is_absolute() { dir.to_path_buf() } else { std::env::current_dir().unwrap_or_default().join(dir) };
+            command.env("TEXMF_OUTPUT_DIRECTORY", dir);
+        }
+        let _ = command.status();
+    }
+    allow
+}
+
 // ----------------------------------------------------------- primitives ---
 
 fn s_of(s: &LuaString) -> String {
@@ -826,6 +966,7 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
             let program = s_of(&program);
             let name = s_of(&name);
             let mut found: Vec<String> = if let Some(path) = path {
+                let _ = with_engine(|e| e.lua_untracked("kpse.lookup in an explicit path"));
                 path_search(&program, &s_of(&path), &name, all || !subdirs.is_empty(), must_exist)
             } else {
                 let index = if format >= 0 {
@@ -856,6 +997,7 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
         LuaBytes(expand_var(&s_of(&program), &s_of(&text)).into_bytes())
     });
     sys_reg!(lua, s, "kpse_expand_path", |program: LuaString, text: LuaString| -> LuaBytes {
+
         LuaBytes(expand_path(&s_of(&program), &s_of(&text)).into_bytes())
     });
     sys_reg!(lua, s, "kpse_expand_braces", |text: LuaString| -> LuaBytes { LuaBytes(expand_braces(&s_of(&text)).into_bytes()) });
@@ -878,7 +1020,9 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
             }
         }
         let path = path_of(&bytes);
-        match std::fs::File::open(&path) {
+        let opened = std::fs::File::open(&path);
+        let _ = with_engine(|e| e.lua_dep_read(&path, opened.is_ok() && path.is_file()));
+        match opened {
             Ok(_) if path.is_file() => Some(LuaBytes(bytes)),
             Ok(_) => None,
             Err(e) => {
@@ -912,6 +1056,9 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
     sys_reg!(lua, s, "kpse_record", |name: LuaString, output: bool| {
         let path = path_of(&bytes_of(&name));
         let _ = with_engine(|e| {
+            if crate::lua_deps::ignored(&path) {
+                return;
+            }
             let list = if output { &mut e.written_files } else { &mut e.loaded_files };
             if !list.contains(&path) {
                 list.push(path);
@@ -946,4 +1093,21 @@ pub(crate) fn set_allowed_commands(list: &str) {
 /// A numeric `texmf.cnf` parameter.
 pub(crate) fn cnf_number(name: &str) -> i64 {
     var_value("luatex", name).and_then(|v| v.parse().ok()).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::simple_words;
+
+    #[test]
+    fn internal_commands_need_only_word_splitting() {
+        let words = |command: &str| simple_words(command).map(|words| words.join("|"));
+        // `shell_cmd_is_allowed` quotes every argument.
+        assert_eq!(words("makeindex '-s' 'my style.ist' 'doc.idx'").as_deref(), Some("makeindex|-s|my style.ist|doc.idx"));
+        assert_eq!(words("makeindex  doc.idx ").as_deref(), Some("makeindex|doc.idx"));
+        assert_eq!(words(r#"makeindex "a\"b" c\ d"#).as_deref(), Some(r#"makeindex|a"b|c d"#));
+        for shell in ["makeindex a.idx > log", "makeindex a.idx; rm x", "makeindex $HOME/a", "makeindex *.idx", "A=1 makeindex", "makeindex 'a"] {
+            assert_eq!(words(shell), None, "{shell}");
+        }
+    }
 }

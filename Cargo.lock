@@ -1269,6 +1269,7 @@ dependencies = [
  "tex-bibtex",
  "tex-core",
  "tex-kpse",
+ "tex-makeindex",
  "tex-ps",
 ]
 
@@ -1321,6 +1322,10 @@ dependencies = [
  "libloading",
  "tokio",
 ]
+
+[[package]]
+name = "tex-makeindex"
+version = "0.7.2"
 
 [[package]]
 name = "tex-mplib"

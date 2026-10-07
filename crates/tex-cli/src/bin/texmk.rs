@@ -14,6 +14,8 @@
 
 #[path = "../bibtex/mod.rs"]
 mod embedded_bibtex;
+#[path = "../index/mod.rs"]
+mod embedded_index;
 #[path = "pdflatex.rs"]
 mod embedded_engine;
 #[path = "latexdiff.rs"]
@@ -38,6 +40,7 @@ const CACHE_GC_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const TEXMK_CACHE_HIT_MARKER_ENV: &str = "TEX_RS_CACHE_HIT_MARKER";
 const TEXMK_PUBLISHED_OUTPUT_ENV: &str = "TEX_RS_TEXMK_PUBLISHED_OUTPUT";
 const TEXMK_WATCH_DEPENDENCIES_ENV: &str = "TEX_RS_TEXMK_WATCH_DEPENDENCIES";
+const TEXMK_FONT_CACHE_ENV: &str = "TEX_RS_TEXMK_FONT_CACHE";
 const TEXMK_INTERNAL_MODE_ENV: &str = "TEXMK_INTERNAL_MODE";
 const HERMETIC_ENV: &str = "TEX_RS_HERMETIC";
 const AUX_GRAPH_MAX_DEPTH: usize = 32;
@@ -52,6 +55,8 @@ const MANIFEST_MAX_BYTES: u64 = 4 * 1024 * 1024;
 const TOOL_OUTPUT_MAX_BYTES_PER_STREAM: usize = 1024 * 1024;
 const TOOL_OUTPUT_HEAD_BYTES: usize = 128 * 1024;
 const IO_BUFFER_BYTES: usize = 64 * 1024;
+/// The .aux latexmk writes before the first run of a build (set_trivial_aux_fdb).
+const TRIVIAL_AUX: &str = "\\relax \n\\gdef \\@abspage@last{1}\n";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CleanMode {
@@ -436,6 +441,9 @@ struct Manifest {
     aux_files: BTreeMap<PathBuf, u64>,
     bibliography_signature: Option<u64>,
     bibliography_output_hash: Option<u64>,
+    /// Per formatted index (`.ind`, named relative to the auxiliary
+    /// directory): the signature of the makeindex run that wrote it.
+    indexes: BTreeMap<PathBuf, u64>,
 }
 
 fn read_to_string_bounded(path: &Path, max_bytes: u64) -> std::io::Result<Option<String>> {
@@ -460,7 +468,7 @@ fn read_manifest(path: &Path) -> Option<Manifest> {
     let mut lines = text.lines();
     if !matches!(
         lines.next()?,
-        "TEXMK-CACHE-1" | "TEXMK-CACHE-2" | "TEXMK-CACHE-3" | "TEXMK-CACHE-4"
+        "TEXMK-CACHE-1" | "TEXMK-CACHE-2" | "TEXMK-CACHE-3" | "TEXMK-CACHE-4" | "TEXMK-CACHE-5"
     ) {
         return None;
     }
@@ -506,6 +514,11 @@ fn read_manifest(path: &Path) -> Option<Manifest> {
                     "-" => None,
                     value => Some(value.parse().ok()?),
                 };
+            }
+            "index" => {
+                let file = PathBuf::from(hex_decode(fields.next()?)?);
+                let signature = fields.next()?.parse().ok()?;
+                manifest.indexes.insert(file, signature);
             }
             _ => return None,
         }
@@ -630,7 +643,7 @@ fn take_cache_hit_marker(path: &Path) -> bool {
 }
 
 fn write_manifest(path: &Path, manifest: &Manifest) -> std::io::Result<()> {
-    let mut text = String::from("TEXMK-CACHE-4\n");
+    let mut text = String::from("TEXMK-CACHE-5\n");
     text.push_str(&format!("identity\t{}\n", hex_encode(&manifest.identity)));
     text.push_str(&format!(
         "pdf\t{}\t{}\t{}\n",
@@ -676,6 +689,12 @@ fn write_manifest(path: &Path, manifest: &Manifest) -> std::io::Result<()> {
             .map(|value| value.to_string())
             .unwrap_or_else(|| "-".to_string())
     ));
+    for (file, signature) in &manifest.indexes {
+        text.push_str(&format!(
+            "index\t{}\t{signature}\n",
+            hex_encode(&file.to_string_lossy())
+        ));
+    }
     if text.len() as u64 > MANIFEST_MAX_BYTES {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -910,7 +929,7 @@ fn same_file(_left: &Path, _right: &Path) -> bool {
 fn ignored_state_file(path: &Path) -> bool {
     matches!(
         path.extension().and_then(OsStr::to_str),
-        Some("log" | "blg" | "depcache" | "pdf" | "fls")
+        Some("log" | "blg" | "ilg" | "depcache" | "pdf" | "fls")
     ) || path
         .file_name()
         .and_then(OsStr::to_str)
@@ -2953,6 +2972,56 @@ fn run_bibtex(aux_stem: &Path, source_dir: &Path, silent: bool) -> i32 {
     }
 }
 
+/// Runs the embedded makeindex for each index the last pass announced, as
+/// latexmk does: when its input (or style) changed since the run that wrote
+/// its output, or the output is missing. An output rewritten since (by
+/// imakeidx running makeindex itself) is left alone. Returns the number of
+/// runs, or makeindex's exit status when one fails.
+fn run_index_tools(
+    manifest: &mut Manifest,
+    aux_dir: &Path,
+    source_dir: &Path,
+    log_path: &Path,
+    silent: bool,
+    recorded: &std::cell::RefCell<BTreeSet<PathBuf>>,
+) -> Result<u32, i32> {
+    let Ok(log) = std::fs::read(log_path) else {
+        return Ok(0);
+    };
+    let log = String::from_utf8_lossy(&log);
+    if !log.contains("Writing index file") {
+        return Ok(0);
+    }
+    let mut runs = 0;
+    for job in embedded_index::plan(&log, aux_dir) {
+        let signature = stable_hash(&embedded_index::signature_input(&job, source_dir));
+        let key = job.ind.strip_prefix(aux_dir).unwrap_or(&job.ind).to_path_buf();
+        if job.ind.is_file() && manifest.indexes.get(&key) == Some(&signature) {
+            continue;
+        }
+        if !silent {
+            eprintln!("texmk: makeindex {}", job.idx.display());
+        }
+        let _ = std::fs::remove_file(&job.ind);
+        if let Err(status) = embedded_index::run(&job, source_dir) {
+            manifest.indexes.remove(&key);
+            eprintln!("texmk: makeindex failed on {}", job.idx.display());
+            return Err(status);
+        }
+        if regular_file_hash(&job.ind).is_none() {
+            manifest.indexes.remove(&key);
+            eprintln!("texmk: makeindex wrote no output file {}", job.ind.display());
+            return Err(1);
+        }
+        manifest.indexes.insert(key.clone(), signature);
+        let mut recorded = recorded.borrow_mut();
+        recorded.insert(key.clone());
+        recorded.insert(key.with_extension("ilg"));
+        runs += 1;
+    }
+    Ok(runs)
+}
+
 /// epstopdf's name for the conversion of an EPS figure.
 fn eps_converted_path(eps: &Path) -> PathBuf {
     let stem = eps.file_stem().unwrap_or_default().to_string_lossy();
@@ -3346,6 +3415,10 @@ fn build(opt: &Options, info: &mut BuildInfo) -> i32 {
     // The engine may omit this one future output from directory-membership
     // fingerprints. Direct reads and missing-file probes remain dependencies.
     let force_color = tex_core::diagnostics::color_enabled();
+    // The Lua font database (luaotfload names, font caches) is per machine, not
+    // per document: building it takes tens of seconds, so all jobs share it
+    // (and direct engine passes, which keep it in the same place).
+    let font_cache_dir = Some(requested_cache.join("texmf-var"));
     let mut engine_env = vec![
         (
             OsString::from(TEXMK_INTERNAL_MODE_ENV),
@@ -3368,6 +3441,12 @@ fn build(opt: &Options, info: &mut BuildInfo) -> i32 {
             OsString::from(if force_color { "1" } else { "0" }),
         ),
     ];
+    if let Some(dir) = font_cache_dir.filter(|dir| std::fs::create_dir_all(dir).is_ok()) {
+        engine_env.push((
+            OsString::from(TEXMK_FONT_CACHE_ENV),
+            dir.into_os_string(),
+        ));
+    }
     // Watch mode also wants the font files and failed lookups, which the
     // recorder (kept in web2c's format) does not list. The file lives with the
     // engine cache, which is neither snapshotted nor exported.
@@ -3438,6 +3517,7 @@ fn build(opt: &Options, info: &mut BuildInfo) -> i32 {
     let mut bibtex_done = false;
     let mut bibtex_runs = 0u32;
     let mut biber_runs = 0u32;
+    let mut index_runs = 0u32;
     let mut passes = 0u32;
     let mut converged = false;
     let mut last_output = String::new();
@@ -3532,6 +3612,22 @@ fn build(opt: &Options, info: &mut BuildInfo) -> i32 {
         manifest.bibliography_output_hash = None;
     }
 
+    // As latexmk's set_trivial_aux_fdb does, start a build without an .aux
+    // from the one a one-page document without cross-references writes. The
+    // first pass reads it as TeX Live's first pass under latexmk does, and a
+    // document that rewrites it unchanged has converged after one pass; any
+    // other first-pass .aux needs a second pass, as under latexmk.
+    let started_from_trivial_aux = !aux_path.exists();
+    if started_from_trivial_aux {
+        if let Err(error) = std::fs::write(&aux_path, TRIVIAL_AUX) {
+            eprintln!(
+                "texmk: cannot write initial auxiliary file {}: {error}",
+                aux_path.display()
+            );
+            retain_requested(&retention, &mut manifest);
+            return 1;
+        }
+    }
     while passes < MAX_PASSES {
         passes += 1;
         let snap_before = match strict_state_snapshot(&aux_dir) {
@@ -3648,6 +3744,20 @@ fn build(opt: &Options, info: &mut BuildInfo) -> i32 {
             signals.merge(log_signals);
         }
         last_output = output;
+        match run_index_tools(
+            &mut manifest,
+            &aux_dir,
+            &source_dir,
+            &log_path,
+            opt.silent,
+            &recorded_outputs,
+        ) {
+            Ok(runs) => index_runs += runs,
+            Err(status) => {
+                retain_requested(&retention, &mut manifest);
+                return status;
+            }
+        }
         let aux_graph = read_aux_graph(&aux_path, &aux_dir, &source_dir);
         if !aux_graph_warning_emitted {
             if let Some(issue) = &aux_graph.issue {
@@ -3774,7 +3884,7 @@ fn build(opt: &Options, info: &mut BuildInfo) -> i32 {
         // typeset again.
         let is_stable = !files_changed
             || (passes == 1
-                && !snap_before.is_empty()
+                && !started_from_trivial_aux
                 && is_trivially_converged_first_pass(&aux_dir, &snap_after, &sig, need_bibtex));
         if is_stable {
             if !opt.silent {
@@ -3883,6 +3993,9 @@ fn build(opt: &Options, info: &mut BuildInfo) -> i32 {
     }
     if biber_runs > 0 {
         bib_note.push_str(&format!(", {biber_runs} biber run(s)"));
+    }
+    if index_runs > 0 {
+        bib_note.push_str(&format!(", {index_runs} makeindex run(s)"));
     }
     // As latexmk does, a PDF produced despite TeX errors (recovered in an
     // explicitly requested nonstop/batch mode) is published, but the build
@@ -4219,6 +4332,15 @@ fn run_embedded_bibtex() -> ! {
     std::process::exit(embedded_bibtex::run(&args, "1.0"));
 }
 
+fn run_embedded_makeindex() -> ! {
+    enable_embedded_resources_by_default();
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let cwd = Path::new(".");
+    let tree = |name: &str| embedded_index::tree::style(cwd, name);
+    let host = tex_makeindex::DirHost { work_dir: cwd, output_dir: None, tree: &tree, stdin: true };
+    std::process::exit(tex_makeindex::run_cli(&args, &host));
+}
+
 fn run_embedded_biber() -> ! {
     enable_embedded_resources_by_default();
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
@@ -4257,6 +4379,7 @@ pub(crate) fn main() {
         "lualatex" => run_embedded_engine("lualatex"),
         "bibtex" | "tex-bibtex" => run_embedded_bibtex(),
         "biber" => run_embedded_biber(),
+        "makeindex" => run_embedded_makeindex(),
         "latexdiff" => {
             let diff_args = if args.len() > 1 { &args[1..] } else { &[] };
             std::process::exit(latexdiff::latexdiff_main(diff_args));

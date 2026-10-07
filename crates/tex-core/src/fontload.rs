@@ -117,6 +117,10 @@ pub struct FontLoader {
     /// Search roots or subtrees which were not directories during lookup.
     /// Their later creation can expose files at otherwise unenumerable paths.
     pub dependency_missing_directories: Vec<std::path::PathBuf>,
+    /// Directories whose existence a Lua script depended on.
+    pub dependency_present_directories: Vec<std::path::PathBuf>,
+    /// Environment variables a Lua script read, with their values (`None`: unset).
+    pub dependency_environment: Vec<(String, Option<std::ffi::OsString>)>,
     /// False when an I/O error prevented a complete dependency snapshot.
     pub dependency_tracking_complete: bool,
 }
@@ -158,6 +162,8 @@ impl FontLoader {
             dependency_file_digests: Vec::new(),
             dependency_missing_files: Vec::new(),
             dependency_missing_directories: Vec::new(),
+            dependency_present_directories: Vec::new(),
+            dependency_environment: Vec::new(),
             dependency_tracking_complete: true,
         }
     }
@@ -521,6 +527,17 @@ impl FontLoader {
         let rc = Rc::new(prog);
         self.program_cache.insert(key, rc.clone());
         Ok(rc)
+    }
+
+    /// The `SlantFont` and `ExtendFont` of the font's map entry in thousandths
+    /// (`fm_slant`, `fm_extend`), found the way `program_for_font` finds the
+    /// entry.
+    pub fn map_transform_millis(&mut self, font: &crate::tfm::Font) -> (i32, i32) {
+        self.ensure_map();
+        self.map
+            .get(&font.tfm_name)
+            .or_else(|| font.map_fontname.as_ref().and_then(|m| self.map.get(m)))
+            .map_or((0, 0), |entry| (entry.slant_millis(), entry.extend_millis()))
     }
 
     /// Resolve the actual font program for any Font (native or classic mapped).

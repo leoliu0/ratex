@@ -196,6 +196,8 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
             };
         }
         let meta = if follow { fs::metadata(&p) } else { fs::symlink_metadata(&p) };
+        let kind = meta.as_ref().ok().map(|meta| mode_name(meta.file_type()));
+        let _ = crate::lua_bridge::with_engine(|e| e.lua_dep_stat(&p, kind));
         match meta {
             Ok(meta) => (
                 Some(LuaBytes(mode_name(meta.file_type()).as_bytes().to_vec())),
@@ -211,6 +213,7 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
         }
     });
     sys_reg!(lua, s, "lfs_readlink", |path: LuaString| -> Tri<LuaBytes> {
+        let _ = crate::lua_bridge::with_engine(|e| e.lua_untracked("lfs.readlink"));
         match fs::read_link(path_of(&bytes_of(&path))) {
             Ok(target) => (Some(LuaBytes(path_bytes(&target))), None, None),
             Err(e) => failure(&e, None),
@@ -222,6 +225,7 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
             return failure_errno(EROFS);
         }
         let p = path_of(&bytes);
+        let _ = crate::lua_bridge::with_engine(|e| e.lua_dep_mutation(&p, "lfs.mkdir"));
         #[cfg(unix)]
         let result = {
             use std::os::unix::fs::DirBuilderExt;
@@ -232,10 +236,13 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
         done(result)
     });
     sys_reg!(lua, s, "lfs_rmdir", |path: LuaString| -> Tri<bool> {
-        done(fs::remove_dir(path_of(&bytes_of(&path))))
+        let p = path_of(&bytes_of(&path));
+        let _ = crate::lua_bridge::with_engine(|e| e.lua_dep_mutation(&p, "lfs.rmdir"));
+        done(fs::remove_dir(p))
     });
     sys_reg!(lua, s, "lfs_chdir", |path: LuaString| -> (bool, Option<LuaBytes>) {
         let bytes = bytes_of(&path);
+        let _ = crate::lua_bridge::with_engine(|e| e.lua_untracked("lfs.chdir"));
         match std::env::set_current_dir(path_of(&bytes)) {
             Ok(()) => (true, None),
             Err(e) => {
@@ -254,6 +261,7 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
     });
     sys_reg!(lua, s, "lfs_link", |old: LuaString, new: LuaString, symbolic: bool| -> Tri<i64> {
         let (old, new) = (path_of(&bytes_of(&old)), path_of(&bytes_of(&new)));
+        let _ = crate::lua_bridge::with_engine(|e| e.lua_dep_mutation(&new, "lfs.link"));
         #[cfg(unix)]
         let result = if symbolic { std::os::unix::fs::symlink(&old, &new) } else { fs::hard_link(&old, &new) };
         #[cfg(not(unix))]
@@ -268,6 +276,7 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
     });
     sys_reg!(lua, s, "lfs_touch", |path: LuaString, times: bool, atime: f64, mtime: i64| -> Tri<bool> {
         let p = path_of(&bytes_of(&path));
+        let _ = crate::lua_bridge::with_engine(|e| e.lua_dep_mutation(&p, "lfs.touch"));
         #[cfg(unix)]
         {
             use std::os::unix::ffi::OsStrExt;
@@ -302,7 +311,9 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
                 None => Err(format!("cannot open {}: {}", text, strerror_no(ENOENT))),
             };
         }
-        match fs::read_dir(path_of(&bytes)) {
+        let listing = fs::read_dir(path_of(&bytes));
+        let _ = crate::lua_bridge::with_engine(|e| e.lua_dep_directory(&path_of(&bytes), listing.is_ok()));
+        match listing {
             Ok(entries) => Ok(DIRS.with(|d| {
                 let mut d = d.borrow_mut();
                 let entries = entries.flatten().map(|entry| os_bytes(&entry.file_name()));
@@ -341,6 +352,7 @@ pub(crate) fn register(lua: &mut Lua, s: &tex_lua::LuaTable) -> Result<(), Strin
     sys_reg!(lua, s, "lfs_lock_dir", |path: LuaString| -> Tri<LuaBytes> {
         let mut link = bytes_of(&path);
         link.extend_from_slice(b"/lockfile.lfs");
+        let _ = crate::lua_bridge::with_engine(|e| e.lua_dep_mutation(&path_of(&link), "lfs.lock_dir"));
         #[cfg(unix)]
         let result = std::os::unix::fs::symlink("lock", path_of(&link));
         #[cfg(not(unix))]

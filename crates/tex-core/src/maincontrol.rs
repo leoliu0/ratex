@@ -282,7 +282,7 @@ impl Engine {
             Copy => {
                 let idx = self.scan_reg_num();
 
-                let b = self.eqtb.boxed[idx as usize].clone();
+                let b = self.copy_box_register(idx);
                 self.append_box_node(b);
             }
             UnHBox => {
@@ -373,14 +373,14 @@ impl Engine {
                     let max = if self.engine_kind == crate::engine::EngineKind::PdfTeX { 255 } else { 1114111 };
                     self.error_at(
                         &format!("Character code {c} is out of range for \\catcode; expected 0 through {max}; assignment ignored"),
-                        character_source,
+                        character_source.map(|mark| mark.to_context()),
                     );
                 } else if !(0..=15).contains(&v) {
                     self.error_at(
                         &format!(
                             "Category code {v} is out of range; expected 0 through 15; assignment ignored"
                         ),
-                        value_source,
+                        value_source.map(|mark| mark.to_context()),
                     );
                 } else {
                     self.eqtb.assign_cat_code(character.unwrap(), v as u8, g);
@@ -407,14 +407,14 @@ impl Engine {
                     let max = if self.engine_kind == crate::engine::EngineKind::PdfTeX { 255 } else { 1114111 };
                     self.error_at(
                         &format!("Character code {c} is out of range for \\mathcode; expected 0 through {max}; assignment ignored"),
-                        character_source,
+                        character_source.map(|mark| mark.to_context()),
                     );
                 } else if !(0..=32768).contains(&v) {
                     self.error_at(
                         &format!(
                             "Math code {v} is out of range; expected 0 through 32768; assignment ignored"
                         ),
-                        value_source,
+                        value_source.map(|mark| mark.to_context()),
                     );
                 } else {
                     self.eqtb
@@ -431,14 +431,14 @@ impl Engine {
                     let max = if self.engine_kind == crate::engine::EngineKind::PdfTeX { 255 } else { 1114111 };
                     self.error_at(
                         &format!("Character code {c} is out of range for \\delcode; expected 0 through {max}; assignment ignored"),
-                        character_source,
+                        character_source.map(|mark| mark.to_context()),
                     );
                 } else if !(-1..=0xFF_FFFF).contains(&v) {
                     self.error_at(
                         &format!(
                             "Delimiter code {v} is out of range; expected -1 through 16777215; assignment ignored"
                         ),
-                        value_source,
+                        value_source.map(|mark| mark.to_context()),
                     );
                 } else {
                     self.eqtb
@@ -457,12 +457,12 @@ impl Engine {
                 if character.is_none() {
                     self.error_at(
                         &format!("Invalid character code for {command}; assignment ignored"),
-                        character_source,
+                        character_source.map(|mark| mark.to_context()),
                     );
                 } else if value.is_none() {
                     self.error_at(
                         &format!("Invalid case-mapping value for {command}; assignment ignored"),
-                        value_source,
+                        value_source.map(|mark| mark.to_context()),
                     );
                 } else {
                     self.eqtb.assign_case_code(
@@ -483,14 +483,14 @@ impl Engine {
                     let max = if self.engine_kind == crate::engine::EngineKind::PdfTeX { 255 } else { 1114111 };
                     self.error_at(
                         &format!("Character code {c} is out of range for \\sfcode; expected 0 through {max}; assignment ignored"),
-                        character_source,
+                        character_source.map(|mark| mark.to_context()),
                     );
                 } else if !(0..=32767).contains(&v) {
                     self.error_at(
                         &format!(
                             "Space-factor code {v} is out of range; expected 0 through 32767; assignment ignored"
                         ),
-                        value_source,
+                        value_source.map(|mark| mark.to_context()),
                     );
                 } else {
                     self.eqtb
@@ -796,6 +796,7 @@ impl Engine {
             }
             Char => {
                 let (value, source) = self.scan_int_with_source();
+                let source = source.map(|mark| mark.to_context());
                 let xetex = self.engine_kind == crate::engine::EngineKind::XeTeX;
                 // xetex.web: `hmode+char_num` scans a USV, `mmode+char_num`
                 // a 16-bit character number
@@ -938,7 +939,7 @@ impl Engine {
                         &format!(
                             "Math character code {value} is out of range for \\mathchar; expected 0 through 32767 and used 0"
                         ),
-                        source,
+                        source.map(|mark| mark.to_context()),
                     );
                     0
                 };
@@ -967,7 +968,7 @@ impl Engine {
                         &format!(
                             "Math character code {value} is out of range for \\mathaccent; expected 0 through 32767 and used 0"
                         ),
-                        source,
+                        source.map(|mark| mark.to_context()),
                     );
                     0
                 };
@@ -996,7 +997,7 @@ impl Engine {
                         &format!(
                             "Delimiter code {value} is out of range for \\radical; expected 0 through 134217727 and used 0"
                         ),
-                        source,
+                        source.map(|mark| mark.to_context()),
                     );
                     0
                 };
@@ -1344,7 +1345,7 @@ impl Engine {
                         &format!(
                             "Undefined PDF form object {id} in \\pdfrefxform; reference omitted"
                         ),
-                        source,
+                        source.map(|mark| mark.to_context()),
                     );
                     return;
                 };
@@ -1366,7 +1367,7 @@ impl Engine {
                         &format!(
                             "Undefined PDF image object {id} in \\pdfrefximage; reference omitted"
                         ),
-                        source,
+                        source.map(|mark| mark.to_context()),
                     );
                     return;
                 };
@@ -1811,7 +1812,7 @@ impl Engine {
                 if let Some(message) = message {
                     // pdftex.web: `pdf_retval := -1 {signal the problem}`
                     self.pdf_retval = -1;
-                    self.error_at(&message, source.clone());
+                    self.error_at(&message, source.as_ref().map(|mark| mark.to_context()));
                     omit_requested_obj = true;
                 }
             }
@@ -2266,7 +2267,6 @@ impl Engine {
                     base14_fonts: &mut doc.imported_base14_fonts,
                     fonts: &mut fonts,
                     imported_fonts: &mut doc.imported_fonts,
-                    font_init_order: self.pdf_backend.initialized_fonts(),
                 };
                 let source = match doc.pdf_sources.entry(path.to_string_lossy().into_owned()) {
                     std::collections::hash_map::Entry::Occupied(entry) => Ok(entry.into_mut()),

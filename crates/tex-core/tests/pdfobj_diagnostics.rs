@@ -106,7 +106,6 @@ fn pdf_xref_with_leading_newline_is_repaired_and_loads_successfully() {
                     base14_fonts: &mut standard_fonts,
                     fonts: &mut tex_core::pdf_images::NoFonts,
                     imported_fonts: &mut imported_fonts,
-                    font_init_order: 0,
                 },
             )
         });

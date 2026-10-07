@@ -490,6 +490,37 @@ fn ctex_documents_run_under_xetex_with_the_bundled_fandol_fonts() {
 }
 
 #[test]
+fn polyglossia_greek_runs_under_xetex_with_the_bundled_cm_unicode_fonts() {
+    // TeX Live 2026 xelatex finds the cm-unicode files that polyglossia
+    // documents name, embeds CMUSerif-Roman, CMUSerif-Bold and CMUSansSerif,
+    // and extracts as "Η αποδοτική κατανομή. Τέλος Effect".
+    let s = session(
+        r"\documentclass{article}
+\usepackage{fontspec}
+\setmainfont{cmunrm.otf}[BoldFont=cmunbx.otf]
+\setsansfont{cmunss.otf}
+\usepackage{polyglossia}
+\setmainlanguage{greek}
+\newfontfamily\greekfont{cmunrm.otf}[BoldFont=cmunbx.otf]
+\begin{document}
+Η αποδοτική κατανομή. \textbf{Τέλος} \textsf{Effect}
+\end{document}",
+    );
+    let r = s.compile("main.tex");
+    assert_eq!(r.status, Status::Success, "{}\n{}", r.diagnostics, r.log);
+    assert_eq!(r.selected_engine, EngineKind::XeTeX);
+    let mut pdf = lopdf::Document::load_mem(&r.pdf).unwrap();
+    let fonts = embedded_font_names(&pdf);
+    for name in ["CMUSerif-Roman", "CMUSerif-Bold", "CMUSansSerif"] {
+        assert!(fonts.iter().any(|f| f == name), "{name}: {fonts:?}");
+    }
+    let text = native_text(&mut pdf);
+    for word in ["αποδοτική", "Τέλος", "Effect"] {
+        assert!(text.contains(word), "{word}: {text}");
+    }
+}
+
+#[test]
 fn luatex_engine_compilation_succeeds() {
     let s = session(HELLO);
     let mut request = CompileRequest::new("main.tex");
@@ -498,4 +529,31 @@ fn luatex_engine_compilation_succeeds() {
     assert_eq!(result.status, Status::Success, "{}", result.diagnostics);
     assert_eq!(result.selected_engine, EngineKind::LuaTeX);
     assert!(!result.pdf.is_empty());
+}
+
+/// `\mathscr` from rsfso is the virtual font rsfso10 over rrsfso10, whose
+/// map entry is `rsfs10 " -.4 SlantFont "`. TeX Live (pdfTeX) embeds the
+/// rsfs10 program as `/FontName /<tag>+rsfs10-Slant_-400` with the slant
+/// folded into its `/FontMatrix` (`[0.001 0 -0.0004 0.001 0 0]`).
+#[test]
+fn rsfso_virtual_font_embeds_the_slanted_rsfs_program() {
+    let s = session(
+        r"\documentclass{article}
+\usepackage[scr]{rsfso}
+\begin{document}
+$\mathscr{M}_{x}$
+\end{document}",
+    );
+    let r = s.compile("main.tex");
+    assert_eq!(r.status, Status::Success, "{}\n{}", r.diagnostics, r.log);
+    let pdf = lopdf::Document::load_mem(&r.pdf).unwrap();
+    let fonts = embedded_font_names(&pdf);
+    assert!(fonts.iter().any(|f| f == "rsfs10-Slant_-400"), "{fonts:?}");
+    let slanted = pdf.objects.values().any(|object| {
+        let lopdf::Object::Stream(stream) = object else { return false };
+        let Ok(data) = stream.decompressed_content() else { return false };
+        data.windows(37)
+            .any(|w| w == b"/FontMatrix [0.001 0 -0.0004 0.001 0 ")
+    });
+    assert!(slanted, "no slanted /FontMatrix in an embedded program");
 }

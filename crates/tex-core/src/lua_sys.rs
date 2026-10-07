@@ -139,9 +139,10 @@ pub(crate) fn strerror_no(errno: i32) -> String {
     }
 }
 
-/// How much of the system the Lua libraries may reach, as set by
-/// `--shell-escape`/`--no-shell-escape`/`shell_escape=p` in LuaTeX
-/// (`shellenabledp`/`restrictedshell`).
+/// How much of the system `\write18` and the Lua libraries may reach, as set
+/// by `-shell-escape`/`-no-shell-escape`/`-shell-restricted` and
+/// `shell_escape=p` (`shellenabledp`/`restrictedshell`). Like TeX Live's
+/// `texmf.cnf`, the default is `Restricted`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShellEscape {
     /// `status.shell_escape == 0`: no command execution at all.
@@ -153,9 +154,10 @@ pub enum ShellEscape {
 }
 
 thread_local! {
-    static SHELL: std::cell::Cell<ShellEscape> = const { std::cell::Cell::new(ShellEscape::Disabled) };
+    static SHELL: std::cell::Cell<ShellEscape> = const { std::cell::Cell::new(ShellEscape::Restricted) };
     static SAFER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static CACHE_DIR: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+    static FONT_CACHE_DIR: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Use `dir` as the per-user cache root (`-cache-directory`) instead of
@@ -166,13 +168,26 @@ pub fn set_cache_dir(dir: PathBuf) {
     CACHE_DIR.with(|d| *d.borrow_mut() = Some(dir));
 }
 
+/// Use `dir` as `$TEXMFVAR` (the Lua font loader's name database and font
+/// caches) instead of `<cache root>/texmf-var`. The build driver shares one
+/// such directory between all its jobs, so the font database is built once.
+pub fn set_font_cache_dir(dir: PathBuf) {
+    FONT_CACHE_DIR.with(|d| *d.borrow_mut() = Some(dir));
+}
+
+pub(crate) fn font_cache_dir() -> PathBuf {
+    FONT_CACHE_DIR
+        .with(|d| d.borrow().clone())
+        .unwrap_or_else(|| cache_dir().join("texmf-var"))
+}
+
 pub(crate) fn cache_dir() -> PathBuf {
     CACHE_DIR
         .with(|d| d.borrow().clone())
         .unwrap_or_else(tex_kpse::platform_cache_dir)
 }
 
-/// Set the shell-escape policy of Lua's `os.execute`/`os.exec`/`os.spawn`/
+/// Set the shell-escape policy of `\write18`, `\pdfshellescape`, Lua's `os.execute`/`os.exec`/`os.spawn`/
 /// `io.popen`, `status.shell_escape` and `kpse.check_permission`.
 pub fn set_shell_escape(mode: ShellEscape) {
     SHELL.with(|s| s.set(mode));
@@ -180,6 +195,16 @@ pub fn set_shell_escape(mode: ShellEscape) {
 
 pub(crate) fn shell_escape() -> ShellEscape {
     SHELL.with(|s| s.get())
+}
+
+/// `\pdfshellescape`/`\shellescape` and `status.shell_escape`: 0 disabled,
+/// 1 enabled, 2 restricted.
+pub(crate) fn shell_escape_status() -> i32 {
+    match shell_escape() {
+        ShellEscape::Disabled => 0,
+        ShellEscape::Enabled => 1,
+        ShellEscape::Restricted => 2,
+    }
 }
 
 /// LuaTeX's `--safer` option (`status.safer_option`).
@@ -258,6 +283,7 @@ fn register_handles(lua: &mut Lua, sys: &LuaTable) -> Result<(), String> {
 /// Install every system library into a Lua state whose standard libraries
 /// and TeX bridge are open.
 pub(crate) fn install(lua: &mut Lua) -> Result<(), String> {
+    crate::lua_deps::install_observer();
     let sys: LuaTable = lua.create_table().map_err(|e| format!("{e:?}"))?;
     register_handles(lua, &sys)?;
     crate::lua_sys_embedded::register(lua, &sys)?;

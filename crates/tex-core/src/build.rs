@@ -28,6 +28,7 @@ pub(crate) enum LigKernOp {
 
 /// tex.web §1039/§909: the instruction of `cur_l`'s lig/kern program (None:
 /// the font's left boundary program) whose next char is `cur_r`.
+#[inline]
 pub(crate) fn lig_kern_step(font: &Font, cur_l: Option<u8>, cur_r: u8) -> Option<LigKernOp> {
     let prog = &font.lig_kern;
     let mut k = match cur_l {
@@ -206,8 +207,12 @@ impl Engine {
                 g.width += fd(6).unwrap_or_else(|| font.extra_space());
             }
         }
-        g.stretch = crate::scaled::xn_over_d(g.stretch, sf as i32, 1000);
-        g.shrink = crate::scaled::xn_over_d(g.shrink, 1000, sf as i32);
+        // xn_over_d(x, 1000, 1000) is x: skip the divisions at the
+        // ordinary space factor
+        if sf != 1000 {
+            g.stretch = crate::scaled::xn_over_d(g.stretch, sf as i32, 1000);
+            g.shrink = crate::scaled::xn_over_d(g.shrink, 1000, sf as i32);
+        }
         // luatex run_app_space / app_space: every text space is typed
         // `spaceskip` (`space_skip_code + 1`)
         if self.engine_kind == crate::engine::EngineKind::LuaTeX {
@@ -219,7 +224,10 @@ impl Engine {
     /// tex.web ex_space (control space `\ `): append_normal_space — plain
     /// interword glue of the current font (or \spaceskip as-is when set),
     /// WITHOUT space-factor scaling of stretch/shrink and without
-    /// \fontdimen7 extra space. \spacefactor is left unchanged.
+    /// \fontdimen7 extra space. \spacefactor is left unchanged. Math mode
+    /// takes the same `goto append_normal_space` (tex.web §1045), so the
+    /// glue lands on the math list built from the same \spaceskip/current
+    /// \fontdimen values as in horizontal mode.
     pub fn ex_space(&mut self) {
         self.flush_native_text();
         self.end_char_chain();
@@ -235,41 +243,44 @@ impl Engine {
         }
         match self.mode {
             Mode::Horizontal | Mode::RestrictedHorizontal => {
-                let ss = self.eqtb.glue_params[GlueParam::SpaceSkip.idx() as usize];
-                let g = if !ss.is_zero() {
-                    ss.param(glue_subtype::SPACE_SKIP)
-                } else {
-                    let f = self.eqtb.cur_font_val;
-                    let fp = self.eqtb.font_params.get(f as usize);
-                    let fd = |i: usize| -> Option<i32> { fp.and_then(|v| v.get(i).copied()) };
-                    match self.eqtb.fonts.get(f as usize) {
-                        Some(font) => Glue::spec(
-                            fd(1).unwrap_or_else(|| font.space()),
-                            fd(2).unwrap_or_else(|| font.space_stretch()),
-                            0,
-                            fd(3).unwrap_or_else(|| font.space_shrink()),
-                            0,
-                        ),
-                        None => Glue::zero(),
-                    }
-                };
-                let mut g = g;
-                if self.engine_kind == crate::engine::EngineKind::LuaTeX {
-                    g.subtype = glue_subtype::SPACE_SKIP;
-                }
+                let g = self.normal_space_glue();
                 self.cur_list.push(Node::Glue(g, self.eqtb.cur_attr));
             }
             Mode::Math | Mode::DisplayMath => {
-                // tex.web mmode+ex_space: goto append_normal_space — a plain
-                // space glue lands on the math list.
-                let f = self.eqtb.cur_font_val;
-                if let Some(font) = self.eqtb.fonts.get(f as usize) {
-                    let g = Glue::spec(font.space(), font.space_stretch(), 0, font.space_shrink(), 0);
-                    self.append_mlist_node(Node::Glue(g, self.eqtb.cur_attr));
-                }
+                let g = self.normal_space_glue();
+                self.append_mlist_node(Node::Glue(g, self.eqtb.cur_attr));
             }
             Mode::Vertical | Mode::InternalVertical => {}
         }
+    }
+
+    /// tex.web append_normal_space (§1041): \spaceskip as a parameter glue
+    /// when nonzero, else the current font's space glue read from the
+    /// mutable \fontdimen overlay (TeX's `font_glue`, which a \fontdimen2-4
+    /// assignment resets).
+    fn normal_space_glue(&self) -> Glue {
+        let ss = self.eqtb.glue_params[GlueParam::SpaceSkip.idx() as usize];
+        let mut g = if !ss.is_zero() {
+            ss.param(glue_subtype::SPACE_SKIP)
+        } else {
+            let f = self.eqtb.cur_font_val;
+            let fp = self.eqtb.font_params.get(f as usize);
+            let fd = |i: usize| -> Option<i32> { fp.and_then(|v| v.get(i).copied()) };
+            match self.eqtb.fonts.get(f as usize) {
+                Some(font) => Glue::spec(
+                    fd(1).unwrap_or_else(|| font.space()),
+                    fd(2).unwrap_or_else(|| font.space_stretch()),
+                    0,
+                    fd(3).unwrap_or_else(|| font.space_shrink()),
+                    0,
+                ),
+                None => Glue::zero(),
+            }
+        };
+        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
+            g.subtype = glue_subtype::SPACE_SKIP;
+        }
+        g
     }
 
     /// Whether the current font is a Lua font (its characters become
@@ -405,7 +416,12 @@ impl Engine {
     /// crosses 1000 upward: after an uppercase letter (sf=999) a period
     /// yields sf=1000, i.e. NO sentence boost after capitals.
     pub fn space_factor_of(&self, c: u32) -> i32 {
-        let main_s = i32::from(self.eqtb.space_factor_code(c));
+        // Codes below 256 live only in the byte table (the sparse map holds
+        // larger characters), so ordinary text skips the hash lookup.
+        let main_s = i32::from(match self.eqtb.sf_code.get(c as usize) {
+            Some(&code) if c < 256 => code,
+            _ => self.eqtb.space_factor_code(c),
+        });
         if main_s == 1000 {
             1000
         } else if main_s < 1000 {
@@ -591,7 +607,14 @@ impl Engine {
     pub fn vlist_append(&mut self, n: Node) {
         self.vlist_append_il(n, true);
     }
-    pub fn vlist_append_il(&mut self, mut n: Node, interline: bool) {
+    pub fn vlist_append_il(&mut self, n: Node, interline: bool) {
+        self.vlist_append_il_after(n, interline, Vec::new());
+    }
+
+    /// `vlist_append_il`, with `post` joining the contribution list right
+    /// after `n` and before the page builder runs (tex.web box_end appends
+    /// the migrated material before `build_page`).
+    fn vlist_append_il_after(&mut self, mut n: Node, interline: bool, post: Vec<Node>) {
         if self.mode == Mode::Vertical {
             // luatex append_to_vlist: `append_to_vlist_filter` supplies the
             // nodes (and `prev_depth`) instead of the interline glue
@@ -599,6 +622,9 @@ impl Engine {
                 match self.lua_append_to_vlist(n, "box", self.prev_depth) {
                     Ok((list, depth)) => {
                         for item in list {
+                            self.page_append(item);
+                        }
+                        for item in post {
                             self.page_append(item);
                         }
                         if let Some(d) = depth {
@@ -674,6 +700,9 @@ impl Engine {
                 _ => None,
             };
             self.page_append(n);
+            for item in post {
+                self.page_append(item);
+            }
             if trigger {
                 if let Some(info) = page_info {
                     self.lua_page_filter(info, true);
@@ -682,6 +711,7 @@ impl Engine {
             }
         } else {
             self.cur_list.push(n);
+            self.cur_list.extend(post);
         }
     }
 
@@ -729,6 +759,9 @@ impl Engine {
     pub fn append_char(&mut self, c: u8) {
         if self.engine_kind == crate::engine::EngineKind::LuaTeX {
             self.lua_note_text_language();
+        }
+        if self.append_chained_char(c) {
+            return;
         }
         // tex.web §1034: a character starting a chain in unrestricted
         // horizontal mode first checks the paragraph's language
@@ -788,6 +821,46 @@ impl Engine {
             }
         }
         self.append_char_lig(c, f);
+    }
+
+    /// The common step of the main loop (tex.web §1036-1040) inside a
+    /// character chain: the tail is the chain's last character or ligature
+    /// of the current font, `c` exists in it, and the program of the tail
+    /// gives nothing or a kern for `c`. Appends exactly what `lig_kern_run`
+    /// would; returns false (having changed nothing) when a ligature, a
+    /// trailing hyphen or any other case needs the general path.
+    #[inline]
+    fn append_chained_char(&mut self, c: u8) -> bool {
+        let f = self.eqtb.cur_font_val;
+        if self.native_text.lig_chain != Some(f) || self.native_text.suppress_left_boundary {
+            return false;
+        }
+        let cur_l = match self.cur_list.last() {
+            Some(Node::Char { c, font, .. } | Node::Ligature { c, font, .. }) if *font == f => *c,
+            _ => return false,
+        };
+        let Some(font) = self.eqtb.fonts.get(f as usize) else {
+            return false;
+        };
+        // An existing `c` is never the font's false boundary character.
+        if !font.char_present(c) {
+            return false;
+        }
+        let kern = match lig_kern_step(font, Some(cur_l), c) {
+            None => None,
+            Some(LigKernOp::Kern(w)) => Some(w),
+            Some(LigKernOp::Lig { .. }) => return false,
+        };
+        // wrapup of cur_l: an explicit hyphen leaves a discretionary
+        if self.mode == Mode::Horizontal && self.tail_ends_hyphen(f) {
+            return false;
+        }
+        let attr = self.eqtb.cur_attr;
+        if let Some(w) = kern {
+            self.cur_list.push(Node::Kern(w, attr));
+        }
+        self.cur_list.push(Node::Char { c, font: f, attr });
+        true
     }
 
     /// tex.web wrapup (§1035): when the last character consumed is the
@@ -1427,6 +1500,8 @@ impl Engine {
         match kind {
             0 => {
                 self.mode = Mode::RestrictedHorizontal;
+                // tex.web §1083: the new horizontal list starts at space_factor 1000
+                self.space_factor = 1000;
                 let toks = (*self.eqtb.tok_params
                     [crate::prim::ToksParam::EveryHBox.idx() as usize])
                     .clone();
@@ -1468,8 +1543,8 @@ impl Engine {
             .diagnostic_group_openings
             .iter()
             .rev()
-            .find(|(level, _)| *level == box_level)
-            .map(|(_, source)| source.clone());
+            .find(|opening| opening.level == box_level)
+            .map(|opening| opening.mark.clone());
         let kind = self.box_kinds.pop().unwrap_or(0);
         // packed lines join the vbox instead of being vpack-discarded
 
@@ -1590,6 +1665,26 @@ impl Engine {
             self.lua_pack_inner(kind, inner, target, box_max_depth, adjusted)
         } else {
             inner
+        };
+        // tex.web §1084/§1076: an \hbox that is appended to a vertical list
+        // (not \setbox, \shipout, a leader box or a box Lua asked for) is
+        // packed in an adjusted_hbox_group, so `hpack` moves its marks,
+        // insertions and \vadjust material out; `box_end` puts that material
+        // on the vertical list around the box.
+        let (inner, pre_adjust, post_adjust) = if kind == 0 && outer_mode.is_v() {
+            let depth = self.box_kinds.len();
+            let leaders = self.leader_stack.last().is_some_and(|&(_, d)| d == depth);
+            let shipout = self.shipout_pending && self.shipout_depth == depth;
+            let setbox = self.setbox_target.is_some() && self.setbox_depth == depth;
+            let scanned = self.lua_tex.scan_depth == Some(depth);
+            if leaders || shipout || setbox || scanned {
+                (inner, Vec::new(), Vec::new())
+            } else {
+                let (kept, post, pre) = boxes::split_adjust_material(inner);
+                (kept, pre, post)
+            }
+        } else {
+            (inner, Vec::new(), Vec::new())
         };
         // tex.web package(): vboxes are packed against the value of
         let pack = |list: Vec<Node>, target: Option<(i32, bool)>, k: u8| -> boxes::PackResult {
@@ -1723,12 +1818,31 @@ impl Engine {
         if kind == 8 && matches!(self.mode, Mode::Horizontal | Mode::RestrictedHorizontal) {
             self.cur_list.push(node);
         } else {
-            self.append_box_node(Some(node));
+            self.append_box_node_migrating(Some(node), pre_adjust, post_adjust);
         }
     }
 
     pub fn append_box_node(&mut self, b: Option<Node>) {
+        self.append_box_node_migrating(b, Vec::new(), Vec::new());
+    }
+
+    /// tex.web box_end for a box appended to a vertical list: `pre` (pdftex
+    /// `\vadjust pre`) goes in front of the box, `post` (marks, insertions
+    /// and `\vadjust` material that left the box in `hpack`) follows it.
+    fn append_box_node_migrating(&mut self, b: Option<Node>, pre: Vec<Node>, post: Vec<Node>) {
         self.flush_native_text();
+        if self.mode == Mode::Vertical && (!pre.is_empty() || !post.is_empty()) {
+            for n in pre {
+                self.page_append(n);
+            }
+            if let Some(node) = b {
+                self.vlist_append_il_after(node, true, post);
+            }
+            return;
+        }
+        if self.mode == Mode::InternalVertical {
+            self.cur_list.extend(pre);
+        }
         match b {
             None => {}
             Some(node) => match self.mode {
@@ -1748,6 +1862,7 @@ impl Engine {
                         match self.lua_append_to_vlist(node, "box", self.prev_depth) {
                             Ok((list, depth)) => {
                                 self.cur_list.extend(list);
+                                self.cur_list.extend(post);
                                 if let Some(d) = depth {
                                     self.prev_depth = d;
                                 }
@@ -1788,6 +1903,7 @@ impl Engine {
                         self.prev_depth = trail;
                     }
                     self.cur_list.push(node);
+                    self.cur_list.extend(post);
                 }
                 Mode::Math | Mode::DisplayMath => {
                     self.append_mlist_node(node);
@@ -1816,22 +1932,31 @@ impl Engine {
             self.error("Incompatible list can't be unboxed");
             return;
         }
-        let node = if copy {
-            self.eqtb.boxed.get(n as usize).cloned().flatten()
-        } else {
-            // tex.web's box(n):=null consumes the value without changing its
-            // eqtb level. A locally assigned box can therefore restore the
-            // saved outer value when the current group closes.
-            let old = self.eqtb.take_box(n);
-            self.global_flag = false;
-            old
-        };
+        // tex.web §1110 copy_node_list: a copy leaves the register intact and
+        // splices fresh copies of its items
+        let is_vmode = self.mode == Mode::Vertical;
+        if copy {
+            if let Some(Some(crate::boxes::Node::Box { list, .. })) = self.eqtb.boxed.get(n as usize) {
+                if is_vmode {
+                    for item in boxes::clone_node_list(list) {
+                        self.page_append(item);
+                    }
+                } else {
+                    self.cur_list.extend(list.iter().map(boxes::clone_node));
+                }
+            }
+            return;
+        }
+        // tex.web's box(n):=null consumes the value without changing its
+        // eqtb level. A locally assigned box can therefore restore the
+        // saved outer value when the current group closes.
+        let node = self.eqtb.take_box(n);
+        self.global_flag = false;
         let Some(crate::boxes::Node::Box { list, .. }) = node else { return };
         // tex.web unpackage (§21327-21331): the splice is pure link
         // surgery (`link(tail):=list_ptr(p)` then advance `tail`) —
         // append_to_vlist never runs, so NO interline glue is
         // recomputed AND \prevdepth keeps its pre-splice value.
-        let is_vmode = self.mode == Mode::Vertical;
         for item in list {
             if is_vmode {
                 self.page_append(item);
@@ -1839,6 +1964,11 @@ impl Engine {
                 self.cur_list.push(item);
             }
         }
+    }
+
+    /// A copy of box register `idx` (tex.web `copy_node_list(box(n))`).
+    pub(crate) fn copy_box_register(&self, idx: u16) -> Option<Node> {
+        self.eqtb.boxed.get(idx as usize).and_then(Option::as_ref).map(boxes::clone_node)
     }
 
     fn box_prim_or_name(&self, t: Token) -> Option<Prim> {
@@ -1928,7 +2058,7 @@ impl Engine {
             }
             Some(Prim::Copy) => {
                 let idx = self.scan_reg_num();
-                let b = self.eqtb.boxed[idx as usize].clone();
+                let b = self.copy_box_register(idx);
                 if let Some(b) = b {
                     self.finish_leaders(kind, LeaderBody::Box(Box::new(b)));
                 }
@@ -2253,7 +2383,7 @@ impl Engine {
             }
             Some(Prim::Copy) => {
                 let idx = self.scan_reg_num();
-                let b = self.eqtb.boxed[idx as usize].clone();
+                let b = self.copy_box_register(idx);
                 let b = b.map(|mut n| {
                     if let Node::Box { shift, .. } = &mut n {
                         if let Some((d, _)) = self.pending_box_shift {
@@ -2730,7 +2860,9 @@ impl Engine {
 
     pub fn scan_keyword(&mut self, kw: &[u8]) -> bool {
         self.skip_spaces_relax();
-        let mut collected: Vec<Token> = Vec::new();
+        // the tokens read so far, put back in reverse when the keyword fails
+        // (keywords are short; no allocation on the common miss)
+        let mut collected = smallvec::SmallVec::<[Token; 12]>::new();
         for &expected in kw {
             let t = self.get_token();
             collected.push(t);
@@ -2855,7 +2987,7 @@ impl Engine {
                     }
                     crate::prim::Prim::Copy => {
                         let idx = self.scan_reg_num();
-                        let b = self.eqtb.boxed.get(idx as usize).cloned().flatten();
+                        let b = self.copy_box_register(idx);
                         self.ship_box(b);
                         return;
                     }
@@ -3308,12 +3440,17 @@ impl Engine {
         // A soft page break that SHIPPED this paragraph's lines interrupts
         // it: the resumed content has no complete line yet, so just_box
         // must stay empty until the next real break refreshes it.
+        // Only init_math reads it, right after breaking the interrupted
+        // paragraph here (outside LuaTeX, every display init that reads it
+        // passes this line first), so other paragraphs skip the copy.
+        let keep_just_box =
+            self.in_display_init || self.engine_kind == crate::engine::EngineKind::LuaTeX;
         self.last_par_line = match &lines {
-            Node::Box { list, .. } => list
+            Node::Box { list, .. } if keep_just_box => list
                 .iter()
                 .rev()
                 .find(|n| matches!(n, Node::Box { kind, .. } if *kind == crate::boxes::HBOX))
-                .cloned(),
+                .map(boxes::clone_node),
             _ => None,
         };
 
@@ -3629,17 +3766,7 @@ mod structural_state_tests {
         font_with_hole.tfm_name = "holes".into();
         font_with_hole.bc = 0;
         font_with_hole.ec = 2;
-        font_with_hole.chars = vec![
-            CharInfo {
-                width: 0,
-                height: 0,
-                depth: 0,
-                italic: 0,
-                tag: 0,
-                remainder: 0,
-            };
-            3
-        ];
+        font_with_hole.chars = vec![CharInfo::MISSING; 3];
         engine.eqtb.fonts.push(std::rc::Rc::new(font_with_hole));
         engine.eqtb.cur_font_val = 1;
 

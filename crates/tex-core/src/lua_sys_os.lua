@@ -1,6 +1,15 @@
 -- LuaTeX's additions to os and io, and the security overlay that
 -- luatex-core.lua applies after initialization.
 local S = __texres_sys
+
+-- Every environment read is a dependency of the build (see lua_deps.rs).
+do
+  local getenv, note = os.getenv, S.os_env_note
+  function os.getenv(name)
+    if type(name) == "string" then note(name) end
+    return getenv(name)
+  end
+end
 local type, tostring, error, select, pairs, next, pcall, rawget, getmetatable =
   type, tostring, error, select, pairs, next, pcall, rawget, getmetatable
 local format, gmatch, gsub, find = string.format, string.gmatch, string.gsub, string.find
@@ -30,7 +39,18 @@ do
   local flat = { S.os_environ() }
   for i = 1, #flat, 2 do env[flat[i]] = flat[i + 1] end
 end
-os.env = env
+-- Reading `os.env` reads the environment: report it like `os.getenv` does.
+os.env = setmetatable({}, {
+  __index = function(_, key)
+    if type(key) == "string" then S.os_env_note(key) end
+    return env[key]
+  end,
+  __newindex = function(_, key, value) env[key] = value end,
+  __pairs = function()
+    S.os_env_all()
+    return next, env, nil
+  end,
+})
 
 function os.sleep(interval, units)
   if type(interval) ~= "number" then

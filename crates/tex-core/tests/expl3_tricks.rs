@@ -4,6 +4,12 @@ use tex_core::eqtb::Equiv;
 use tex_core::prim::Prim;
 
 fn boot() -> Engine {
+    // The RSS cap measures the whole test process: with one engine per test
+    // thread, the peak sits just under the 512 MiB default, and a loaded
+    // machine (more tests overlapping) pushes it over, failing random tests
+    // with a capacity error.
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| std::env::set_var("TEX_MEM_LIMIT_MIB", "0"));
     let mut e = Engine::new(true);
     e.init_primitives();
     e
@@ -2434,11 +2440,11 @@ fn pdfshellescape_is_an_unexpandable_internal_integer() {
         &mut e,
         "\\catcode123=1 \\catcode125=2\n\
          \\chardef\\status\\pdfshellescape\n\
-         \\ifcase\\status \\count0=7 \\or \\count0=9 \\fi\n\
+         \\ifcase\\status \\count0=9 \\or \\count0=9 \\or \\count0=7 \\fi\n\
          \\edef\\saved{\\pdfshellescape}\\def\\expected{\\pdfshellescape}\n\
          \\ifx\\saved\\expected \\count1=1 \\fi\n\
-         \\edef\\numbered{\\number\\pdfshellescape}\\def\\zero{0}\n\
-         \\ifx\\numbered\\zero \\count2=1 \\fi\n",
+         \\edef\\numbered{\\number\\pdfshellescape}\\def\\two{2}\n\
+         \\ifx\\numbered\\two \\count2=1 \\fi\n",
     );
     assert_eq!(e.error_count, 0, "{}", e.term);
     assert_eq!(&e.eqtb.count[..3], &[7, 1, 1], "{}", e.term);

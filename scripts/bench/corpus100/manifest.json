@@ -1,0 +1,878 @@
+{
+ "lua_beamer": {
+  "engine": "lua",
+  "flag": "-lualatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "beamer",
+   "lualatex",
+   "fontspec"
+  ],
+  "note": ""
+ },
+ "lua_biblatex": {
+  "engine": "lua",
+  "flag": "-lualatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "lualatex",
+   "biblatex",
+   "biber"
+  ],
+  "note": ""
+ },
+ "lua_book": {
+  "engine": "lua",
+  "flag": "-lualatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "book",
+   "lualatex",
+   "fontspec"
+  ],
+  "note": ""
+ },
+ "lua_directlua": {
+  "engine": "lua",
+  "flag": "-lualatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "lualatex",
+   "directlua"
+  ],
+  "note": ""
+ },
+ "lua_fontspec_pagella": {
+  "engine": "lua",
+  "flag": "-lualatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "lualatex",
+   "fontspec",
+   "unicode-math",
+   "pagella"
+  ],
+  "note": ""
+ },
+ "lua_fontspec_termes": {
+  "engine": "lua",
+  "flag": "-lualatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "lualatex",
+   "fontspec",
+   "unicode-math",
+   "termes"
+  ],
+  "note": ""
+ },
+ "lua_lm_fontspec": {
+  "engine": "lua",
+  "flag": "-lualatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "lualatex",
+   "fontspec",
+   "latin-modern"
+  ],
+  "note": ""
+ },
+ "lua_luacode_env": {
+  "engine": "lua",
+  "flag": "-lualatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "lualatex",
+   "luacode"
+  ],
+  "note": "uses \\begin{luacode}; TeXres 0.7.2 failed on it"
+ },
+ "lua_microtype": {
+  "engine": "lua",
+  "flag": "-lualatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "lualatex",
+   "microtype",
+   "twocolumn"
+  ],
+  "note": ""
+ },
+ "lua_polyglossia_french": {
+  "engine": "lua",
+  "flag": "-lualatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "lualatex",
+   "polyglossia",
+   "french"
+  ],
+  "note": ""
+ },
+ "lua_polyglossia_german": {
+  "engine": "lua",
+  "flag": "-lualatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "lualatex",
+   "polyglossia",
+   "german"
+  ],
+  "note": ""
+ },
+ "lua_polyglossia_russian": {
+  "engine": "lua",
+  "flag": "-lualatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "lualatex",
+   "polyglossia",
+   "russian"
+  ],
+  "note": ""
+ },
+ "lua_scrartcl_unicode": {
+  "engine": "lua",
+  "flag": "-lualatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "scrartcl",
+   "KOMA",
+   "lualatex",
+   "unicode-math"
+  ],
+  "note": ""
+ },
+ "lua_siunitx": {
+  "engine": "lua",
+  "flag": "-lualatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "lualatex",
+   "siunitx"
+  ],
+  "note": ""
+ },
+ "lua_tikz_pgfplots": {
+  "engine": "lua",
+  "flag": "-lualatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "lualatex",
+   "tikz",
+   "pgfplots"
+  ],
+  "note": ""
+ },
+ "pdf_amsart": {
+  "engine": "pdf",
+  "flag": "-pdf",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "amsart",
+   "amsthm"
+  ],
+  "note": ""
+ },
+ "pdf_beamer_boadilla": {
+  "engine": "pdf",
+  "flag": "-pdf",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "beamer",
+   "Boadilla",
+   "pgfplots"
+  ],
+  "note": ""
+ },
+ "pdf_beamer_metropolis": {
+  "engine": "pdf",
+  "flag": "-pdf",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "beamer",
+   "metropolis"
+  ],
+  "note": ""
+ },
+ "pdf_biblatex_authortitle": {
+  "engine": "pdf",
+  "flag": "-pdf",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "biblatex",
+   "biber",
+   "authortitle"
+  ],
+  "note": ""
+ },
+ "pdf_biblatex_chicago": {
+  "engine": "pdf",
+  "flag": "-pdf",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "biblatex",
+   "biber",
+   "chicago-authordate"
+  ],
+  "note": ""
+ },
+ "pdf_biblatex_ieee": {
+  "engine": "pdf",
+  "flag": "-pdf",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "biblatex",
+   "biber",
+   "ieee",
+   "twocolumn"
+  ],
+  "note": ""
+ },
+ "pdf_biblatex_numeric": {
+  "engine": "pdf",
+  "flag": "-pdf",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "biblatex",
+   "biber",
+   "numeric-comp"
+  ],
+  "note": ""
+ },
+ "pdf_cleveref_hyperref": {
+  "engine": "pdf",
+  "flag": "-pdf",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "cleveref",
+   "hyperref",
+   "amsthm"
+  ],
+  "note": ""
+ },
+ "pdf_elsarticle": {
+  "engine": "pdf",
+  "flag": "-pdf",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "elsarticle",
+   "bibtex",
+   "elsarticle-harv"
+  ],
+  "note": ""
+ },
+ "pdf_float_heavy": {
+  "engine": "pdf",
+  "flag": "-pdf",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "float-heavy",
+   "subcaption"
+  ],
+  "note": ""
+ },
+ "pdf_footnote_heavy": {
+  "engine": "pdf",
+  "flag": "-pdf",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "footmisc",
+   "footnote-heavy"
+  ],
+  "note": ""
+ },
+ "pdf_glossaries": {
+  "engine": "pdf",
+  "flag": "-pdf",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "glossaries"
+  ],
+  "note": ""
+ },
+ "pdf_hyperref_toc": {
+  "engine": "pdf",
+  "flag": "-pdf",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "book",
+   "hyperref",
+   "bookmarks"
+  ],
+  "note": ""
+ },
+ "pdf_ieeetran_conf": {
+  "engine": "pdf",
+  "flag": "-pdf",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "IEEEtran",
+   "bibtex",
+   "twocolumn"
+  ],
+  "note": ""
+ },
+ "pdf_imakeidx": {
+  "engine": "pdf",
+  "flag": "-pdf",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "imakeidx",
+   "makeindex"
+  ],
+  "note": ""
+ },
+ "pdf_letter": {
+  "engine": "pdf",
+  "flag": "-pdf",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "letter"
+  ],
+  "note": ""
+ },
+ "pdf_listings_algorithm2e": {
+  "engine": "pdf",
+  "flag": "-pdf",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "listings",
+   "algorithm2e",
+   "xcolor"
+  ],
+  "note": ""
+ },
+ "pdf_llncs": {
+  "engine": "pdf",
+  "flag": "-pdf",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "llncs",
+   "bibtex",
+   "splncs04"
+  ],
+  "note": ""
+ },
+ "pdf_makeindex": {
+  "engine": "pdf",
+  "flag": "-pdf",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "book",
+   "makeidx",
+   "makeindex"
+  ],
+  "note": ""
+ },
+ "pdf_memoir_book": {
+  "engine": "pdf",
+  "flag": "-pdf",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "memoir",
+   "book"
+  ],
+  "note": ""
+ },
+ "pdf_microtype": {
+  "engine": "pdf",
+  "flag": "-pdf",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "microtype",
+   "twocolumn"
+  ],
+  "note": ""
+ },
+ "pdf_natbib_numbers": {
+  "engine": "pdf",
+  "flag": "-pdf",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "natbib",
+   "bibtex"
+  ],
+  "note": ""
+ },
+ "pdf_pgfplots_gallery": {
+  "engine": "pdf",
+  "flag": "-pdf",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "pgfplots"
+  ],
+  "note": ""
+ },
+ "pdf_report_longtable": {
+  "engine": "pdf",
+  "flag": "-pdf",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "report",
+   "longtable",
+   "tabularx",
+   "booktabs"
+  ],
+  "note": ""
+ },
+ "pdf_revtex4_2": {
+  "engine": "pdf",
+  "flag": "-pdf",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "revtex4-2",
+   "twocolumn"
+  ],
+  "note": ""
+ },
+ "pdf_scrartcl_floats": {
+  "engine": "pdf",
+  "flag": "-pdf",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "scrartcl",
+   "KOMA",
+   "subcaption",
+   "float-heavy"
+  ],
+  "note": ""
+ },
+ "pdf_scrbook_large": {
+  "engine": "pdf",
+  "flag": "-pdf",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "scrbook",
+   "book",
+   "KOMA"
+  ],
+  "note": "~300 pages"
+ },
+ "pdf_siunitx_tables": {
+  "engine": "pdf",
+  "flag": "-pdf",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "siunitx",
+   "booktabs"
+  ],
+  "note": ""
+ },
+ "pdf_standalone_tikz": {
+  "engine": "pdf",
+  "flag": "-pdf",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "standalone",
+   "tikz"
+  ],
+  "note": ""
+ },
+ "pdf_tcolorbox": {
+  "engine": "pdf",
+  "flag": "-pdf",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "tcolorbox",
+   "xcolor"
+  ],
+  "note": ""
+ },
+ "pdf_tikz_diagrams": {
+  "engine": "pdf",
+  "flag": "-pdf",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "tikz"
+  ],
+  "note": ""
+ },
+ "xe_beamer": {
+  "engine": "xe",
+  "flag": "-xelatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "beamer",
+   "xelatex",
+   "fontspec"
+  ],
+  "note": ""
+ },
+ "xe_biblatex": {
+  "engine": "xe",
+  "flag": "-xelatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "xelatex",
+   "biblatex",
+   "biber"
+  ],
+  "note": ""
+ },
+ "xe_book_memoir": {
+  "engine": "xe",
+  "flag": "-xelatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "memoir",
+   "xelatex",
+   "fontspec"
+  ],
+  "note": ""
+ },
+ "xe_ctex_article": {
+  "engine": "xe",
+  "flag": "-xelatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "ctexart",
+   "xelatex",
+   "ctex",
+   "CJK"
+  ],
+  "note": ""
+ },
+ "xe_ctex_book": {
+  "engine": "xe",
+  "flag": "-xelatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "ctexbook",
+   "xelatex",
+   "ctex",
+   "CJK"
+  ],
+  "note": ""
+ },
+ "xe_float_heavy": {
+  "engine": "xe",
+  "flag": "-xelatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "xelatex",
+   "float-heavy",
+   "subcaption"
+  ],
+  "note": ""
+ },
+ "xe_fontspec_bonum": {
+  "engine": "xe",
+  "flag": "-xelatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "xelatex",
+   "fontspec",
+   "unicode-math",
+   "bonum"
+  ],
+  "note": ""
+ },
+ "xe_fontspec_pagella": {
+  "engine": "xe",
+  "flag": "-xelatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "xelatex",
+   "fontspec",
+   "unicode-math",
+   "pagella"
+  ],
+  "note": ""
+ },
+ "xe_fontspec_schola": {
+  "engine": "xe",
+  "flag": "-xelatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "xelatex",
+   "fontspec",
+   "unicode-math",
+   "schola"
+  ],
+  "note": ""
+ },
+ "xe_fontspec_termes": {
+  "engine": "xe",
+  "flag": "-xelatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "xelatex",
+   "fontspec",
+   "unicode-math",
+   "termes"
+  ],
+  "note": ""
+ },
+ "xe_lm_fontspec": {
+  "engine": "xe",
+  "flag": "-xelatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "xelatex",
+   "fontspec",
+   "latin-modern"
+  ],
+  "note": ""
+ },
+ "xe_natbib_bibtex": {
+  "engine": "xe",
+  "flag": "-xelatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "xelatex",
+   "natbib",
+   "bibtex"
+  ],
+  "note": ""
+ },
+ "xe_polyglossia_french": {
+  "engine": "xe",
+  "flag": "-xelatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "xelatex",
+   "polyglossia",
+   "french"
+  ],
+  "note": ""
+ },
+ "xe_polyglossia_german": {
+  "engine": "xe",
+  "flag": "-xelatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "xelatex",
+   "polyglossia",
+   "german"
+  ],
+  "note": ""
+ },
+ "xe_polyglossia_greek": {
+  "engine": "xe",
+  "flag": "-xelatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "xelatex",
+   "polyglossia",
+   "greek"
+  ],
+  "note": ""
+ },
+ "xe_polyglossia_multilingual": {
+  "engine": "xe",
+  "flag": "-xelatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "xelatex",
+   "polyglossia",
+   "multilingual"
+  ],
+  "note": ""
+ },
+ "xe_polyglossia_polish": {
+  "engine": "xe",
+  "flag": "-xelatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "xelatex",
+   "polyglossia",
+   "polish"
+  ],
+  "note": ""
+ },
+ "xe_polyglossia_russian": {
+  "engine": "xe",
+  "flag": "-xelatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "xelatex",
+   "polyglossia",
+   "russian"
+  ],
+  "note": ""
+ },
+ "xe_polyglossia_spanish": {
+  "engine": "xe",
+  "flag": "-xelatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "xelatex",
+   "polyglossia",
+   "spanish"
+  ],
+  "note": ""
+ },
+ "xe_report_tables": {
+  "engine": "xe",
+  "flag": "-xelatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "report",
+   "xelatex",
+   "longtable",
+   "tabularx"
+  ],
+  "note": ""
+ },
+ "xe_scrbook_fontspec": {
+  "engine": "xe",
+  "flag": "-xelatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "scrbook",
+   "KOMA",
+   "xelatex",
+   "fontspec"
+  ],
+  "note": ""
+ },
+ "xe_siunitx": {
+  "engine": "xe",
+  "flag": "-xelatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "xelatex",
+   "siunitx"
+  ],
+  "note": ""
+ },
+ "xe_tikz_pgfplots": {
+  "engine": "xe",
+  "flag": "-xelatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "xelatex",
+   "tikz",
+   "pgfplots"
+  ],
+  "note": ""
+ },
+ "xe_xecjk_chinese": {
+  "engine": "xe",
+  "flag": "-xelatex",
+  "main": "main.tex",
+  "source": "generated",
+  "tags": [
+   "article",
+   "xelatex",
+   "xeCJK",
+   "CJK"
+  ],
+  "note": ""
+ }
+}

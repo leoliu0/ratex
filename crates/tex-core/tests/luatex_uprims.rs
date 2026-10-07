@@ -717,3 +717,28 @@ fn engine_noads_reach_the_mlist_to_hlist_callback_like_luatex() {
     let out = run(&format!("{MATH_FONTS}{LUA_NOAD_HELPERS}{LUA_NOAD_FORMULA}"));
     assert_eq!(out, want);
 }
+
+/// `\scantextokens` ends without an end-of-line character (`\scantokens` adds
+/// one); luacode compares the lines it collects with such a token list.
+/// Expected values are `luatex --ini` (TeX Live 2026) output.
+#[test]
+fn scantextokens_appends_no_final_end_of_line_character() {
+    let out = run(
+        "\\newlinechar`\\^^J \\def\\m#1{\\t{[\\meaning#1]}}\n\
+\\edef\\x{\\scantextokens{a}}\\m\\x\n\
+\\edef\\x{\\scantextokens{a^^Jb}}\\m\\x\n\
+\\edef\\x{\\scantextokens{a^^Jb^^J}}\\m\\x\n\
+\\edef\\x{\\scantextokens{}}\\m\\x\n\
+\\edef\\x{\\scantokens{a}}\\m\\x\n\
+\\edef\\x{\\scantokens{a^^Jb}}\\m\\x\n\
+{\\endlinechar-1 \\edef\\x{\\scantextokens{a^^Jb}}\\m\\x}\n\
+{\\endlinechar`\\X \\edef\\x{\\scantextokens{a^^Jb}}\\m\\x}",
+    );
+    assert_eq!(
+        out,
+        [
+            "[macro:->a]", "[macro:->a b]", "[macro:->a b]", "[macro:->]", "[macro:->a ]",
+            "[macro:->a b ]", "[macro:->ab]", "[macro:->aXb]"
+        ]
+    );
+}

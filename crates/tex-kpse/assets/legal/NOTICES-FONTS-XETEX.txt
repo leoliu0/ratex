@@ -51,6 +51,13 @@ libertinus-fonts (7.051, TeX Live revision 72484)
 - License: SIL Open Font License 1.1. Modifications must not use the Reserved Font Names.
 - Shipped notice: doc/fonts/libertinus-fonts/OFL.txt, README.md
 
+cm-unicode (0.7.0, TeX Live revision 58661)
+- Upstream: https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/cm-unicode.tar.xz
+- Author: Andrey V. Panov (converted from the METAFONT sources of D. E. Knuth's cm/concrete, the ec, lh, cbgreek, tipa,
+  vnr and cmbright fonts). Computer Modern Unicode (CMU Serif, Sans, Typewriter and the other 33 OpenType faces).
+- License: SIL Open Font License 1.1. Reserved Font Family Name: "Computer Modern Unicode fonts".
+- Shipped notice: doc/fonts/cm-unicode/OFL.txt, README
+
 XeTeX support packages (TeX sources and TECkit mappings, runtime files only)
 ----------------------------------------------------------------------------
 

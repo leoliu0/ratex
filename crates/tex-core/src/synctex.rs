@@ -32,6 +32,8 @@ pub struct SyncTexData {
     /// File paths interned as 1-based SyncTeX Input IDs.
     pub files: Vec<String>,
     file_map: HashMap<String, u32>,
+    /// The ID the last lookup returned (0 before the first).
+    last_file: u32,
     /// Records grouped by 1-based page number.
     pub pages: HashMap<u32, Vec<SyncRecord>>,
     /// Physical PDF page dimensions in scaled points.
@@ -44,13 +46,25 @@ impl SyncTexData {
     }
 
     /// Register a source file and get its 1-based SyncTeX File ID.
+    ///
+    /// Called at the start of every word, nearly always for the file of the
+    /// previous call, which is compared before the table is hashed.
     pub fn get_or_register_file(&mut self, path: &str) -> u32 {
-        if let Some(&id) = self.file_map.get(path) {
-            return id;
+        if let Some(last) = self.last_file.checked_sub(1) {
+            if self.files[last as usize] == path {
+                return self.last_file;
+            }
         }
-        let id = (self.files.len() + 1) as u32;
-        self.files.push(path.to_string());
-        self.file_map.insert(path.to_string(), id);
+        let id = match self.file_map.get(path) {
+            Some(&id) => id,
+            None => {
+                let id = (self.files.len() + 1) as u32;
+                self.files.push(path.to_string());
+                self.file_map.insert(path.to_string(), id);
+                id
+            }
+        };
+        self.last_file = id;
         id
     }
 

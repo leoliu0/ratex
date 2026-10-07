@@ -517,9 +517,18 @@ impl EqEntry {
     };
 
     /// Install `equiv` as the meaning, returning the previous one.
+    /// `outer_entries` counts the entries whose meaning is \outer.
     #[inline]
-    fn set(&mut self, equiv: Option<Equiv>) -> Option<Equiv> {
-        self.outer = matches!(&equiv, Some(Equiv::Macro(m)) if m.outer);
+    fn set(&mut self, equiv: Option<Equiv>, outer_entries: &mut u32) -> Option<Equiv> {
+        let outer = matches!(&equiv, Some(Equiv::Macro(m)) if m.outer);
+        if outer != self.outer {
+            if outer {
+                *outer_entries += 1;
+            } else {
+                *outer_entries -= 1;
+            }
+            self.outer = outer;
+        }
         std::mem::replace(&mut self.equiv, equiv)
     }
 }
@@ -576,10 +585,11 @@ pub struct Eqtb {
     pub cur_level: u16,
     group_level_capacity_exceeded: bool,
     pending_interaction_mode: Option<i32>,
-    /// Set once any control sequence has been given an \outer macro meaning
-    /// and never cleared: until then no token can be \outer, so scanners
-    /// skip the per-token meaning lookup of tex.web §336.
-    outer_macros: bool,
+    /// How many control sequences have an \outer macro meaning now. While
+    /// none has, no token can be \outer, so scanners skip the per-token
+    /// meaning lookup of tex.web §336 (an \outer meaning given inside a
+    /// group, like fancyvrb's end of line, is gone after the group).
+    outer_entries: u32,
 
     /// tex.web cur_font_loc: current font, group-scoped via SaveItem::CurFont
     pub cur_font_val: u16,
@@ -928,7 +938,7 @@ impl Eqtb {
             save_stack: Vec::new(),
             cur_level: LEVEL_ONE,
             group_level_capacity_exceeded: false,
-            outer_macros: false,
+            outer_entries: 0,
             pending_interaction_mode: None,
             cur_font_val: 0,
             cur_font_level: LEVEL_ONE,
@@ -1076,9 +1086,6 @@ impl Eqtb {
     }
 
     pub fn assign(&mut self, id: CsId, equiv: Equiv, global: bool) {
-        if matches!(&equiv, Equiv::Macro(m) if m.outer) {
-            self.outer_macros = true;
-        }
         self.define_eq(id, Some(equiv), global);
     }
 
@@ -1099,12 +1106,12 @@ impl Eqtb {
         }
         let entry = &mut self.entries[idx];
         if !global && entry.level < cur_level {
-            let old = entry.set(equiv);
+            let old = entry.set(equiv, &mut self.outer_entries);
             let ol = entry.level;
             entry.level = cur_level;
             self.push_save(SaveItem::Eq(id, old, ol));
         } else {
-            entry.set(equiv);
+            entry.set(equiv, &mut self.outer_entries);
             entry.level = if global { LEVEL_ONE } else { cur_level };
         }
         self.end_assign(TraceSlot::Eq(id));
@@ -2448,10 +2455,11 @@ impl Eqtb {
                     break;
                 }
                 SaveItem::Eq(id, old, ol) => {
-                    let e = self.ensure_entry(id);
+                    self.ensure_entry(id);
+                    let e = &mut self.entries[id as usize];
                     let restored = e.level > LEVEL_ONE;
                     if restored {
-                        e.set(old);
+                        e.set(old, &mut self.outer_entries);
                         e.level = ol;
                     }
                     self.trace_restore(restored, TraceSlot::Eq(id));
@@ -2736,23 +2744,22 @@ impl Eqtb {
 
     /// Restore one control-sequence entry from a format dump.
     pub(crate) fn restore_eq(&mut self, id: CsId, equiv: Option<Equiv>, level: u16) {
-        if matches!(&equiv, Some(Equiv::Macro(m)) if m.outer) {
-            self.outer_macros = true;
-        }
-        let e = self.ensure_entry(id);
-        e.set(equiv);
+        self.ensure_entry(id);
+        let e = &mut self.entries[id as usize];
+        e.set(equiv, &mut self.outer_entries);
         e.level = level;
     }
 
     /// Clear all control-sequence entries before restoring from a format dump.
     pub(crate) fn clear_entries(&mut self) {
         self.entries.clear();
+        self.outer_entries = 0;
     }
 
-    /// False while no \outer macro has ever been defined.
+    /// False while no control sequence has an \outer macro meaning.
     #[inline(always)]
     pub(crate) fn has_outer_macros(&self) -> bool {
-        self.outer_macros
+        self.outer_entries != 0
     }
 }
 

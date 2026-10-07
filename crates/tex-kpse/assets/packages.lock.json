@@ -33247,9 +33247,9 @@
   },
   "supplement_archive": {
     "name": "packages-supplement.tar.zst",
-    "sha256": "7195e10716ddfd309a206bb85fc231086ec97ea1f668cab2509cc132ab6a5d34",
-    "size_bytes": 39192257,
-    "total_members": 787,
+    "sha256": "71f02406749e51cf62272a449104ded12ccd58306d72461462bfae13f3c8a3a1",
+    "size_bytes": 40315362,
+    "total_members": 1090,
     "precedence": "read before the main archive; its members shadow same-named main members",
     "packages": {
       "beamer": {
@@ -34442,6 +34442,1115 @@
           "tex/xetex/xetexko/xetexko-vertical.sty": "118d3fe8459902c336e429915f9623d99e1cc580c59d4ba02e0d7d3ce9437265",
           "tex/xetex/xetexko/xetexko.sty": "c1a1ea7de3c6613e123b40b441bf30f09a28d3f7abfb5b99054721ac6465f1f8"
         }
+      },
+      "hyph-utf8": {
+        "version": "TeX Live r79618",
+        "revision": 79618,
+        "license": "mit",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyph-utf8.tar.xz",
+        "upstream_sha256": "bb7ddfa4129050cd5d446ecad5bf033c9be3ee2a5614e0035c344a0323f6d344",
+        "upstream_size_bytes": 16008,
+        "map_files": [],
+        "file_count": 1,
+        "files": {
+          "tex/luatex/hyph-utf8/luatex-hyphen.lua": "cd97087cc4b1ed7ed6d0095a754e7545b133b6ac96d26b5de4bb0054c75a1101"
+        }
+      },
+      "hyphen-base": {
+        "version": "TeX Live r78076",
+        "revision": 78076,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-base.tar.xz",
+        "upstream_sha256": "fe8136043cf4f3a9b2750066e031fee12e0a2d15724aa484abd0b4ca1fbf6f8b",
+        "upstream_size_bytes": 22644,
+        "map_files": [],
+        "file_count": 2,
+        "files": {
+          "tex/generic/config/language.dat.lua": "d9b190a717c751dd2483ad320ba1c82137433d9b2be7fd8cb892e72e012fa0d2",
+          "tex/generic/config/language.def": "acef93e9332f79c08f5156dcefad502d5c6ecd827ea5a0ed8c0828ed8e71e711"
+        }
+      },
+      "ukrhyph": {
+        "version": "TeX Live r79618",
+        "revision": 79618,
+        "license": "lppl1",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/ukrhyph.tar.xz",
+        "upstream_sha256": "a09831d43c83b06f57d37038f96f6459e695c45d4638dd58a267a64e878155e7",
+        "upstream_size_bytes": 39096,
+        "map_files": [],
+        "file_count": 21,
+        "files": {
+          "tex/generic/ukrhyph/catlcy.tex": "9f13591f87a891c5415f0e27b83b1f20dfc66d34f52809c35ee0a43dab84411f",
+          "tex/generic/ukrhyph/lcy2koi.tex": "d3067774583677f7d5fe49e346f1d2c9a98ae0ba4e7180141d5585407e528c0c",
+          "tex/generic/ukrhyph/lcy2lcy.tex": "92fd7c54486061caa6d9d67f2e115808edc1d6cc8ab828d295c208fc445623c1",
+          "tex/generic/ukrhyph/lcy2ot2.tex": "880fcff4f2753eee6aaec75157b76e609fe53dde8d5f1c14d6360943426ac0dd",
+          "tex/generic/ukrhyph/lcy2t2a.tex": "dd84524d6127d20918cbd09a0e8de10669657164352d81678287a8d6b0fc6e78",
+          "tex/generic/ukrhyph/lcy2ucy.tex": "0e0a8f85cbff42d6788f69859adad95c4ad5491049da5e6dbd489c3493e2df01",
+          "tex/generic/ukrhyph/rules60.tex": "ac8c18ef7b95e2048510a1855ae62f7512cfb7e0e36a9f335d445b4ebf0cd8ab",
+          "tex/generic/ukrhyph/rules90.tex": "7148b649e057c8ce0dd91780482d901570c6d0cd20f34b42a478a556fb7688f5",
+          "tex/generic/ukrhyph/rules_ph.tex": "7dd77b97f6e3c5b4a92e9d536aab3868b874f8aab531b9c4e2ff6da2fdd0cf1a",
+          "tex/generic/ukrhyph/ukrenhyp.tex": "c6c1f637cbaff81199f6f1d204e2ac7a39bdb4d0a9bb7def5bb766cf65b991ca",
+          "tex/generic/ukrhyph/ukrhypfa.tex": "8ef1e036fd014dfa9627e466ab46eda7d675c043fda2b98a8f24dae4b90660a8",
+          "tex/generic/ukrhyph/ukrhyph.koi": "9ea3fd6a1443c794d3b865e162fd10e5aa48d6f42b554161470c9bd430fb3af0",
+          "tex/generic/ukrhyph/ukrhyph.lcy": "7a9b94d3f472dc5ec6bb5bb0673710f827601ebde0cce202681ca14f189bead6",
+          "tex/generic/ukrhyph/ukrhyph.ot2": "323754b35f96000277d33f8f4c3eb850a1379637781524ff375f70c4effc7f67",
+          "tex/generic/ukrhyph/ukrhyph.t2a": "ce0201af97706b8d4d8296893c7b7675f6e29b8d2ad785b497ada2472914f5d1",
+          "tex/generic/ukrhyph/ukrhyph.tex": "4585623ae28ed2e0419be2c3270a52fb36ba9428cfe591f6914f2cce90e7e8ba",
+          "tex/generic/ukrhyph/ukrhyph.ucy": "17a428c2a529e84e19143978dac6c6077a1a9cd9913ba3d8ea89a9e076cc3ef2",
+          "tex/generic/ukrhyph/ukrhypmp.tex": "fc6e1c2b18a7f6af455d18586be2b7db1c8b89060f18beaa735e713694e92806",
+          "tex/generic/ukrhyph/ukrhypmt.tex": "37d81df5bd5e7504763f558e59076795600fb4db294e4f90ce949d8cc2b22bfc",
+          "tex/generic/ukrhyph/ukrhypsm.tex": "cc28cb3af41d1c6e21d113595bbf23f2e91c3c7df83231a1447dfb075e1ebfcf",
+          "tex/generic/ukrhyph/ukrhypst.tex": "6e34ff6b69ffed0d4364aa66087f7266b532d514588e1d42ce66a0b732701953"
+        }
+      },
+      "hyphen-arabic": {
+        "version": "TeX Live r74115",
+        "revision": 74115,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-arabic.tar.xz",
+        "upstream_sha256": "c356a1bf482003e07e4c4eb06845474470e72fcda1222daf7f87a2f80ed6b38c",
+        "upstream_size_bytes": 720,
+        "map_files": [],
+        "file_count": 1,
+        "files": {
+          "tex/generic/hyph-utf8/patterns/tex/hyph-ar.tex": "42a876e2c31dc7e98df30850ee994fbe1242f5e49ccee8399c2ccf7793c537e7"
+        }
+      },
+      "hyphen-farsi": {
+        "version": "TeX Live r74115",
+        "revision": 74115,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-farsi.tar.xz",
+        "upstream_sha256": "f6c944a5ad26f9536742c801f33356d6a1d5aaa978ee53cd7b96ddbd8d97278a",
+        "upstream_size_bytes": 740,
+        "map_files": [],
+        "file_count": 1,
+        "files": {
+          "tex/generic/hyph-utf8/patterns/tex/hyph-fa.tex": "f7da7025e409878044237aee80cf7287d66d01ac37bacb6c2f71a35c785dc449"
+        }
+      },
+      "hyphen-chinese": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-chinese.tar.xz",
+        "upstream_sha256": "e0c60d93c408b3f80ee1eaed33e84475de61ecf29a3225655d609d3edd8353a6",
+        "upstream_size_bytes": 3224,
+        "map_files": [],
+        "file_count": 1,
+        "files": {
+          "tex/generic/hyph-utf8/patterns/txt/hyph-zh-latn-pinyin.pat.txt": "33cb4ef6f14ae339f1454a5e8a34ab751517862e98c52e9a4f0adeecda0f3fc7"
+        }
+      },
+      "hyphen-belarusian": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-belarusian.tar.xz",
+        "upstream_sha256": "db3de23f3211d4850fb362632cad4964ef38aac284d20a2d05a0572c3398780c",
+        "upstream_size_bytes": 11972,
+        "map_files": [],
+        "file_count": 5,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-be.tex": "94f54d030937e8d698a3b2d3d39975e44b3e2fdbb5871e60322f21b69b1da6fc",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-be.t2a.tex": "bd1120ba4fd0569840c057b43fea34fef69c03a4a9f5a9b92dc6088eeb96d13a",
+          "tex/generic/hyph-utf8/patterns/quote/hyph-quote-be.tex": "9a055ed4d781da3111e6522862ac51d50f6670de7cf823de646f1b3bf1676b9f",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-be.tex": "ce0c69d86e03c40bdd0ab9f4535cee2503fe2894590380e45a99974f029cea6f",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-be.pat.txt": "ee8f3dc26a89a1b4428bc2cb82260ca0dc242f2833c9c5b23fb6d0cc71f00ba4"
+        }
+      },
+      "hyphen-bulgarian": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-bulgarian.tar.xz",
+        "upstream_sha256": "aef72d8e7c604834cf08b3330744d4b07cc6d8a90891f4a743ac8e365ed13a60",
+        "upstream_size_bytes": 28228,
+        "map_files": [],
+        "file_count": 4,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-bg.tex": "a9b3f58116a9085bd07bc9475a2ebbbde80b9c89eb25b716703fe9051d5c29a8",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-bg.t2a.tex": "4951a1623bcab24a371ad1705630d6e45487c966d6a83e5b499a1fa8e484b349",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-bg.tex": "d37886f8cecea60bf829e4dd9dc1107aea8e8ee3eb92425423534bafac5f59b0",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-bg.pat.txt": "ca3a154c7b5303050bb78e6ac1d4090b2130795db0e6d9665156b1126a4ad402"
+        }
+      },
+      "hyphen-churchslavonic": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-churchslavonic.tar.xz",
+        "upstream_sha256": "8cafbbcb73cbfc01350f7a15daf488879171e325ef4588490a731d631270f82e",
+        "upstream_size_bytes": 31556,
+        "map_files": [],
+        "file_count": 4,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-cu.tex": "8e0791a073d019a9058f150147e8d7514e54086fcd0f95a16003f7331b835d23",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-cu.tex": "f4636573f2e35ac367159d286bf4b8f65fb68d3bc2712b3e763ad53d498a56ca",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-cu.hyp.txt": "c0d2bb3b0402a477fbd397401a60be74907fee683dd177900f00a81e9130dc30",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-cu.pat.txt": "c7b2c0acbcc20ef781946baad874eb2129b1cfe227d9899d015f3e5bb6c46136"
+        }
+      },
+      "hyphen-kazakh": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-kazakh.tar.xz",
+        "upstream_sha256": "984b356501d42d7789b013d0953d6407ef6aea0ce1f8350d3c14145523e52b8c",
+        "upstream_size_bytes": 4972,
+        "map_files": [],
+        "file_count": 4,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-kk.tex": "3fc1f7bb0124fb3ae7513e26f7c60b2cfbd56b2185f0cc53587b117e96166eac",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-kk.t2a.tex": "c849c2f625c97832bc7a595ee7bdaf06d6143808f0cfbce5ea9df9cf12048a7d",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-kk.tex": "76a394f5b13f60862a9842bd399643af37d386a1737bc42a09439b090a623e19",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-kk.pat.txt": "736c83bed9314f9793b1436e022030d4c74b7936ddb3cc74bdda28abdc61bc54"
+        }
+      },
+      "hyphen-mongolian": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-mongolian.tar.xz",
+        "upstream_sha256": "5f5444918dc76cbd374b60e48f56f17b3cc2139256d418cb131dd15dbe45e511",
+        "upstream_size_bytes": 10476,
+        "map_files": [],
+        "file_count": 7,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-mn-cyrl-x-lmc.tex": "f77231ec1eae754ac87912617df20b78a114fe7ff3ca57dc8395fe7c0862fe7a",
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-mn-cyrl.tex": "3520b4621244ac3e750e2b1a0081b4a047a044a028b562f8c3586cfca91a6d5c",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-mn-cyrl-x-lmc.lmc.tex": "d0ad04bf3ae437b5e7e2de3e43b83b97bd4b20e8a2e77000e94e9ed28b648a2e",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-mn-cyrl.t2a.tex": "883267670bc11d6cfd4dfa21642b076f825be2f773a38404090b8278820ccd79",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-mn-cyrl-x-lmc.tex": "192fa0887ca631595c38cac1b30025badb3d86a82359e68c97efd825a8d15143",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-mn-cyrl.tex": "22903e12e25e5348d7c2285f8d3173215540296e1b47f38515936618993988fa",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-mn-cyrl.pat.txt": "476463ab5b28ad58b080259f85cf8a974a1cda36c0fb379a47fc4c37df00be42"
+        }
+      },
+      "hyphen-russian": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-russian.tar.xz",
+        "upstream_sha256": "0886909c81731d7a51636f831fac58ff19317d2f1f81a87953090bb13aef9a8a",
+        "upstream_size_bytes": 34300,
+        "map_files": [],
+        "file_count": 0,
+        "files": {}
+      },
+      "hyphen-serbian": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "gpl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-serbian.tar.xz",
+        "upstream_sha256": "f55789b5f4829a5f3e032087b7f3ec1aae94ef98e5d2182b16acfb674857ed22",
+        "upstream_size_bytes": 25360,
+        "map_files": [],
+        "file_count": 13,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-sr-cyrl.tex": "a9abd74f295555df792e3d1bdccc16c7d52d76c0fb384e82f5d6fae82644c996",
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-sr-latn.tex": "e1ecde3872738e781f30ead0c687ba75d9095aefab75f7873691a359b1457b52",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-sh-cyrl.t2a.tex": "fdae67080133b8c06ca2ce86c2724295cf5e1bc06f0875c26f8c25da444023ea",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-sh-latn.ec.tex": "15fb26704551d9a3cf181e2e23adda5a2b92af2d2008ed0d086be84dccbec3e7",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-sh-cyrl.tex": "9b0f8f489868d3f98d4dec8a5d71f465ad5a70afde6857c6c2d79ec0344618fc",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-sh-latn.tex": "5aea49c845df3c21b95e417abfc28349909a4c9565523702055a122153486a4a",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-sr-cyrl.tex": "f1752536f668ddf0cd59b9e7513222763b0f1f4501188cfa41b296358604ec47",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-sh-cyrl.hyp.txt": "33df07418cf5c11a0f3c8e7c2deecd810dd3c9feea16fde179a56bc27c791519",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-sh-cyrl.pat.txt": "f637b0c1ab70e840200e1f99ebad87459c4cb9c7fada03229b616ecf6117b45b",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-sh-latn.hyp.txt": "276ea2a0b5e4d056b2e0ca5fb6211fc8a60975012caab790577136ebb06d5e6b",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-sh-latn.pat.txt": "600d327c7326cafb6854063083e2d7d9bec8da99214be05745ec3274ce6aae25",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-sr-cyrl.hyp.txt": "4f1775d7a860079b48c1135a1b952a45461fb940accda7370dd100bead9a9362",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-sr-cyrl.pat.txt": "ec8a3415d75a7a5899aada1379cf980373832a2bbe5814fcc339e242845322e0"
+        }
+      },
+      "hyphen-ukrainian": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-ukrainian.tar.xz",
+        "upstream_sha256": "b214aea47e659359cbd8abbb83647747cd0f9a9d4accc38a6e8e47e9f9711530",
+        "upstream_size_bytes": 18720,
+        "map_files": [],
+        "file_count": 5,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-uk.tex": "ca8e1c5dc10af1c26e99ce06851e8ca3ab165a7cfb988e59ab258eba3cf932f3",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-uk.t2a.tex": "8de8a5a391afea33d1cd259858600427cc658bdce3b6518bc5e3b87b4be9dd91",
+          "tex/generic/hyph-utf8/patterns/quote/hyph-quote-uk.tex": "e41dcb8e394702c3958128cbfe5a9e50ffd22a4a3de72809720fba5b6f8fe73e",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-uk.tex": "9f57d9593f4b8a93e033f7f9649aaf3abb49d17117cbd987692b626e13374c55",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-uk.pat.txt": "48c8640eb073bee879fb3d57cd91068bf70129b0bb8f7f5db6ecf9e056b57d1e"
+        }
+      },
+      "hyphen-czech": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-czech.tar.xz",
+        "upstream_sha256": "4fbb69046377ce47a3ca5ba76a4c4d18405ba7e88c52d85d3c334b825ee92c9b",
+        "upstream_size_bytes": 15760,
+        "map_files": [],
+        "file_count": 5,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-cs.tex": "c30023190abfe53eab917e8e6775a9c0246270edf4100e2719c02788b243aac5",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-cs.ec.tex": "c07c5583e95a05da60e709107649e0b2df274e4c9dd7da524f33e857e81378e2",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-cs.tex": "37b16173109c9c1a34d04c87eeb4ea8206d55e636c380dbcd72e912b4ca5033a",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-cs.hyp.txt": "a31b19189676f5d31d1fa75042a43a16eacfa80bc42a9d02c2bda9d37c91e2b7",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-cs.pat.txt": "6d868b0196c049cb834640902068857617e6697748b039941feee4402a3508ac"
+        }
+      },
+      "hyphen-slovak": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-slovak.tar.xz",
+        "upstream_sha256": "315b2acf3226c653bea1bf8f6ade661083eca326db0597b75214d1a480b20ed0",
+        "upstream_size_bytes": 10824,
+        "map_files": [],
+        "file_count": 5,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-sk.tex": "c2decb455e6dd97f779f0a0d422d150bcf9fa003c2e3374f6826e6498b068726",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-sk.ec.tex": "28f3e81a320f78a472be353b392f4eace3fc79ea90c5b384fe7d684d7cbbbdba",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-sk.tex": "55b51962da5ad3f48ff62007006ecb7768bf2665e407c920e968d08b10b40369",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-sk.hyp.txt": "f5c5f2728787dc00a4a1600437f6dc39d1eaa2b0f33d857f6759a1001befe1cb",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-sk.pat.txt": "6d98c4164657cbf2da4dfb7e34cc919a6304aa4416e7bd03807e4f321dfc7102"
+        }
+      },
+      "hyphen-english": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-english.tar.xz",
+        "upstream_sha256": "cb22c0c51786d47aff5cef7dc6d0a47ab291d6da88c21ac6a9929f4409a456ab",
+        "upstream_size_bytes": 41348,
+        "map_files": [],
+        "file_count": 0,
+        "files": {}
+      },
+      "hyphen-albanian": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-albanian.tar.xz",
+        "upstream_sha256": "3b98d0de99a1504f8278c2aa66bebb9c28553224bcf8af3b709e5cb086013679",
+        "upstream_size_bytes": 3364,
+        "map_files": [],
+        "file_count": 5,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-sq.tex": "06965b241e81b2eea7002eccd589791532daacda9751d054b1914af52c00b03a",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-sq.ec.tex": "68534561d8371e5fe812d8091d9f30c5624575dc1217fc5bf7788795b970c050",
+          "tex/generic/hyph-utf8/patterns/quote/hyph-quote-sq.tex": "b1081683e24f81cfba4bfd08003b91fab579b2e37af8c3bdb387840dc597bb2f",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-sq.tex": "632e3c5c02d0f2260b4195e7b6e9f6e348c2deb57c61d2a0dc832209a332ee9f",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-sq.pat.txt": "b5a91734b8ec76a8178dacd9606c8de67e3acde81e1e0330da16c188937330ad"
+        }
+      },
+      "hyphen-croatian": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl1.3",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-croatian.tar.xz",
+        "upstream_sha256": "10a04b6615509dfbc06d61ee540f07acdd883b3e98d27f92272465cd41f9a5fb",
+        "upstream_size_bytes": 5568,
+        "map_files": [],
+        "file_count": 4,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-hr.tex": "2ec5fa243654748ffc48ab2b29df3affebda84472fef45f1bdd44dc464ce9077",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-hr.ec.tex": "7f1d9dd7cea512e6027d79a2b45018958c09d31c2fa1c4238fbf5691b9239c1c",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-hr.tex": "69d684289c626c2576678112699c960d5821b52e7addbd473c0e8d0ef0c1694e",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-hr.pat.txt": "4a2ad51bd5a2dba979d99b02bd0abad25c7ae15d9f1eb9c4b1b6cc2ac7bcf3d2"
+        }
+      },
+      "hyphen-danish": {
+        "version": "TeX Live r79618",
+        "revision": 79618,
+        "license": "lppl1.3",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-danish.tar.xz",
+        "upstream_sha256": "80a460a696e6794a285358f5c59ed3e5f74ea041cde00b7c8d3130ab751df0d8",
+        "upstream_size_bytes": 5748,
+        "map_files": [],
+        "file_count": 4,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-da.tex": "4a9a345a1e76506cc6580ba70dd3b509871eb437debc72b05b18d054b43e89f3",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-da.ec.tex": "019ce9e8afc57ad8d063466cdc14fcacbfefdd49a886730b8aef9208cb0e5d27",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-da.tex": "23e0a50f0c20d632be06f973e700323463961eac737bb14f6c3787675a4f5575",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-da.pat.txt": "a093ef99375717fe34d261b05d2fdc8e64f8a9f741578c020204374f4c39a20c"
+        }
+      },
+      "hyphen-dutch": {
+        "version": "TeX Live r79618",
+        "revision": 79618,
+        "license": "lppl1",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-dutch.tar.xz",
+        "upstream_sha256": "2ded1602ae66c64235744ad72db659601026de79ed7e08e1cd8f1e6763fde630",
+        "upstream_size_bytes": 37984,
+        "map_files": [],
+        "file_count": 5,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-nl.tex": "0a1c94d3c25dcd0c21c9d63ec3dbe878a81534ac4df2c280fffd7705f74a0c70",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-nl.ec.tex": "edabb2fcbb5f063386ea799cd88c96f51b95b28ee736c679fd74c3121478496e",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-nl.tex": "d21499bfbee53e4d50e867ef92a41fd28b65725d7c91c980e4f8f02889bf6b2a",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-nl.hyp.txt": "5902ba4d760815a51a972b6d05f514dde1842c16fa2859b907e2d299edbb3299",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-nl.pat.txt": "ac5795c1d6cd7027e6ec3a9e58e173789f999669e40ffd81755a4db7d3214165"
+        }
+      },
+      "hyphen-estonian": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-estonian.tar.xz",
+        "upstream_sha256": "c1ccf8dfc934ea708ef9ceea6b255d7acee5754f0f698e42672ebc44fb1ee319",
+        "upstream_size_bytes": 14584,
+        "map_files": [],
+        "file_count": 4,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-et.tex": "cb7bde9154313bbea849fd2541a29f001a756cd2728e01ca10320f3bf79d4551",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-et.ec.tex": "4a40b4bb654b8969eee33075db4a9e81512184a636a52de02388ce34f346ab23",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-et.tex": "617abc528446e33c1690a3d13ae7629292d2f00557b1b4ec96cb2a1d790ac090",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-et.pat.txt": "e04675ba1851dca1cdaab9fe5cb8dea2f7b04dfc9bf89820fc6bc9ef7eb7fd16"
+        }
+      },
+      "hyphen-finnish": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "pd",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-finnish.tar.xz",
+        "upstream_sha256": "edb4c8b9b7872f023bef4fb793d51a5926dd2268287c2d0e7f668679db575c5a",
+        "upstream_size_bytes": 4668,
+        "map_files": [],
+        "file_count": 8,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-fi-x-school.tex": "1c497e6aa4f35e092cf8d2703d6c32262a0dac51ea1ea00c9ed120189ac95bbb",
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-fi.tex": "afa5546e295bcbee49ce9af494c06a6cbb5da4f20aaea1c9023f36ca377961a3",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-fi-x-school.ec.tex": "600e455fdb938ac8b4eef036f6a4c49c81704e5cfa252d1f834aae083eb50a42",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-fi.ec.tex": "8c861d70bc77eb8614b11f5a0f2e29dd78736ce7991d83e98c28b63bfbb8de9f",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-fi-x-school.tex": "264a2ba2ab5237246f0bd902c7b3f111b03662ddd55c4dab03a9897e47e5491c",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-fi.tex": "cf68be5eb003d299f85f2b7185f31d8ff5799c19dfad3f0300eaf9843e9cc8d3",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-fi-x-school.pat.txt": "2316cafa761a8a8888789164219ce645eaa0fd0893d6d4ee4c3180c018deb1f1",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-fi.pat.txt": "ccabb0b3f403eca9999c0cd73b75d16b0220f2052d8f6aad2f98b5f1854dc027"
+        }
+      },
+      "hyphen-friulan": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-friulan.tar.xz",
+        "upstream_sha256": "0fea355457ddb570fd4300a02b5025cac73776de482110bfca477fd5b3c6ab9b",
+        "upstream_size_bytes": 3788,
+        "map_files": [],
+        "file_count": 5,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-fur.tex": "80ef7dcb218094c087f2e8245c681c7bc12c24cdf36f90f68c7fd93273ea9484",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-fur.ec.tex": "6d20ca9f0d1f6140f167e7e8d9757e94b45383165f0db4fbbfa6791929a1ee54",
+          "tex/generic/hyph-utf8/patterns/quote/hyph-quote-fur.tex": "6d50da6af4bb9aaf13d4bb26692421056c7af508d71f5e9940eb5b85959182f5",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-fur.tex": "1987a744179d443677258f9ac0ef941fd2673e235aa576c20da64e352c95f6aa",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-fur.pat.txt": "e51b6e51c29233b79b2ecc0493fe2b99177ef98e99b925d9603841fb30942478"
+        }
+      },
+      "hyphen-hungarian": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "gpl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-hungarian.tar.xz",
+        "upstream_sha256": "d309b4b6d3f2b5d8940dbea1d9137ab3b405ead29e9b9fb41304f44f79f2d1bb",
+        "upstream_size_bytes": 285360,
+        "map_files": [],
+        "file_count": 4,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-hu.tex": "3ca62e6f1656c745534de81931b74073f5bcb5418cc32b69367d7081094fd213",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-hu.ec.tex": "9b2ae8ab1c9a065edb6139cfcac084bd30c4cb6a478254bf87bd78b53d5d5f33",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-hu.tex": "c6f02d2b6f49d5068035f7bbc91aaeefd0b691ff806c17539a033a716c374692",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-hu.pat.txt": "7e0f87d5409c19a1aa772caa51bdfbdb8d1ac8850289783a53aae10ff31dbab1"
+        }
+      },
+      "hyphen-icelandic": {
+        "version": "TeX Live r79618",
+        "revision": 79618,
+        "license": "lppl1.2",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-icelandic.tar.xz",
+        "upstream_sha256": "e1811dadceab064bba9d4a150fe5411741019970142f7dd6f53ef15eb0f40e4a",
+        "upstream_size_bytes": 19496,
+        "map_files": [],
+        "file_count": 4,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-is.tex": "bd552dc1602d85d026dbf3555085cf403acfc02187c2ad4ba2239285814bacdc",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-is.ec.tex": "fed4c09960c1aaf5b9f1f5b1eb2bdf0e8ef14c33bf3b0a767635c1d8d565dbfd",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-is.tex": "2707969ebe34a9ddfd861aaef40619e75ac78453718a56401aed91c5cbdcfcec",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-is.pat.txt": "68a5f188bebcb7714ecc71f55391ce27174f6683b26204500b258f28cf846c4e"
+        }
+      },
+      "hyphen-irish": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-irish.tar.xz",
+        "upstream_sha256": "48814c1d7e7f62df211fe23118210d3966e74984326b56108df894b2e107da54",
+        "upstream_size_bytes": 30400,
+        "map_files": [],
+        "file_count": 5,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-ga.tex": "53cf11498d6bd2aa6863ddc58e0341d145f5f351b64bdadfe5fab60ca871a3cd",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-ga.ec.tex": "8082c1c5e81fa2b70acfa73843ba4a7acaab8418e932596665fb5850df46c875",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-ga.tex": "7856cb341fd978b910c3807aa6918b39791e2f507d803253daccb5c71bbc02c6",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-ga.hyp.txt": "80e8b010b6615bb43f8759d4339de69e556e249ed606f86c89781324f4ea89ac",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-ga.pat.txt": "207d76d5666607cf1ec73b736cc821f8502fc0eeae822e5c460ed5615cb7202b"
+        }
+      },
+      "hyphen-kurmanji": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-kurmanji.tar.xz",
+        "upstream_sha256": "e7214892af8467c869b67c7ddc960e7e512ed35140efa40e6c07c969369dda4b",
+        "upstream_size_bytes": 2700,
+        "map_files": [],
+        "file_count": 4,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-kmr.tex": "649b8b458d3a94669ad48a357733c50a9d2a3fb26e6a6347a277048cbe1ece90",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-kmr.ec.tex": "4f333c87d5aa7c3c855419e325ffe5c9f0082d92eda132b744d00df971e9e6b0",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-kmr.tex": "2299d69ff2e093291338275b20fa85a35c62abc156835647d5d91a9dfad476eb",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-kmr.pat.txt": "80bdb7635999aad9010654cfef8703f0f503e8f3b4b444ce9dedee1e44bf4fc7"
+        }
+      },
+      "hyphen-latin": {
+        "version": "TeX Live r79618",
+        "revision": 79618,
+        "license": "lppl1",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-latin.tar.xz",
+        "upstream_sha256": "86a7c4156d7ff06791c841bbc794732536d445eacb783742e6728eed5d16f04c",
+        "upstream_size_bytes": 102028,
+        "map_files": [],
+        "file_count": 12,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-la-x-classic.tex": "2de86031c37326bde3fd861567d9e8138632b4df4f2c606e269aafebf728d9a0",
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-la-x-liturgic.tex": "20582e9007cfec5df6f4fe19a710d6b59aa0f0522f4791853f192400bf8ecdb3",
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-la.tex": "0df8b72c573b48b05db7a011e14839f9a9de2ce6018bbcc22cd62a43e4ac8458",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-la-x-liturgic.ec.tex": "90c1430670b654a631890ed47f07fe57a60ea39551a2d114449689e15914a3fb",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-la.ec.tex": "75acf94e1a3cb934b34bd88522774bd75e2fab1bf026f9bafcd3a2222210d2b3",
+          "tex/generic/hyph-utf8/patterns/tex-8bit/hyph-la-x-classic.ec.tex": "e6dce86fbce5bdce078bbd0dd9713ef352d90df6028f1ef82ac1f224c3eca6e4",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-la-x-classic.tex": "68257e2ce6ee077f635e38c700734ede7d1ebb4f4708546b878a0bee68bd7d8f",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-la-x-liturgic.tex": "60fea9390492d86bf701f77da8ac818a027da7ea9badb2965e9889ddeb95a5d0",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-la.tex": "84e0be1877beaf6d1d7a83d5639fb65a0e0645cd2447b0dbccfa5e63565abdfd",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-la-x-classic.pat.txt": "8240b58cf9a6a150b879fc43395d95ead515eac6cbb05db4498aa79715686e51",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-la-x-liturgic.pat.txt": "c4052e428681d65d5f5a4e6dbbfd8ed4695dfd91ee5cc4664e2b74cf8d7e9fed",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-la.pat.txt": "a16fd3a431fd5698391e71c35f1d159c0618061f7bac02278210fae87a4fc44b"
+        }
+      },
+      "hyphen-latvian": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-latvian.tar.xz",
+        "upstream_sha256": "190c304cd3a51d7aae91ffc9cd9e315e57bcabc579aa5590b0988952c1c2ab99",
+        "upstream_size_bytes": 52448,
+        "map_files": [],
+        "file_count": 4,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-lv.tex": "a864c638ae71ca0bb6ca346309076399daeaa00dde070bda4d07f48034727f87",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-lv.l7x.tex": "25385056dbe6c6d5b15b3e6bc846e043bed681b841a269c96c2090987d2b078d",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-lv.tex": "209e0a5b09aaf68517724a2cecc7b7bbd278355ffdd918051ce23110687e3d3c",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-lv.pat.txt": "f24446f5c68d9732b4a017d193724241edff598f02573f0767894fb2f9abe10c"
+        }
+      },
+      "hyphen-lithuanian": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-lithuanian.tar.xz",
+        "upstream_sha256": "aab9889806e94f9900e20f7ef0443f7e5cb6b6639f70fed5e7fc79d6bd78de97",
+        "upstream_size_bytes": 7424,
+        "map_files": [],
+        "file_count": 4,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-lt.tex": "c9f8e26d214671c84a98b964903cf9bea1106f92599cc2f73f0511cab5934aa7",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-lt.l7x.tex": "bf0872009b08587313e113d38032f85587cafddfae063fe19f0d5c9b1d61d9b1",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-lt.tex": "6162b566620367abb827ba1457567e7a79680596919886a7138e48b346e983d1",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-lt.pat.txt": "38e3ac46376bc32db4197facffedff4ee442c3871f0244e08cd520d62665d56d"
+        }
+      },
+      "hyphen-macedonian": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-macedonian.tar.xz",
+        "upstream_sha256": "f3655157a277e2127b5f124045c982492c517d703b8b3162c85a9e8bca23cea2",
+        "upstream_size_bytes": 5532,
+        "map_files": [],
+        "file_count": 4,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-mk.tex": "b7416ac1a72edc32ca1f9caea6eb61149a6d393b8546cfe22af1c363d392043a",
+          "tex/generic/hyph-utf8/patterns/tex-8bit/hyph-mk.macedonian.tex": "382aa510f16647f020dcb30e57bdb22510a04e7acb0ec11ea46074006dd8654c",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-mk.tex": "3cd8cf3ad015adec006523ba0c087069ee262f06625275ad4a332d3051f655fd",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-mk.pat.txt": "ed01a46b778f5e176aa44205ff27a4056cfa87d57d99cbd9c2d1d6f6b17642e9"
+        }
+      },
+      "hyphen-norwegian": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-norwegian.tar.xz",
+        "upstream_sha256": "f0bfac073fae3a7d192e28560882481e07758b77a9834272fc52b1c5eaa59431",
+        "upstream_size_bytes": 96224,
+        "map_files": [],
+        "file_count": 11,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-nb.tex": "2d2b2c6e9341c0eca5ca2eb1030c18ca97f3106071f572f353bd1abc729ccb3a",
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-nn.tex": "1d09417b413d1fa51aa0533a5e4f7319e4364f88d32fe967262319c9c2729b1f",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-nb.ec.tex": "79afb46ad7fb42bcf7024260e99ba7d777050165989b24bfdb5effce26ea3471",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-nn.ec.tex": "d07c67447fac98009ce85a69ae7344e158fa4ab8151b1a9ef729ceda895eebc9",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-nb.tex": "b111264f46d59089d4cf96691c66b637166f5aae5b86719a5b9fe32737cc0169",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-nn.tex": "f217dca0e815443bc9feac27d9eb48cf795b3f4f222afacf7f87fb6c2b0e196e",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-no.tex": "05a2ac5fbf88bdc78c580e5cb8a158e6aa760d13756604f9523aa99feec3ec65",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-nb.hyp.txt": "6484bbd793e20a206a2f0d7abfc499a5f8688c54ea7e91ee7af87fba53959d00",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-nb.pat.txt": "e080c77da3d0f8de7e464f69082f5e2485e43ed349a2a7018b84e0adef785806",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-nn.hyp.txt": "817480ec60623d17564f87366200de408421ed2ad3d6feba284ff5350ff245e4",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-nn.pat.txt": "e080c77da3d0f8de7e464f69082f5e2485e43ed349a2a7018b84e0adef785806"
+        }
+      },
+      "hyphen-occitan": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-occitan.tar.xz",
+        "upstream_sha256": "ebe25efa007bbdeddc595b592e85f020549c24639825d3593dc4b64ca541b6a8",
+        "upstream_size_bytes": 3304,
+        "map_files": [],
+        "file_count": 5,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-oc.tex": "1d9a2edbe47b8d05a598c4b20faaaf7dd180c7e3cded5cf60007b660ea4d9351",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-oc.ec.tex": "55f59498abd24254da5f371ce716d8a39022330aeca722b8a11e179b25340235",
+          "tex/generic/hyph-utf8/patterns/quote/hyph-quote-oc.tex": "063fe294c0389c1b17383135a2d109fef2bb9bdc8e018e18113ae615576a60bd",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-oc.tex": "0a968a3588697da7c0ef13f219f45973fc75c08e8ee9253ff1a4bf567167c8fb",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-oc.pat.txt": "1645fb6be70a2a13c9cee9dbbd4b1e8e18950fd6ebada2e73261c813e3884293"
+        }
+      },
+      "hyphen-piedmontese": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-piedmontese.tar.xz",
+        "upstream_sha256": "8369684dedd43e690247e27312d1881f15562696edf09f0baa2761409a8d9325",
+        "upstream_size_bytes": 3336,
+        "map_files": [],
+        "file_count": 4,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-pms.tex": "a1670982add4cbf1743509d23a5ae9966853cb73a53fc63b4a6663f31b0199a9",
+          "tex/generic/hyph-utf8/patterns/quote/hyph-quote-pms.tex": "bbdf4a6a82ffcb11fd4e155c132250bad1815bdd1958f65b0ce8a8b16faeb941",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-pms.tex": "a5af2db65a7bc27318c3d0300d1a3ef332997a6d447a572aa728e0710ac3243e",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-pms.pat.txt": "0462ddb61c346db315493c914c80b04d2e2ef1d13b48f92b8deda6f033f323e9"
+        }
+      },
+      "hyphen-romanian": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-romanian.tar.xz",
+        "upstream_sha256": "d754e02a910f1bb64b627ffe8e803edf3cbcbadca7d483a1194b3e12931d3804",
+        "upstream_size_bytes": 4340,
+        "map_files": [],
+        "file_count": 4,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-ro.tex": "7c466312668a684ff98c2cf82eb116b167e44a783b1b1e79b86b9d38208a69c5",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-ro.ec.tex": "ea4ca30a002fd7d9ea26bd4703b0bb50f9eb94ea2374165ea33cc23d3c6f4957",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-ro.tex": "6f09c53cc65cb6fcf4435396371c49bf50aaa88e40af7931a9e6bccc405f1fab",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-ro.pat.txt": "888e44981860ccb9d980fe5d8077053efa8801aeb42cfdc493705217d5b41caf"
+        }
+      },
+      "hyphen-romansh": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-romansh.tar.xz",
+        "upstream_sha256": "6b686f607e0c55a14c7150c3f8786760411e943e2b6437cafb62aeef63be16e2",
+        "upstream_size_bytes": 4236,
+        "map_files": [],
+        "file_count": 4,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-rm.tex": "81ebf6729b5e505eeaa2221a9dcada4904c63f9fff9ad6e448097e2ca3f811df",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-rm.ec.tex": "ec0df58dae611d94ae9b2d85ebaa42452df0b5f6b52ef8129ac24bc96c548d5a",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-rm.tex": "e79c432ffdf1611a23ed9368ee25612a8e7bde78f6cff24a8f6a36abd02440c9",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-rm.pat.txt": "d0d52b25a0106699a94c7912f63c94b690cdff949452d5bd165e5db8cec16f8d"
+        }
+      },
+      "hyphen-slovenian": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-slovenian.tar.xz",
+        "upstream_sha256": "c200321919ad5a6690804d602f73d871b839d5cbd3cea20c73ec6442f1360667",
+        "upstream_size_bytes": 6200,
+        "map_files": [],
+        "file_count": 4,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-sl.tex": "b0c9b87a3b5b215c683db722489ba785a87d1832c34670820dcb9b4a3a73a2a4",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-sl.ec.tex": "7d90065d654cd10a8c273d65c95cb538a9ad7ccbabdb121de1a35165b5362f27",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-sl.tex": "27da982d03b881fe84f1c4fb42ba0948f33e01a3a44eaa5ebd07e01d20c72691",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-sl.pat.txt": "7a08718a42e1bfbfc0547ec117d82b51c55987c46f7445cf14f1af3cffd69c39"
+        }
+      },
+      "hyphen-swedish": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-swedish.tar.xz",
+        "upstream_sha256": "6773d972a0c3c67209482d44ea9e04db728153a09196f9a4ad3987661da1e0a6",
+        "upstream_size_bytes": 18240,
+        "map_files": [],
+        "file_count": 4,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-sv.tex": "a6c5fa667135cd6b1469d434ccd26fa96e3fd3859a5c9309e0d7e9c32465e9d0",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-sv.ec.tex": "c8c80074c8669068bca954fd81053bec0a6afa7d1fd28a4ea286826f0179ff78",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-sv.tex": "102253382bd91cdb7535de5c20744254c9ac9aaa4ca12ed420eb835e5004c0b3",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-sv.pat.txt": "1fbf98f5d316712fd4e86f564643ad7341184f9ce8b30e0e18d06eceb4f52a79"
+        }
+      },
+      "hyphen-turkish": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "other-free",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-turkish.tar.xz",
+        "upstream_sha256": "ab777d12d352d9dd75c2beb9167f21e4c3870f9413d08236342771474e03af68",
+        "upstream_size_bytes": 3868,
+        "map_files": [],
+        "file_count": 4,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-tr.tex": "8eb10e3c3911d8d759584f997003f67472a76aab28b4af93df38b3133fc72962",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-tr.ec.tex": "ddc2a8c6bc3b258226a324a8f23c8bbac91dca1bee4dacd271dc1ed530f8d6fc",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-tr.tex": "9243b6fc1426b07dae71c6136bd7d4a907e01a36ab6326f349ee6c310e6bb2b5",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-tr.pat.txt": "0e7dda13d183f667e3eca0f7ea426dbe51458ca6072b878eb35102966ec22f03"
+        }
+      },
+      "hyphen-uppersorbian": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-uppersorbian.tar.xz",
+        "upstream_sha256": "71f5bb491c3e936387b5a067497b5697354f33dbc6c386098cd33a8aa9a93daf",
+        "upstream_size_bytes": 5504,
+        "map_files": [],
+        "file_count": 5,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-hsb.tex": "ad2e9e74c846d42c218e8bcdb2f8ad9b6f040b779890eb11c8605c86ab57a6b9",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-hsb.ec.tex": "b0f90a5ad4e420bb50d65a81551a3bbe6b71dc939da292b1d00f36faa8fcf66a",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-hsb.tex": "0b961d89317523960f41b2f32742abf807a253717200d9756b8d69c12f895fcf",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-hsb.hyp.txt": "bede71ad02b55e8b725ba149e1b7dc08bc45c4259d7f2d12a649b21d8d0cd3b7",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-hsb.pat.txt": "2f9866fd489eaf2d8a64045ac2a12b9e3b57793d57da4795d2bbf5d36d3f7a45"
+        }
+      },
+      "hyphen-welsh": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-welsh.tar.xz",
+        "upstream_sha256": "1cce9635790a3c17aa9f0bff3e0f2ff0313c46ea34f7c779320b2eb95103c9f5",
+        "upstream_size_bytes": 19988,
+        "map_files": [],
+        "file_count": 4,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-cy.tex": "7c248550d83cc1e295ef3d5aaec831f1e5326236b8ab31fb1f2a1cfb6d8e6420",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-cy.ec.tex": "392734d46121e9901c8fd61e5bd6cd2d2993f13d9b17d94942e9e0161a00d2ae",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-cy.tex": "22c4d441e790c035bd208c4cccbe9a8254ab81c3da0ca0a8b062f8ed34f3e14c",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-cy.pat.txt": "ba1025eecf4464bd1709d6e4d19c4744fd79d540509ed1dc8d8e00e4b243786c"
+        }
+      },
+      "hyphen-basque": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "other-free",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-basque.tar.xz",
+        "upstream_sha256": "7af159568c7135034573a7280eb92680b28e1c8c4b22410b07322f2352b688c5",
+        "upstream_size_bytes": 3220,
+        "map_files": [],
+        "file_count": 0,
+        "files": {}
+      },
+      "hyphen-french": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-french.tar.xz",
+        "upstream_sha256": "57100a3a7072b37a23de7efef01f0b089655ab10ec43b4d84aafcbd5ad690bd3",
+        "upstream_size_bytes": 11432,
+        "map_files": [],
+        "file_count": 0,
+        "files": {}
+      },
+      "dehyph-exptl": {
+        "version": "TeX Live r79618",
+        "revision": 79618,
+        "license": "mit lppl1.3",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/dehyph-exptl.tar.xz",
+        "upstream_sha256": "ffdcf44d13d6455812c41ccf620ce093b5ac00ea380be6f9ceaf29247f3f4970",
+        "upstream_size_bytes": 134308,
+        "map_files": [],
+        "file_count": 0,
+        "files": {}
+      },
+      "hyphen-german": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-german.tar.xz",
+        "upstream_sha256": "2bbfc00f6362b8ff525f902c1b5de47bbbb8cba8840a2ccfaf6591daa748ab12",
+        "upstream_size_bytes": 229712,
+        "map_files": [],
+        "file_count": 0,
+        "files": {}
+      },
+      "hyphen-ancientgreek": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-ancientgreek.tar.xz",
+        "upstream_sha256": "14340cb7c98969d33e7f2b6d0b88a75f166f899d735fdb98c8ae610ffe17ebd4",
+        "upstream_size_bytes": 38280,
+        "map_files": [],
+        "file_count": 0,
+        "files": {}
+      },
+      "hyphen-greek": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "other-free",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-greek.tar.xz",
+        "upstream_sha256": "c9853da8a044e4d3edbc2b03e0943604076cf369e5be90478e9cc718ef929999",
+        "upstream_size_bytes": 13296,
+        "map_files": [],
+        "file_count": 0,
+        "files": {}
+      },
+      "hyphen-italian": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lgpl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-italian.tar.xz",
+        "upstream_sha256": "6efa7bf159b8bf3297404527716edd84a7032220644edfcd46c62fc9ff07c466",
+        "upstream_size_bytes": 3508,
+        "map_files": [],
+        "file_count": 4,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-it.tex": "558b1e51cddc0de5f49b23f585dcc404939d918f7d7703392ea45a71b5628461",
+          "tex/generic/hyph-utf8/patterns/quote/hyph-quote-it.tex": "063fe294c0389c1b17383135a2d109fef2bb9bdc8e018e18113ae615576a60bd",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-it.tex": "6ce56ed6ed2ca7c0688838e366e6595e0429f984f4fc6e96ec045cebb1e76a47",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-it.pat.txt": "ce650cffad4e81ecaf04591f3274a8ed909e82c587698c55e33b00e2aa7746de"
+        }
+      },
+      "hyphen-afrikaans": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-afrikaans.tar.xz",
+        "upstream_sha256": "43ee2d58424311b268fc69cce837376bdd2247dee00ecb06ddc1d331988d4727",
+        "upstream_size_bytes": 37008,
+        "map_files": [],
+        "file_count": 6,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-af.tex": "cdd380203d96166b0a3a0084ffd06a6ac7fc3b131d38b0a9030268a3ec595940",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-af.ec.tex": "3212dd492713e587472e6641232d50e3cb6394e0424b31f1608295f3697ea0e0",
+          "tex/generic/hyph-utf8/patterns/quote/hyph-quote-af.tex": "80a2d5493c62f62f9df6959d4b7867d5a8158efc958d252235e00db81836b0e2",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-af.tex": "a5de62ec8e5fd38251de838d8ebbdc44b21c76d30e9b486005fbfa641a93abe6",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-af.hyp.txt": "f1a77063f393d227aa29b085279307d2c728f4200e54c41e4507707ae5aca6b8",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-af.pat.txt": "094be0ccc966cb8a9919abffb4d481566bbc25d62bb182647be9feb431de5b5b"
+        }
+      },
+      "hyphen-armenian": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-armenian.tar.xz",
+        "upstream_sha256": "b14cfa809054b12e1501f53706e5ebb9e8d3e566248bf38c2abc6c126f10acec",
+        "upstream_size_bytes": 2620,
+        "map_files": [],
+        "file_count": 3,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-hy.tex": "c5a5f00a558486199f74ee784ed5de6279035e0547e36c9489e1d3be670bde12",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-hy.tex": "a132d1fdfafbc601da8540c3bc8419335dde455369b80c3a0a8ce06116eec449",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-hy.pat.txt": "badaeb19d5bda800ea870ccfb774e2db8ed14fc1104b6a3fe419644a84ccc43d"
+        }
+      },
+      "hyphen-coptic": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-coptic.tar.xz",
+        "upstream_sha256": "85810dc53f90de4af96d89c1fa11b84a0b2fbc709c05f52a0cf1d04960c65452",
+        "upstream_size_bytes": 6148,
+        "map_files": [],
+        "file_count": 4,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-cop.tex": "8a099a048083fa0ded2ec996357bb0fd88fc328420814383f844dd0f535aa20e",
+          "tex/generic/hyph-utf8/patterns/tex-8bit/copthyph.tex": "d59bb9fa0a002a287662eeea702dac0b3012c8ce5c1c9fb336363529c72ebec3",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-cop.tex": "e66cbaa15da902f47cf955bd654f2eb0afe2abe5d1c819db1fd8186b98c7bb40",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-cop.pat.txt": "9c3b254145940bbf09cad234c21e40d3c4deeac0929e9f12b3267efe9b7e2207"
+        }
+      },
+      "hyphen-esperanto": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-esperanto.tar.xz",
+        "upstream_sha256": "f58ae460bb944545b05ed10d6529e0382b04d74816f1ba5c7b5a385b9c877e16",
+        "upstream_size_bytes": 10668,
+        "map_files": [],
+        "file_count": 4,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-eo.tex": "dd2804bfe0cf188a3fe2fa3a9e99a6bcfc5c7edba655bd5407510a6361167e2d",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-eo.il3.tex": "e5911d3bb3ce46a82ff008e4ca1f87b4d004bd7e8aae3c84fba0e4b6562944ee",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-eo.tex": "6892e3758fd35a1cb509556bb06fcb008eda3e975a867ee87eb828f204460d18",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-eo.pat.txt": "aecb4cf4ac1676c31f90a1329afca7f194f73ae418ec4740b7bb418c1c5375da"
+        }
+      },
+      "hyphen-ethiopic": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-ethiopic.tar.xz",
+        "upstream_sha256": "839731689a8bb8af7ac2c5126d7f3cfb004d69bf77a5d400428844251e857867",
+        "upstream_size_bytes": 4460,
+        "map_files": [],
+        "file_count": 3,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-mul-ethi.tex": "8fa01b666f45bb73f6921b174bbd49373a06a2959b6b0ea4a51da2f84f1eb6f0",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-mul-ethi.tex": "df702eec647db16b37056d7850b066fb7e006a0c9753006e2cd761f19f642bff",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-mul-ethi.pat.txt": "7f68ce48ae723a1ca679916fb831b1dbc01818f92d25a9bf1d7da9accf0ba014"
+        }
+      },
+      "hyphen-georgian": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-georgian.tar.xz",
+        "upstream_sha256": "94d5c9475969171d9920a25d4ecc5417d6eb9c69792f5540e0d6b0ac5b8c8efa",
+        "upstream_size_bytes": 11040,
+        "map_files": [],
+        "file_count": 4,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-ka.tex": "c1408be45a636f844d8e673bb61c65157d4b77b0ae14f736ea26db94e0cb5246",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-ka.t8m.tex": "2fa865577c5c096db518d6f922d2a1da907633dc2dd6a1688c2580d880513ff9",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-ka.tex": "909f290e3a018e6b28692606ed2c1cf26d64f2d8bb1ec43e6133aba6d4704759",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-ka.pat.txt": "80eac1aa8ea0e34f9751858b22df777b22c65a6efdd9a92e0d71054d83550cbe"
+        }
+      },
+      "hyphen-hebrew": {
+        "version": "TeX Live r74032",
+        "revision": 74032,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-hebrew.tar.xz",
+        "upstream_sha256": "773bfae22baf211a5985e669aa93c3503ca9f43768bf82fe32b050eebb4aa50b",
+        "upstream_size_bytes": 720,
+        "map_files": [],
+        "file_count": 1,
+        "files": {
+          "tex/generic/hyph-utf8/patterns/tex/hyph-he.tex": "9927480f413dbda46739eb956ce115fd90c1bec5cfa876b8646611a3a2b9a3f6"
+        }
+      },
+      "hyphen-indic": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-indic.tar.xz",
+        "upstream_sha256": "6292d9acd3acb829216c55cdeeff449c5e9a2408ae2d729ee908c20e3a1be210",
+        "upstream_size_bytes": 5172,
+        "map_files": [],
+        "file_count": 36,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-as.tex": "d47d4c5e427e0eca2067ddb32477467378e68f045d909e14e524390e2f3ea000",
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-bn.tex": "343b9b11b5f2d80965dba5ecd720b4545dd32a4792e46c9c69d4b8888a27df67",
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-gu.tex": "cd2dcef8c1e82248c9033b6c08387d3a7b363844a34b897ffbe81df5da6ffd2a",
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-hi.tex": "8762302b9ad69e7b5bb79fd1441932b86229a6ee98d76ff2511bf74d65c82b02",
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-kn.tex": "f6f848d1bb4e3d2bf3b71d49473c4cd5a227b40fc2af4d223ed45a7ded373ea2",
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-ml.tex": "39f81c7fee8e5c53248726cbea69cd73dc3cf89af0b2224cdf517b17d516ba0c",
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-mr.tex": "eebf5617b2cbe5eeb9dac91914a77f938ab25bf7c028b7ed1b754531224869a7",
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-or.tex": "789170d9611f01468633a794d8dca6e487805ed97093dfc2998ca0471d845bd0",
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-pa.tex": "fd6dd9ee2ef6fd0dca47efad1d6ffdcbb5346333df6daeef6155d86648ebc25a",
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-pi.tex": "35ceccb5808ed16d56258bff591c501603d77028d2ee269da0c371368a60503c",
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-ta.tex": "d17e1c323f8d81fdfe48854e2a865f1bcafacfda119c9362710d31783475c886",
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-te.tex": "1fc76ee9e446fa9e1083b32f837fb7c40d1c408620e16b628d604f9aaa678090",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-as.tex": "c0d23a0364983038ee73fdc9ee54dc8faa23d38111991b7c5c2b31833f22a050",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-bn.tex": "b44ca65373a702020d5ffbf1acdffa78f5b4d3259b4f18a12a88b2a71ae2445d",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-gu.tex": "7b9f11a5fb0ab27bad7ed3a0b9dbb1ef33d67050069610cc7630de35d2a34cda",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-hi.tex": "a55a2766d7e1c2d36991f4fccfef639016721b41593029043c2d13bc340ef632",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-kn.tex": "2f88ea093e99239f7c22a2b26455fcebec7a9dbcbfbfd73683582ea3af5fc99c",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-ml.tex": "b37b1446d79587003d85887731df822aa01afea2f6d8cc5728d55e00a92edb8d",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-mr.tex": "dd033b789f381081fbf05a976e34790b566f40ddcd276790f581b15b62eca844",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-or.tex": "a028fb9f5554f709cbc3f073873e5771b2b669e3725c9888d917c38152d8ea0b",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-pa.tex": "7582a5ac2e6959d64c13b3f2cee41222c810f1e0ed6b29c870da657fee09442a",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-pi.tex": "d27f9141dc55bfff0a00a204fd8af2031a1fd23ead83836ffec61debf4eb9033",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-ta.tex": "7154ee4519ae5fcebbb2c1d05fd7f19820b53db8b84dbaea34e6a6f6a8fd4642",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-te.tex": "101a8f1664ea5a7520e06f07f0275c9bdf6ad3de63d6f74c4f44fd1369396ccd",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-as.pat.txt": "7e919515a24ff650b14cb21458498aadf5267b5cdc761058e72f274544a4ecb6",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-bn.pat.txt": "7e919515a24ff650b14cb21458498aadf5267b5cdc761058e72f274544a4ecb6",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-gu.pat.txt": "717fbb82d36d78025c0ab660658d9f07dba8da8508e529acee5186820b81807c",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-hi.pat.txt": "a070afade79f4ba1701db681cd91be25922cbdff975bc8ec1884214fcb6f4971",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-kn.pat.txt": "d7939c1e1c8fef58585cd0af4c852d665440cf16c3c5cdf2f956bc4ce1201292",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-ml.pat.txt": "842d36348d00d3e0b079fdeaf2b975d53e788317a2da6233724a97c09222619d",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-mr.pat.txt": "a070afade79f4ba1701db681cd91be25922cbdff975bc8ec1884214fcb6f4971",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-or.pat.txt": "8092c7d8facd85c0aeb72a825fcd68057bc2ac7a97c006d4331108212ea71b62",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-pa.pat.txt": "a9b5522e2738ee145c0051a0dfc77580ca3308688d94e0d10ccf04308ab517ed",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-pi.pat.txt": "50c7ae2261d541a2c325086180aeccd3c77bb0df0b43a3655ba5de5597e9898d",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-ta.pat.txt": "6ccd02f3254fd7f4a2d1d98b6ab03d2880e7b4d6f45781e03c1944f787a91caa",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-te.pat.txt": "43676d49d447ccfe6e4cf8280a879a08ddbc1f50cf86145f7bf7564119b57d35"
+        }
+      },
+      "hyphen-indonesian": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-indonesian.tar.xz",
+        "upstream_sha256": "cc11c4cf7b567fa9efee20fb58848b75be0f18f54c8093f46092a2ef5a4ea146",
+        "upstream_size_bytes": 2412,
+        "map_files": [],
+        "file_count": 4,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-id.tex": "90990a117d2105f5f07cee88f56bdd16c96994e003f7f62efc8f2f9048218fb3",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-id.tex": "95bb9f56044f5f4bcceb838224a13d560df0188f0d91543c8d3b4c9a2abfc032",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-id.hyp.txt": "85260a236be4763cc5972be8a29ea94796e388a2528c9350df3a0519207c8482",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-id.pat.txt": "484a55a28d3cbffabd8b6ca0305079b2128dfb6c58cd140556b50dca6c7e29b2"
+        }
+      },
+      "hyphen-interlingua": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-interlingua.tar.xz",
+        "upstream_sha256": "599ea6de171629099ddc5c238865b90a9985445055195402e49536b5c359cf84",
+        "upstream_size_bytes": 2880,
+        "map_files": [],
+        "file_count": 4,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-ia.tex": "bd18be8ebc26dea5780b1a5d8d81bc57ddd664375dfc7f1901c847e8a39ee6c9",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-ia.tex": "c2e570831d02831f2c2c26e17ebe68d81c02a1c2cfbf4ac9d182610d6a0c6e3d",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-ia.hyp.txt": "5c1c813043e1c4ad1d48fbba3d8187ba33561e901b92dc0de2f6751e35e05045",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-ia.pat.txt": "cf0eb8ba228ec69d03318f6c9617a8a703be42c9880510786fbbb3271a2e4c6a"
+        }
+      },
+      "hyphen-sanskrit": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-sanskrit.tar.xz",
+        "upstream_sha256": "1dfec14ef68848d13d027bf16d35266e485f96deba8465f821904a34818dc783",
+        "upstream_size_bytes": 3596,
+        "map_files": [],
+        "file_count": 3,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-sa.tex": "53dccd22ba3d5a169d9bf7df9b732998838aeeadd4502a964e3e3542c417ea6d",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-sa.tex": "7f895b18be9ef598dfbc490ed19a24200712652eb0c5068f5c6fd88c363759c8",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-sa.pat.txt": "e8adb07b040b241b3a7c30688bf967ce7cff05dbd5580c8e05979662d98f4ea0"
+        }
+      },
+      "hyphen-thai": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-thai.tar.xz",
+        "upstream_sha256": "ba365d1acd79a0574ac76850ec7f2fd5ffe0d4d37dd22a846add0326e413d1cc",
+        "upstream_size_bytes": 33716,
+        "map_files": [],
+        "file_count": 4,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-th.tex": "0776f3b6f05740c43dd8b8a79bc25e9783027dac0b147aff0b0ce3a0b975169c",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-th.lth.tex": "d3597f1e890e7505876e4f346cf9adaa68df9c6a0234958573246ce03c128d9d",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-th.tex": "2d59071f549c68419362e9489044f67cc94bd395c004479afce9dc37338fc0c5",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-th.pat.txt": "7da72796303444e0fe524b20fb7896dd95c70daa94b354433a7104350304d3fc"
+        }
+      },
+      "hyphen-turkmen": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-turkmen.tar.xz",
+        "upstream_sha256": "7cb65fbd4d185eeeda11d71b2235b1b67cff54d0dae79de470d385ec086d3209",
+        "upstream_size_bytes": 6284,
+        "map_files": [],
+        "file_count": 4,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-tk.tex": "b625d99e7b1e8896cfb244bde2a97200d89408a54c6607d0f701c87395c4dfe2",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-tk.ec.tex": "13d96618b2cc1d0cc39c23213957268e11ff17046123a70b047251429ad3695b",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-tk.tex": "801ef59c14dab4fec0a9ae178632e63b8ef9f0362dcea74f4a3689a4a7908690",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-tk.pat.txt": "a016ebc51d23accd92d958f58b4c10583432f56ea4e70ab2987bbf517ca8ec50"
+        }
+      },
+      "hyphen-vietnamese": {
+        "version": "TeX Live r74032",
+        "revision": 74032,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-vietnamese.tar.xz",
+        "upstream_sha256": "bb552e50a88ed639f4c86326cb01a3adf1685093e85cd12af2cddfdfb17c6de8",
+        "upstream_size_bytes": 712,
+        "map_files": [],
+        "file_count": 1,
+        "files": {
+          "tex/generic/hyph-utf8/patterns/tex/hyph-vi.tex": "60d6b75e15395bbbb6474d2712f650de23ab432b56315476e074a6b0a5fea378"
+        }
+      },
+      "hyphen-polish": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "knuth",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-polish.tar.xz",
+        "upstream_sha256": "128b68a22215ffc5066a58af9bd3f8fe792412bfd4b5d5203583266048ad8a1e",
+        "upstream_size_bytes": 12500,
+        "map_files": [],
+        "file_count": 5,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-pl.tex": "7e11ba2260a08494f9a058fabffaed67d48cd787998e78a8e29be412b11aea51",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-pl.qx.tex": "978c811f19417c11029dafa85b1cadfb8f6d544c31a4e4f76f4c130c26f446cb",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-pl.tex": "83ddbbd21bc06a44bc4f4a4c49c38782e809cff5f026b764c044daa29e818843",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-pl.hyp.txt": "0e3fd28ea45ec144f5f1438a7bbfb5b55c14dd0cccfefe4ddfbe95fee14d82cf",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-pl.pat.txt": "4b9c3583f176efb76dccee7e630ac7516567abd96dcbc3ebaa2388e795774b48"
+        }
+      },
+      "hyphen-portuguese": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-portuguese.tar.xz",
+        "upstream_sha256": "68031bec21717fe36f442b2af3fa168aa6bfb4c35f981c9e167b276c497e448e",
+        "upstream_size_bytes": 3772,
+        "map_files": [],
+        "file_count": 0,
+        "files": {}
+      },
+      "hyphen-catalan": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-catalan.tar.xz",
+        "upstream_sha256": "f45d9535088ff7549ddd48624c661701fd8c87cad8c41e3a836c54de12515577",
+        "upstream_size_bytes": 5048,
+        "map_files": [],
+        "file_count": 5,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-ca.tex": "d1541367f74436603532e16709bcb7fffb266a9742b1baebf8518836018e687b",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-ca.ec.tex": "7bdfee2bab334905743858445ffa8158aa93f377e85dccbcd4ad46acb6722f1e",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-ca.tex": "153b51e2a9f8afdd87a8848f73f4462a902c58d597aa55c66506af65c5596e7a",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-ca.hyp.txt": "e499a2936114dccf2912a9b8f3fdcd13e0935c0c43f068caf9b831f1b783778c",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-ca.pat.txt": "2dc1bdf12b59ade48a70a3af4692c79bbc1be4e786ad625164cdf90f0e5e7753"
+        }
+      },
+      "hyphen-galician": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "lppl",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-galician.tar.xz",
+        "upstream_sha256": "6496a76d5d589c353ce6ec90a45a4f91e96c8bfd858f8c75b74b5e1347b87ccf",
+        "upstream_size_bytes": 10372,
+        "map_files": [],
+        "file_count": 4,
+        "files": {
+          "tex/generic/hyph-utf8/loadhyph/loadhyph-gl.tex": "c40dcf0f187086688bd3e458184547f880cf60d86d17965502d981b0c7b79754",
+          "tex/generic/hyph-utf8/patterns/ptex/hyph-gl.ec.tex": "fbe35f4437bc2b4b8534be1d928a6a4f4ab76d01fe108405f03e2ae4d25750e8",
+          "tex/generic/hyph-utf8/patterns/tex/hyph-gl.tex": "a7dbf7fd11c646921a40be561fb1ba362cd79ce93d0099dec9f86676abb5273a",
+          "tex/generic/hyph-utf8/patterns/txt/hyph-gl.pat.txt": "78185ecaff922fc2fb7c8acc164ed5a303119eb280d4af48745fd7513a628522"
+        }
+      },
+      "hyphen-spanish": {
+        "version": "TeX Live r78069",
+        "revision": 78069,
+        "license": "mit",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/hyphen-spanish.tar.xz",
+        "upstream_sha256": "ba1c9340f186573770ad28a513bb4aaa334b7bee50f5f902544f381fb058d835",
+        "upstream_size_bytes": 16428,
+        "map_files": [],
+        "file_count": 0,
+        "files": {}
       }
     },
     "mf_outlines": {
@@ -34492,24 +35601,109 @@
       "doc/fonts/NOTICES-FONTS-XETEX.txt": "5f129dbf9fc76485c8ae4ea7fd495805f82f8e3784c83619208de46e862795d1"
     },
     "hyphenation_config": {
-      "output_file": "tex/generic/config/language.dat.lua",
-      "sha256": "bebd18d722dbba5a1b6119388a7109e4e0bf51e5f98e78d11ec3d01fe1f71f5f",
-      "size_bytes": 2247,
+      "files": {
+        "tex/generic/config/language.dat": {
+          "sha256": "20a3ca170d03db8b37c0c2680315ae6bae033280b459bb01aa41a128e50893b5",
+          "size_bytes": 6865
+        },
+        "tex/generic/config/language.def": {
+          "sha256": "bdd8febff4834f7b3a35ccc6d905dad1c83191b21c158f7ed5df0e140ab5521b",
+          "size_bytes": 8129
+        },
+        "tex/generic/config/language.dat.lua": {
+          "sha256": "80af6fad6874b1a3eafa4add8e8c0e6325405fd4ae9e5f9dbc4c79bd7e01815f",
+          "size_bytes": 18357
+        }
+      },
       "languages": [
-        "english",
+        "arabic",
+        "farsi",
+        "pinyin",
+        "belarusian",
+        "bulgarian",
+        "churchslavonic",
+        "kazakh",
+        "mongolian",
+        "mongolianlmc",
+        "russian",
+        "serbian",
+        "serbianc",
+        "ukrainian",
+        "czech",
+        "slovak",
         "ukenglish",
         "usenglishmax",
+        "albanian",
+        "croatian",
+        "danish",
+        "dutch",
+        "estonian",
+        "finnish",
+        "schoolfinnish",
+        "friulan",
+        "hungarian",
+        "icelandic",
+        "irish",
+        "kurmanji",
+        "classiclatin",
+        "latin",
+        "liturgicallatin",
+        "latvian",
+        "lithuanian",
+        "macedonian",
+        "bokmal",
+        "nynorsk",
+        "occitan",
+        "piedmontese",
+        "romanian",
+        "romansh",
+        "slovenian",
+        "swedish",
+        "turkish",
+        "uppersorbian",
+        "welsh",
         "basque",
         "french",
+        "german-x-2024-02-28",
+        "ngerman-x-2024-02-28",
         "german",
         "ngerman",
         "swissgerman",
+        "ancientgreek",
+        "ibycus",
         "greek",
         "monogreek",
-        "ancientgreek",
-        "spanish",
+        "italian",
+        "afrikaans",
+        "armenian",
+        "coptic",
+        "esperanto",
+        "ethiopic",
+        "georgian",
+        "hebrew",
+        "assamese",
+        "bengali",
+        "gujarati",
+        "hindi",
+        "kannada",
+        "malayalam",
+        "marathi",
+        "oriya",
+        "pali",
+        "panjabi",
+        "tamil",
+        "telugu",
+        "indonesian",
+        "interlingua",
+        "sanskrit",
+        "thai",
+        "turkmen",
+        "vietnamese",
+        "polish",
         "portuguese",
-        "russian"
+        "catalan",
+        "galician",
+        "spanish"
       ]
     },
     "map_roots": {

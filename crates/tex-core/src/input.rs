@@ -404,6 +404,11 @@ impl MacroFrame {
         depth
     }
 
+    /// Take the argument buffer of a frame that is about to be dropped.
+    pub(crate) fn take_arg_buffer(&mut self) -> Vec<Token> {
+        std::mem::take(&mut self.args.toks)
+    }
+
     pub(crate) fn into_arg_buffer(self) -> Vec<Token> {
         self.args.into_buffer()
     }

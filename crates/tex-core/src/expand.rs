@@ -595,23 +595,28 @@ impl Engine {
     }
 
     /// Pop the exhausted token list on top of the input stack (tex.web
-    /// end_token_list), recycling its buffer.
+    /// end_token_list), recycling its buffer. The source is dropped where it
+    /// lies: moving it out of the stack would copy all of it.
     #[inline(never)]
     fn end_token_list(&mut self) {
-        match self.input.stack.pop() {
-            Some(crate::input::Source::TokList { toks, name, .. }) => {
-                if name == crate::align::U_PART_SRC {
-                    self.align_u_template_finished();
-                }
-                if let crate::input::TokTokens::Vec(v) = toks {
-                    self.recycle_token_vec(v);
-                }
-            }
-            Some(crate::input::Source::MacroFrame(frame)) => {
-                self.recycle_token_vec(frame.into_arg_buffer());
-            }
-            _ => {}
+        use crate::input::{Source, TokTokens};
+        let (u_part, buffer) = match self.input.stack.last_mut() {
+            Some(Source::TokList { toks, name, .. }) => (
+                *name == crate::align::U_PART_SRC,
+                match toks {
+                    TokTokens::Vec(v) => std::mem::take(v),
+                    TokTokens::Rc(_) => Vec::new(),
+                },
+            ),
+            Some(Source::MacroFrame(frame)) => (false, frame.take_arg_buffer()),
+            _ => (false, Vec::new()),
+        };
+        let depth = self.input.stack.len().saturating_sub(1);
+        self.input.stack.truncate(depth);
+        if u_part {
+            self.align_u_template_finished();
         }
+        self.recycle_token_vec(buffer);
     }
 
     #[inline]

@@ -1,0 +1,15 @@
+This is makeindex, version 2.18 [TeX Live 2026] (kpathsea + Thai support).
+Scanning style file ./prec.ist..done (2 attributes redefined, 0 ignored).
+Scanning input file pages.idx....
+!! Input index error (file = pages.idx, line = 7):
+   -- Illegal page number i or page_precedence AnR.
+!! Input index error (file = pages.idx, line = 8):
+   -- Illegal page number a or page_precedence AnR.
+
+!! Input index error (file = pages.idx, line = 11):
+   -- Illegal Arabic digit: position 2 in 1-2.
+done (15 entries accepted, 3 rejected).
+Sorting entries....done (59 comparisons).
+Generating output file pages.ind....done (13 lines written, 0 warnings).
+Output written in pages.ind.
+Transcript written in pages.ilg.

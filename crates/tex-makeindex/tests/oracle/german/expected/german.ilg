@@ -1,0 +1,7 @@
+This is makeindex, version 2.18 [TeX Live 2026] (kpathsea + Thai support).
+Scanning style file ./german.ist..done (2 attributes redefined, 0 ignored).
+Scanning input file german.idx....done (20 entries accepted, 0 rejected).
+Sorting entries....done (90 comparisons).
+Generating output file german.ind....done (42 lines written, 0 warnings).
+Output written in german.ind.
+Transcript written in german.ilg.

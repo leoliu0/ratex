@@ -1,5 +1,7 @@
 #[path = "../allocator.rs"]
 mod allocator;
+#[path = "../index/tree.rs"]
+mod index_tree;
 #[global_allocator]
 static GLOBAL: allocator::EngineAllocator = allocator::EngineAllocator;
 
@@ -2328,8 +2330,23 @@ pub(crate) fn main() {
     main_with_args(std::env::args_os().collect());
 }
 
+/// `\write18{makeindex ...}` and `os.execute` (imakeidx): the embedded
+/// makeindex, run in the working directory on the job's files, which TeX
+/// writes to `output_dir`.
+fn internal_command(words: &[String], output_dir: Option<&std::path::Path>) -> Option<i32> {
+    let (program, args) = words.split_first()?;
+    if program != "makeindex" {
+        return None;
+    }
+    let cwd = std::path::Path::new(".");
+    let tree = |name: &str| index_tree::style(cwd, name);
+    let host = tex_makeindex::DirHost { work_dir: cwd, output_dir, tree: &tree, stdin: false };
+    Some(tex_makeindex::run_cli(args, &host))
+}
+
 pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     install_panic_reporter();
+    tex_core::set_internal_command(internal_command);
     let mut phase_timer = PhaseTimer::new();
     apply_mem_limit();
     let program = program_name();

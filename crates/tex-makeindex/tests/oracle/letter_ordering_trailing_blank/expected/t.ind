@@ -1,0 +1,18 @@
+\begin{theindex}
+
+  \item  , \emph{q}, 1-3
+
+  \indexspace
+
+  \item a  b, 3
+  \item a b, 1
+  \item ab, 2
+
+  \indexspace
+
+  \item x, 5
+  \item x , 4, 6
+  \item x y, 7
+  \item xy, 8
+
+\end{theindex}

@@ -1,0 +1,11 @@
+This is makeindex, version 2.18 [TeX Live 2026] (kpathsea + Thai support).
+Scanning input file f.idx....
+!! Input index error (file = f.idx, line = 2):
+   -- Page number 11 has too many fields (max. 10).
+!! Input index error (file = f.idx, line = 6):
+   -- Illegal page number * or page_precedence rnaRA.
+done (7 entries accepted, 2 rejected).
+Sorting entries....done (17 comparisons).
+Generating output file f.ind....done (31 lines written, 0 warnings).
+Output written in f.ind.
+Transcript written in f.ilg.

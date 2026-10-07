@@ -440,9 +440,8 @@ struct Manifest {
     bibliography_signature: Option<u64>,
     bibliography_output_hash: Option<u64>,
     /// Per formatted index (`.ind`, named relative to the auxiliary
-    /// directory): the signature of the makeindex run that wrote it and the
-    /// hash of what it wrote.
-    indexes: BTreeMap<PathBuf, (u64, u64)>,
+    /// directory): the signature of the makeindex run that wrote it.
+    indexes: BTreeMap<PathBuf, u64>,
 }
 
 fn read_to_string_bounded(path: &Path, max_bytes: u64) -> std::io::Result<Option<String>> {
@@ -517,8 +516,7 @@ fn read_manifest(path: &Path) -> Option<Manifest> {
             "index" => {
                 let file = PathBuf::from(hex_decode(fields.next()?)?);
                 let signature = fields.next()?.parse().ok()?;
-                let output = fields.next()?.parse().ok()?;
-                manifest.indexes.insert(file, (signature, output));
+                manifest.indexes.insert(file, signature);
             }
             _ => return None,
         }
@@ -689,9 +687,9 @@ fn write_manifest(path: &Path, manifest: &Manifest) -> std::io::Result<()> {
             .map(|value| value.to_string())
             .unwrap_or_else(|| "-".to_string())
     ));
-    for (file, (signature, output)) in &manifest.indexes {
+    for (file, signature) in &manifest.indexes {
         text.push_str(&format!(
-            "index\t{}\t{signature}\t{output}\n",
+            "index\t{}\t{signature}\n",
             hex_encode(&file.to_string_lossy())
         ));
     }
@@ -2972,52 +2970,48 @@ fn run_bibtex(aux_stem: &Path, source_dir: &Path, silent: bool) -> i32 {
     }
 }
 
-/// Runs the embedded makeindex for each index the last pass wrote whose
-/// input, options or style changed since its output was produced. Returns the
-/// number of runs, or makeindex's exit status when one fails.
+/// Runs the embedded makeindex for each index the last pass announced, as
+/// latexmk does: when its input (or style) changed since the run that wrote
+/// its output, or the output is missing. An output rewritten since (by
+/// imakeidx running makeindex itself) is left alone. Returns the number of
+/// runs, or makeindex's exit status when one fails.
 fn run_index_tools(
     manifest: &mut Manifest,
     aux_dir: &Path,
     source_dir: &Path,
-    fls_path: &Path,
     log_path: &Path,
     silent: bool,
     recorded: &std::cell::RefCell<BTreeSet<PathBuf>>,
 ) -> Result<u32, i32> {
-    let Ok(Some(fls)) = read_to_string_bounded(fls_path, MANIFEST_MAX_BYTES) else {
+    let Ok(log) = std::fs::read(log_path) else {
         return Ok(0);
     };
-    if !fls.lines().any(|line| line.starts_with("OUTPUT ") && line.ends_with(".idx")) {
+    let log = String::from_utf8_lossy(&log);
+    if !log.contains("Writing index file") {
         return Ok(0);
     }
-    let log = std::fs::read(log_path).map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
-    let jobs = embedded_index::plan(&fls, log.as_deref().unwrap_or(""), aux_dir, source_dir);
-    let host = embedded_index::Host { source_dir, aux_dir };
     let mut runs = 0;
-    for job in jobs {
-        let signature = stable_hash(&embedded_index::signature_input(&job, &host));
+    for job in embedded_index::plan(&log, aux_dir) {
+        let signature = stable_hash(&embedded_index::signature_input(&job, source_dir));
         let key = job.ind.strip_prefix(aux_dir).unwrap_or(&job.ind).to_path_buf();
-        let current = regular_file_hash(&job.ind);
-        let up_to_date = current.is_some()
-            && manifest.indexes.get(&key) == Some(&(signature, current.unwrap_or(0)));
-        if up_to_date {
+        if job.ind.is_file() && manifest.indexes.get(&key) == Some(&signature) {
             continue;
         }
         if !silent {
             eprintln!("texmk: makeindex {}", job.idx.display());
         }
         let _ = std::fs::remove_file(&job.ind);
-        if let Err(status) = embedded_index::run(&job, &host) {
+        if let Err(status) = embedded_index::run(&job, source_dir) {
             manifest.indexes.remove(&key);
             eprintln!("texmk: makeindex failed on {}", job.idx.display());
             return Err(status);
         }
-        let Some(output_hash) = regular_file_hash(&job.ind) else {
+        if regular_file_hash(&job.ind).is_none() {
             manifest.indexes.remove(&key);
             eprintln!("texmk: makeindex wrote no output file {}", job.ind.display());
             return Err(1);
-        };
-        manifest.indexes.insert(key.clone(), (signature, output_hash));
+        }
+        manifest.indexes.insert(key.clone(), signature);
         let mut recorded = recorded.borrow_mut();
         recorded.insert(key.clone());
         recorded.insert(key.with_extension("ilg"));
@@ -3736,7 +3730,6 @@ fn build(opt: &Options, info: &mut BuildInfo) -> i32 {
             &mut manifest,
             &aux_dir,
             &source_dir,
-            &artifact_path(&aux_dir, &job, ".fls"),
             &log_path,
             opt.silent,
             &recorded_outputs,
@@ -4324,7 +4317,10 @@ fn run_embedded_bibtex() -> ! {
 fn run_embedded_makeindex() -> ! {
     enable_embedded_resources_by_default();
     let args: Vec<String> = std::env::args().skip(1).collect();
-    std::process::exit(tex_makeindex::run_cli(&args, &tex_makeindex::FsHost));
+    let cwd = Path::new(".");
+    let tree = |name: &str| embedded_index::tree::style(cwd, name);
+    let host = tex_makeindex::DirHost { work_dir: cwd, output_dir: None, tree: &tree, stdin: true };
+    std::process::exit(tex_makeindex::run_cli(&args, &host));
 }
 
 fn run_embedded_biber() -> ! {

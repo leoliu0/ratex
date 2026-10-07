@@ -772,12 +772,16 @@ impl Engine {
         }
     }
 
+    #[cold]
+    #[inline(never)]
     pub fn error_at(&mut self, message: &str, source: Option<SourceContext>) {
         let saved = std::mem::replace(&mut self.diagnostic_source_override, source);
         self.error(message);
         self.diagnostic_source_override = saved;
     }
 
+    #[cold]
+    #[inline(never)]
     pub fn fatal_error_at(&mut self, message: &str, source: Option<SourceContext>) {
         let saved = std::mem::replace(&mut self.diagnostic_source_override, source);
         self.fatal_error(message);
@@ -1383,6 +1387,8 @@ impl Engine {
         }
     }
 
+    #[cold]
+    #[inline(never)]
     pub fn error(&mut self, msg: &str) {
         if self.stopped_on_error {
             return;
@@ -1450,6 +1456,8 @@ impl Engine {
         }
     }
 
+    #[cold]
+    #[inline(never)]
     pub fn fatal_error(&mut self, msg: &str) {
         self.error(msg);
         self.flush_diagnostic_repeats();

@@ -29,10 +29,24 @@ pub struct IfState {
     pub unless: bool,
     /// tex.web `if_limit = fi_code`: the `\else` branch is running
     pub in_else: bool,
-    pub loc_file: std::rc::Rc<str>,
+    /// The file open when the conditional began; `None` when that is the
+    /// file of `loc` (the usual case, sparing a reference count per
+    /// conditional). Read it with [`IfState::loc_file`].
+    pub(crate) loc_file: Option<std::rc::Rc<str>>,
     pub loc_line: u32,
     pub loc_cs: u32,
     pub(crate) loc: Option<crate::input::SourceMark>,
+}
+
+impl IfState {
+    /// The name of the file open when the conditional began ("" if none).
+    pub fn loc_file(&self) -> &str {
+        match (&self.loc_file, &self.loc) {
+            (Some(name), _) => name,
+            (None, Some(mark)) => mark.file_name(),
+            (None, None) => "",
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

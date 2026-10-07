@@ -187,6 +187,12 @@ jobs:
         uses: TeX-Live/setup-texlive-action@v3
         with:
           version: 2026
+          # Every collection-lang* with hyphenation patterns, as the bundled
+          # formats dump them (scripts/bundle_packages.py
+          # HYPHENATION_COLLECTIONS): the reference must define the same
+          # languages under the same \language numbers, or packages that
+          # switch patterns when a language exists (lipsum's Latin) break
+          # lines differently.
           packages: |
             scheme-basic
             collection-latexrecommended
@@ -196,12 +202,22 @@ jobs:
             collection-luatex
             collection-xetex
             collection-mathscience
+            collection-langarabic
             collection-langcjk
             collection-langchinese
+            collection-langcyrillic
+            collection-langczechslovak
+            collection-langenglish
+            collection-langeuropean
+            collection-langfrench
+            collection-langgerman
+            collection-langgreek
+            collection-langitalian
             collection-langjapanese
             collection-langkorean
-            collection-langcyrillic
-            collection-langgreek
+            collection-langother
+            collection-langpolish
+            collection-langportuguese
             collection-langspanish
 
       - name: Linux font and engine compatibility gate

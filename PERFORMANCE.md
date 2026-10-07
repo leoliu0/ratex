@@ -294,8 +294,12 @@ Two caches can make a run skip typesetting entirely:
 
 - The **engine result cache**: a direct engine pass records its inputs (source,
   every loaded file, auxiliary state, relevant environment, executable
-  identity) and, when nothing changed, republishes the previous PDF, SyncTeX
-  file, and transcript without typesetting.
+  identity, the dates `\pdffilemoddate` reported) and, when nothing changed,
+  republishes the previous PDF, SyncTeX file, and transcript without
+  typesetting. What the run produced itself is not an input: a file read back
+  after the run wrote it through `\openout` (beamer's `.vrb`), and a file first
+  read after a `\write18` command ran and gone at the end (minted's
+  `latexminted` config file), which is recorded as absent.
 - The **driver cache**: `texres` keeps per-job auxiliary state and a manifest
   and can declare an unchanged build converged after one cache hit.
 

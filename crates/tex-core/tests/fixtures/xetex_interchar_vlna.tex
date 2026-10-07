@@ -1,0 +1,17 @@
+\catcode`\{=1 \catcode`\}=2 \catcode`\#=6
+\showboxdepth=100 \showboxbreadth=10000 \tracingonline=1
+\synctex=1
+\font\a="[lmroman10-regular.otf]" \a
+% polyglossia's Polish vlna: one-letter prepositions examine the next token
+\XeTeXinterchartokenstate=1
+\XeTeXcharclass`\z=1 \XeTeXcharclass`\a=1 \XeTeXcharclass`\w=1 \XeTeXcharclass`\i=1
+\def\nointer{\let\inter\pre}
+\def\pre{\let\inter\nointer\examine}
+\def\examine#1{#1\futurelet\next\process}
+\def\process{\ifx\next\xspace\penalty10000 \fi}
+\futurelet\xspace{ }\nointer
+\XeTeXinterchartoks 4095 1 {\inter}
+\setbox0\vbox{\noindent x zalezy zaa wielkosci z x\showlists}
+\setbox0\hbox{zalezy wielkosci}
+\showbox0
+\end

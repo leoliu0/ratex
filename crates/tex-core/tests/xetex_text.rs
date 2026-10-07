@@ -73,6 +73,23 @@ fn run_file(src: &[u8]) -> Engine {
     eng
 }
 
+/// polyglossia's Polish vlna: `\XeTeXinterchartoks` before a one-letter
+/// preposition re-reads the letter as a macro argument and `\futurelet`s the
+/// next one, so a word like "zalezy" is collected in three runs that each join
+/// the preceding native word. With SyncTeX on, the marks TeXres keeps behind
+/// a merged word must not stop the next run from joining it (TeX Live: one
+/// node per word, so the word stays hyphenatable).
+#[test]
+fn interchar_runs_join_one_word_with_synctex() {
+    let eng = run_file(include_bytes!("fixtures/xetex_interchar_vlna.tex"));
+    let t = &eng.term;
+    has(
+        t,
+        "\\a x\n\\glue 3.34248 plus 1.67123 minus 1.11415\n\\a zalezy\n\\glue 3.34248 plus 1.67123 minus 1.11415\n\\a zaa\n\\penalty 10000\n\\glue 3.34248 plus 1.67123 minus 1.11415\n\\a wielkosci\n\\glue 3.34248 plus 1.67123 minus 1.11415\n\\a z\n\\penalty 10000\n\\glue 3.34248 plus 1.67123 minus 1.11415\n\\a x\nspacefactor 1000",
+    );
+    has(t, "\\hbox(11.31227+2.91086)x68.34538\n.\\a zalezy\n.\\glue 3.34248 plus 1.67123 minus 1.11415\n.\\a wielkosci");
+}
+
 /// `\font` of a missing native font defines the control sequence as
 /// `nullfont` (tex.web §1257), reports the error only without
 /// `\suppressfontnotfounderror`, and prints the spec unquoted; `\/` after a

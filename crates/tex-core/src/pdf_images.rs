@@ -844,8 +844,6 @@ pub struct PdfImportHost<'a> {
     pub fonts: &'a mut dyn FontLookup,
     /// epdf.c's font descriptors, shared by every inclusion.
     pub imported_fonts: &'a mut Vec<ImportedFont>,
-    /// Number of document fonts initialized so far.
-    pub font_init_order: usize,
 }
 
 /// Copies objects of an included PDF into the output, renumbering every
@@ -898,30 +896,9 @@ impl PdfCopier<'_, '_> {
                 for (key, value) in dict {
                     copy.set(key.clone(), self.copy(value, depth + 1)?);
                 }
-                if copy
-                    .get(b"Type")
-                    .and_then(Object::as_name)
-                    .map(|n| n == b"FontDescriptor")
-                    .unwrap_or(false)
-                {
-                    let asc = copy.get(b"Ascent").ok().and_then(|o| {
-                        o.as_float()
-                            .ok()
-                            .map(|x| x as f64)
-                            .or_else(|| o.as_i64().ok().map(|x| x as f64))
-                    });
-                    let desc = copy.get(b"Descent").ok().and_then(|o| {
-                        o.as_float()
-                            .ok()
-                            .map(|x| x as f64)
-                            .or_else(|| o.as_i64().ok().map(|x| x as f64))
-                    });
-                    if let (Some(a), Some(d)) = (asc, desc) {
-                        if a - d > 3000.0 {
-                            copy.set(b"Descent", Object::Integer((a - 3000.0) as i64));
-                        }
-                    }
-                }
+                // pdfTeX copies a standard font without a program as it is;
+                // only the EPS converter's figures get the programs
+                // Ghostscript would have embedded for epstopdf
                 let unembedded_base14 = copy
                     .get(b"Type")
                     .and_then(Object::as_name)
@@ -930,7 +907,8 @@ impl PdfCopier<'_, '_> {
                         .get(b"Subtype")
                         .and_then(Object::as_name)
                         .is_ok_and(|name| name == b"Type1")
-                    && copy.get(b"FontDescriptor").is_err();
+                    && copy.get(b"FontDescriptor").is_err()
+                    && converted_eps(self.doc);
                 let base_font = unembedded_base14
                     .then(|| {
                         copy.get(b"BaseFont")
@@ -1091,7 +1069,6 @@ impl PdfCopier<'_, '_> {
                     stem_v,
                     desc_obj,
                     name_obj: 0,
-                    init_order: self.host.font_init_order,
                 });
                 self.host.imported_fonts.len() - 1
             }
@@ -1147,6 +1124,15 @@ fn lookup<'d>(
     key: &[u8],
 ) -> Option<&'d lopdf::Object> {
     doc.dereference(dict.get(key).ok()?).ok().map(|(_, value)| value)
+}
+
+/// The file is tex-ps's conversion of an EPS figure (its /Producer).
+fn converted_eps(doc: &lopdf::Document) -> bool {
+    lookup(doc, &doc.trailer, b"Info")
+        .and_then(|info| info.as_dict().ok())
+        .and_then(|info| lookup(doc, info, b"Producer"))
+        .and_then(|producer| producer.as_str().ok())
+        .is_some_and(|producer| producer == tex_ps::EPS_PDF_PRODUCER.as_bytes())
 }
 
 /// pdfTeX `zround`: round half away from zero, clamped to C `integer`.
@@ -3909,7 +3895,6 @@ mod tests {
                 base14_fonts: &mut standard_fonts,
                 fonts: &mut NoFonts,
                 imported_fonts: &mut imported_fonts,
-                font_init_order: 0,
             },
         )
     }

@@ -1853,7 +1853,6 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
     // pdfTeX walks font objects newest first: the most recently initialized
     // font of a program creates (and presets) the shared descriptor
     let mut descriptor_owner: HashMap<FontFileKey, usize> = HashMap::new();
-    let mut first_init: HashMap<FontFileKey, usize> = HashMap::new();
     for (index, (font, &key)) in doc.fonts.iter().zip(&font_keys).enumerate() {
         if is_sfnt(font) || font.font_file.is_empty() {
             continue;
@@ -1862,17 +1861,14 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         if font.init_order > doc.fonts[*owner].init_order {
             *owner = index;
         }
-        let first = first_init.entry(key).or_insert(font.init_order);
-        *first = (*first).min(font.init_order);
     }
-    // epdf.c created the descriptor of these programs before any document
-    // font was initialized: no font presets it from its TFM, and its /StemV
-    // is the included font's
+    // epdf.c created the descriptor of these programs while a page was shipped
+    // out, before `do_pdf_font` reaches any document font at the end of the
+    // job: no font presets it from its TFM, and its /StemV is the included
+    // font's
     let mut import_created: HashMap<FontFileKey, i32> = HashMap::new();
     for (font, &key) in doc.imported_fonts.iter().zip(&imported_keys) {
-        if first_init.get(&key).is_some_and(|&first| font.init_order <= first) {
-            import_created.entry(key).or_insert(font.stem_v);
-        }
+        import_created.entry(key).or_insert(font.stem_v);
     }
 
     // pdfencoding.c `pdf_encoding_complete`: the /Encoding entry and the ToUnicode CMap (made on

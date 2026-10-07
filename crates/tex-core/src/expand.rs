@@ -2286,7 +2286,7 @@ impl Engine {
                         &format!(
                             "Category code {category} is out of range for \\Ucharcat; expected 0 through 15 and used category 12"
                         ),
-                        source,
+                        source.map(|mark| mark.to_context()),
                     );
                     12
                 };

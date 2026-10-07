@@ -111,6 +111,32 @@ fn native_words_are_hyphenated_as_xetex_does() {
     }
 }
 
+/// Text collected after `\\XeTeXinterchartoks` ended a native word joins that
+/// word (xetex.web `collected`), also while SyncTeX records the text's
+/// position: the word stays whole for hyphenation (polyglossia's Polish
+/// `vlna` classes split every word starting with a, i, o, u, w or z this way).
+/// `xetex -ini -etex` shows `x | al- | go- | rithm`.
+#[test]
+fn interchar_fragments_merge_into_one_hyphenatable_word_with_synctex() {
+    let mut eng = boot();
+    run(
+        &mut eng,
+        r####"\catcode`\{=1 \catcode`\}=2 \catcode`\#=6
+\def\lcrange#1#2{\ifnum#1>#2 \else \lccode#1=#1 \expandafter\lcrange\expandafter{\number\numexpr#1+1\relax}{#2}\fi}
+\lcrange{`a}{`z}
+\language=0 \input hyphen.tex\relax
+\synctex=1
+\font\x="[EBGaramond-Regular.otf]"\relax \x \hyphenchar\x=`\- \showboxdepth=100 \showboxbreadth=10000 \hbadness=10000
+\hfuzz=1000pt \parindent=0pt \parfillskip=0pt plus 1fil \pretolerance=-1 \tolerance=10000
+\XeTeXinterchartokenstate=1 \XeTeXcharclass`\a=1 \XeTeXinterchartoks 1 0 {\relax}
+\scrollmode
+\setbox0\vbox{\hsize=1sp \lefthyphenmin=2 \righthyphenmin=3 \x x algorithm\par}\showbox0
+\end
+"####,
+    );
+    assert_eq!(showbox_lines(&eng.log), [["x", "al-", "go-", "rithm"]]);
+}
+
 /// `\\patterns` and `\\hyphenation` themselves: the characters TeX
 /// accepts, `\\savinghyphcodes`, exceptions, `\\uchyph`, the hyphenation
 /// minima, and the error messages.

@@ -1,0 +1,2 @@
+# makeindex -p reads the page count from these TeX transcripts
+!*.log

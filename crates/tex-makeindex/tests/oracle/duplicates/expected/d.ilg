@@ -1,0 +1,12 @@
+This is makeindex, version 2.18 [TeX Live 2026] (kpathsea + Thai support).
+Scanning input file d.idx....done (26 entries accepted, 0 rejected).
+Sorting entries....done (150 comparisons).
+Generating output file d.ind....
+## Warning (input = d.idx, line = 4; output = d.ind, line = 3):
+   -- Conflicting entries: multiple encaps for the same page under same key.
+
+## Warning (input = d.idx, line = 6; output = d.ind, line = 3):
+   -- Conflicting entries: multiple encaps for the same page under same key.
+done (15 lines written, 2 warnings).
+Output written in d.ind.
+Transcript written in d.ilg.

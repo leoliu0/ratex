@@ -1,0 +1,49 @@
+\begin{theindex}
+
+  \item a, \textbf{3}, 1--5
+
+  \indexspace
+
+  \item b, 2
+
+  \indexspace
+
+  \item c, 1--4
+
+  \indexspace
+
+  \item d, ii, 3
+
+  \indexspace
+
+  \item e, 1-1, 2-1
+
+  \indexspace
+
+  \item f, \textbf{1--3}
+
+  \indexspace
+
+  \item g, 2--10
+
+  \indexspace
+
+  \item h, 4
+
+  \indexspace
+
+  \item i, 1
+
+  \indexspace
+
+  \item j, \emph{1}, \textbf{1}
+
+  \indexspace
+
+  \item k, 3
+
+  \indexspace
+
+  \item l, 2, \see{x}{2}, 3
+
+\end{theindex}

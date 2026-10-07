@@ -1,0 +1,40 @@
+This is makeindex, version 2.18 [TeX Live 2026] (kpathsea + Thai support).
+Scanning input file bad.idx....
+!! Input index error (file = bad.idx, line = 2):
+   -- Missing arguments -- need two (premature LFD).
+!! Input index error (file = bad.idx, line = 3):
+   -- Unknown index keyword \foo.
+!! Input index error (file = bad.idx, line = 4):
+   -- Missing arguments -- need two (premature LFD).
+!! Input index error (file = bad.idx, line = 5):
+   -- No closing delimiter for second argument (illegal character `t').
+!! Input index error (file = bad.idx, line = 6):
+   -- No opening delimiter for second argument (illegal character `x').
+!! Input index error (file = bad.idx, line = 7):
+   -- Illegal space within numerals in second argument.
+!! Input index error (file = bad.idx, line = 8):
+   -- Illegal page number  or page_precedence rnaRA.
+!! Input index error (file = bad.idx, line = 9):
+   -- Extra `!' at position 6 of first argument.
+!! Input index error (file = bad.idx, line = 10):
+   -- Illegal null field.
+
+!! Input index error (file = bad.idx, line = 12):
+   -- Extra `|' at position 4 of first argument.
+!! Input index error (file = bad.idx, line = 13):
+   -- Extra `@' at position 4 of first argument.
+!! Input index error (file = bad.idx, line = 14):
+   -- Illegal Arabic digit: position 2 in 1a.
+!! Input index error (file = bad.idx, line = 15):
+   -- Illegal Roman number: position 3 in ixq.
+!! Input index error (file = bad.idx, line = 16):
+   -- Illegal page number * or page_precedence rnaRA.
+!! Input index error (file = bad.idx, line = 17):
+   -- Incomplete first argument (premature LFD).
+!! Input index error (file = bad.idx, line = 18):
+   -- Incomplete second argument (premature LFD).
+done (7 entries accepted, 16 rejected).
+Sorting entries....done (23 comparisons).
+Generating output file bad.ind....done (23 lines written, 0 warnings).
+Output written in bad.ind.
+Transcript written in bad.ilg.

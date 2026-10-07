@@ -1,4 +1,5 @@
-//! Offline Babel loading, language switching, and aux/TOC round trips.
+//! Offline Babel loading, language switching, aux/TOC round trips, and the
+//! hyphenation patterns of TeX Live's language collections.
 
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -19,7 +20,19 @@ impl Fixture {
     }
 
     fn run(&self, binary: &str) -> Output {
-        let out = Command::new(binary)
+        self.exec(std::path::Path::new(binary), binary)
+    }
+
+    /// Runs the multi-call binary under an engine name (`xelatex`, `lualatex`).
+    fn run_as(&self, engine: &str) -> Output {
+        let binary = env!("CARGO_BIN_EXE_texmk");
+        let alias = self.0.join(engine);
+        std::os::unix::fs::symlink(binary, &alias).unwrap();
+        self.exec(&alias, binary)
+    }
+
+    fn exec(&self, program: &std::path::Path, binary: &str) -> Output {
+        let out = Command::new(program)
             .arg("main.tex")
             .current_dir(&self.0)
             .env_clear()
@@ -104,4 +117,55 @@ fn brazilian_and_english_modules_load_and_switch_offline() {
     assert!(first_toc.contains(r"\babel@toc {brazilian}"), "{first_toc}");
     fixture.run(env!("CARGO_BIN_EXE_pdflatex"));
     assert_eq!(fixture.read("main.toc"), first_toc);
+}
+
+/// TeX Live 2026 installs every collection-lang* collection: its formats dump
+/// the patterns of all language.dat languages (polish is \language 86), and
+/// polyglossia selects them with the language's minima. Expected
+/// `\showhyphens` lines are those of /usr/bin/{xelatex,lualatex,pdflatex}.
+const POLYGLOSSIA_POLISH: &str = r"\documentclass{article}
+\usepackage{polyglossia}
+\setmainlanguage{polish}
+\begin{document}
+\typeout{PL=\the\language/\the\lefthyphenmin/\the\righthyphenmin}
+\showhyphens{stabilizuje równowaga}
+\end{document}
+";
+
+#[test]
+fn xelatex_polyglossia_polish_uses_the_dumped_polish_patterns() {
+    let fixture = Fixture::new("xe-polish", POLYGLOSSIA_POLISH);
+    fixture.run_as("xelatex");
+    let log = fixture.read("main.log");
+    assert!(log.contains("PL=86/2/2"), "{log}");
+    assert!(log.contains("sta-bi-li-zu-je rów-no-wa-ga"), "{log}");
+}
+
+#[test]
+fn lualatex_polyglossia_polish_loads_the_polish_patterns() {
+    let fixture = Fixture::new("lua-polish", POLYGLOSSIA_POLISH);
+    fixture.run_as("lualatex");
+    let log = fixture.read("main.log");
+    assert!(log.contains("PL=2/2/2"), "{log}");
+    assert!(log.contains("sta-bi-li-zu-je rów-no-wa-ga"), "{log}");
+}
+
+#[test]
+fn pdflatex_format_dumps_the_polish_patterns() {
+    let fixture = Fixture::new(
+        "pdf-polish",
+        r"\documentclass{article}
+\usepackage[T1]{fontenc}
+\begin{document}
+\makeatletter
+\language=\l@polish \lefthyphenmin=2 \righthyphenmin=2
+\typeout{PL=\the\language}
+\showhyphens{stabilizuje}
+\end{document}
+",
+    );
+    fixture.run(env!("CARGO_BIN_EXE_pdflatex"));
+    let log = fixture.read("main.log");
+    assert!(log.contains("PL=86"), "{log}");
+    assert!(log.contains("sta-bi-li-zu-je"), "{log}");
 }

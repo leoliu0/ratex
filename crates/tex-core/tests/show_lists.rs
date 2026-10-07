@@ -466,3 +466,41 @@ fn scripted_right_delimiter_keeps_later_math_kerns() {
 "#],
     );
 }
+
+/// tex.web make_radical (§737): the radicand is a clean_box (no
+/// \binoppenalty inside it even in a paragraph), the overbar rule has
+/// running width, and the surd + overbar pair is packed into one hbox.
+#[test]
+fn radical_is_one_box_with_a_clean_radicand() {
+    let log = run(
+        r#"\mathcode`\+="202B \medmuskip=4mu plus 2mu minus 4mu \binoppenalty=700 \parfillskip=0pt plus 1fil
+\setbox1\vbox{\hsize=100pt \noindent$\radical"270370 {a+b}+a$\par}\showbox1"#,
+    );
+    assert_displays(
+        &log,
+        &[r#"> \box1=
+\vbox(10.39996+0.0)x100.0
+.\hbox(8.9055+1.49446)x100.0, glue set 52.35893fil
+..\mathon
+..\hbox(8.9055+1.49446)x30.13304
+...\hbox(0.39998+9.6)x8.33336, shifted -8.10555
+....\tensy p
+...\vbox(8.9055+0.83333)x21.79968
+....\kern0.39998
+....\rule(0.39998+0.0)x*
+....\kern1.1611
+....\hbox(6.94444+0.83333)x21.79968
+.....\teni a
+.....\glue(\medmuskip) 2.22217 plus 1.11108 minus 2.22217
+.....\tenrm +
+.....\glue(\medmuskip) 2.22217 plus 1.11108 minus 2.22217
+.....\teni b
+..\glue(\medmuskip) 2.22217 plus 1.11108 minus 2.22217
+..\tenrm +
+..\penalty 700
+..\glue(\medmuskip) 2.22217 plus 1.11108 minus 2.22217
+..\teni a
+..\mathoff
+"#],
+    );
+}

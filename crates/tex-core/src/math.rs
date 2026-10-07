@@ -4332,15 +4332,10 @@ impl Engine {
         style: GStyle,
         origin: &MathDiagnosticOrigin,
     ) -> NodeList {
-        // xetex.web make_radical: `x:=clean_box(nucleus(q),cramped_style)`
+        // tex.web make_radical: `x:=clean_box(nucleus(q),cramped_style)`
         // (no penalties; a lone unshifted box stays as it is)
-        let x = if self.engine_kind == crate::engine::EngineKind::XeTeX {
-            self.clean_math_box(body, style | 1)
-        } else {
-            let body_nodes = self.mlist_to_hlist_pen(body, style | 1, self.math_penalties.get());
-            hpack(body_nodes, None, HBOX, &self.eqtb).node
-        };
-        let (xw, xh, xd) = box_dims(&x);
+        let x = self.clean_math_box(body, style | 1);
+        let (_, xh, xd) = box_dims(&x);
         // xetex.web make_radical: `f` is the small family font at this size
         let xe_f = self.xe_fam_fnt(style, delim.small_fam);
         let xe_ot = self.engine_kind == crate::engine::EngineKind::XeTeX && self.xe_is_new_mathfont(xe_f);
@@ -4383,12 +4378,12 @@ impl Engine {
         if delta > 0 {
             clr += half_i(delta);
         }
-        // overbar(b, k=clr, t=surd height): [kern(t), rule(t), kern(clr), body]
-        let xe_mode = self.engine_kind == crate::engine::EngineKind::XeTeX;
+        // overbar(b, k=clr, t=surd height): [kern(t), rule(t), kern(clr),
+        // body]; the fraction_rule has running width
         let vlist = vec![
             Node::Kern(dh, self.eqtb.cur_attr),
             Node::Rule {
-                width: if xe_mode { crate::build::RULE_FILL } else { xw },
+                width: crate::build::RULE_FILL,
                 height: dh,
                 depth: 0, subtype: crate::boxes::RULE_NORMAL, index: 0, attr: self.eqtb.cur_attr,
             },
@@ -4399,14 +4394,8 @@ impl Engine {
         if let Node::Box { shift, .. } = &mut d_box {
             *shift = -(xh + clr);
         }
-        let mut out = NodeList::new();
-        out.push(d_box);
-        out.push(v);
-        if xe_mode {
-            // info(nucleus(q)) := hpack(y, natural)
-            return vec![hpack(out, None, HBOX, &self.eqtb).node];
-        }
-        out
+        // info(nucleus(q)) := hpack(y, natural)
+        vec![hpack(vec![d_box, v], None, HBOX, &self.eqtb).node]
     }
 
     fn make_accent(
@@ -5213,15 +5202,19 @@ mod tests {
         }
     }
 
-    /// oracle: `\hbox{$\sqrt{x}$}` — cmex surd shifted to -(h+clr), bar box
-    /// = [kern(surd_h), rule(surd_h), kern(clr), body]
+    /// oracle: `\hbox{$\sqrt{x}$}` — one hbox (tex.web §737 `hpack(y)`)
+    /// holding the cmex surd shifted to -(h+clr) and the bar box =
+    /// [kern(surd_h), rule(surd_h), kern(clr), body]
     #[test]
     fn radical_sqrt_x() {
         let b = text_math("\\sqrtG{x}");
-        let (list, w, h, d, _) = box_of(&b);
+        let (outer, w, h, d, _) = box_of(&b);
         approx(w, 14.04863, "sqrt width = surd + body");
         approx(h, 8.00272, "sqrt height");
         approx(d, 2.39725, "sqrt depth");
+        assert_eq!(outer.len(), 1, "one radical box: {:?}", outer);
+        let (list, rw, _, _, _) = box_of(&outer[0]);
+        approx(rw, 14.04863, "radical box width");
         assert_eq!(list.len(), 2, "surd + bar vbox: {:?}", list);
         let (_, sw, _, sd, ssh) = box_of(&list[0]);
         approx(sw, 8.33336, "surd width");

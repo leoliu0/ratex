@@ -33247,9 +33247,9 @@
   },
   "supplement_archive": {
     "name": "packages-supplement.tar.zst",
-    "sha256": "bd833f8343d901f34d5cdd0057129857c3333ca2d03ca1943e54f9cbef9949df",
-    "size_bytes": 34989183,
-    "total_members": 718,
+    "sha256": "2acd6529e9b845a8df034c4ec0b8c11687fe41155033113437bf56f14a9b4da8",
+    "size_bytes": 34989173,
+    "total_members": 721,
     "precedence": "read before the main archive; its members shadow same-named main members",
     "packages": {
       "beamer": {
@@ -33419,6 +33419,21 @@
           "fonts/vf/public/newpx/zplmia.vf": "f818c694c2ef2a925a59a9e3c2735d8b833642f1ba9de8e25f44517f7b81f5de",
           "fonts/vf/public/newpx/zplsyc.vf": "94b0cd39f2f17310660f63a560e540aeba20987e88e1112a38299bbb8ab1cec5",
           "fonts/vf/public/newpx/zplsym.vf": "61c997ec7b009b10aa23ba9b57975206fcb39d23b948fe9a20f6c330efe273ec"
+        }
+      },
+      "rsfso": {
+        "version": "1.03",
+        "revision": 79618,
+        "license": "LPPL-1.3",
+        "upstream_url": "https://mirror.aarnet.edu.au/pub/CTAN/systems/texlive/tlnet/archive/rsfso.tar.xz",
+        "upstream_sha256": "020dceed71a12c218a39f00031b625914f95df8a0936e7ee033a5d8499b06007",
+        "upstream_size_bytes": 3796,
+        "map_files": [],
+        "file_count": 3,
+        "files": {
+          "fonts/vf/public/rsfso/rsfso10.vf": "44bc96005ac03ba1c58d4fc4d7e39c5f324cae5840ba66a8d16209bde7bc31ab",
+          "fonts/vf/public/rsfso/rsfso5.vf": "2b5e8f959f6e22619ba5d575f859a642de85cf0b952aa191c4577515913df950",
+          "fonts/vf/public/rsfso/rsfso7.vf": "efd64057699c784229febb4a383495c30849d7ebd30c4bb83c6d74c263c019f6"
         }
       },
       "lua-uni-algos": {
@@ -34379,7 +34394,7 @@
       }
     },
     "notices": {
-      "doc/fonts/NOTICES-FONTS-XETEX.txt": "38250ac70f80a90eccbbc2c4736689fde5444b54673d54e259325055bfbc53af"
+      "doc/fonts/NOTICES-FONTS-XETEX.txt": "fe2e67b4b4c0ee02c3a6b6893900d651cffe83b6ed28450930b37168ca42aa06"
     },
     "hyphenation_config": {
       "output_file": "tex/generic/config/language.dat.lua",

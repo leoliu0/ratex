@@ -1330,6 +1330,61 @@ fn input_rewritten_after_read_cannot_seed_a_false_cache_hit() {
     );
 }
 
+/// beamer writes each fragile frame to `\jobname.vrb` and reads it back, so
+/// one run reads several contents of the same file, all its own output.
+/// Reading or sizing a file after this run wrote it is no dependency: an
+/// unchanged rebuild is a cache hit, as latexmk does nothing.
+#[test]
+fn files_read_back_after_this_run_wrote_them_do_not_block_cache_hits() {
+    let job = Job::new();
+    std::fs::write(
+        job.0.join("main.tex"),
+        r"\documentclass{article}
+\newwrite\scratch
+\def\frame#1{\immediate\openout\scratch=\jobname.vrb
+\immediate\write\scratch{#1}\immediate\closeout\scratch
+\IfFileExists{\jobname.vrb}{\input{\jobname.vrb} (\pdffilesize{\jobname.vrb} bytes)\par}{}}
+\begin{document}
+\frame{First frame.}
+\frame{A longer second frame.}
+\end{document}",
+    )
+    .unwrap();
+    job.successful_compile();
+    job.successful_compile();
+    std::fs::write(job.0.join("main.log"), "cache sentinel").unwrap();
+    job.successful_compile();
+    assert_eq!(
+        std::fs::read_to_string(job.0.join("main.log")).unwrap(),
+        "cache sentinel",
+        "an unchanged rebuild re-ran the engine"
+    );
+
+    // A file read before this run rewrites it is still an input.
+    let source = std::fs::read_to_string(job.0.join("main.tex")).unwrap();
+    std::fs::write(
+        job.0.join("main.tex"),
+        source.replace(r"\begin{document}", r"\begin{document}\input{\jobname.vrb}"),
+    )
+    .unwrap();
+    job.successful_compile();
+    job.successful_compile();
+    std::fs::write(job.0.join("main.log"), "stable sentinel").unwrap();
+    job.successful_compile();
+    assert_eq!(
+        std::fs::read_to_string(job.0.join("main.log")).unwrap(),
+        "stable sentinel",
+        "the converged rebuild re-ran the engine"
+    );
+    std::fs::write(job.0.join("main.vrb"), "Changed outside the run.\n").unwrap();
+    job.successful_compile();
+    assert_ne!(
+        std::fs::read_to_string(job.0.join("main.log")).unwrap(),
+        "stable sentinel",
+        "a file read before the run rewrote it was not tracked"
+    );
+}
+
 #[test]
 fn openin_uses_the_same_bytes_for_tex_and_the_cache_digest() {
     let job = Job::new();

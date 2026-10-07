@@ -2248,7 +2248,11 @@ impl Engine {
                             .filter(|metadata| metadata.is_file())
                             .map(|metadata| {
                                 let size = metadata.len();
-                                self.loaded_file_sizes.push((path, size));
+                                // Like a read (`record_loaded_bytes`), the size
+                                // of a file this run wrote is its own output.
+                                if !self.written_before(&path) {
+                                    self.loaded_file_sizes.push((path, size));
+                                }
                                 size
                             })
                     }

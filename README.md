@@ -35,16 +35,16 @@ Download the package from the [latest release](https://github.com/leoliu0/texres
 
 ```bash
 # Debian / Ubuntu
-sudo apt install ./texres_0.7.1_amd64.deb
+sudo apt install ./texres_0.7.2_amd64.deb
 
 # Fedora / RHEL / openSUSE
-sudo dnf install ./texres-0.7.1-1.x86_64.rpm
+sudo dnf install ./texres-0.7.2-1.x86_64.rpm
 
 # Arch (AUR)
 yay -S texres-bin    # or build from source: yay -S texres
 
 # Any other glibc distribution (installs to ~/.local)
-tar -xzf tex-suite-v0.7.1-linux-x86_64.tar.gz && ./tex-suite-linux-x86_64/install.sh
+tar -xzf tex-suite-v0.7.2-linux-x86_64.tar.gz && ./tex-suite-linux-x86_64/install.sh
 ```
 
 ARM64 builds need glibc 2.36 or newer (Debian 12 or later), which includes

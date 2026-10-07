@@ -1,5 +1,5 @@
-//! Global allocator of the command-line tools: dlmalloc behind one lock for
-//! large blocks, and a lock-free per-thread cache for small ones.
+//! Global allocator of the command-line tools: dlmalloc behind its global
+//! lock for large blocks, and a lock-free per-thread cache for small ones.
 //!
 //! The engine allocates and frees millions of small token lists, macro bodies
 //! and frames. A locked allocator spends more time in the lock than in the
@@ -10,19 +10,21 @@
 //! joins the freeing thread's list: every block of a class has the same size
 //! and alignment, so it serves any later request of that class. Small blocks
 //! are never returned to dlmalloc.
+//!
+//! The large path is `GlobalDlmalloc`, whose lock is a statically initialized
+//! pthread mutex / SRW lock. A `std::sync::Mutex` must not guard it: on
+//! targets without futexes (macOS) std boxes the pthread mutex on first lock,
+//! and that allocation would re-enter this allocator without end.
 
-use dlmalloc::Dlmalloc;
+use dlmalloc::GlobalDlmalloc;
 use std::alloc::{GlobalAlloc, Layout};
 use std::cell::UnsafeCell;
 use std::ptr;
-use std::sync::Mutex;
 
 const GRAIN: usize = 16;
 const MAX_SMALL: usize = 1024;
 const CLASSES: usize = MAX_SMALL / GRAIN;
 const CHUNK: usize = 128 * 1024;
-
-static LARGE: Mutex<Dlmalloc> = Mutex::new(Dlmalloc::new());
 
 struct Cache {
     /// Head of the free list of each size class (class `c` holds blocks of
@@ -55,17 +57,10 @@ fn small_class(layout: &Layout) -> Option<usize> {
     }
 }
 
-#[inline(always)]
-fn large() -> std::sync::MutexGuard<'static, Dlmalloc> {
-    // A poisoned lock only means another thread panicked inside dlmalloc;
-    // the process aborts on panic, so it cannot be observed.
-    LARGE.lock().unwrap_or_else(|e| e.into_inner())
-}
-
 #[cold]
 #[inline(never)]
 unsafe fn refill(cache: &mut Cache, block: usize) -> *mut u8 {
-    let chunk = large().malloc(CHUNK, GRAIN);
+    let chunk = GlobalDlmalloc.alloc(Layout::from_size_align_unchecked(CHUNK, GRAIN));
     if chunk.is_null() {
         return chunk;
     }
@@ -107,7 +102,7 @@ unsafe impl GlobalAlloc for EngineAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         match small_class(&layout) {
             Some(class) => alloc_small(class),
-            None => large().malloc(layout.size(), layout.align()),
+            None => GlobalDlmalloc.alloc(layout),
         }
     }
 
@@ -115,7 +110,7 @@ unsafe impl GlobalAlloc for EngineAllocator {
     unsafe fn dealloc(&self, p: *mut u8, layout: Layout) {
         match small_class(&layout) {
             Some(class) => free_small(p, class),
-            None => large().free(p, layout.size(), layout.align()),
+            None => GlobalDlmalloc.dealloc(p, layout),
         }
     }
 
@@ -129,7 +124,7 @@ unsafe impl GlobalAlloc for EngineAllocator {
                 }
                 p
             }
-            None => large().calloc(layout.size(), layout.align()),
+            None => GlobalDlmalloc.alloc_zeroed(layout),
         }
     }
 
@@ -137,7 +132,7 @@ unsafe impl GlobalAlloc for EngineAllocator {
     unsafe fn realloc(&self, p: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         let new_layout = Layout::from_size_align_unchecked(new_size, layout.align());
         match (small_class(&layout), small_class(&new_layout)) {
-            (None, None) => large().realloc(p, layout.size(), layout.align(), new_size),
+            (None, None) => GlobalDlmalloc.realloc(p, layout, new_size),
             (Some(old), Some(new)) if old == new => p,
             _ => {
                 let q = self.alloc(new_layout);

@@ -560,7 +560,8 @@ pub fn run(options: &Options, host: &dyn Host) -> i32 {
             collation.compare(&mut entries, a, b)
         });
         log.message(format!("done ({comparisons} comparisons).\n").as_bytes());
-        let sorted: Vec<scan::Entry> = keys.iter().map(|&index| entries[index].clone()).collect();
+        let mut slots: Vec<Option<scan::Entry>> = entries.into_iter().map(Some).collect();
+        let sorted: Vec<scan::Entry> = keys.iter().filter_map(|&index| slots[index].take()).collect();
 
         let layout = Layout {
             style: &style,

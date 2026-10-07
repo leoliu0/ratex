@@ -43,8 +43,8 @@ struct Gen<'a, 'l> {
     level: usize,
     prev_level: usize,
     /// The current entry's encapsulator without its range operator.
-    encap: Vec<u8>,
-    prev_encap: Option<Vec<u8>>,
+    encap: &'a [u8],
+    prev_encap: Option<&'a [u8]>,
     in_range: bool,
     encap_range: bool,
     buff: Vec<u8>,
@@ -117,7 +117,7 @@ impl Gen<'_, '_> {
         let curr = self.curr.expect("an entry is current");
         self.begin = curr;
         self.the_end = curr;
-        self.prev_encap = Some(self.encap.clone());
+        self.prev_encap = Some(self.encap);
     }
 
     fn run(&mut self) {
@@ -125,9 +125,9 @@ impl Gen<'_, '_> {
         self.log.message(format!("Generating output file {}...", self.layout.output_name).as_bytes());
         self.put(&style.preamble);
         self.lc += style.prelen;
-        if let Some(page) = self.layout.start_page.clone() {
+        if let Some(page) = &self.layout.start_page {
             self.put(&style.setpage_prefix);
-            self.put(&page);
+            self.put(page);
             self.put(&style.setpage_suffix);
             self.lc += style.setpagelen;
         }
@@ -159,10 +159,10 @@ impl Gen<'_, '_> {
         let first = self.curr.is_none();
         self.prev = self.curr;
         self.curr = Some(n);
-        let encap = &self.entries[n].encap;
+        let entries = self.entries;
+        let encap: &[u8] = &entries[n].encap;
         let lead = encap.first().copied().unwrap_or(0);
-        self.encap =
-            if lead == style.range_open || lead == style.range_close { encap[1..].to_vec() } else { encap.clone() };
+        self.encap = if lead == style.range_open || lead == style.range_close { &encap[1..] } else { encap };
 
         if first {
             self.prev_level = 0;
@@ -185,8 +185,7 @@ impl Gen<'_, '_> {
             }
         }
 
-        let encap = self.entries[n].encap.clone();
-        let prev_encap = self.prev_encap.clone().unwrap_or_default();
+        let prev_encap = self.prev_encap.unwrap_or_default();
         if lead == style.range_open {
             if self.in_range {
                 let message = [&b"Extra range opening operator "[..], &[style.range_open], b".\n"].concat();
@@ -209,7 +208,7 @@ impl Gen<'_, '_> {
                 self.warn(&message);
             }
         } else if !encap.is_empty() && encap != prev_encap && self.in_range {
-            let message = [&b"Inconsistent page encapsulator "[..], &encap, b" within range.\n"].concat();
+            let message = [&b"Inconsistent page encapsulator "[..], encap, b" within range.\n"].concat();
             self.warn(&message);
         }
     }
@@ -220,28 +219,29 @@ impl Gen<'_, '_> {
         let style = self.style;
         let curr = self.curr.expect("an entry is current");
         let level = self.level;
-        let text = |entry: &Entry, level: usize| -> Vec<u8> {
-            if entry.af[level].is_empty() { entry.sf[level].clone() } else { entry.af[level].clone() }
+        let entries = self.entries;
+        let text = |entry: usize, level: usize| -> &[u8] {
+            let entry = &entries[entry];
+            if entry.af[level].is_empty() { &entry.sf[level] } else { &entry.af[level] }
         };
         let (item, lines) = if level > self.prev_level {
             (&style.item_u[level], style.ilen_u[level])
         } else {
             (&style.item_r[level], style.ilen_r[level])
         };
-        self.line = [term, item, &text(self.entry(curr), level)].concat();
+        self.line = [term, item, text(curr, level)].concat();
         self.lc += lines;
         let mut i = level + 1;
-        while i < FIELD_MAX && !self.entry(curr).sf[i].is_empty() {
+        while i < FIELD_MAX && !entries[curr].sf[i].is_empty() {
             let line = std::mem::take(&mut self.line);
             self.put(&line);
-            self.line = [&style.item_x[i][..], &text(self.entry(curr), i)].concat();
+            self.line = [&style.item_x[i][..], text(curr, i)].concat();
             self.lc += style.ilen_x[i];
             self.level = i;
             i += 1;
         }
         self.indent = 0;
-        let delimiter = style.delim_p[self.level].clone();
-        self.line.extend_from_slice(&delimiter);
+        self.line.extend_from_slice(&style.delim_p[self.level]);
         self.save();
     }
 
@@ -286,8 +286,7 @@ impl Gen<'_, '_> {
             self.put_header(letter.unwrap_or(0xff), true);
             self.make_item(&[]);
         } else {
-            let term = style.delim_t.clone();
-            self.make_item(&term);
+            self.make_item(&style.delim_t);
         }
     }
 
@@ -296,7 +295,7 @@ impl Gen<'_, '_> {
         let curr_index = self.curr.expect("an entry is current");
         let diff = page_diff(self.entry(self.the_end), self.entry(curr_index));
         let same_type = self.prev().ty == self.curr().ty;
-        let same_encap = self.prev_encap.as_ref().is_some_and(|prev| *prev == self.encap);
+        let same_encap = self.prev_encap == Some(self.encap);
         if same_type
             && diff != -1
             && ((diff == 0 && same_encap) || (self.layout.merge_page && diff == 1 && same_encap) || self.in_range)
@@ -307,7 +306,7 @@ impl Gen<'_, '_> {
             if self.in_range
                 && lead != 0
                 && lead != style.range_close
-                && self.prev_encap.as_deref() != Some(curr.encap.as_slice())
+                && self.prev_encap != Some(curr.encap.as_slice())
             {
                 self.buff = [&style.encap_prefix[..], &curr.encap, &style.encap_infix, &curr.lpg, &style.encap_suffix]
                     .concat();
@@ -388,9 +387,10 @@ impl Gen<'_, '_> {
             }
         } else {
             self.encap_range = false;
-            self.buff = begin.lpg.clone();
+            self.buff.clear();
+            self.buff.extend_from_slice(&begin.lpg);
         }
-        if let Some(prev_encap) = self.prev_encap.as_ref().filter(|encap| !encap.is_empty()) {
+        if let Some(prev_encap) = self.prev_encap.filter(|encap| !encap.is_empty()) {
             self.buff =
                 [&style.encap_prefix[..], prev_encap, &style.encap_infix, &self.buff, &style.encap_suffix].concat();
         }
@@ -447,7 +447,7 @@ pub(crate) fn generate(entries: &[Entry], layout: &Layout, log: &mut Transcript)
         range_ptr: 0,
         level: 0,
         prev_level: 0,
-        encap: Vec::new(),
+        encap: &[],
         prev_encap: None,
         in_range: false,
         encap_range: false,

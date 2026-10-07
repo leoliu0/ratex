@@ -574,8 +574,8 @@ impl Style {
         for index in 1..last {
             offset[kinds[index]] = order[index - 1];
         }
-        for kind in 0..PAGETYPE_MAX {
-            if offset[kind] == -1 {
+        for (kind, slot) in offset.iter_mut().enumerate() {
+            if *slot == -1 {
                 let width = match kinds[last - 1] {
                     ROML => ROMAN_LOWER_OFFSET,
                     ROMU => ROMAN_UPPER_OFFSET,
@@ -585,7 +585,7 @@ impl Style {
                 };
                 order[last] = order[last - 1] + width;
                 kinds[last] = kind;
-                offset[kind] = order[last];
+                *slot = order[last];
                 last += 1;
             }
         }

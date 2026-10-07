@@ -548,7 +548,7 @@ impl<'s> Scanner<'s> {
             }
             let byte = at(key, *n);
             if byte == style.quote {
-                if escapes % 2 == 0 {
+                if escapes.is_multiple_of(2) {
                     *n += 1;
                     field.push(at(key, *n));
                 } else {

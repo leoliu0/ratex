@@ -60,6 +60,9 @@ pub struct Options {
     pub inputs: Vec<String>,
 }
 
+/// A style file found: the path makeindex reports, and the contents.
+pub type FoundStyle = (String, Vec<u8>);
+
 /// File system access, so that callers can resolve files and keep outputs
 /// under their own control.
 pub trait Host {
@@ -69,7 +72,7 @@ pub trait Host {
     fn exists(&self, path: &str) -> bool;
     /// Locates a style file as kpathsea's `ist` format would: the path as
     /// makeindex reports it, and the contents.
-    fn find_style(&self, name: &str) -> Option<(String, Vec<u8>)>;
+    fn find_style(&self, name: &str) -> Option<FoundStyle>;
     fn read_stdin(&self) -> std::io::Result<Vec<u8>>;
 }
 
@@ -100,7 +103,7 @@ impl Host for FsHost {
         std::path::Path::new(path).is_file()
     }
 
-    fn find_style(&self, name: &str) -> Option<(String, Vec<u8>)> {
+    fn find_style(&self, name: &str) -> Option<FoundStyle> {
         let candidates = style_candidates(name);
         let read = |path: &str| std::fs::read(path).ok().filter(|_| std::path::Path::new(path).is_file());
         if is_explicit_path(name) {
@@ -144,7 +147,7 @@ impl Host for FsHost {
 pub struct DirHost<'a> {
     pub work_dir: &'a std::path::Path,
     pub output_dir: Option<&'a std::path::Path>,
-    pub tree: &'a dyn Fn(&str) -> Option<(String, Vec<u8>)>,
+    pub tree: &'a dyn Fn(&str) -> Option<FoundStyle>,
     /// Whether standard input may be read (`-i`, or no input file).
     pub stdin: bool,
 }
@@ -185,7 +188,7 @@ impl Host for DirHost<'_> {
         self.locate(path).is_some()
     }
 
-    fn find_style(&self, name: &str) -> Option<(String, Vec<u8>)> {
+    fn find_style(&self, name: &str) -> Option<FoundStyle> {
         let candidates = style_candidates(name);
         if std::path::Path::new(name).is_absolute() {
             return candidates.into_iter().find_map(|path| {

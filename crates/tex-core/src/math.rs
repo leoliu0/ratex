@@ -5176,7 +5176,8 @@ mod tests {
             approx(*k1, 1.23732, "num->rule kern");
             approx(*k2, 0.88731, "rule->den kern");
             approx(*height, RT * 10.0, "rule thickness");
-            approx(*width, 4.33765, "rule width = box width");
+            // tex.web fraction_rule: a running width (pdftex shows `x*`)
+            assert_eq!(*width, crate::build::RULE_FILL, "rule width is running");
         } else {
             panic!("fraction middle: {:?}", vlist);
         }

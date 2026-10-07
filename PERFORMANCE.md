@@ -245,9 +245,13 @@ The `ffi-release` profile used for `libtex` inherits `release` but sets
 
 ## Profile-guided build
 
-`scripts/build_pgo.sh [OUTPUT]` builds an instrumented `texres`, runs it over
-the benchmark corpus (`scripts/bench/corpus`) and rebuilds with the recorded
-profile (`-Cprofile-use`). It needs `llvm-profdata` of the LLVM that `rustc`
+`scripts/build_pgo.sh [OUTPUT]` builds an instrumented `texres`, runs a cold
+build of every pdfLaTeX and XeLaTeX document of the benchmark corpora
+(`scripts/bench/corpus` and `scripts/bench/corpus100`, eight at a time) and
+rebuilds with the recorded profile (`-Cprofile-use`). The 100-document corpus
+brings the packages the eight-document one leaves out (beamer themes, siunitx
+tables, CJK, KOMA-Script, memoir, indexes). It needs `llvm-profdata` of the
+LLVM that `rustc`
 uses (`rustup component add llvm-tools` or the distribution's `llvm`
 package). Nothing it generates is committed: the profile belongs to the exact
 sources it was recorded from.

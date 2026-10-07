@@ -4,7 +4,7 @@
 #   scripts/build_pgo.sh [OUTPUT]      # default: target/pgo/texres
 #
 # 1. builds an instrumented texres,
-# 2. runs a cold build of every pdfLaTeX/XeLaTeX document of the training
+# 2. runs a cold build of every document of the training
 #    corpus (scripts/bench/corpus, plus a variant of scripts/bench/corpus100
 #    with other text and data: gen_corpus100.py --seed-offset; documents that
 #    come out identical to the measured ones are left out, so no benchmark
@@ -56,22 +56,32 @@ build "$work/gen" "-Cprofile-generate=$work/raw"
 echo "==> training run over the benchmark corpora"
 bin=$work/gen/$triple/release/texres
 # One cold build per document: scripts/bench/corpus (except the LuaLaTeX
-# document) and the pdfLaTeX/XeLaTeX documents of a corpus100 variant, whose
-# packages (beamer themes, siunitx tables, CJK, KOMA, memoir, TikZ, indexes,
-# bibliographies, ...) the eight-document corpus alone leaves out of the
-# profile. The variant has the measured documents' structure but other text
-# and data; any document identical to its measured counterpart is skipped.
-# Instrumented processes merge into the same raw profile files, so documents
-# run in parallel.
+# document) and the documents of a corpus100 variant, whose packages (beamer
+# themes, siunitx tables, CJK, KOMA, memoir, TikZ, indexes, bibliographies,
+# fontspec/luaotfload node processing, ...) the eight-document corpus alone
+# leaves out of the profile. The variant has the measured documents' structure
+# but other text and data; any document identical to its measured counterpart
+# is skipped. Instrumented processes merge into the same raw profile files, so
+# documents run in parallel.
+# A LuaLaTeX build starts by building luaotfload's font names database; to keep
+# the training independent of the machine's fonts, that database holds the TeX
+# Live fonts only: OSFONTDIR names no system font directory and the
+# configuration's location-precedence leaves only the texmf trees.
 rm -rf "$work/train100"
 python3 scripts/bench/gen_corpus100.py --out "$work/train100" --seed-offset 1000003 >/dev/null
+mkdir -p "$work/run/no-os-fonts" "$work/run/xdg/luaotfload"
+printf '[db]\n    location-precedence = texmf\n' >"$work/run/xdg/luaotfload/luaotfload.conf"
 train() { # train <source dir> <engine flag>
     doc=$(basename "$1")
+    fonts=()
+    if [ "$2" = -lualatex ]; then
+        fonts=(OSFONTDIR="$work/run/no-os-fonts" XDG_CONFIG_HOME="$work/run/xdg")
+    fi
     rm -rf "$work/run/$doc" "$work/run/$doc.cache"
     cp -r "$1" "$work/run/$doc"
     mkdir -p "$work/run/$doc.cache"
     (cd "$work/run/$doc" &&
-        TEX_RS_CACHE_DIR="$work/run/$doc.cache" TZ=UTC LC_ALL=C.UTF-8 \
+        env "${fonts[@]}" TEX_RS_CACHE_DIR="$work/run/$doc.cache" TZ=UTC LC_ALL=C.UTF-8 \
         SOURCE_DATE_EPOCH=1700000000 FORCE_SOURCE_DATE=1 \
         "$bin" "$2" main.tex >/dev/null 2>&1) ||
         echo "    $doc: exit status $? (the profile still counts what ran)"
@@ -91,7 +101,7 @@ export work bin
 import filecmp, json, os, sys
 from pathlib import Path
 train = Path(os.environ["WORK"]) / "train100"
-flags = {"pdf": "-pdf", "xe": "-xelatex"}
+flags = {"pdf": "-pdf", "xe": "-xelatex", "lua": "-lualatex"}
 for name, doc in sorted(json.load(open(train / "manifest.json")).items()):
     if doc["engine"] not in flags or doc["main"] != "main.tex":
         continue

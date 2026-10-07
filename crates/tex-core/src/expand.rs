@@ -4196,12 +4196,24 @@ impl Engine {
                 out.extend_from_slice(name);
                 // tex.web print_cs / show_token_list (§5605): control word
                 // (name length > 1 or single character with letter catcode)
-                // is followed by a space.
-                if name.len() > 1
-                    || name
-                        .first()
-                        .is_some_and(|&c| self.eqtb.cat[c as usize] == crate::token::CAT_LETTER)
-                {
+                // is followed by a space. The Unicode engines store a
+                // single-character name as one UTF-8 scalar.
+                let trailing_space = match name {
+                    [] => false,
+                    [c] => self.eqtb.cat[*c as usize] == crate::token::CAT_LETTER,
+                    _ if self.engine_kind != crate::engine::EngineKind::PdfTeX && name.len() <= 4 => {
+                        match std::str::from_utf8(name).ok().and_then(|s| {
+                            let mut chars = s.chars();
+                            let first = chars.next()?;
+                            chars.next().is_none().then_some(u32::from(first))
+                        }) {
+                            Some(c) => self.eqtb.cat_code(c) == crate::token::CAT_LETTER,
+                            None => true,
+                        }
+                    }
+                    _ => true,
+                };
+                if trailing_space {
                     out.push(b' ');
                 }
             } else {

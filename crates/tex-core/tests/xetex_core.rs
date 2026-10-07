@@ -270,6 +270,21 @@ fn strings_are_one_token_per_scalar_and_case_codes_are_unicode() {
     );
 }
 
+/// tex.web `print_cs`: a single-character control sequence is followed by a
+/// space only when its character is a letter, also beyond ASCII.
+#[test]
+fn single_unicode_character_control_sequences_print_like_texlive() {
+    let eng = run(&format!(
+        "{PRELUDE}{}",
+        r#"\catcode`\é=11 \def\m{\é\–x\a}\show{\meaning\m}
+\show{\detokenize{\é\–x}}
+\end
+"#
+    ));
+    assert_eq!(eng.error_count, 0, "{}", eng.term);
+    assert_eq!(shown(&eng), ["[macro:->\\é \\–x\\a ]", "[\\é \\–x]"], "{}", eng.term);
+}
+
 fn utf16(text: &str, big_endian: bool) -> Vec<u8> {
     text.encode_utf16()
         .flat_map(|unit| if big_endian { unit.to_be_bytes() } else { unit.to_le_bytes() })

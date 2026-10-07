@@ -106,7 +106,8 @@ fn tex_print_family_follows_luatex_line_rules() {
 /// textoken.c `str_toks` decodes UTF-8: `\detokenize`, `\string`, `\meaning`
 /// and `\luaescapestring` give one character token per scalar, so biblatex's
 /// `\DeclareRangeChars*{–—}` builds `\do\–\do\—` single-character control
-/// sequences that work as alphabetic constants.
+/// sequences that work as alphabetic constants; such a control sequence
+/// prints with a trailing space only when its character is a letter.
 #[test]
 fn string_conversions_yield_one_token_per_unicode_scalar() {
     let mut e = luatex_ini();
@@ -123,7 +124,9 @@ fn string_conversions_yield_one_token_per_unicode_scalar() {
   \expandafter\defdochars\expandafter#1\fi}
 \def\foo{}\expandafter\defdochars\expandafter\foo\detokenize{–—}\relax
 \def\do#1{\uccode`#1=`\%}\foo
-\show{\the\uccode"2013,\the\uccode"2014}"#,
+\show{\the\uccode"2013,\the\uccode"2014}
+\show{\meaning\foo}
+\catcode`\é=11 \def\m{\é\–x\a}\show{\meaning\m}"#,
     );
     assert!(errors(&e).is_empty(), "errors: {:?}", errors(&e));
     assert_eq!(
@@ -134,6 +137,8 @@ fn string_conversions_yield_one_token_per_unicode_scalar() {
             "[109,97,99,114,111,58,45,62,252]",
             "[228,92,34]",
             "[37,37]",
+            "[macro:->\\do \\–\\do \\—]",
+            "[macro:->\\é \\–x\\a ]",
         ],
         "term: {}",
         e.term

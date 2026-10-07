@@ -2010,13 +2010,13 @@ impl Engine {
         if xe_char {
             crate::xemath_prims::xe_char_field(&mut field);
         }
-        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
-            // texmath.c scan_math stores only the family and character of
-            // an unbraced math character field, not its original noad class.
-            if let [Node::MathChar { fam, class, .. }] = field.as_mut_slice() {
-                if *fam != crate::boxes::NO_FAM {
-                    *class = CL_ORD;
-                }
+        // tex.web §1151 scan_math (texmath.c alike) stores only the family
+        // and character of an unbraced math character field, not its noad
+        // class: `\mathop\mathchar"303A` is an op noad with a math_char
+        // nucleus, centered on the axis by make_op
+        if let [Node::MathChar { fam, class, .. }] = field.as_mut_slice() {
+            if *fam != crate::boxes::NO_FAM {
+                *class = CL_ORD;
             }
         }
         field

@@ -349,3 +349,120 @@ fn appended_hbox_migrates_marks_inserts_and_vadjust() {
 "#],
     );
 }
+
+/// tex.web §755: a character nucleus with scripts stays the bare character
+/// node (plus its italic kern when no subscript follows); the scripts
+/// follow it as shifted boxes. A standalone \delimiter nucleus is a
+/// character too.
+#[test]
+fn scripted_character_nucleus_is_not_boxed() {
+    let log = run(
+        r#"\mathcode`\)="5029 \mathcode`\f="7166 \mathcode`\2="7032
+\setbox1\hbox{$)^a f^2 f_2 f_2^2 \delimiter"4162362 ^2$}\showbox1"#,
+    );
+    assert_displays(
+        &log,
+        &[r#"> \box1=
+\hbox(10.07336+4.41544)x50.30688
+.\mathon
+.\tenrm )
+.\hbox(4.30554+0.0)x5.28589, shifted -3.62892
+..\teni a
+.\teni f
+.\kern1.0764
+.\hbox(6.44444+0.0)x5.00002, shifted -3.62892
+..\tenrm 2
+.\teni f
+.\hbox(6.44444+0.0)x5.00002, shifted 3.00002
+..\tenrm 2
+.\teni f
+.\vbox(14.4888+0.0)x6.07642, shifted 4.41544
+..\hbox(6.44444+0.0)x5.00002, shifted 1.0764
+...\tenrm 2
+..\kern1.59991
+..\hbox(6.44444+0.0)x5.00002
+...\tenrm 2
+.\teni b
+.\hbox(6.44444+0.0)x5.00002, shifted -3.62892
+..\tenrm 2
+.\mathoff
+"#],
+    );
+}
+
+/// tex.web §1045: math-mode `\ ` is append_normal_space — \spaceskip when
+/// nonzero, else the current text font's space glue with its CURRENT
+/// \fontdimen2-4 (IEEEtran retunes them), exactly as in horizontal mode.
+#[test]
+fn control_space_in_math_uses_spaceskip_and_current_fontdimens() {
+    let log = run(
+        r#"\mathcode`\f="7166
+\fontdimen2\tenrm=5pt \fontdimen3\tenrm=2pt \fontdimen4\tenrm=1pt
+\setbox1\hbox{$f\ f$}\showbox1
+\spaceskip=4pt plus 1pt
+\setbox1\hbox{$f\ f$ f\ f}\showbox1"#,
+    );
+    assert_displays(
+        &log,
+        &[
+            r#"> \box1=
+\hbox(6.94444+1.94444)x16.94452
+.\mathon
+.\teni f
+.\kern1.0764
+.\glue 5.0 plus 2.0 minus 1.0
+.\teni f
+.\kern1.0764
+.\mathoff
+"#,
+            r#"> \box1=
+\hbox(6.94444+1.94444)x30.05566
+.\mathon
+.\teni f
+.\kern1.0764
+.\glue(\spaceskip) 4.0 plus 1.0
+.\teni f
+.\kern1.0764
+.\mathoff
+.\glue(\spaceskip) 4.0 plus 1.0
+.\tenrm f
+.\glue(\spaceskip) 4.0 plus 1.0
+.\tenrm f
+"#,
+        ],
+    );
+}
+
+/// tex.web §752 make_ord: a `\right` delimiter that took a script still
+/// closes its `\left` group, so later adjacent characters of one family
+/// keep their lig/kern program (cmmi10 kerns `Y` against the comma).
+#[test]
+fn scripted_right_delimiter_keeps_later_math_kerns() {
+    let log = run(
+        r#"\mathcode`\,="613B \thinmuskip=3mu
+\setbox1\hbox{$\left(x\right)^a Y,b$}\showbox1"#,
+    );
+    assert_displays(
+        &log,
+        &[r#"> \box1=
+\hbox(7.94446+2.5)x35.54277
+.\mathon
+.\hbox(7.5+2.5)x13.49307
+..\hbox(7.5+2.5)x3.8889
+...\tenrm (
+..\teni x
+..\hbox(7.5+2.5)x3.8889
+...\tenrm )
+.\hbox(4.30554+0.0)x5.28589, shifted -3.63892
+..\teni a
+.\glue(\thinmuskip) 1.66663
+.\teni Y
+.\kern2.22223
+.\kern-1.66667
+.\teni ;
+.\glue(\thinmuskip) 1.66663
+.\teni b
+.\mathoff
+"#],
+    );
+}

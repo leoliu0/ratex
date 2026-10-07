@@ -2777,11 +2777,17 @@ impl Engine {
         let mut i = 0usize;
 
         while i < nodes.len() {
+            // A `\right` marker that took scripts (`\right)^a`) is wrapped
+            // in a Scripts node; it still closes the group, or every later
+            // atom of the list would lose its lig/kern program.
+            if is_lr_close(&nodes[i]) {
+                left_right_depth = left_right_depth.saturating_sub(1);
+                i += 1;
+                continue;
+            }
             if let Node::DelimBox { size, .. } = &nodes[i] {
-                match *size {
-                    0 => left_right_depth += 1,
-                    1 if left_right_depth > 0 => left_right_depth -= 1,
-                    _ => {}
+                if *size == 0 {
+                    left_right_depth += 1;
                 }
                 i += 1;
                 continue;
@@ -3411,7 +3417,15 @@ impl Engine {
                     let mut out = vec![Node::Char { c: byte, font: fid, attr: self.eqtb.cur_attr }];
                     if let Some(f) = self.eqtb.fonts.get(fid as usize) {
                         let ic = f.char_italic(byte);
-                        if ic != 0 && !(math_text_char && f.space() != 0) {
+                        // tex.web §755: `space(cur_f)` is the font's current
+                        // \fontdimen2, not the value loaded from the TFM
+                        let space = self
+                            .eqtb
+                            .font_params
+                            .get(fid as usize)
+                            .and_then(|v| v.get(1).copied())
+                            .unwrap_or_else(|| f.space());
+                        if ic != 0 && !(math_text_char && space != 0) {
                             out.push(Node::Kern(ic, self.eqtb.cur_attr));
                         }
                     }
@@ -3734,8 +3748,10 @@ impl Engine {
         let nuc: Node;
         let mut shift_up = 0i32;
         let mut shift_down = 0i32;
-        // XeTeX: a native-font character nucleus is a bare glyph node
-        let mut xe_list: Option<NodeList> = None;
+        // tex.web §755: a character nucleus is the bare character node (plus
+        // its italic kern when no subscript follows), not a box; a XeTeX
+        // native-font nucleus is likewise a bare glyph node
+        let mut char_list: Option<NodeList> = None;
         let mut xe_glyph: Option<(FontId, u16)> = None;
         match nucleus {
             // A character nucleus keeps its italic correction as a trailing
@@ -3760,7 +3776,7 @@ impl Engine {
                         let (list, d) = self.xe_native_char(fid, *c, false, sub.is_some());
                         delta = d;
                         xe_glyph = list.first().and_then(Self::xe_glyph_of);
-                        xe_list = Some(list);
+                        char_list = Some(list);
                         nuc = Node::Empty;
                     } else if self.engine_kind == crate::engine::EngineKind::XeTeX && *c > 255 {
                         self.xe_missing_math_char(fid, *c, origin);
@@ -3777,13 +3793,8 @@ impl Engine {
                         } else {
                             delta = ic;
                         }
-                        // tex.web §755: the nucleus is the character node itself
-                        if self.engine_kind == crate::engine::EngineKind::XeTeX {
-                            xe_list = Some(core);
-                            nuc = Node::Empty;
-                        } else {
-                            nuc = hpack(core, None, HBOX, &self.eqtb).node;
-                        }
+                        char_list = Some(core);
+                        nuc = Node::Empty;
                     } else {
                         nuc = hpack(Vec::new(), None, HBOX, &self.eqtb).node;
                     }
@@ -3809,12 +3820,8 @@ impl Engine {
                     } else {
                         delta = ic;
                     }
-                    if self.engine_kind == crate::engine::EngineKind::XeTeX {
-                        xe_list = Some(core);
-                        nuc = Node::Empty;
-                    } else {
-                        nuc = hpack(core, None, HBOX, &self.eqtb).node;
-                    }
+                    char_list = Some(core);
+                    nuc = Node::Empty;
                 } else {
                     nuc = hpack(Vec::new(), None, HBOX, &self.eqtb).node;
                 }
@@ -3860,7 +3867,7 @@ impl Engine {
                 shift_down = zd + self.fparam_idx(drop_size, 2, 19);
             }
         }
-        let mut out: NodeList = match xe_list {
+        let mut out: NodeList = match char_list {
             Some(list) => list,
             None => vec![nuc],
         };

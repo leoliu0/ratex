@@ -56,8 +56,10 @@ fn dumped_format_preserves_distinct_language_patterns_and_aliases() {
     assert_ne!(english, spanish);
     assert_ne!(portuguese, spanish);
     assert_ne!(portuguese, english);
+    // TeX Live 2026's language.dat: `=american` aliases english, `=portuges`
+    // aliases portuguese (pdflatex: \l@american=0, \l@portuges=87).
     assert_eq!(language(b"l@american"), english);
-    assert_eq!(language(b"l@brazilian"), portuguese);
+    assert_eq!(language(b"l@portuges"), portuguese);
 
     let english_trie = engine
         .trie_for_language(english)

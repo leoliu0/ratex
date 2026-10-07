@@ -116,6 +116,18 @@ jobs:
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
 
+      # Debug binaries carry the embedded package archive (about 1 GB each);
+      # the workspace build plus the copies the driver tests run in parallel
+      # (a hard link would change the shared binary's ctime, which is part of
+      # the cache identity) outgrow a stock Linux runner's free space, as in
+      # release.yml.
+      - name: Free runner disk space (linux)
+        if: runner.os == 'Linux'
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
       - name: Run workspace tests
         run: cargo test --workspace --locked
 

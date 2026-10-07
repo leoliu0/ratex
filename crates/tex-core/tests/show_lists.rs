@@ -349,3 +349,53 @@ fn appended_hbox_migrates_marks_inserts_and_vadjust() {
 "#],
     );
 }
+
+/// tex.web §1151/§1186: `\mathopen{}` and friends are noads with an empty
+/// sub-mlist nucleus (an empty hbox) that take part in inter-atom spacing,
+/// and a group holding one box noad (`{\raise2pt\hbox{}}`, amsmath's
+/// `\smash`) becomes that box nucleus, shift and all.
+#[test]
+fn empty_class_groups_are_spaced_noads_and_braced_boxes_stay_unpacked() {
+    let log = run(
+        r#"\thinmuskip3mu \medmuskip4mu \thickmuskip5mu
+\setbox0\hbox{$\hbox{}\mathopen{}\mathop{x}y \hbox{}\mathbin{}y \hbox{}\mathrel{}y {\raise2pt\hbox{}}$}\showbox0
+\setbox0\hbox{$\hbox{}\mathpunct{}y$}\showbox0
+"#,
+    );
+    assert_displays(
+        &log,
+        &[
+            r#"\hbox(4.65277+1.94444)x33.16644
+.\mathon
+.\hbox(0.0+0.0)x0.0
+.\hbox(0.0+0.0)x0.0
+.\hbox(4.30554+0.0)x5.71527, shifted -0.34723
+..\teni x
+.\glue(\thinmuskip) 1.66663
+.\teni y
+.\kern0.35878
+.\hbox(0.0+0.0)x0.0
+.\glue(\medmuskip) 2.22217
+.\hbox(0.0+0.0)x0.0
+.\glue(\medmuskip) 2.22217
+.\teni y
+.\kern0.35878
+.\hbox(0.0+0.0)x0.0
+.\glue(\thickmuskip) 2.77771
+.\hbox(0.0+0.0)x0.0
+.\glue(\thickmuskip) 2.77771
+.\teni y
+.\kern0.35878
+.\hbox(0.0+0.0)x0.0, shifted -2.0
+.\mathoff"#,
+            r#"\hbox(4.30554+1.94444)x6.92822
+.\mathon
+.\hbox(0.0+0.0)x0.0
+.\hbox(0.0+0.0)x0.0
+.\glue(\thinmuskip) 1.66663
+.\teni y
+.\kern0.35878
+.\mathoff"#,
+        ],
+    );
+}

@@ -179,6 +179,10 @@ pub(crate) fn finish_math_group(mut inner: NodeList, flatten: i32, attr: crate::
                 }
                 return n;
             }
+            // tex.web §1186: the lone ord noad may have a box nucleus
+            // (`{\raise1pt\hbox{}}`, amsmath's \smash); the group becomes that
+            // sub_box, so a shifted box is not repacked by a sub_mlist hpack
+            Some(Node::Box { .. }) if bit(CL_ORD) => return inner.pop().unwrap(),
             _ => {}
         }
     }
@@ -2161,14 +2165,11 @@ impl Engine {
     pub fn do_math_class(&mut self, class: u8) {
         self.show.scan_owner = Some(ScanKind::Class(class));
         let field = self.scan_math_group_or_token();
-        let node = if field.is_empty() {
-            Node::MathChar {
-                fam: 255,
-                c: 0,
-                class,
-                origin: MathDiagnosticOrigin::default(), attr: self.eqtb.cur_attr,
-            }
-        } else if field.len() == 1 {
+        // tex.web §1151/§1186: `\mathopen{}` is a noad of the class whose
+        // nucleus is an empty sub-mlist (an empty hbox that still takes part
+        // in inter-atom spacing); only a non-empty group reaches the
+        // single-node shortcuts below.
+        let node = if field.len() == 1 {
             match field.into_iter().next().unwrap() {
                 Node::MathChar {
                     fam,
@@ -2216,7 +2217,7 @@ impl Engine {
                 }
             }
         } else {
-            // multi-node group atom. tex.web: `\mathop{...}` (and the other
+            // empty or multi-node group atom. tex.web: `\mathop{...}` (and the other
             // math_comp prims) tail_append a FRESH noad whose type is the
             // class and whose subtype is `normal` — scripts then take the
             // make_op promotion rule `(subtype=normal) and (cur_style<

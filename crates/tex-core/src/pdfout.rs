@@ -475,10 +475,6 @@ pub struct ImportedFont {
     /// `fn_objnum` (0 until a font dictionary needs it): the object that
     /// holds the tagged /BaseFont name.
     pub name_obj: i32,
-    /// Number of document fonts already initialized when the font was first
-    /// included: it created the shared descriptor, so those initialized
-    /// later find it and preset nothing from their TFM.
-    pub init_order: usize,
 }
 
 impl PdfDoc {

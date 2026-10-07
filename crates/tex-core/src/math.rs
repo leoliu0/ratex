@@ -940,24 +940,20 @@ impl Engine {
         }
         let hlist = inline_hlist.unwrap();
         match self.mode {
-            // tex.web §22461 (finish math in text): the converted nodes are
-            // SPLICED into the current hlist between math-on/math-off nodes
-            // carrying \mathsurround — justification stretches into the
-            // formula and lines may break inside it (never inside a box)
-            Mode::Horizontal => {
-                self.cur_list.push(Node::MathKern(ms, 1, formula_attr));
-                self.cur_list.extend(hlist);
-                self.cur_list.push(Node::MathKern(ms, 2, formula_attr));
-                self.space_factor = 1000;
-            }
             Mode::Vertical | Mode::InternalVertical => {
                 let hbox = hpack(hlist, None, HBOX, &self.eqtb).node;
                 self.vlist_append(hbox);
             }
+            // tex.web §1196 (finish math in text): the converted nodes are
+            // SPLICED into the current hlist between math-on/math-off nodes
+            // carrying \mathsurround — justification stretches into the
+            // formula and lines may break inside it (never inside a box) —
+            // and the space factor is 1000 in either horizontal mode
             _ => {
                 self.cur_list.push(Node::MathKern(ms, 1, formula_attr));
                 self.cur_list.extend(hlist);
                 self.cur_list.push(Node::MathKern(ms, 2, formula_attr));
+                self.space_factor = 1000;
             }
         }
     }
@@ -2018,13 +2014,13 @@ impl Engine {
         if xe_char {
             crate::xemath_prims::xe_char_field(&mut field);
         }
-        if self.engine_kind == crate::engine::EngineKind::LuaTeX {
-            // texmath.c scan_math stores only the family and character of
-            // an unbraced math character field, not its original noad class.
-            if let [Node::MathChar { fam, class, .. }] = field.as_mut_slice() {
-                if *fam != crate::boxes::NO_FAM {
-                    *class = CL_ORD;
-                }
+        // tex.web §1151 scan_math (texmath.c alike) stores only the family
+        // and character of an unbraced math character field, not its noad
+        // class: `\mathop\mathchar"303A` is an op noad with a math_char
+        // nucleus, centered on the axis by make_op
+        if let [Node::MathChar { fam, class, .. }] = field.as_mut_slice() {
+            if *fam != crate::boxes::NO_FAM {
+                *class = CL_ORD;
             }
         }
         field

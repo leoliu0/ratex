@@ -1415,6 +1415,45 @@ fn display_error_recovery_preserves_following_paragraphs() {
     }
 }
 
+/// tex.web §1196: a formula ends with space factor 1000 in restricted
+/// horizontal mode too, so the space after it gets no extra space.
+/// pdftex -ini: [A1000][W22.38199pt].
+#[test]
+fn inline_math_resets_the_space_factor_inside_boxes() {
+    let e = run_lenient(&format!(
+        r"{PROBE_SETUP}
+\sfcode`\.=3000
+\setbox0\hbox{{x.$x$\message{{[A\the\spacefactor]}} y}}\message{{[W\the\wd0]}}
+\end"
+    ));
+    assert_eq!(e.error_count, 0, "{}", e.log);
+    let values = message_values(&e);
+    for want in ["[A1000]", "[W22.38199pt]"] {
+        assert!(values.contains(want), "{want} missing: {}", e.term);
+    }
+}
+
+/// tex.web §1151 scan_math: an unbraced math character field keeps only
+/// its family and character, so `\mathop\mathchar"303A` is centered on the
+/// axis by make_op while the braced rel noad is not, and a `\sum` script
+/// is set as an ord. pdftex -ini: [A4.65277pt,0.0pt][B4.30554pt,0.0pt]
+/// [C11.0765pt,0.0pt].
+#[test]
+fn unbraced_math_fields_drop_the_character_class() {
+    let e = run_lenient(&format!(
+        r#"{PROBE_SETUP}\catcode`\^=7
+\setbox0\hbox{{$\mathop\mathchar"303A$}}\message{{[A\the\ht0,\the\dp0]}}
+\setbox0\hbox{{$\mathop{{\mathchar"303A}}$}}\message{{[B\the\ht0,\the\dp0]}}
+\setbox0\hbox{{$x^\mathchar"1350$}}\message{{[C\the\ht0,\the\dp0]}}
+\end"#
+    ));
+    assert_eq!(e.error_count, 0, "{}", e.log);
+    let values = message_values(&e);
+    for want in ["[A4.65277pt,0.0pt]", "[B4.30554pt,0.0pt]", "[C11.0765pt,0.0pt]"] {
+        assert!(values.contains(want), "{want} missing: {}", e.term);
+    }
+}
+
 /// tex.web §1160 scan_delimiter: a token that is not a letter/other with a
 /// nonnegative \delcode (or `\delimiter`) gives `Missing delimiter (. inserted)`
 /// and is read again, for \left, \middle, \right and every ...withdelims.

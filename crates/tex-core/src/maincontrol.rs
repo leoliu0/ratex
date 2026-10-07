@@ -2266,7 +2266,6 @@ impl Engine {
                     base14_fonts: &mut doc.imported_base14_fonts,
                     fonts: &mut fonts,
                     imported_fonts: &mut doc.imported_fonts,
-                    font_init_order: self.pdf_backend.initialized_fonts(),
                 };
                 let source = match doc.pdf_sources.entry(path.to_string_lossy().into_owned()) {
                     std::collections::hash_map::Entry::Occupied(entry) => Ok(entry.into_mut()),

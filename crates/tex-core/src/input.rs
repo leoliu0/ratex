@@ -92,7 +92,12 @@ impl SourceMark {
     }
 }
 
-#[derive(Clone, Debug)]
+/// An input source. `repr(C)` lays out the fields of each variant in
+/// declaration order, so the token cursor (`seg`, `pos`, `end`) that a token
+/// list and a macro frame begin with sits at the same place in both, and
+/// `raw_token` reads either without telling them apart.
+#[derive(Debug)]
+#[repr(C)]
 pub enum Source {
     File {
         name: String,
@@ -136,12 +141,16 @@ pub enum Source {
         xetex_enc: crate::xetex_input::Enc,
     },
     TokList {
-        toks: TokTokens,
+        /// `toks.as_ptr()`: the cursor's view of the list.
+        seg: *const Token,
         pos: usize,
-        name: &'static str,
-        owner: Option<CsId>,
+        /// `toks.len()`.
+        end: usize,
         /// Number of macro ancestry entries that belong to this list.
         trace_depth: u8,
+        toks: TokTokens,
+        name: &'static str,
+        owner: Option<CsId>,
     },
     MacroFrame(MacroFrame),
 }
@@ -206,21 +215,28 @@ impl MacroArgs {
 /// A macro replacement read lazily: body tokens interleaved with the
 /// arguments their parameter references name, without materializing the
 /// substituted list.
-#[derive(Clone, Debug)]
+///
+/// `repr(C)`: the cursor comes first, in the layout of `Source::TokList`'s
+/// (see `Source`).
+#[derive(Debug)]
+#[repr(C)]
 pub struct MacroFrame {
+    /// Cursor into the current segment: `body` or, when `in_arg`, `args`.
+    /// `seg` is the start of that segment's buffer, which neither moves nor
+    /// changes while the frame exists.
+    pub(crate) seg: *const Token,
+    pub(crate) pos: usize,
+    pub(crate) end: usize,
+    pub trace_depth: u8,
+    in_arg: bool,
+    /// Body position after the reference whose argument is being read.
+    resume: u32,
+    next_ref: u32,
     body: Rc<[Token]>,
     /// (body position, argument index) for every parameter reference.
     references: Rc<[(usize, usize)]>,
     args: MacroArgs,
-    /// Cursor into the current segment: `body` or, when `in_arg`, `args`.
-    pos: u32,
-    end: u32,
-    /// Body position after the reference whose argument is being read.
-    resume: u32,
-    next_ref: u32,
-    in_arg: bool,
     pub owner: Option<CsId>,
-    pub trace_depth: u8,
 }
 
 impl MacroFrame {
@@ -231,13 +247,14 @@ impl MacroFrame {
         owner: Option<CsId>,
         trace_depth: u8,
     ) -> Self {
-        let end = references.first().map_or(body.len(), |&(position, _)| position) as u32;
+        let end = references.first().map_or(body.len(), |&(position, _)| position);
         MacroFrame {
+            seg: body.as_ptr(),
+            pos: 0,
+            end,
             body,
             references,
             args,
-            pos: 0,
-            end,
             resume: 0,
             next_ref: 0,
             in_arg: false,
@@ -256,14 +273,9 @@ impl MacroFrame {
     #[inline(always)]
     pub fn next_token(&mut self) -> Option<Token> {
         loop {
-            if self.pos < self.end {
-                let index = self.pos as usize;
+            if let Some(t) = self.peek_token() {
                 self.pos += 1;
-                return Some(if self.in_arg {
-                    self.args.toks[index]
-                } else {
-                    self.body[index]
-                });
+                return Some(t);
             }
             if !self.next_segment() {
                 return None;
@@ -275,15 +287,7 @@ impl MacroFrame {
     /// at a segment boundary.
     #[inline(always)]
     pub(crate) fn peek_token(&self) -> Option<Token> {
-        if self.pos >= self.end {
-            return None;
-        }
-        let index = self.pos as usize;
-        Some(if self.in_arg {
-            self.args.toks[index]
-        } else {
-            self.body[index]
-        })
+        self.segment().first().copied()
     }
 
     /// Move on to the next segment that has a token left; false once the
@@ -299,21 +303,22 @@ impl MacroFrame {
     }
 
     /// The undelivered rest of the current body or argument segment.
-    #[inline]
+    #[inline(always)]
     pub(crate) fn segment(&self) -> &[Token] {
-        let source = if self.in_arg {
-            &self.args.toks[..]
-        } else {
-            &self.body[..]
-        };
-        &source[self.pos as usize..self.end as usize]
+        if self.pos >= self.end {
+            return &[];
+        }
+        // SAFETY: `seg` is the start of `body` or `args.toks` (see
+        // `next_segment`), both owned by the frame and never changed while
+        // it exists, and `pos < end <= ` that buffer's length.
+        unsafe { std::slice::from_raw_parts(self.seg.add(self.pos), self.end - self.pos) }
     }
 
     /// Consume `count` tokens of `segment()`.
     #[inline]
     pub(crate) fn skip(&mut self, count: usize) {
-        debug_assert!(self.pos as usize + count <= self.end as usize);
-        self.pos += count as u32;
+        debug_assert!(self.pos + count <= self.end);
+        self.pos += count;
     }
 
     /// Move to the segment after the current one; false at the end.
@@ -326,8 +331,9 @@ impl MacroFrame {
             self.resume = position as u32 + 1;
             if index < self.args.count as usize {
                 self.in_arg = true;
-                self.pos = self.args.start(index) as u32;
-                self.end = self.args.ends[index];
+                self.seg = self.args.toks.as_ptr();
+                self.pos = self.args.start(index);
+                self.end = self.args.ends[index] as usize;
                 return true;
             }
             // A reference beyond the supplied arguments contributes nothing.
@@ -335,17 +341,18 @@ impl MacroFrame {
         } else {
             return false;
         };
-        self.pos = body_from as u32;
+        self.seg = self.body.as_ptr();
+        self.pos = body_from;
         self.end = self
             .references
             .get(self.next_ref as usize)
-            .map_or(self.body.len(), |&(position, _)| position) as u32;
+            .map_or(self.body.len(), |&(position, _)| position);
         true
     }
 
     /// A number that changes whenever a token is delivered.
     pub(crate) fn signature(&self) -> usize {
-        (self.pos as usize) << 8 ^ (self.next_ref as usize) << 1 ^ usize::from(self.in_arg)
+        self.pos << 8 ^ (self.next_ref as usize) << 1 ^ usize::from(self.in_arg)
     }
 
     /// Where `show_context` finds this call: the replacement text with the
@@ -354,12 +361,12 @@ impl MacroFrame {
     /// `parameter` level above the macro).
     pub(crate) fn context_view(&self) -> (&Rc<[Token]>, usize, Option<(&[Token], usize)>) {
         if !self.in_arg {
-            return (&self.body, self.pos as usize, None);
+            return (&self.body, self.pos, None);
         }
         let index = self.references[self.next_ref as usize - 1].1;
         let start = self.args.start(index);
-        let arg = &self.args.toks[start..self.end as usize];
-        (&self.body, self.resume as usize, Some((arg, self.pos as usize - start)))
+        let arg = &self.args.toks[start..self.end];
+        (&self.body, self.resume as usize, Some((arg, self.pos - start)))
     }
 
     /// Net brace depth of the tokens delivered so far (alignment scanning
@@ -911,8 +918,10 @@ impl InputStack {
             "TeX capacity exceeded, sorry [token list size={MAX_TOKEN_LIST_TOKENS}]"
         );
         self.stack.push(Source::TokList {
-            toks,
+            seg: toks.as_ptr(),
             pos: 0,
+            end: toks.len(),
+            toks,
             name,
             owner,
             trace_depth,

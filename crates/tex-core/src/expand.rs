@@ -357,31 +357,40 @@ impl Engine {
             self.pushed_read = t;
             t
         } else {
+            use crate::input::{MacroFrame, Source};
             let eqtb = &self.eqtb;
+            // A token list and a macro frame share the layout of their
+            // cursor, so this is one test of the source kind. Only within
+            // the current segment: moving on to the next segment calls out
+            // of line, which would make every call of `raw_token` set up a
+            // stack frame (`raw_token_next_segment` does that).
             let (t, depth) = match self.input.stack.last_mut() {
-                Some(crate::input::Source::TokList {
-                    toks,
-                    pos,
-                    trace_depth,
-                    ..
-                }) => match toks.get(*pos) {
-                    Some(&t) if filter.passes(t, eqtb) => {
-                        *pos += 1;
-                        (t, *trace_depth)
+                Some(
+                    Source::TokList {
+                        seg,
+                        pos,
+                        end,
+                        trace_depth,
+                        ..
                     }
-                    _ => return None,
-                },
-                // Only within the current segment: moving on to the next
-                // segment calls out of line, which would make every call of
-                // `raw_token` set up a stack frame. `raw_token_general`
-                // crosses segment boundaries.
-                Some(crate::input::Source::MacroFrame(frame)) => match frame.peek_token() {
-                    Some(t) if filter.passes(t, eqtb) => {
-                        frame.skip(1);
-                        (t, frame.trace_depth)
+                    | Source::MacroFrame(MacroFrame {
+                        seg,
+                        pos,
+                        end,
+                        trace_depth,
+                        ..
+                    }),
+                ) if *pos < *end => {
+                    // SAFETY: the cursor of a token list or macro frame
+                    // points into a token buffer the source owns and never
+                    // changes, and `pos < end <=` its length.
+                    let t = unsafe { *seg.add(*pos) };
+                    if !filter.passes(t, eqtb) {
+                        return None;
                     }
-                    _ => return None,
-                },
+                    *pos += 1;
+                    (t, *trace_depth)
+                }
                 _ => return None,
             };
             self.unwind_macro_trace(depth);

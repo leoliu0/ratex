@@ -61,7 +61,6 @@ DOCS = {
     "xelatex_fontspec": ("-xelatex", "xelatex"),
     "lualatex_fontspec": ("-lualatex", "lualatex"),
     "long_thesis": ("-pdf", "pdflatex"),
-    # Known TeXres/TeX Live difference; must come out as "excluded".
     "toc_wrap_canary": ("-pdf", "pdflatex"),
 }
 SCENARIOS = {

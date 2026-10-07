@@ -98,15 +98,13 @@ Scenarios:
 
 Before timing, each document is built once with both tools. The PDFs must have
 the same page count and the same `pdftotext -layout` text after removing all
-whitespace; otherwise the document is reported and excluded. All eight timed
-documents passed. One additional document, `toc_wrap_canary`, is **excluded on
-purpose and is part of the run**: a long, wrapping list-of-figures entry is
-hyphenated by TeXres (`re-lates`) where `pdflatex` does not break the
-word. Page count is the same; only that line break differs. While building the
-corpus the same difference appeared on the long-caption list-of-figures and
-list-of-tables pages of two other documents, so those documents use short
-captions. That is a correctness difference found while benchmarking, not
-something the table hides.
+whitespace; otherwise the document is reported and excluded. The
+one-page `toc_wrap_canary` holds a single long, wrapping list-of-figures
+entry. It is the minimal reproduction of a line-breaking bug this benchmark
+found: TeXres ignored the dot leaders of a contents entry when breaking lines,
+so the first pass (no hyphenation) failed and it hyphenated `re-lates` where
+`pdflatex` keeps the word. That is fixed, and the document stays in the corpus
+as a regression check.
 
 The LuaLaTeX document loads its helper functions with `dofile` instead of
 the `luacode` environment, because TeXres 0.7.2 fails on `\begin{luacode}`
@@ -126,11 +124,11 @@ byte-for-byte with `python3 scripts/bench/gen_corpus.py`. All text is synthetic.
 | `article_biblatex` | pdfLaTeX | 12 | `biblatex` with `backend=biber`, 80 entries |
 | `article_natbib` | pdfLaTeX | 12 | `natbib`, `plainnat`, BibTeX, 80 entries |
 | `beamer_deck` | pdfLaTeX | 82 | Beamer (Madrid), overlays, columns, tables, 40+ frames |
-| `tikz_pgfplots` | pdfLaTeX | 9 | 8 pgfplots 2D plots, 3 surface plots, 6 TikZ diagrams |
+| `tikz_pgfplots` | pdfLaTeX | 10 | 8 pgfplots 2D plots, 3 surface plots, 6 TikZ diagrams |
 | `xelatex_fontspec` | XeLaTeX | 8 | `fontspec`, `unicode-math`, TeX Gyre fonts, accented, Greek and Cyrillic text |
 | `lualatex_fontspec` | LuaLaTeX | 7 | as above, plus Lua computed by `\directlua` |
 | `long_thesis` | pdfLaTeX | 113 | `report`, 12 chapters, 84 sections, 84 floats, `natbib` + BibTeX with 120 entries, lists of figures and tables |
-| `toc_wrap_canary` | pdfLaTeX | 1 | excluded on purpose (see above) |
+| `toc_wrap_canary` | pdfLaTeX | 1 | one wrapping list-of-figures entry; regression check for the line breaker (see above) |
 
 ### Method
 

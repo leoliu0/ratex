@@ -81,6 +81,15 @@ class Gen:
         return " ".join(out)
 
 
+def caption(g, cap):
+    """A long figure or table caption: a full sentence, so that its list entry
+    wraps. The text comes from the separate stream `cap`; the phrase that the
+    body stream `g` used to supply here is still drawn (and dropped), so the
+    body text of a document is unchanged by the caption length."""
+    g.phrase()
+    return cap.sentence()
+
+
 def write(name, fname, text):
     d = OUT / name
     d.mkdir(parents=True, exist_ok=True)
@@ -327,6 +336,7 @@ def doc_beamer():
 def doc_tikz():
     g = Gen(505)
     r = g.r
+    cap = Gen(5051)
     figs = []
     for i in range(1, 9):
         # line/scatter plot from an inline table
@@ -345,7 +355,7 @@ def doc_tikz():
 \legend{{data,fit,seasonal}}
 \end{{axis}}
 \end{{tikzpicture}}
-\caption{{{g.phrase().title()}}}\label{{fig:plot{i}}}
+\caption{{{caption(g, cap)}}}\label{{fig:plot{i}}}
 \end{{figure}}"""
         )
     for i in range(1, 4):
@@ -356,7 +366,7 @@ def doc_tikz():
 \addplot3[surf,domain=-2:2,domain y=-2:2,samples=24] {{exp(-(x^2+y^2))*cos(deg({i}*x))}};
 \end{{axis}}
 \end{{tikzpicture}}
-\caption{{Surface {i}: {g.phrase().title()}}}\label{{fig:surf{i}}}
+\caption{{Surface {i}. {caption(g, cap)}}}\label{{fig:surf{i}}}
 \end{{figure}}"""
         )
     for i in range(1, 7):
@@ -373,7 +383,7 @@ def doc_tikz():
 \foreach \k in {{1,...,{6 + i}}} {{ \draw[fill=orange!{20 + 8 * i}] ({{\k*0.9}},-3.2) circle ({{0.15 + 0.03*\k}}); }}
 \foreach \a in {{0,15,...,345}} {{ \draw[blue!60,thin] (9.6,-2.2) -- +(\a:{0.6 + 0.1 * i}); }}
 \end{{tikzpicture}}
-\caption{{{g.phrase().title()}}}\label{{fig:dia{i}}}
+\caption{{{caption(g, cap)}}}\label{{fig:dia{i}}}
 \end{{figure}}"""
         )
     names = [f"fig:plot{i}" for i in range(1, 9)] + [f"fig:surf{i}" for i in range(1, 4)] + [f"fig:dia{i}" for i in range(1, 7)]
@@ -491,6 +501,7 @@ end
 
 def doc_long():
     g = Gen(808)
+    cap = Gen(8081)
     keys, b = bib(8080, 120)
     write("long_thesis", "refs.bib", b)
     makers = cite_makers(keys, g, ["citep", "citet"])
@@ -526,7 +537,7 @@ def doc_long():
                 )
                 out.append(
                     rf"""\begin{{table}}[tbp]\centering
-\caption{{{g.phrase().title()}}}\label{{{tl}}}
+\caption{{{caption(g, cap)}}}\label{{{tl}}}
 \begin{{tabular}}{{lrrl}}\hline Item & Count & Share & Type \\ \hline
 {rows}
 \hline\end{{tabular}}
@@ -541,7 +552,7 @@ def doc_long():
                 out.append(
                     rf"""\begin{{figure}}[tbp]\centering
 \fbox{{\parbox[b]{{0.8\textwidth}}{{\centering\vspace{{2mm}}{bars}\vspace{{2mm}}}}}}
-\caption{{{g.phrase().title()}}}\label{{{fl}}}
+\caption{{{caption(g, cap)}}}\label{{{fl}}}
 \end{{figure}}"""
                 )
             out.append(g.para(6, cites=makers, refs=refs))
@@ -570,8 +581,9 @@ def doc_long():
 
 
 def doc_toc_wrap_canary():
-    """Known TeXres-vs-TeX-Live difference: a long list-of-figures entry that
-    wraps is hyphenated differently. The benchmark must report and exclude it."""
+    """Regression canary: a long list-of-figures entry that wraps. TeXres once
+    hyphenated it differently from TeX Live (the line breaker ignored the dot
+    leaders of the entry); it is timed like every other document."""
     tex = r"""\documentclass[11pt]{article}
 \usepackage[margin=1in]{geometry}
 \begin{document}

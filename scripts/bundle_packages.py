@@ -2630,23 +2630,12 @@ def generate_metafont_outlines(combined_dir, cache_dir, scratch_dir):
     for BBM, IFSYM, and Computer Modern extra fonts (cmbcsc10, cmcsc12)
     using pinned canonical METAFONT sources from bbm.tar.xz, ifsym.tar.xz,
     cm-mf-extra-bold.tar.xz, cmcyr.tar.xz, and cm.tar.xz.
-    Traces Bezier outline programs using mftrace and potrace.
+    Traces the glyph bitmaps with scripts/mf_trace.py (METAFONT + potrace).
     """
     print("  [MF Outlines] Regenerating authentic Type 1 outlines from pinned METAFONT sources...")
 
-    # Locate declared real build dependencies via shutil.which with explicit error
-    mftrace_cmd = []
-    mftrace_exe = shutil.which("mftrace")
-    tools_bin = os.path.join(cache_dir, "tools/bin")
-    if mftrace_exe:
-        mftrace_cmd = [mftrace_exe]
-    elif os.path.exists(os.path.join(tools_bin, "mftrace.py")):
-        mftrace_cmd = ["python3", os.path.join(tools_bin, "mftrace.py")]
-    else:
-        raise RuntimeError(
-            "Required build tool 'mftrace' not found via PATH or cache. "
-            "Please ensure mftrace (with potrace backend) is available to generate METAFONT outlines."
-        )
+    # Tracing is done by scripts/mf_trace.py (mf + potrace + fontTools).
+    mftrace_cmd = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "mf_trace.py")]
 
     mf_exe = shutil.which("mf")
     if not mf_exe:
@@ -2657,8 +2646,6 @@ def generate_metafont_outlines(combined_dir, cache_dir, scratch_dir):
         raise RuntimeError("Required build tool 'potrace' not found via PATH.")
 
     env = os.environ.copy()
-    if os.path.exists(tools_bin):
-        env["PATH"] = f"{tools_bin}:{env['PATH']}"
 
     work_dir = os.path.join(scratch_dir, "mf_outlines_work")
     os.makedirs(work_dir, exist_ok=True)
@@ -2766,7 +2753,7 @@ def generate_metafont_outlines(combined_dir, cache_dir, scratch_dir):
 
     print(f"  [MF Outlines] Successfully generated {len(generated_records)} authentic font files & maps.")
     return {
-        "generator": "mftrace with potrace backend from authentic CTAN METAFONT sources",
+        "generator": "scripts/mf_trace.py (mf + potrace) from authentic CTAN METAFONT sources",
         "source_archives": ["bbm.tar.xz", "ifsym.tar.xz", "cm-mf-extra-bold.tar.xz", "cmcyr.tar.xz", "cm.tar.xz"],
         "total_generated": len(generated_records),
         "files": generated_records,
@@ -3677,6 +3664,29 @@ def build_supplement(assets_dir, lock_file_path, cache_dir, legal_dir):
                 add_supplement_notice(added, main_members, legal_dir, legal_name, dest_rel,
                                       package_records[pkg_id]["notices"])
 
+    # The main archive's traced METAFONT fonts (bbm, ifsym, cmbcsc10, cmcsc12)
+    # are empty .notdef-only shells; the real outlines shadow them here.
+    with tempfile.TemporaryDirectory() as scratch:
+        combined = os.path.join(scratch, "combined")
+        os.makedirs(combined)
+        outlines = generate_metafont_outlines(combined, cache_dir, scratch)
+        mf_outline_files = {}
+        for rel in sorted(outlines["files"]):
+            if not rel.endswith(".pfb"):
+                continue
+            if os.path.basename(rel) not in main_by_basename:
+                raise RuntimeError(f"REJECTED: {rel} replaces no main-archive member")
+            with open(os.path.join(combined, rel), "rb") as fp:
+                data = fp.read()
+            added[rel] = data
+            mf_outline_files[rel] = hashlib.sha256(data).hexdigest()
+    mf_outline_record = {
+        "generator": outlines["generator"],
+        "source_archives": outlines["source_archives"],
+        "file_count": len(mf_outline_files),
+        "files": mf_outline_files,
+    }
+
     notice_records = {}
     for legal_name, dest_rel in SUPPLEMENT_EXTRA_NOTICES:
         add_supplement_notice(added, main_members, legal_dir, legal_name, dest_rel, notice_records)
@@ -3741,6 +3751,7 @@ def build_supplement(assets_dir, lock_file_path, cache_dir, legal_dir):
         "total_members": len(added),
         "precedence": "read before the main archive; its members shadow same-named main members",
         "packages": package_records,
+        "mf_outlines": mf_outline_record,
         "notices": notice_records,
         "hyphenation_config": lua_provenance,
         "map_roots": {

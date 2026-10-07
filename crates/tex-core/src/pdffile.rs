@@ -158,6 +158,7 @@ pub fn make_embed_font(
         desc_obj: 0,
         pdftex: None,
         xe: None,
+        type3: None,
     };
     set_font_usage(&mut font, used_chars);
     font
@@ -1048,6 +1049,40 @@ fn pdf_literal_string(s: &[u8]) -> String {
     out
 }
 
+/// writet3.c `writet3` for a PK font: the glyph procedures (in PK file
+/// order), the Type 3 dictionary, its /Widths, /Encoding and /CharProcs.
+fn write_type3_font(b: &mut PdfBuilder, font: &crate::writet3::Type3Font, font_obj: usize) {
+    let mut procs: Vec<(u8, usize)> = font
+        .char_procs
+        .iter()
+        .map(|(code, stream)| {
+            let obj = b.alloc();
+            b.set_stream(obj, "", stream, true);
+            (*code, obj)
+        })
+        .collect();
+    let widths = b.alloc();
+    let encoding = b.alloc();
+    let char_procs = b.alloc();
+    let [llx, lly, urx, ury] = font.bbox;
+    b.set(
+        font_obj,
+        format!(
+            "<< /Type /Font /Subtype /Type3 /Name /F{}{} /FontMatrix {} /FontBBox [ {llx} {lly} {urx} {ury} ] /Resources << /ProcSet [ /PDF /ImageB ] >> /FirstChar {} /LastChar {} /Widths {widths} 0 R /Encoding {encoding} 0 R /CharProcs {char_procs} 0 R >>",
+            font.name,
+            font_attr_entry(&font.font_attr),
+            font.font_matrix(),
+            font.first_char,
+            font.last_char,
+        ),
+    );
+    b.set(widths, font.widths_array());
+    b.set(encoding, format!("<< /Type /Encoding /Differences {} >>", font.differences()));
+    procs.sort_unstable();
+    let entries: String = procs.iter().map(|(code, obj)| format!(" /a{code} {obj} 0 R")).collect();
+    b.set(char_procs, format!("<<{entries} >>"));
+}
+
 /// xdvipdfmx's Type0/CIDFont objects of a XeTeX native font
 /// (`dpx_font::build_xe_font`).
 fn write_xe_font(
@@ -1700,7 +1735,7 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
             } else {
                 b.alloc()
             };
-            if f.xe.is_some() {
+            if f.xe.is_some() || f.type3.is_some() {
                 return FontObjs { font, desc: 0, file: None, tounicode: None, cidfont: None, encoding: None, widths: None };
             }
             let sfnt = is_sfnt(f);
@@ -1897,6 +1932,10 @@ pub fn write_pdf(doc: &PdfDoc) -> Result<Vec<u8>, String> {
         xdpx_enc_tu.insert(enc_file.clone(), (text, None));
     }
     for (index, ((f, fo), key)) in doc.fonts.iter().zip(&font_objs).zip(&font_keys).enumerate() {
+        if let Some(type3) = &f.type3 {
+            write_type3_font(&mut b, type3, fo.font);
+            continue;
+        }
         if let Some(xe) = &f.xe {
             write_xe_font(&mut b, doc, f, xe, fo.font, &mut xe_tags)?;
             continue;

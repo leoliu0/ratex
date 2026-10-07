@@ -434,6 +434,8 @@ pub enum Format {
     Otf,
     /// kpathsea `lua` format (LUAINPUTS): Lua modules for `require`.
     Lua,
+    /// kpathsea `pk` format (PKFONTS): `<font>.<dpi>pk` bitmap fonts.
+    Pk,
 }
 
 impl Format {
@@ -453,6 +455,8 @@ impl Format {
             Format::Bib => &[".bib"],
             Format::Otf => &[".otf"],
             Format::Lua => &[".luc", ".luctex", ".texluc", ".lua", ".luatex", ".texlua"],
+            // names are spelled with their resolution (`bbm12.600pk`)
+            Format::Pk => &["pk"],
         }
     }
 
@@ -494,6 +498,7 @@ impl Format {
                 "tex/latex//",
                 "tex//",
             ],
+            Format::Pk => &["fonts/pk//"],
         }
     }
 }
@@ -951,6 +956,7 @@ impl Kpse {
             ("BSTINPUTS", &[Format::Bst]),
             ("BIBINPUTS", &[Format::Bib]),
             ("LUAINPUTS", &[Format::Lua]),
+            ("PKFONTS", &[Format::Pk]),
         ] {
             let Some(value) = variable(name) else {
                 continue;

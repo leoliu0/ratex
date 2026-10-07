@@ -400,6 +400,8 @@ pub struct EmbedFont {
     pub pdftex: Option<PdfTexFont>,
     /// XeTeX native font data (xdvipdfmx Identity-H/V CID font).
     pub xe: Option<XeFont>,
+    /// writet3.c's Type 3 font of a PK bitmap font (no map entry).
+    pub type3: Option<crate::writet3::Type3Font>,
 }
 
 /// What the writer needs of a XeTeX native font beyond the program.

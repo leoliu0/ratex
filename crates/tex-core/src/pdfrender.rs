@@ -63,7 +63,7 @@ pub(crate) fn divide_scaled(mut s: i64, mut m: i64, decimal_digits: u32) -> (i64
     (sign * quotient, sign * (s - remainder / ten_pow))
 }
 
-fn push_decimal(buf: &mut String, mut value: i64, decimal_digits: u32) {
+pub(crate) fn push_decimal(buf: &mut String, mut value: i64, decimal_digits: u32) {
     if value < 0 {
         buf.push('-');
         value = -value;
@@ -2101,7 +2101,12 @@ impl<'a> RenderCtx<'a> {
             .get(f as usize)
             .cloned()
             .ok_or_else(|| format!("Missing font {f} during shipout"))?;
-        let program = if let Some(program) = self.font_programs.get(&f) {
+        let program = if self.eng.pdf_font_is_pk(f) {
+            // a PK font's characters are as wide as the TFM says
+            let width = i64::from(font.char_width(character));
+            self.advance_cache.insert(key, width);
+            return Ok(width);
+        } else if let Some(program) = self.font_programs.get(&f) {
             program.clone()
         } else {
             let program = self.eng.font_loader.program_for_font(&font)?;
@@ -2143,6 +2148,13 @@ impl<'a> RenderCtx<'a> {
                 self.lua_cw += round_xn_over_d(
                     w, 10_000_000, at_size_sp * (1000 + i64::from(self.cur_tm_a)),
                 );
+            }
+            return;
+        }
+        if self.eng.pdf_font_is_pk(f) {
+            // pdftex.web adv_char_width: `get_pk_char_width(f, w)`
+            if let Some(scale) = self.eng.pk_scale(f) {
+                self.delta_h += scale.advance(w);
             }
             return;
         }

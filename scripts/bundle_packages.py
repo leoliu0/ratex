@@ -44,6 +44,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import struct
 import sys
 import tarfile
 import tempfile
@@ -1168,7 +1169,7 @@ UPSTREAM_PACKAGES = {
         'description': '"Blackboard-style" cm fonts',
         'license': 'other-free',
         'license_files': ['doc/fonts/bbm/README'],
-        'map_files': ['fonts/map/dvips/bbm/bbm.map'],
+        'map_files': [],
         'revision': 77682,
         'source_obligations': 'other-free; authentic METAFONT source archive',
         'tds_dirs': [('fonts/source/public/bbm', 'fonts/source/public/bbm'), ('fonts/tfm/public/bbm', 'fonts/tfm/public/bbm')],
@@ -1224,7 +1225,7 @@ UPSTREAM_PACKAGES = {
         'description': 'Extra Metafont files for CM',
         'license': 'gpl pd',
         'license_files': [],
-        'map_files': ['fonts/map/dvips/cmextra/cmextra-t1.map'],
+        'map_files': [],
         'revision': 54512,
         'source_obligations': 'gpl pd; authentic METAFONT source archive',
         'tds_dirs': [('fonts/source/public/cm-mf-extra-bold', 'fonts/source/public/cm-mf-extra-bold'), ('fonts/tfm/public/cm-mf-extra-bold', 'fonts/tfm/public/cm-mf-extra-bold')],
@@ -1392,7 +1393,7 @@ UPSTREAM_PACKAGES = {
         'description': 'A collection of symbols',
         'license': 'other-free',
         'license_files': [],
-        'map_files': ['fonts/map/dvips/ifsym/ifsym.map'],
+        'map_files': [],
         'revision': 77682,
         'source_obligations': 'other-free; authentic METAFONT source archive',
         'tds_dirs': [('fonts/source/public/ifsym', 'fonts/source/public/ifsym'), ('fonts/tfm/public/ifsym', 'fonts/tfm/public/ifsym'), ('tex/latex/ifsym', 'tex/latex/ifsym')],
@@ -2771,137 +2772,183 @@ def generate_lh_metrics(combined_dir, cache_dir, scratch_dir):
     }
 
 
-def generate_metafont_outlines(combined_dir, cache_dir, scratch_dir):
-    """
-    Deterministic offline regeneration of Type 1 outlines, metrics, and maps
-    for BBM, IFSYM, and Computer Modern extra fonts (cmbcsc10, cmcsc12)
-    using pinned canonical METAFONT sources from bbm.tar.xz, ifsym.tar.xz,
-    cm-mf-extra-bold.tar.xz, cmcyr.tar.xz, and cm.tar.xz.
-    Traces the glyph bitmaps with scripts/mf_trace.py (METAFONT + potrace).
-    """
-    print("  [MF Outlines] Regenerating authentic Type 1 outlines from pinned METAFONT sources...")
+# pdfTeX writes a TFM that has no pdftex.map entry as a Type 3 font of PK
+# bitmaps, which kpathsea has mktexpk make on demand (texmf.cnf: mode ljfour;
+# pdftexconfig.tex: \pdfpkresolution 600). TeX Live maps none of these
+# METAFONT-only fonts, so they are shipped as the PK files mktexpk writes.
+MF_PK_MODE = "ljfour"
+MF_PK_BDPI = 600
+# LaTeX's standard sizes: the size lists of the .fd files (ifsym's `<->`
+# scales one design size to all of them).
+MF_PK_SIZES = ("5", "6", "7", "8", "9", "10", "10.95", "12", "14.4", "17.28", "20.74", "24.88")
+# (archive, TDS directory of the PK files, fonts: None = every TFM the archive ships)
+MF_PK_FONTS = (
+    ("bbm.tar.xz", "bbm", None),
+    ("ifsym.tar.xz", "ifsym", None),
+    ("cm-mf-extra-bold.tar.xz", "cm-mf-extra-bold", ["cmbcsc10"]),
+    ("cmcyr.tar.xz", "cmcyr", ["cmcsc12"]),
+)
 
-    # Tracing is done by scripts/mf_trace.py (mf + potrace + fontTools).
-    mftrace_cmd = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "mf_trace.py")]
 
-    mf_exe = shutil.which("mf")
+def _f32(x):
+    return struct.unpack("f", struct.pack("f", x))[0]
+
+
+def _tex_pt_sp(text):
+    """tex.web scan_dimen of `<text>pt`: the fraction through round_decimals."""
+    whole, _, frac = text.partition(".")
+    a = 0
+    for digit in reversed(frac[:17]):
+        a = (a + int(digit) * 0o400000) // 10
+    return int(whole) * 65536 + (a + 1) // 2
+
+
+def _divide_scaled_out(s, m, dd):
+    """pdftex.web divide_scaled's `scaled_out` for s, m > 0."""
+    q, r = divmod(s, m)
+    for _ in range(dd):
+        q, r = 10 * q + (10 * r) // m, (10 * r) % m
+    if 2 * r >= m:
+        r -= m
+    p = 10 ** dd
+    return s - (r // p if r >= 0 else -((-r) // p))
+
+
+def _kpse_magstep(n, bdpi):
+    """kpathsea magstep.c `magstep` (n in half steps)."""
+    neg, n = n < 0, abs(n)
+    t = 1.0
+    if n & 1:
+        n &= ~1
+        t = 1.095445115
+    while n > 8:
+        n -= 8
+        t *= 2.0736
+    while n > 0:
+        n -= 2
+        t *= 1.2
+    return int(0.5 + (bdpi / t if neg else bdpi * t))
+
+
+def _kpse_magstep_fix(dpi, bdpi):
+    """kpathsea `kpathsea_magstep_fix`: snap dpi to a magstep within 1."""
+    sign = -1 if dpi < bdpi else 1
+    real = 0
+    for m in range(40):
+        mdpi = _kpse_magstep(m * sign, bdpi)
+        if abs(mdpi - dpi) <= 1:
+            real = mdpi
+        elif (mdpi - dpi) * sign > 0:
+            real = dpi
+        if real:
+            break
+    return real or dpi
+
+
+def _pdftex_pk_dpi(at_sp, dsize_sp):
+    """writet3.c `writepk`: the PK resolution pdfTeX asks kpathsea for."""
+    size = _divide_scaled_out(at_sp, 6578176, 6)  # pdf_font_size
+    val = _f32(MF_PK_BDPI * _f32(_f32(size) / _f32(dsize_sp)))
+    return _kpse_magstep_fix(int(val + 0.5), MF_PK_BDPI)
+
+
+def _tfm_design_size_sp(data):
+    """tex.web: the TFM header's design size as scaled points."""
+    return int.from_bytes(data[28:32], "big") >> 4
+
+
+def generate_metafont_pk(combined_dir, cache_dir, scratch_dir):
+    """
+    The PK fonts pdfTeX embeds for the METAFONT-only fonts of MF_PK_FONTS,
+    made the way mktexpk does (`mf-nowin -progname=mf \\mode:=ljfour;
+    mag:=<dpi div 600>+<dpi mod 600>/600; nonstopmode; input <font>` and
+    gftopk) from the pinned CTAN METAFONT sources, at every resolution a
+    standard LaTeX size of half to 2.5 times the design size asks for.
+    Also writes cmcsc12.tfm, which TeX Live's mktextfm makes on demand.
+    """
+    print("  [MF PK] Generating PK fonts from pinned METAFONT sources...")
+    mf_exe = shutil.which("mf-nowin") or shutil.which("mf")
     if not mf_exe:
         raise RuntimeError("Required build tool 'mf' (METAFONT) not found via PATH.")
+    gftopk_exe = shutil.which("gftopk")
+    if not gftopk_exe:
+        raise RuntimeError("Required build tool 'gftopk' not found via PATH.")
 
-    potrace_exe = shutil.which("potrace")
-    if not potrace_exe:
-        raise RuntimeError("Required build tool 'potrace' not found via PATH.")
-
-    env = os.environ.copy()
-
-    work_dir = os.path.join(scratch_dir, "mf_outlines_work")
+    work_dir = os.path.join(scratch_dir, "mf_pk_work")
     os.makedirs(work_dir, exist_ok=True)
-
-    # Extract pinned upstream METAFONT source archives from cache (zero host font dependency)
-    bbm_src_dir = os.path.join(work_dir, "bbm_src")
-    with tarfile.open(os.path.join(cache_dir, "bbm.tar.xz"), "r:xz") as tf:
-        tf.extractall(bbm_src_dir)
-    ifsym_src_dir = os.path.join(work_dir, "ifsym_src")
-    with tarfile.open(os.path.join(cache_dir, "ifsym.tar.xz"), "r:xz") as tf:
-        tf.extractall(ifsym_src_dir)
-    cmextra_src_dir = os.path.join(work_dir, "cmextra_src")
-    with tarfile.open(os.path.join(cache_dir, "cm-mf-extra-bold.tar.xz"), "r:xz") as tf:
-        tf.extractall(cmextra_src_dir)
-    cmcyr_src_dir = os.path.join(work_dir, "cmcyr_src")
-    with tarfile.open(os.path.join(cache_dir, "cmcyr.tar.xz"), "r:xz") as tf:
-        tf.extractall(cmcyr_src_dir)
-    cm_src_dir = os.path.join(work_dir, "cm_src")
-    with tarfile.open(os.path.join(cache_dir, "cm.tar.xz"), "r:xz") as tf:
-        tf.extractall(cm_src_dir)
-
+    archives = [archive for archive, _, _ in MF_PK_FONTS] + ["cm.tar.xz"]
     mf_dirs = []
-    for d in [bbm_src_dir, ifsym_src_dir, cmextra_src_dir, cmcyr_src_dir, cm_src_dir]:
-        for root, _, files in os.walk(d):
+    tfms = {}
+    for archive in archives:
+        src = os.path.join(work_dir, "src", archive)
+        with tarfile.open(os.path.join(cache_dir, archive), "r:xz") as tf:
+            tf.extractall(src)
+        for root, _, files in os.walk(src):
             if any(f.endswith(".mf") for f in files):
                 mf_dirs.append(root)
-    env["MFINPUTS"] = ":".join(mf_dirs)
+            for f in files:
+                if f.endswith(".tfm"):
+                    tfms[(archive, f[:-4])] = os.path.join(root, f)
+    env = os.environ.copy()
+    env["MFINPUTS"] = ":".join(sorted(mf_dirs))
+    # the GF/PK preamble comment carries METAFONT's run time
+    env["SOURCE_DATE_EPOCH"] = str(FIXED_MTIME)
+    env["FORCE_SOURCE_DATE"] = "1"
 
-    bbm_fonts = [
-        "bbm5", "bbm6", "bbm7", "bbm8", "bbm9", "bbm10", "bbm12", "bbm17",
-        "bbmbx5", "bbmbx6", "bbmbx7", "bbmbx8", "bbmbx9", "bbmbx10", "bbmbx12",
-        "bbmsl8", "bbmsl9", "bbmsl10", "bbmsl12",
-        "bbmss8", "bbmss9", "bbmss10", "bbmss12", "bbmss17"
-    ]
-    ifsym_fonts = ["ifsym10", "ifsymb10", "ifgeo10", "ifclk10", "ifwea10"]
-    cmextra_fonts = ["cmbcsc10", "cmcsc12"]
+    def run_mf(font, dpi, out_dir):
+        os.makedirs(out_dir, exist_ok=True)
+        mag = f"{dpi // MF_PK_BDPI}+{dpi % MF_PK_BDPI}/{MF_PK_BDPI}"
+        # like mktexpk, accept METAFONT's recoverable errors (bbmssbx10's
+        # "Strange path") as long as it wrote the GF file
+        subprocess.run(
+            [mf_exe, "-progname=mf", f"\\mode:={MF_PK_MODE}; mag:={mag}; nonstopmode; input {font}"],
+            cwd=out_dir, env=env, capture_output=True,
+        )
+        if not os.path.exists(os.path.join(out_dir, f"{font}.{dpi}gf")):
+            raise RuntimeError(f"METAFONT wrote no {font}.{dpi}gf")
+        subprocess.run([gftopk_exe, f"{font}.{dpi}gf", f"{font}.{dpi}pk"],
+                       cwd=out_dir, env=env, check=True, capture_output=True)
+        return os.path.join(out_dir, f"{font}.{dpi}pk")
 
     generated_records = {}
     pkg_owners = {}
+    jobs = []
+    for archive, tds_dir, names in MF_PK_FONTS:
+        pkg = archive[: -len(".tar.xz")]
+        for font in names or sorted(name for owner, name in tfms if owner == archive):
+            tfm = tfms.get((archive, font))
+            if tfm is None:
+                # not shipped as a TFM (cmcsc12): METAFONT writes it
+                out_dir = os.path.join(work_dir, "tfm", font)
+                run_mf(font, MF_PK_BDPI, out_dir)
+                tfm = os.path.join(out_dir, f"{font}.tfm")
+                rel = f"fonts/tfm/public/cmextra/{font}.tfm"
+                os.makedirs(os.path.join(combined_dir, os.path.dirname(rel)), exist_ok=True)
+                shutil.copyfile(tfm, os.path.join(combined_dir, rel))
+                generated_records[rel] = sha256_file(tfm)
+                pkg_owners[rel] = pkg
+            with open(tfm, "rb") as fp:
+                dsize = _tfm_design_size_sp(fp.read())
+            sizes = [_tex_pt_sp(size) for size in MF_PK_SIZES]
+            dpis = sorted({MF_PK_BDPI} | {_pdftex_pk_dpi(at, dsize) for at in sizes if dsize <= 2 * at <= 5 * dsize})
+            for dpi in dpis:
+                jobs.append((font, dpi, f"fonts/pk/{MF_PK_MODE}/public/{tds_dir}/{font}.{dpi}pk", pkg))
 
-    bbm_pfb_dir = os.path.join(combined_dir, "fonts/type1/public/bbm")
-    bbm_map_dir = os.path.join(combined_dir, "fonts/map/dvips/bbm")
-    ifsym_pfb_dir = os.path.join(combined_dir, "fonts/type1/public/ifsym")
-    ifsym_map_dir = os.path.join(combined_dir, "fonts/map/dvips/ifsym")
-    cmextra_pfb_dir = os.path.join(combined_dir, "fonts/type1/public/cmextra")
-    cmextra_tfm_dir = os.path.join(combined_dir, "fonts/tfm/public/cmextra")
-    cmextra_map_dir = os.path.join(combined_dir, "fonts/map/dvips/cmextra")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as executor:
+        built = list(executor.map(
+            lambda job: run_mf(job[0], job[1], os.path.join(work_dir, "pk", f"{job[0]}.{job[1]}")), jobs))
+    for (font, dpi, rel, pkg), pk in zip(jobs, built):
+        dest = os.path.join(combined_dir, rel)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        shutil.copyfile(pk, dest)
+        generated_records[rel] = sha256_file(dest)
+        pkg_owners[rel] = pkg
 
-    for d in [bbm_pfb_dir, bbm_map_dir, ifsym_pfb_dir, ifsym_map_dir, cmextra_pfb_dir, cmextra_tfm_dir, cmextra_map_dir]:
-        os.makedirs(d, exist_ok=True)
-
-    for f in bbm_fonts:
-        cmd = mftrace_cmd + ["--formats=pfb", "--noround", "--no-afm", f]
-        subprocess.run(cmd, cwd=bbm_pfb_dir, env=env, check=True, capture_output=True)
-        rel = f"fonts/type1/public/bbm/{f}.pfb"
-        with open(os.path.join(combined_dir, rel), "rb") as fp:
-            generated_records[rel] = hashlib.sha256(fp.read()).hexdigest()
-        pkg_owners[rel] = "bbm"
-
-    bbm_map_rel = "fonts/map/dvips/bbm/bbm.map"
-    with open(os.path.join(combined_dir, bbm_map_rel), "w") as fp:
-        for f in bbm_fonts:
-            fp.write(f"{f} {f} <{f}.pfb\n")
-    with open(os.path.join(combined_dir, bbm_map_rel), "rb") as fp:
-        generated_records[bbm_map_rel] = hashlib.sha256(fp.read()).hexdigest()
-    pkg_owners[bbm_map_rel] = "bbm"
-
-    for f in ifsym_fonts:
-        cmd = mftrace_cmd + ["--formats=pfb", "--noround", "--no-afm", f]
-        subprocess.run(cmd, cwd=ifsym_pfb_dir, env=env, check=True, capture_output=True)
-        rel = f"fonts/type1/public/ifsym/{f}.pfb"
-        with open(os.path.join(combined_dir, rel), "rb") as fp:
-            generated_records[rel] = hashlib.sha256(fp.read()).hexdigest()
-        pkg_owners[rel] = "ifsym"
-
-    ifsym_map_rel = "fonts/map/dvips/ifsym/ifsym.map"
-    with open(os.path.join(combined_dir, ifsym_map_rel), "w") as fp:
-        for f in ifsym_fonts:
-            fp.write(f"{f} {f} <{f}.pfb\n")
-    with open(os.path.join(combined_dir, ifsym_map_rel), "rb") as fp:
-        generated_records[ifsym_map_rel] = hashlib.sha256(fp.read()).hexdigest()
-    pkg_owners[ifsym_map_rel] = "ifsym"
-
-    for f in cmextra_fonts:
-        cmd = mftrace_cmd + ["--formats=pfb", "--noround", "--no-afm", f]
-        subprocess.run(cmd, cwd=cmextra_pfb_dir, env=env, check=True, capture_output=True)
-        rel = f"fonts/type1/public/cmextra/{f}.pfb"
-        with open(os.path.join(combined_dir, rel), "rb") as fp:
-            generated_records[rel] = hashlib.sha256(fp.read()).hexdigest()
-        pkg_owners[rel] = "cm-mf-extra-bold" if f == "cmbcsc10" else "cmcyr"
-
-    subprocess.run([mf_exe, "\\mode:=ljfour; nonstopmode; input cmcsc12.mf"], cwd=cmextra_tfm_dir, env=env, check=True, capture_output=True)
-    tfm12_rel = "fonts/tfm/public/cmextra/cmcsc12.tfm"
-    with open(os.path.join(combined_dir, tfm12_rel), "rb") as fp:
-        generated_records[tfm12_rel] = hashlib.sha256(fp.read()).hexdigest()
-    pkg_owners[tfm12_rel] = "cmcyr"
-
-    cmextra_map_rel = "fonts/map/dvips/cmextra/cmextra-t1.map"
-    with open(os.path.join(combined_dir, cmextra_map_rel), "w") as fp:
-        for f in cmextra_fonts:
-            fp.write(f"{f} {f} <{f}.pfb\n")
-    with open(os.path.join(combined_dir, cmextra_map_rel), "rb") as fp:
-        generated_records[cmextra_map_rel] = hashlib.sha256(fp.read()).hexdigest()
-    pkg_owners[cmextra_map_rel] = "cm-mf-extra-bold"
-
-    print(f"  [MF Outlines] Successfully generated {len(generated_records)} authentic font files & maps.")
+    print(f"  [MF PK] Generated {len(generated_records)} files.")
     return {
-        "generator": "scripts/mf_trace.py (mf + potrace) from authentic CTAN METAFONT sources",
-        "source_archives": ["bbm.tar.xz", "ifsym.tar.xz", "cm-mf-extra-bold.tar.xz", "cmcyr.tar.xz", "cm.tar.xz"],
+        "generator": f"mf ({MF_PK_MODE}, {MF_PK_BDPI} dpi) + gftopk, as mktexpk runs them",
+        "source_archives": archives,
+        "fonts": sorted({job[0] for job in jobs}),
         "total_generated": len(generated_records),
         "files": generated_records,
         "pkg_owners": pkg_owners,
@@ -3418,10 +3465,10 @@ def build_bundle(baseline_path, output_dir, lock_file_path, cache_dir, legal_dir
         new_basenames[fname] = ("lh", target_rel, fhash)
         new_files_by_pkg["lh"][target_rel] = fhash
 
-    mf_outlines_provenance = generate_metafont_outlines(combined_dir, cache_dir, scratch)
-    for target_rel, fhash in mf_outlines_provenance["files"].items():
+    mf_pk_provenance = generate_metafont_pk(combined_dir, cache_dir, scratch)
+    for target_rel, fhash in mf_pk_provenance["files"].items():
         fname = os.path.basename(target_rel)
-        pkg_owner = mf_outlines_provenance.get("pkg_owners", {}).get(target_rel, "cm")
+        pkg_owner = mf_pk_provenance["pkg_owners"][target_rel]
         new_basenames[fname] = (pkg_owner, target_rel, fhash)
         new_files_by_pkg.setdefault(pkg_owner, {})[target_rel] = fhash
 
@@ -3713,10 +3760,10 @@ def build_bundle(baseline_path, output_dir, lock_file_path, cache_dir, legal_dir
                 "source_archives": lh_provenance["source_archives"],
             },
         },
-        "metafont_outline_closures": {
-            "generator": mf_outlines_provenance["generator"],
-            "total_generated": mf_outlines_provenance["total_generated"],
-            "source_archives": mf_outlines_provenance["source_archives"],
+        "metafont_pk_closures": {
+            "generator": mf_pk_provenance["generator"],
+            "total_generated": mf_pk_provenance["total_generated"],
+            "source_archives": mf_pk_provenance["source_archives"],
         },
         "basename_collision_policy": {
             "status": "verified_clean",
@@ -3834,27 +3881,29 @@ def build_supplement(assets_dir, lock_file_path, cache_dir, legal_dir):
                 add_supplement_notice(added, main_members, legal_dir, legal_name, dest_rel,
                                       package_records[pkg_id]["notices"])
 
-    # The main archive's traced METAFONT fonts (bbm, ifsym, cmbcsc10, cmcsc12)
-    # are empty .notdef-only shells; the real outlines shadow them here.
+    # TeX Live maps no METAFONT-only font (bbm, ifsym, cmbcsc10, cmcsc12):
+    # pdfTeX embeds their PK bitmaps. Their records in the main archive's
+    # pdftex.map are dropped below, leaving its traced .pfb files unused.
     with tempfile.TemporaryDirectory() as scratch:
         combined = os.path.join(scratch, "combined")
         os.makedirs(combined)
-        outlines = generate_metafont_outlines(combined, cache_dir, scratch)
-        mf_outline_files = {}
-        for rel in sorted(outlines["files"]):
-            if not rel.endswith(".pfb"):
+        mf_pk = generate_metafont_pk(combined, cache_dir, scratch)
+        mf_pk_files = {}
+        for rel in sorted(mf_pk["files"]):
+            if not rel.endswith("pk"):
                 continue
-            if os.path.basename(rel) not in main_by_basename:
-                raise RuntimeError(f"REJECTED: {rel} replaces no main-archive member")
+            if os.path.basename(rel) in main_by_basename or rel in added:
+                raise RuntimeError(f"REJECTED: basename collision on '{rel}'")
             with open(os.path.join(combined, rel), "rb") as fp:
                 data = fp.read()
             added[rel] = data
-            mf_outline_files[rel] = hashlib.sha256(data).hexdigest()
-    mf_outline_record = {
-        "generator": outlines["generator"],
-        "source_archives": outlines["source_archives"],
-        "file_count": len(mf_outline_files),
-        "files": mf_outline_files,
+            mf_pk_files[rel] = hashlib.sha256(data).hexdigest()
+    mf_pk_record = {
+        "generator": mf_pk["generator"],
+        "source_archives": mf_pk["source_archives"],
+        "fonts": mf_pk["fonts"],
+        "file_count": len(mf_pk_files),
+        "files": mf_pk_files,
     }
 
     notice_records = {}
@@ -3896,6 +3945,8 @@ def build_supplement(assets_dir, lock_file_path, cache_dir, legal_dir):
             map_lines[tfm] = norm + "\n"
             record["added_entries"] += 1
         map_roots[rel] = record
+    for tfm in mf_pk["fonts"]:
+        map_lines.pop(tfm, None)
     pdftex_map = "".join(header) + "".join(map_lines[t] for t in sorted(map_lines))
     added[PDFTEX_MAP_REL] = pdftex_map.encode()
 
@@ -3921,7 +3972,7 @@ def build_supplement(assets_dir, lock_file_path, cache_dir, legal_dir):
         "total_members": len(added),
         "precedence": "read before the main archive; its members shadow same-named main members",
         "packages": package_records,
-        "mf_outlines": mf_outline_record,
+        "mf_pk": mf_pk_record,
         "notices": notice_records,
         "hyphenation_config": hyphenation_provenance,
         "map_roots": {

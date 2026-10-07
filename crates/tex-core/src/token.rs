@@ -125,7 +125,13 @@ pub struct NameHasher(u64);
 impl std::hash::Hasher for NameHasher {
     #[inline]
     fn finish(&self) -> u64 {
-        self.0
+        // The low bits of a product depend only on the low bits of its
+        // factors, and the last byte of a word only reaches the top bits,
+        // but the table indexes with the low ones: names that differ only
+        // late (`\csname foo\number\n\endcsname`) would pile into a few
+        // buckets. Fold the high half down and mix once more.
+        let h = (self.0 ^ (self.0 >> 32)).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        h ^ (h >> 29)
     }
     #[inline]
     fn write(&mut self, bytes: &[u8]) {
@@ -282,6 +288,26 @@ impl CsTable {
 
     pub fn all_ids(&self) -> impl Iterator<Item = CsId> {
         0..self.names.len() as CsId
+    }
+}
+
+#[cfg(test)]
+mod name_hash_tests {
+    use super::NameHasher;
+    use std::hash::{Hash, Hasher};
+
+    /// Names that differ only after their first bytes (`\csname foo\number\n
+    /// \endcsname`) must still spread over the low bits the table indexes with.
+    #[test]
+    fn names_with_a_late_difference_use_the_low_bits() {
+        let mut used = std::collections::HashSet::new();
+        for n in 0..50_000 {
+            let mut hasher = NameHasher::default();
+            format!("foo{n}").into_bytes().hash(&mut hasher);
+            used.insert(hasher.finish() & 0xFFFF);
+        }
+        // Random hashing fills about 35,000 of the 65,536 buckets.
+        assert!(used.len() > 30_000, "only {} buckets used", used.len());
     }
 }
 

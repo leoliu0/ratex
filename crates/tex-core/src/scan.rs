@@ -48,14 +48,18 @@ impl Engine {
             .or_else(|| self.current_token_source_mark().map(NumericOrigin::Mark))
     }
 
-    fn numeric_origin_context(&self, origin: NumericOrigin) -> Option<SourceContext> {
+    fn numeric_origin_mark(&self, origin: NumericOrigin) -> Option<crate::input::SourceMark> {
         match origin {
-            NumericOrigin::Physical(source) => self
-                .input
-                .source_mark_at(source.source_index, source.line, source.byte_column)
-                .map(|mark| mark.to_context()),
-            NumericOrigin::Mark(mark) => Some(mark.to_context()),
+            NumericOrigin::Physical(source) => {
+                self.input
+                    .source_mark_at(source.source_index, source.line, source.byte_column)
+            }
+            NumericOrigin::Mark(mark) => Some(mark),
         }
+    }
+
+    fn numeric_origin_context(&self, origin: NumericOrigin) -> Option<SourceContext> {
+        self.numeric_origin_mark(origin).map(|mark| mark.to_context())
     }
 
     /// Check a prospective append to a scanner-owned token list without
@@ -1045,7 +1049,7 @@ impl Engine {
                 &format!(
                     "Register number {n} is out of range; expected a number from 0 through {max}"
                 ),
-                source,
+                source.map(|mark| mark.to_context()),
             );
             return 0;
         }
@@ -1068,11 +1072,12 @@ impl Engine {
         n as u16
     }
 
-    /// Scan a character/integer operand and retain the first source token,
-    /// before numeric lookahead advances to the following delimiter.
-    pub(crate) fn scan_int_with_source(&mut self) -> (i32, Option<SourceContext>) {
+    /// Scan a character/integer operand and retain a bookmark of its first
+    /// source token, before numeric lookahead advances to the following
+    /// delimiter. The source excerpt is materialized only by an error.
+    pub(crate) fn scan_int_with_source(&mut self) -> (i32, Option<crate::input::SourceMark>) {
         let (value, origin) = self.scan_int_with_origin();
-        let source = origin.and_then(|origin| self.numeric_origin_context(origin));
+        let source = origin.and_then(|origin| self.numeric_origin_mark(origin));
         (value, source)
     }
 
@@ -3047,7 +3052,7 @@ impl Engine {
                 &format!(
                     "Character code {character} is out of range for {command}; expected 0 through 255 and used character 0"
                 ),
-                source,
+                source.map(|mark| mark.to_context()),
             );
             0
         };

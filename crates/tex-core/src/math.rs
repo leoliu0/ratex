@@ -2375,7 +2375,7 @@ impl Engine {
                 &format!(
                     "Delimiter code {value} is out of range for {command}; expected 0 through 134217727 and used the null delimiter"
                 ),
-                source,
+                source.map(|mark| mark.to_context()),
             );
             0
         }

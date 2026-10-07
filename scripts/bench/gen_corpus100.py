@@ -13,6 +13,7 @@ one-line-edit scenario of scripts/bench100.py replaces it with `BENCH-B`.
     python3 scripts/bench/gen_corpus100.py
 """
 
+import argparse
 import json
 import random
 import re
@@ -23,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gen_corpus import ADJ, VERBS, WORDS, Gen, bib, math_block  # noqa: E402
 
 OUT = Path(__file__).resolve().parent / "corpus100"
+SEED_OFFSET = 0
 MANIFEST = {}
 MARK = r"The benchmark edit marker reads BENCH-A."
 
@@ -477,11 +479,11 @@ def build(name, engine, *, cls="article", opts="11pt", pre="", front=None, nsec=
           seed=None, title=None, tags=None, cleveref=False, lang=None, cjk=False, chapters=0, idx=False, gloss=0,
           tail="", citecmds=("parencite", "textcite", "cite"), theorem=True, toc=True, abstract=True, note="",
           tail_para=5, seed_bib=None):
-    g = Gen(seed if seed is not None else sum(map(ord, name)) * 7919)
+    g = Gen((seed if seed is not None else sum(map(ord, name)) * 7919) + SEED_OFFSET)
     files = {}
     cites = None
     if bibmode:
-        keys, b = bib(seed_bib or (sum(map(ord, name)) + 11), nbib)
+        keys, b = bib((seed_bib or (sum(map(ord, name)) + 11)) + SEED_OFFSET, nbib)
         files["refs.bib"] = b
         cmds = citecmds
         cites = cite_fns(g, keys, list(cmds))
@@ -705,8 +707,17 @@ def define_docs():
 
 
 def main():
+    global OUT, SEED_OFFSET
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--out", type=Path, default=OUT, help="output directory (default: scripts/bench/corpus100)")
+    ap.add_argument("--seed-offset", type=int, default=0,
+                    help="shift every random seed: same document types and packages, different text and data "
+                         "(scripts/build_pgo.sh trains on such a variant, never on the measured documents)")
+    args = ap.parse_args()
+    OUT, SEED_OFFSET = args.out, args.seed_offset
     define_docs()
     names = sorted(MANIFEST)
+    OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "manifest.json").write_text(json.dumps({n: MANIFEST[n] for n in names}, indent=1) + "\n")
     eng = {}
     for n in names:

@@ -109,6 +109,28 @@ your document and load it with `Path=./`.
 behaves like `texres`. The packages install only `texres`, so an existing
 TeX Live is left alone.
 
+## Speed
+
+Median wall time over 7 runs on one Linux machine (64-core Threadripper PRO),
+TeXres 0.7.2 against TeX Live 2026 (`latexmk`). A cold build starts with an
+empty TeXres cache and a clean directory for `latexmk`; both run every pass
+and the bibliography tool. The documents are in the repository.
+
+| Document | Cold build, TeXres / TeX Live | One-line edit, TeXres / TeX Live |
+| --- | ---: | ---: |
+| 113-page thesis, BibTeX | 3.04 s / 3.57 s | 0.77 s / 0.79 s |
+| 12-page article, natbib | 1.04 s / 1.76 s | 0.27 s / 0.45 s |
+| 12-page article, biblatex | 4.79 s / 5.77 s | 1.34 s / 1.38 s |
+| 82-page Beamer deck | 7.88 s / 4.45 s | 4.07 s / 2.30 s |
+| 9-page TikZ and pgfplots figures | 24.7 s / 14.9 s | 8.25 s / 5.01 s |
+| 7-page LuaLaTeX | 52.5 s / 4.23 s | 1.72 s / 1.47 s |
+
+TeXres is faster on most pdfLaTeX and XeLaTeX documents, and an unchanged
+rebuild takes about 10 ms. It is about 1.7 times slower on Beamer and
+TikZ/pgfplots, and the first LuaLaTeX build of each document takes about 50
+seconds. Method, all scenarios, hardware and a script to rerun it:
+[PERFORMANCE.md](PERFORMANCE.md).
+
 ## Editor setup
 
 Find the path with `command -v texres` (Homebrew: `"$(brew --prefix)/bin/texres"`).

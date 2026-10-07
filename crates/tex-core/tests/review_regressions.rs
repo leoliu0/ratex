@@ -1415,6 +1415,24 @@ fn display_error_recovery_preserves_following_paragraphs() {
     }
 }
 
+/// tex.web §1196: a formula ends with space factor 1000 in restricted
+/// horizontal mode too, so the space after it gets no extra space.
+/// pdftex -ini: [A1000][W22.38199pt].
+#[test]
+fn inline_math_resets_the_space_factor_inside_boxes() {
+    let e = run_lenient(&format!(
+        r"{PROBE_SETUP}
+\sfcode`\.=3000
+\setbox0\hbox{{x.$x$\message{{[A\the\spacefactor]}} y}}\message{{[W\the\wd0]}}
+\end"
+    ));
+    assert_eq!(e.error_count, 0, "{}", e.log);
+    let values = message_values(&e);
+    for want in ["[A1000]", "[W22.38199pt]"] {
+        assert!(values.contains(want), "{want} missing: {}", e.term);
+    }
+}
+
 /// tex.web §1160 scan_delimiter: a token that is not a letter/other with a
 /// nonnegative \delcode (or `\delimiter`) gives `Missing delimiter (. inserted)`
 /// and is read again, for \left, \middle, \right and every ...withdelims.

@@ -381,41 +381,6 @@ impl MacroFrame {
         (&self.plan.body, self.resume as usize, Some((arg, self.pos - start)))
     }
 
-    /// Net brace depth of the tokens delivered so far (alignment scanning
-    /// needs the braces that real input sources have already produced).
-    pub fn delivered_brace_balance(&self) -> i32 {
-        fn balance(tokens: &[Token]) -> i32 {
-            tokens.iter().fold(0, |depth, t| {
-                if t.is_char() && t.cc() == 1 {
-                    depth + 1
-                } else if t.is_char() && t.cc() == 2 {
-                    depth - 1
-                } else {
-                    depth
-                }
-            })
-        }
-        // Parameter references are not braces, so the delivered body prefix
-        // can be counted whole.
-        let body_end = if self.in_arg {
-            self.resume as usize - 1
-        } else {
-            self.pos
-        };
-        let mut depth = balance(&self.plan.body[..body_end]);
-        let passed = self.next_ref as usize;
-        for (n, &(_, index)) in self.plan.references[..passed].iter().enumerate() {
-            if let Some(arg) = self.args.get(index) {
-                if self.in_arg && n + 1 == passed {
-                    depth += balance(&self.args.toks[self.args.start(index)..self.pos]);
-                } else {
-                    depth += balance(arg);
-                }
-            }
-        }
-        depth
-    }
-
     /// Take the argument buffer of a frame that is about to be dropped.
     pub(crate) fn take_arg_buffer(&mut self) -> Vec<Token> {
         std::mem::take(&mut self.args.toks)

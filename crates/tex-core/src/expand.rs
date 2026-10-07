@@ -3049,7 +3049,23 @@ impl Engine {
     /// reads on). Stops before a digit that would overflow and before any
     /// other token. Returns true when it consumed that space (the constant
     /// is complete).
+    #[inline(always)]
     pub(crate) fn take_decimal_run(&mut self, value: &mut i64, space_ends: bool) -> bool {
+        // Look at the next token before calling out: after a one-digit
+        // operand (`\numexpr 3*...`) the run is empty.
+        match self.token_list_peek() {
+            Some(t)
+                if t.0.wrapping_sub(Token::other(b'0').0) < 10
+                    || (space_ends && t.0 >> 24 == u32::from(crate::token::CAT_SPACE)) =>
+            {
+                self.take_decimal_run_from_list(value, space_ends)
+            }
+            _ => false,
+        }
+    }
+
+    #[inline(never)]
+    fn take_decimal_run_from_list(&mut self, value: &mut i64, space_ends: bool) -> bool {
         let Some((segment, trace_depth)) = self.token_list_front() else {
             return false;
         };
@@ -4181,6 +4197,24 @@ impl Engine {
         self.unexpanded_parameter = false;
         self.set_cur_char(last);
         true
+    }
+
+    /// The first token of `token_list_front()`, if any.
+    #[inline(always)]
+    fn token_list_peek(&self) -> Option<Token> {
+        use crate::input::{MacroFrame, Source};
+        if !self.pushed.is_empty() {
+            return None;
+        }
+        match self.input.stack.last() {
+            Some(Source::TokList { seg, pos, end, .. } | Source::MacroFrame(MacroFrame { seg, pos, end, .. }))
+                if *pos < *end =>
+            {
+                // SAFETY: as in `raw_token_fast`.
+                Some(unsafe { *seg.add(*pos) })
+            }
+            _ => None,
+        }
     }
 
     /// The undelivered tokens of the current token list (or of the current

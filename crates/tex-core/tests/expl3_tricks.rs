@@ -4,6 +4,12 @@ use tex_core::eqtb::Equiv;
 use tex_core::prim::Prim;
 
 fn boot() -> Engine {
+    // The RSS cap measures the whole test process: with one engine per test
+    // thread, the peak sits just under the 512 MiB default, and a loaded
+    // machine (more tests overlapping) pushes it over, failing random tests
+    // with a capacity error.
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| std::env::set_var("TEX_MEM_LIMIT_MIB", "0"));
     let mut e = Engine::new(true);
     e.init_primitives();
     e

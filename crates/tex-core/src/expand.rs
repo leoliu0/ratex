@@ -237,6 +237,36 @@ enum Unbalanced {
     Eof,
 }
 
+/// Where balanced text comes from, for the source excerpt of its errors.
+#[derive(Clone, Copy)]
+enum TextOrigin<'a> {
+    /// The argument of the macro call being scanned: errors show its call
+    /// site, and \outer macros or the end of the input abort the call.
+    MacroArgument,
+    /// General text that began at the bookmark.
+    Text(Option<&'a crate::input::SourceMark>),
+}
+
+/// What `take_delimited_run` moved into a delimited argument.
+enum DelimitedRun {
+    /// Nothing: the next token needs the token loop.
+    None,
+    /// A run of argument tokens.
+    Taken,
+    /// A run of argument tokens (possibly empty) and the whole delimiter.
+    Delimited,
+}
+
+/// How far `take_undelimited_arg` scanned an undelimited argument.
+enum UndelimitedArg {
+    /// The whole argument.
+    Taken,
+    /// The opening brace of a group, whose rest needs the balanced scan.
+    Group,
+    /// Nothing: the argument needs `scan_undelimited_arg`.
+    Slow,
+}
+
 /// The absorbing scans of tex.web §338-§339 (scanner_status defining,
 /// absorbing, aligning): what an \outer control sequence interrupts.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -3280,8 +3310,7 @@ impl Engine {
                 return;
             }
             self.enter_macro_diagnostic(id, invocation);
-            let call_site = self.diagnostic_macro_call_site.clone();
-            self.expand_macro_with_args(id, m, call_site.as_ref(), Some(show_args));
+            self.expand_macro_with_args(id, m, Some(show_args));
             return;
         }
 
@@ -3295,16 +3324,50 @@ impl Engine {
 
         self.current_macro = id;
         self.enter_macro_diagnostic(id, invocation);
-        let call_site = self.diagnostic_macro_call_site.clone();
-        self.expand_macro_with_args(id, m, call_site.as_ref(), None);
+        self.expand_macro_with_args(id, m, None);
     }
-    fn expand_macro_with_args(
-        &mut self,
-        id: CsId,
-        m: &Macro,
-        origin: Option<&crate::input::SourceMark>,
-        trace: Option<bool>,
-    ) {
+
+    /// The source excerpt of an error in the arguments of the macro call
+    /// being scanned: its call site. The bookmark is read only when an error
+    /// is reported. Argument scanning cannot replace it: it expands nothing
+    /// (`enter_macro_diagnostic`), and every fetch from a file happens with
+    /// `align_macro_arg` or `diagnostic_trace_hold` set, which keeps the
+    /// call site (`get_next_raw`).
+    #[cold]
+    #[inline(never)]
+    fn macro_call_context(&self) -> Option<crate::input::SourceContext> {
+        self.diagnostic_macro_call_site
+            .as_ref()
+            .map(crate::input::SourceMark::to_context)
+    }
+
+    /// `scanned_token_list_has_room` for a macro argument, whose capacity
+    /// error shows the call site.
+    #[inline(always)]
+    fn macro_arg_has_room(&mut self, current: usize, additional: usize) -> bool {
+        if current <= crate::input::MAX_TOKEN_LIST_TOKENS
+            && additional <= crate::input::MAX_TOKEN_LIST_TOKENS - current
+        {
+            return true;
+        }
+        self.macro_arg_overflow("macro parameter size");
+        false
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn macro_arg_overflow(&mut self, description: &str) {
+        let context = self.macro_call_context();
+        self.fatal_error_at(
+            &format!(
+                "TeX capacity exceeded, sorry [{description}={}]",
+                crate::input::MAX_TOKEN_LIST_TOKENS
+            ),
+            context,
+        );
+    }
+
+    fn expand_macro_with_args(&mut self, id: CsId, m: &Macro, trace: Option<bool>) {
         if !m.prefix.is_empty() {
             // tex.web: tokens before the first # must match the next
             // input tokens exactly. scan_delimited would skip ahead and
@@ -3314,20 +3377,19 @@ impl Engine {
                 let stored = self.unfreeze_input_token(raw);
                 let t = self.unfreeze_unexpanded_token(stored);
                 if t == EOF_MARKER {
-                    self.fatal_error_at(
-                        "File ended while matching macro prefix",
-                        origin.map(crate::input::SourceMark::to_context),
-                    );
+                    let context = self.macro_call_context();
+                    self.fatal_error_at("File ended while matching macro prefix", context);
                     return;
                 }
                 if !self.delim_eq(t, *p) {
                     // tex.web §398: the mismatching token is consumed.
+                    let context = self.macro_call_context();
                     self.error_at(
                         &format!(
                             "Use of {} doesn't match its definition",
                             self.display_cs(id)
                         ),
-                        origin.map(crate::input::SourceMark::to_context),
+                        context,
                     );
                     return;
                 }
@@ -3356,10 +3418,18 @@ impl Engine {
         for (i, delim) in m.params.iter().enumerate().take(m.num_params as usize) {
             let keep = selector.map_or(true, |selected| selected == i + 1);
             let start = args.open_start();
-            let scanned = if delim.is_empty() {
-                self.scan_undelimited_arg(id, m.long, keep, args.buffer(), origin)
+            let scanned = if !delim.is_empty() {
+                self.scan_delimited(id, delim, m.long, args.buffer())
             } else {
-                self.scan_delimited(id, delim, m.long, args.buffer(), origin)
+                match self.take_undelimited_arg(m.long, keep, args.buffer()) {
+                    UndelimitedArg::Taken => Ok(()),
+                    UndelimitedArg::Group => {
+                        self.scan_macro_balanced_arg(id, m.long, keep, args.buffer())
+                    }
+                    UndelimitedArg::Slow => {
+                        self.scan_undelimited_arg(id, m.long, keep, args.buffer())
+                    }
+                }
             };
             if scanned.is_err() {
                 self.recycle_token_vec(args.into_buffer());
@@ -3397,32 +3467,90 @@ impl Engine {
             self.push_tokens_rc(std::rc::Rc::clone(&m.body), id);
             return;
         }
-        let references = m.ensure_replacement_plan();
-        let Some(length) =
-            m.replacement_length(&references, &args, crate::input::MAX_TOKEN_LIST_TOKENS)
-        else {
+        let (plan, length) = m.replacement_plan(&args, crate::input::MAX_TOKEN_LIST_TOKENS);
+        let Some(length) = length else {
             self.recycle_token_vec(args.into_buffer());
-            self.fatal_error_at(
-                &format!(
-                    "TeX capacity exceeded, sorry [macro expansion size={}]",
-                    crate::input::MAX_TOKEN_LIST_TOKENS
-                ),
-                origin.map(crate::input::SourceMark::to_context),
-            );
+            self.macro_arg_overflow("macro expansion size");
             return;
         };
         if length == 0 {
             self.recycle_token_vec(args.into_buffer());
             return;
         }
-        let frame = crate::input::MacroFrame::new(
-            std::rc::Rc::clone(&m.body),
-            references,
-            args,
-            Some(id),
-            self.trace_depth(),
-        );
+        let frame = crate::input::MacroFrame::new(plan, args, Some(id), self.trace_depth());
         self.try_push_macro_frame(frame);
+    }
+
+    /// tex.web §393 for an undelimited argument that begins in the current
+    /// segment of the token list on top of the input stack, as
+    /// `scan_undelimited_arg` would scan it, after optional spaces: a single
+    /// plain token or a balanced group of tokens that it takes as they are
+    /// stored is appended to `out` when `collect` (`Taken`); of any other
+    /// group only the opening brace is consumed (`Group`). `Slow` when
+    /// nothing was consumed.
+    #[inline(always)]
+    fn take_undelimited_arg(
+        &mut self,
+        long: bool,
+        collect: bool,
+        out: &mut Vec<Token>,
+    ) -> UndelimitedArg {
+        if self.align_state != crate::align::PH_IDLE {
+            return UndelimitedArg::Slow;
+        }
+        let partoken = self.partoken_id();
+        let Some((segment, _)) = self.token_list_front() else {
+            return UndelimitedArg::Slow;
+        };
+        let mut length = 0;
+        while let Some(&t) = segment.get(length) {
+            if t.0 >> 24 != 10 {
+                break;
+            }
+            length += 1;
+        }
+        let Some(&t) = segment.get(length) else {
+            return UndelimitedArg::Slow;
+        };
+        length += 1;
+        let outer = self.eqtb.has_outer_macros();
+        let taken = if t.0 >> 24 == 1 {
+            // A group that closes inside the segment leaves
+            // align_brace_depth as it was.
+            let group = &segment[length..];
+            let (size, after) = balanced_prefix(group, long, partoken, 1);
+            let content = &group[..size.saturating_sub(1)];
+            if after != 0
+                || content.len() > crate::input::MAX_TOKEN_LIST_TOKENS
+                || (outer && content.iter().any(|&t| self.is_outer_token(t)))
+            {
+                self.align_brace_depth = self.align_brace_depth.saturating_add(1);
+                UndelimitedArg::Group
+            } else {
+                if collect {
+                    out.extend_from_slice(content);
+                }
+                length += size;
+                UndelimitedArg::Taken
+            }
+        } else {
+            // A token that raw_token returns, unfreeze_input_token keeps and
+            // that neither ends the call nor opens a group.
+            if !plain_balanced_token(t, long, Token::from_cs(partoken))
+                || t.0 >> 24 == 2
+                || (t.is_cs() && self.cs.is_active(t.cs_id()))
+                || (outer && self.is_outer_macro_token(t))
+            {
+                return UndelimitedArg::Slow;
+            }
+            if collect {
+                out.push(t);
+            }
+            UndelimitedArg::Taken
+        };
+        // Fetched with align_macro_arg set, which keeps the macro trace.
+        self.consume_token_list_front_held(length);
+        taken
     }
 
     /// tex.web §393: an undelimited argument is the next nonblank token or
@@ -3433,7 +3561,6 @@ impl Engine {
         long: bool,
         collect: bool,
         out: &mut Vec<Token>,
-        origin: Option<&crate::input::SourceMark>,
     ) -> Result<(), ArgAbort> {
         let saved_align_macro_arg = self.align_macro_arg;
         self.align_macro_arg = true;
@@ -3443,19 +3570,19 @@ impl Engine {
         let stored = self.unfreeze_input_token(raw);
         let t = self.unfreeze_unexpanded_token(stored);
         if t == EOF_MARKER {
-            return Err(self.abort_file_ended(id, origin));
+            return Err(self.abort_file_ended(id));
         }
         if self.is_partoken(t) && !long && !self.suppress_long_error() {
-            return Err(self.abort_paragraph(id, stored, origin));
+            return Err(self.abort_paragraph(id, stored));
         }
         if self.is_outer_token(raw) {
-            return Err(self.abort_outer(id, stored, origin));
+            return Err(self.abort_outer(id, stored));
         }
         if t.is_char() && t.cc() == 2 {
-            return Err(self.abort_extra_brace(id, stored, origin));
+            return Err(self.abort_extra_brace(id, stored));
         }
         if t.is_char() && t.cc() == 1 {
-            return self.scan_macro_balanced_arg(id, long, collect, out, origin);
+            return self.scan_macro_balanced_arg(id, long, collect, out);
         }
         out.push(stored);
         Ok(())
@@ -3482,52 +3609,46 @@ impl Engine {
     }
 
     /// tex.web §396: a forbidden \par ends the call; TeX reads it again.
-    fn abort_paragraph(
-        &mut self,
-        id: CsId,
-        par: Token,
-        origin: Option<&crate::input::SourceMark>,
-    ) -> ArgAbort {
+    #[cold]
+    #[inline(never)]
+    fn abort_paragraph(&mut self, id: CsId, par: Token) -> ArgAbort {
         self.push_token(par);
+        let context = self.macro_call_context();
         self.error_at(
             &format!("Paragraph ended before {} was complete", self.display_cs(id)),
-            origin.map(crate::input::SourceMark::to_context),
+            context,
         );
         ArgAbort
     }
 
     /// tex.web §395: the brace is read again after an inserted \par, which
     /// ends the call even for a \long macro.
-    fn abort_extra_brace(
-        &mut self,
-        id: CsId,
-        brace: Token,
-        origin: Option<&crate::input::SourceMark>,
-    ) -> ArgAbort {
+    #[cold]
+    #[inline(never)]
+    fn abort_extra_brace(&mut self, id: CsId, brace: Token) -> ArgAbort {
         self.push_token(brace);
+        let context = self.macro_call_context();
         self.error_at(
             &format!("Argument of {} has an extra }}", self.display_cs(id)),
-            origin.map(crate::input::SourceMark::to_context),
+            context,
         );
         let par = Token::from_cs(self.partoken_id());
-        self.abort_paragraph(id, par, origin)
+        self.abort_paragraph(id, par)
     }
 
     /// tex.web §336-§339: an \outer macro cannot occur in an argument. It is
     /// read again after the inserted \par has silently ended the call.
-    fn abort_outer(
-        &mut self,
-        id: CsId,
-        outer: Token,
-        origin: Option<&crate::input::SourceMark>,
-    ) -> ArgAbort {
+    #[cold]
+    #[inline(never)]
+    fn abort_outer(&mut self, id: CsId, outer: Token) -> ArgAbort {
         self.push_token(outer);
+        let context = self.macro_call_context();
         self.error_at(
             &format!(
                 "Forbidden control sequence found while scanning use of {}",
                 self.display_cs(id)
             ),
-            origin.map(crate::input::SourceMark::to_context),
+            context,
         );
         ArgAbort
     }
@@ -3536,18 +3657,15 @@ impl Engine {
     /// \par silently ends the call; the end of the input is read again.
     #[cold]
     #[inline(never)]
-    fn abort_file_ended(
-        &mut self,
-        id: CsId,
-        origin: Option<&crate::input::SourceMark>,
-    ) -> ArgAbort {
+    fn abort_file_ended(&mut self, id: CsId) -> ArgAbort {
         self.push_token(EOF_MARKER);
         if !self.eof_reported {
             self.eof_reported = true;
             if self.eqtb.int_params[crate::prim::IntParam::SuppressOuterError.idx() as usize] == 0 {
+                let context = self.macro_call_context();
                 self.error_at(
                     &format!("File ended while scanning use of {}", self.display_cs(id)),
-                    origin.map(crate::input::SourceMark::to_context),
+                    context,
                 );
             }
         }
@@ -3559,22 +3677,18 @@ impl Engine {
     /// place and then the inserted \par.
     #[cold]
     #[inline(never)]
-    fn report_outer_in_argument(
-        &mut self,
-        id: CsId,
-        outer: Token,
-        origin: Option<&crate::input::SourceMark>,
-    ) {
+    fn report_outer_in_argument(&mut self, id: CsId, outer: Token) {
         let stored = self.unfreeze_input_token(outer);
         self.push_token(stored);
         let par = Token::from_cs(self.partoken_id());
         self.push_token(par);
+        let context = self.macro_call_context();
         self.error_at(
             &format!(
                 "Forbidden control sequence found while scanning use of {}",
                 self.display_cs(id)
             ),
-            origin.map(crate::input::SourceMark::to_context),
+            context,
         );
     }
 
@@ -3778,9 +3892,12 @@ impl Engine {
     pub fn scan_balanced_raw(&mut self, long: bool) -> Vec<Token> {
         let origin = self.current_token_source_mark();
         let mut out = Vec::new();
-        if let Err(Unbalanced::Paragraph(par)) =
-            self.scan_balanced_raw_collect(long, false, true, &mut out, origin.as_ref())
-        {
+        if let Err(Unbalanced::Paragraph(par)) = self.scan_balanced_raw_collect(
+            long,
+            TextOrigin::Text(origin.as_ref()),
+            true,
+            &mut out,
+        ) {
             self.push_token(par);
             self.error_at(
                 "Runaway argument / missing }",
@@ -3796,17 +3913,26 @@ impl Engine {
         long: bool,
         collect: bool,
         out: &mut Vec<Token>,
-        origin: Option<&crate::input::SourceMark>,
     ) -> Result<(), ArgAbort> {
         self.diagnostic_trace_hold = self.diagnostic_trace_hold.saturating_add(1);
-        let result = self.scan_balanced_raw_collect(long, true, collect, out, origin);
+        let result = self.scan_balanced_raw_collect(long, TextOrigin::MacroArgument, collect, out);
         self.diagnostic_trace_hold -= 1;
         match result {
             Ok(()) => Ok(()),
-            Err(Unbalanced::Paragraph(par)) => Err(self.abort_paragraph(id, par, origin)),
-            Err(Unbalanced::Outer(token)) => Err(self.abort_outer(id, token, origin)),
-            Err(Unbalanced::Eof) => Err(self.abort_file_ended(id, origin)),
+            Err(Unbalanced::Paragraph(par)) => Err(self.abort_paragraph(id, par)),
+            Err(Unbalanced::Outer(token)) => Err(self.abort_outer(id, token)),
+            Err(Unbalanced::Eof) => Err(self.abort_file_ended(id)),
             Err(Unbalanced::Fatal) => Err(ArgAbort),
+        }
+    }
+
+    /// The source excerpt of an error in balanced text from `origin`.
+    #[cold]
+    #[inline(never)]
+    fn text_origin_context(&self, origin: TextOrigin<'_>) -> Option<crate::input::SourceContext> {
+        match origin {
+            TextOrigin::MacroArgument => self.macro_call_context(),
+            TextOrigin::Text(mark) => mark.map(crate::input::SourceMark::to_context),
         }
     }
 
@@ -3816,11 +3942,11 @@ impl Engine {
     fn scan_balanced_raw_collect(
         &mut self,
         long: bool,
-        macro_arg: bool,
+        origin: TextOrigin<'_>,
         collect: bool,
         out: &mut Vec<Token>,
-        origin: Option<&crate::input::SourceMark>,
     ) -> Result<(), Unbalanced> {
+        let macro_arg = matches!(origin, TextOrigin::MacroArgument);
         let mut depth = 1i32;
         let mut scanned = 0;
         loop {
@@ -3841,18 +3967,18 @@ impl Engine {
             let mut stored = self.unfreeze_input_token(raw);
             let t = self.unfreeze_unexpanded_token(stored);
             if t == EOF_MARKER {
-                if macro_arg {
+                let TextOrigin::Text(mark) = origin else {
                     return Err(Unbalanced::Eof);
-                }
+                };
                 if self.outer_scan.is_some() {
                     // The `}` that tex.web inserts closes every open group of
                     // the text here.
-                    self.outer_scan_file_ended(origin);
+                    self.outer_scan_file_ended(mark);
                     return Ok(());
                 }
                 self.fatal_error_at(
                     "Runaway argument / missing }",
-                    origin.map(crate::input::SourceMark::to_context),
+                    mark.map(crate::input::SourceMark::to_context),
                 );
                 return Err(Unbalanced::Fatal);
             }
@@ -3878,12 +4004,13 @@ impl Engine {
             // exactly MAX_TOKEN_LIST_TOKENS tokens remains legal, while a
             // further content token never enters the accumulator.
             if scanned == crate::input::MAX_TOKEN_LIST_TOKENS {
+                let context = self.text_origin_context(origin);
                 self.fatal_error_at(
                     &format!(
                         "TeX capacity exceeded, sorry [balanced text size={}]",
                         crate::input::MAX_TOKEN_LIST_TOKENS
                     ),
-                    origin.map(crate::input::SourceMark::to_context),
+                    context,
                 );
                 return Err(Unbalanced::Fatal);
             }
@@ -4047,15 +4174,33 @@ impl Engine {
         if !self.pushed.is_empty() {
             return None;
         }
+        use crate::input::{MacroFrame, Source};
         match self.input.stack.last() {
-            Some(crate::input::Source::TokList {
-                toks,
-                pos,
-                trace_depth,
-                ..
-            }) => Some((&toks[*pos..], *trace_depth)),
-            Some(crate::input::Source::MacroFrame(frame)) => {
-                Some((frame.segment(), frame.trace_depth))
+            // A token list and a macro frame share the layout of their
+            // cursor (see `raw_token_fast`).
+            Some(
+                Source::TokList {
+                    seg,
+                    pos,
+                    end,
+                    trace_depth,
+                    ..
+                }
+                | Source::MacroFrame(MacroFrame {
+                    seg,
+                    pos,
+                    end,
+                    trace_depth,
+                    ..
+                }),
+            ) => {
+                let rest = if *pos < *end {
+                    // SAFETY: as in `raw_token_fast`.
+                    unsafe { std::slice::from_raw_parts(seg.add(*pos), *end - *pos) }
+                } else {
+                    &[]
+                };
+                Some((rest, *trace_depth))
             }
             _ => None,
         }
@@ -4065,12 +4210,30 @@ impl Engine {
     /// apart from per-token category handling.
     #[inline]
     fn consume_token_list_front(&mut self, count: usize, trace_depth: u8) {
+        self.advance_token_list_front(count);
+        self.note_token_list_fetch(trace_depth);
+    }
+
+    /// Consume `count` tokens of `token_list_front()` as `macro_arg_token`
+    /// or a balanced argument scan would: their fetch keeps the macro trace.
+    #[inline]
+    fn consume_token_list_front_held(&mut self, count: usize) {
+        self.advance_token_list_front(count);
+        if self.diagnostic_sources_live {
+            self.clear_diagnostic_sources();
+        }
+    }
+
+    #[inline]
+    fn advance_token_list_front(&mut self, count: usize) {
+        use crate::input::{MacroFrame, Source};
         match self.input.stack.last_mut() {
-            Some(crate::input::Source::TokList { pos, .. }) => *pos += count,
-            Some(crate::input::Source::MacroFrame(frame)) => frame.skip(count),
+            Some(Source::TokList { pos, end, .. } | Source::MacroFrame(MacroFrame { pos, end, .. })) => {
+                debug_assert!(*pos + count <= *end);
+                *pos += count;
+            }
             _ => unreachable!(),
         }
-        self.note_token_list_fetch(trace_depth);
     }
 
     /// tex.web §392-§397: scan an argument ended by the token list `delim`,
@@ -4081,7 +4244,6 @@ impl Engine {
         delim: &[Token],
         long: bool,
         out: &mut Vec<Token>,
-        origin: Option<&crate::input::SourceMark>,
     ) -> Result<(), ArgAbort> {
         let start = out.len();
         let mut matched = smallvec::SmallVec::<[Token; 8]>::new();
@@ -4089,15 +4251,20 @@ impl Engine {
         loop {
             if matched.is_empty() {
                 let room = crate::input::MAX_TOKEN_LIST_TOKENS.saturating_sub(out.len() - start);
-                if self.take_delimited_run(delim[0], long, out, room) {
-                    continue;
+                match self.take_delimited_run(delim, long, out, room) {
+                    DelimitedRun::None => {}
+                    DelimitedRun::Taken => continue,
+                    DelimitedRun::Delimited => {
+                        Self::strip_outer_braces(out, start);
+                        return Ok(());
+                    }
                 }
             }
             let mut raw = self.macro_arg_token();
             if self.is_outer_token(raw) {
                 // tex.web §336-§339: the \outer token is read again after
                 // the call; the call sees a space, then the inserted \par.
-                self.report_outer_in_argument(id, raw, origin);
+                self.report_outer_in_argument(id, raw);
                 raw = Token::space();
                 outer_abort = true;
             }
@@ -4105,15 +4272,14 @@ impl Engine {
             let t = self.unfreeze_unexpanded_token(stored);
             if self.align_state & crate::align::PH_CLOSE != 0 && t == self.crcr_token() {
                 // The frozen end of the alignment cell is \outer.
-                return Err(self.abort_outer(id, t, origin));
+                return Err(self.abort_outer(id, t));
             }
             if t == EOF_MARKER {
-                return Err(self.abort_file_ended(id, origin));
+                return Err(self.abort_file_ended(id));
             }
             if matched.is_empty() && !self.delim_eq(stored.unfreeze(), delim[0]) {
                 // The common case: the token cannot start the delimiter.
-                if !self.scanned_token_list_has_room(out.len() - start, 1, "macro parameter size", origin)
-                {
+                if !self.macro_arg_has_room(out.len() - start, 1) {
                     return Err(ArgAbort);
                 }
                 out.push(stored);
@@ -4127,12 +4293,7 @@ impl Engine {
                     .all(|(i, token)| self.delim_eq(token.unfreeze(), delim[i]))
                 {
                     let rm = matched.remove(0);
-                    if !self.scanned_token_list_has_room(
-                        out.len() - start,
-                        1,
-                        "macro parameter size",
-                        origin,
-                    ) {
+                    if !self.macro_arg_has_room(out.len() - start, 1) {
                         return Err(ArgAbort);
                     }
                     out.push(rm);
@@ -4165,25 +4326,20 @@ impl Engine {
                     // which has been reported already.
                     return Err(ArgAbort);
                 }
-                return Err(self.abort_paragraph(id, stored, origin));
+                return Err(self.abort_paragraph(id, stored));
             }
             if t.is_char() && t.cc() == 2 {
                 out.pop();
-                return Err(self.abort_extra_brace(id, stored, origin));
+                return Err(self.abort_extra_brace(id, stored));
             }
             if t.is_char() && t.cc() == 1 {
                 // Delimiters cannot contain an unmatched opening brace other
                 // than the single-token #{ case, which returned above. The
                 // brace itself was already stored.
                 let before = out.len();
-                self.scan_macro_balanced_arg(id, long, true, out, origin)?;
+                self.scan_macro_balanced_arg(id, long, true, out)?;
                 let inner = out.len() - before;
-                if !self.scanned_token_list_has_room(
-                    before - start,
-                    inner.saturating_add(1),
-                    "macro parameter size",
-                    origin,
-                ) {
+                if !self.macro_arg_has_room(before - start, inner.saturating_add(1)) {
                     return Err(ArgAbort);
                 }
                 out.push(Token::char(2, b'}' as u32));
@@ -4192,52 +4348,146 @@ impl Engine {
     }
 
     /// Move the run of tokens at the front of the current token list that
-    /// can neither start the delimiter (whose first token is `first`) nor
-    /// end the argument into `out` (at most `room` tokens), as the
-    /// token-by-token loop of `scan_delimited` would. False when no token
-    /// qualifies.
+    /// can neither start the delimiter `delim` nor end the argument into
+    /// `out` (at most `room` tokens), as the token-by-token loop of
+    /// `scan_delimited` would, including brace groups that close in the
+    /// run. When the delimiter follows the run in the same segment, made of
+    /// tokens that loop would match as they are stored, it is consumed too
+    /// and the argument is complete.
     fn take_delimited_run(
         &mut self,
-        first: Token,
+        delim: &[Token],
         long: bool,
         out: &mut Vec<Token>,
         room: usize,
-    ) -> bool {
+    ) -> DelimitedRun {
         // Inside an alignment, raw_token() may end the cell at a row
         // delimiter, and the frozen end of a cell aborts the argument.
         let align_live = self.align_state != crate::align::PH_IDLE && {
             if self.align_state & crate::align::PH_CLOSE != 0 {
-                return false;
+                return DelimitedRun::None;
             }
             self.align_delimiter_live()
         };
-        let partoken = Token::from_cs(self.partoken_id());
+        let partoken_id = self.partoken_id();
+        let partoken = Token::from_cs(partoken_id);
         let outer = self.eqtb.has_outer_macros();
         let Some((segment, trace_depth)) = self.token_list_front() else {
-            return false;
+            return DelimitedRun::None;
         };
-        let limit = segment.len().min(room);
+        let first = delim[0];
+        // A character delimiter of category 0 to 12 equals only itself
+        // (`delim_eq`); a control sequence equals its marked forms and the
+        // active character it is the meaning of.
+        let first_char = first.0 < 0x0D00_0000;
+        let first_cs = first.is_cs().then_some(first.0 & 0x3FFF_FFFF);
+        // Tokens taken from the segment, of which `segment[..copied]` is in
+        // `out` already, and the number of argument tokens they make.
         let mut length = 0;
-        while length < limit {
-            let t = segment[length];
-            if !plain_balanced_token(t, long, partoken)
-                || matches!(t.0 >> 24, 1 | 2)
-                // unfreeze_input_token() turns these into active characters.
-                || (t.is_cs() && self.cs.is_active(t.cs_id()))
-                || self.delim_eq(t, first)
-                || (outer && self.is_outer_macro_token(t))
-                || (align_live && crate::align::row_delimiter(t, &self.eqtb).is_some())
+        let mut copied = 0;
+        let mut stored = 0;
+        // Whether a token outside a group was taken: the token loop takes
+        // those runs with consume_token_list_front, which returns the macro
+        // trace to this list; group and delimiter tokens keep it.
+        let mut unwinds = false;
+        loop {
+            let run = length;
+            let limit = segment.len().min(length + (room - stored));
+            while length < limit {
+                let t = segment[length];
+                let top = t.0 >> 24;
+                if top < 0x80 {
+                    // Ignored characters, braces and the marks above
+                    // category 13 need the token loop.
+                    if top > 13
+                        || matches!(top, 1 | 2 | 9)
+                        || t == first
+                        || (!first_char
+                            && (top == u32::from(CAT_ACTIVE) || first_cs.is_none())
+                            && self.delim_eq(t, first))
+                        || (top == u32::from(CAT_ACTIVE) && outer && self.is_outer_macro_token(t))
+                    {
+                        break;
+                    }
+                } else if top < 0xC0 {
+                    // unfreeze_input_token() turns active control sequences
+                    // into active characters.
+                    if (!long && t == partoken)
+                        || self.cs.is_active(t.cs_id())
+                        || match first_cs {
+                            Some(id) => t.0 & 0x3FFF_FFFF == id,
+                            None => !first_char && self.delim_eq(t, first),
+                        }
+                        || (outer && self.is_outer_macro_token(t))
+                    {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+                if align_live && crate::align::row_delimiter(t, &self.eqtb).is_some() {
+                    break;
+                }
+                length += 1;
+            }
+            stored += length - run;
+            unwinds |= length > run;
+            // A group: the token loop stores its brace, its tokens
+            // (`take_balanced_run`) and a `}` of its own; the braces leave
+            // align_brace_depth as it was.
+            let Some(&brace) = segment.get(length) else {
+                break;
+            };
+            if brace.0 >> 24 != 1
+                || self.align_state != crate::align::PH_IDLE
+                || self.delim_eq(brace, first)
             {
                 break;
             }
-            length += 1;
+            let group = &segment[length + 1..];
+            let (size, after) = balanced_prefix(group, long, partoken_id, 1);
+            let content = &group[..size.saturating_sub(1)];
+            if after != 0
+                || stored + size + 1 > room
+                || (outer && content.iter().any(|&t| self.is_outer_token(t)))
+            {
+                break;
+            }
+            out.extend_from_slice(&segment[copied..=length]);
+            out.extend_from_slice(content);
+            out.push(Token::char(2, b'}' as u32));
+            length += 1 + size;
+            copied = length;
+            stored += size + 1;
         }
-        if length == 0 {
-            return false;
+        // The delimiter that stopped the run, when macro_arg_token would
+        // return its tokens as they are stored (no alignment is running).
+        let delimited = self.align_state == crate::align::PH_IDLE
+            && segment.len() - length >= delim.len()
+            && delim.iter().zip(&segment[length..]).all(|(&d, &t)| {
+                let top = t.0 >> 24;
+                (if top < 0x80 {
+                    top <= 13 && !matches!(top, 1 | 2 | 9)
+                } else {
+                    top < 0xC0 && !self.cs.is_active(t.cs_id())
+                }) && !(outer && self.is_outer_macro_token(t))
+                    && self.delim_eq(t, d)
+            });
+        if length == 0 && !delimited {
+            return DelimitedRun::None;
         }
-        out.extend_from_slice(&segment[..length]);
-        self.consume_token_list_front(length, trace_depth);
-        true
+        out.extend_from_slice(&segment[copied..length]);
+        let taken = if delimited { length + delim.len() } else { length };
+        if unwinds {
+            self.consume_token_list_front(taken, trace_depth);
+        } else {
+            self.consume_token_list_front_held(taken);
+        }
+        if delimited {
+            DelimitedRun::Delimited
+        } else {
+            DelimitedRun::Taken
+        }
     }
 
     /// tex.web §400: a delimited argument that is exactly one group loses

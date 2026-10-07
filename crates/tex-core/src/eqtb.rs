@@ -193,45 +193,83 @@ pub struct Macro {
     pub outer: bool,
     pub protected: bool,
     /// Derived replacement plan; excluded from format serialization and \ifx.
-    pub replacement: std::cell::RefCell<Option<MacroReplacement>>,
+    pub replacement: std::cell::RefCell<Option<Rc<MacroReplacement>>>,
 }
 
-#[derive(Clone, Debug)]
+/// How a macro body is replaced: the body and its parameter references,
+/// shared by the call frames reading it.
+#[derive(Debug)]
 pub struct MacroReplacement {
     pub(crate) body: Rc<[Token]>,
-    pub(crate) references: Rc<[(usize, usize)]>,
+    /// (body position, argument index) for every parameter reference.
+    pub(crate) references: Box<[(usize, usize)]>,
+    /// Number of references to each of the parameters #1 to #9.
+    uses: [u32; 9],
 }
 impl Macro {
-    pub(crate) fn ensure_replacement_plan(&self) -> Rc<[(usize, usize)]> {
-        let mut cached = self.replacement.borrow_mut();
-        if cached
-            .as_ref()
-            .is_none_or(|plan| !Rc::ptr_eq(&plan.body, &self.body))
-        {
-            let is_reference = |token: &Token| (0x4000_0001..0x8000_0000).contains(&token.0);
-            let count = self.body.iter().filter(|token| is_reference(token)).count();
-            let mut found = self
-                .body
-                .iter()
-                .enumerate()
-                .filter(|(_, token)| is_reference(token))
-                .map(|(position, token)| (position, (token.0 & 0x3FFF_FFFF).wrapping_sub(1) as usize));
-            // A counted (trusted-length) source fills the slice in place.
-            let references: Rc<[(usize, usize)]> =
-                (0..count).map(|_| found.next().expect("counted reference")).collect();
-            *cached = Some(MacroReplacement {
-                body: self.body.clone(),
-                references: references.clone(),
+    /// The replacement plan of the current body and the length of the
+    /// replacement for `args`, or None beyond `limit`.
+    pub(crate) fn replacement_plan(
+        &self,
+        args: &crate::input::MacroArgs,
+        limit: usize,
+    ) -> (Rc<MacroReplacement>, Option<usize>) {
+        let plan = {
+            let mut cached = self.replacement.borrow_mut();
+            match &*cached {
+                Some(plan) if Rc::ptr_eq(&plan.body, &self.body) => plan.clone(),
+                _ => cached.insert(Rc::new(self.build_replacement_plan())).clone(),
+            }
+        };
+        // The arguments the references add; saturating, so that a sum beyond
+        // any limit stays beyond it.
+        let added = plan
+            .uses
+            .iter()
+            .zip(args.arg_lengths())
+            .fold(0usize, |sum, (&uses, length)| {
+                sum.saturating_add((uses as usize).saturating_mul(length))
             });
-            references
+        // Every partial sum of the replacement is at most `bound`; only a
+        // bound beyond `limit` needs the reference-by-reference check.
+        let bound = self.body.len().saturating_add(added);
+        let length = if bound <= limit {
+            Some(bound - plan.references.len())
         } else {
-            cached.as_ref().unwrap().references.clone()
+            self.replacement_length(&plan.references, args, limit)
+        };
+        (plan, length)
+    }
+
+    fn build_replacement_plan(&self) -> MacroReplacement {
+        let is_reference = |token: &Token| (0x4000_0001..0x8000_0000).contains(&token.0);
+        let count = self.body.iter().filter(|token| is_reference(token)).count();
+        let mut found = self
+            .body
+            .iter()
+            .enumerate()
+            .filter(|(_, token)| is_reference(token))
+            .map(|(position, token)| (position, (token.0 & 0x3FFF_FFFF).wrapping_sub(1) as usize));
+        // A counted (trusted-length) source fills the slice in place.
+        let references: Box<[(usize, usize)]> =
+            (0..count).map(|_| found.next().expect("counted reference")).collect();
+        let mut uses = [0u32; 9];
+        for &(_, parameter) in references.iter() {
+            // A reference beyond the nine parameters never has an argument.
+            if let Some(n) = uses.get_mut(parameter) {
+                *n += 1;
+            }
+        }
+        MacroReplacement {
+            body: self.body.clone(),
+            references,
+            uses,
         }
     }
 
     /// Length of the replacement for `args` under this macro's replacement
     /// plan `references`, or None beyond `limit`.
-    pub(crate) fn replacement_length(
+    fn replacement_length(
         &self,
         references: &[(usize, usize)],
         args: &crate::input::MacroArgs,
@@ -2822,8 +2860,7 @@ mod tests {
     fn replacement_plan_preserves_repeated_parameters_and_rebuilds_after_body_change() {
         fn expand(m: &Macro, args: &crate::input::MacroArgs) -> Vec<Token> {
             let mut frame = crate::input::MacroFrame::new(
-                m.body.clone(),
-                m.ensure_replacement_plan(),
+                m.replacement_plan(args, usize::MAX).0,
                 args.clone(),
                 None,
                 0,
@@ -2866,16 +2903,15 @@ mod tests {
                 Token::letter(b'Z'),
             ]
         );
-        assert_eq!(m.replacement_length(&m.ensure_replacement_plan(), &args, usize::MAX), Some(6));
+        assert_eq!(m.replacement_plan(&args, usize::MAX).1, Some(6));
         Rc::make_mut(&mut m.body)[0] = Token::letter(b'B');
         assert_eq!(expand(&m, &args)[0], Token::letter(b'B'));
         m.body = vec![Token(0x4000_0001)].into();
         assert_eq!(expand(&m, &args), vec![Token::letter(b'X')]);
 
         m.body = vec![Token(0x4000_0002), Token(0x4000_0002)].into();
-        let plan = m.ensure_replacement_plan();
-        assert_eq!(m.replacement_length(&plan, &args, 3), None);
-        assert_eq!(m.replacement_length(&plan, &args, 4), Some(4));
+        assert_eq!(m.replacement_plan(&args, 3).1, None);
+        assert_eq!(m.replacement_plan(&args, 4).1, Some(4));
     }
 
     fn prim_of(eq: &Eqtb, id: CsId) -> Option<Prim> {

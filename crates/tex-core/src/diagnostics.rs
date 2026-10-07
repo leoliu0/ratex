@@ -25,6 +25,17 @@ const OMITTED_DIAGNOSTICS_MESSAGE: &str =
 pub(crate) const HIDE_MESSAGE: u8 = 1;
 pub(crate) const HIDE_CONTEXT: u8 = 2;
 
+/// Where a user-visible group (`{`, `\begingroup`, a box, ...) was opened.
+/// `repr(C)` keeps the mark first and aligned: in a `(u16, SourceMark)` tuple
+/// the copy into the vector straddled the stores that built the mark and
+/// stalled store forwarding on every group.
+#[derive(Clone, Debug)]
+#[repr(C)]
+pub(crate) struct GroupOpening {
+    pub(crate) mark: SourceMark,
+    pub(crate) level: u16,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DiagnosticSeverity {
     Error,
@@ -717,8 +728,10 @@ impl Engine {
         self.eqtb.push_level_with(kind, meta, line);
         if self.eqtb.cur_level > prev_level {
             if let Some(mark) = source {
-                self.diagnostic_group_openings
-                    .push((self.eqtb.cur_level, mark));
+                self.diagnostic_group_openings.push(GroupOpening {
+                    mark,
+                    level: self.eqtb.cur_level,
+                });
             }
         }
     }
@@ -743,9 +756,11 @@ impl Engine {
         for item in self.eqtb.save_stack.iter().rev() {
             if let crate::eqtb::SaveItem::Level(level, ty) = item {
                 if *ty == kind {
-                    let mark = self.diagnostic_group_openings.iter().rev().find_map(
-                        |(opening_level, mark)| (*opening_level == *level).then_some(mark),
-                    );
+                    let mark = self
+                        .diagnostic_group_openings
+                        .iter()
+                        .rev()
+                        .find_map(|opening| (opening.level == *level).then_some(&opening.mark));
                     return mark.map(|m| (*level, m));
                 }
             }
@@ -763,7 +778,7 @@ impl Engine {
                     let level = self.eqtb.definition_level(id)?;
                     if level > crate::eqtb::LEVEL_ONE {
                         return self.diagnostic_group_openings.iter().rev().find_map(
-                            |(opening_level, mark)| (*opening_level == level).then_some(mark),
+                            |opening| (opening.level == level).then_some(&opening.mark),
                         );
                     }
                 }
@@ -783,12 +798,12 @@ impl Engine {
         if self
             .diagnostic_group_openings
             .last()
-            .is_some_and(|(opening_level, _)| *opening_level == level)
+            .is_some_and(|opening| opening.level == level)
         {
             self.diagnostic_group_openings.pop();
         } else {
             self.diagnostic_group_openings
-                .retain(|(opening_level, _)| *opening_level != level);
+                .retain(|opening| opening.level != level);
         }
     }
 
@@ -1576,8 +1591,8 @@ impl Engine {
                 let opening = open_groups.iter().find_map(|(level, _)| {
                     self.diagnostic_group_openings
                         .iter()
-                        .find(|(opening_level, _)| opening_level == level)
-                        .map(|(_, source)| source.to_context())
+                        .find(|opening| opening.level == *level)
+                        .map(|opening| opening.mark.to_context())
                 });
                 let description = if self.scanner_status == crate::engine::ScannerStatus::Aligning {
                     "Unfinished alignment at \\end; add the missing \\cr and }"
@@ -1648,8 +1663,8 @@ impl Engine {
             let opening = open_groups.iter().find_map(|(level, _)| {
                 self.diagnostic_group_openings
                     .iter()
-                    .find(|(opening_level, _)| opening_level == level)
-                    .map(|(_, source)| source.to_context())
+                    .find(|opening| opening.level == *level)
+                    .map(|opening| opening.mark.to_context())
             });
             let description = if self.scanner_status == crate::engine::ScannerStatus::Aligning {
                 "Unfinished alignment; add the missing \\cr and }"

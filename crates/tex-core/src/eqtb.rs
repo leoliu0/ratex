@@ -370,12 +370,14 @@ impl GroupMeta {
     }
 }
 
-/// One open group: its metadata, the input line it began on (`saved(-1)`)
-/// and the save-stack position of its boundary (`cur_boundary`).
+/// One open group: its metadata, the input line it began on (`saved(-1)`),
+/// the save-stack position of its boundary (`cur_boundary`) and the kind of
+/// level its boundary item records.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct GroupRec {
     pub meta: GroupMeta,
     pub line: i32,
+    pub ty: LevelType,
     pub boundary: usize,
 }
 
@@ -427,7 +429,9 @@ pub enum SaveItem {
     Skip(u16, Glue, u16),
     MuSkip(u16, Glue, u16),
     Toks(u16, Rc<Vec<Token>>, u16),
-    Box(u16, Option<Node>, u16),
+    /// The previous box register value, boxed so that every save-stack
+    /// entry stays small (a node is about 100 bytes).
+    Box(u16, Option<std::boxed::Box<Node>>, u16),
     /// (catcode table, character, old value, old level)
     Cat(i32, u8, u8, u16),
     MathCode(u8, u16, u16),
@@ -455,7 +459,7 @@ pub enum SaveItem {
     /// LuaTeX `\Udelcode` entry (packed, see [`Eqtb::lua_del_code`]).
     LuaDelCode(u32, Option<(u64, u16)>),
     /// LuaTeX `\Umath` mu-glue parameter before a local assignment.
-    MathGlueParam(u32, Option<([i32; 6], u16)>),
+    MathGlueParam(u32, Option<std::boxed::Box<([i32; 6], u16)>>),
     /// LuaTeX `\catcodetable` before a local assignment: (table, level).
     CatCodeTable(i32, u16),
     StyleFont(u8, u16, u16, u16), // (0=textfont,1=scriptfont,2=ssfont, fam, fontid, level)
@@ -472,6 +476,9 @@ pub enum SaveItem {
     PenaltyShape(u8, Rc<[i32]>, u16),
     AfterGroup(Token),
 }
+
+// Every group pushes and pops save-stack entries; keep them to half a cache line.
+const _: () = assert!(std::mem::size_of::<SaveItem>() <= 32);
 
 /// An eqtb location named by e-TeX's assignment and restore tracing
 /// (tex.web show_eqtb regions; e-TeX show_sa for registers above 255).
@@ -1119,6 +1126,11 @@ impl Eqtb {
         self.pending_interaction_mode = None;
     }
 
+    #[inline(always)]
+    pub(crate) fn has_pending_interaction_mode(&self) -> bool {
+        self.pending_interaction_mode.is_some()
+    }
+
     pub(crate) fn take_pending_interaction_mode(&mut self) -> Option<i32> {
         self.pending_interaction_mode.take()
     }
@@ -1562,7 +1574,7 @@ impl Eqtb {
             false,
             self.cur_level,
             &mut self.save_stack,
-            |old, ol| SaveItem::Box(idx, old, ol),
+            |old, ol| SaveItem::Box(idx, old.map(std::boxed::Box::new), ol),
         );
     }
     pub fn assign_box(&mut self, idx: u16, v: Option<Node>, global: bool) {
@@ -1580,7 +1592,7 @@ impl Eqtb {
             global,
             self.cur_level,
             &mut self.save_stack,
-            |old, ol| SaveItem::Box(idx, old, ol),
+            |old, ol| SaveItem::Box(idx, old.map(std::boxed::Box::new), ol),
         );
         self.end_assign(TraceSlot::Box(idx));
     }
@@ -1922,7 +1934,7 @@ impl Eqtb {
             global,
             self.cur_level,
             &mut self.save_stack,
-            |old| SaveItem::MathGlueParam(key, old),
+            |old| SaveItem::MathGlueParam(key, old.map(std::boxed::Box::new)),
         );
     }
 
@@ -2401,19 +2413,17 @@ impl Eqtb {
         self.groups.push(GroupRec {
             meta,
             line,
+            ty,
             boundary: self.save_stack.len(),
         });
         self.cur_level = next_level;
 
         self.push_save(SaveItem::Level(self.cur_level, ty));
     }
+    /// The kind of the innermost open level (the newest `SaveItem::Level`).
+    #[inline]
     pub fn cur_group_type(&self) -> Option<LevelType> {
-        for item in self.save_stack.iter().rev() {
-            if let SaveItem::Level(_, t) = item {
-                return Some(*t);
-            }
-        }
-        None
+        self.groups.last().map(|group| group.ty)
     }
 
     /// tex.web `cur_group`.
@@ -2456,6 +2466,62 @@ impl Eqtb {
         par_shape_sink: &mut Option<(Vec<(i32, i32)>, u16)>,
         penalty_shape_sink: &mut Vec<(u8, Rc<[i32]>, u16)>,
     ) -> LevelType {
+        // The entries nearly every group holds are restored here; the first
+        // other entry hands the rest of the group to the general loop, kept
+        // out of line so that this one stays small.
+        loop {
+            match self.save_stack.last() {
+                Some(&SaveItem::Level(lvl, t)) => {
+                    self.save_stack.pop();
+                    self.leave_level(lvl);
+                    return t;
+                }
+                Some(&SaveItem::AfterGroup(tok)) => {
+                    self.save_stack.pop();
+                    after_group.push(tok);
+                }
+                Some(SaveItem::Eq(..)) => {
+                    if let Some(SaveItem::Eq(id, old, ol)) = self.save_stack.pop() {
+                        self.unsave_eq(id, old, ol);
+                    }
+                }
+                _ => return self.pop_level_general(after_group, par_shape_sink, penalty_shape_sink),
+            }
+        }
+    }
+
+    /// unsave's end: the level boundary `lvl` has been popped.
+    #[inline]
+    fn leave_level(&mut self, lvl: u16) {
+        self.cur_level = lvl - 1;
+        if let Some(group) = self.groups.pop() {
+            if self.int_params[IntParam::TracingGroups as usize] > 0 {
+                self.trace_group(true, group.meta.code, lvl - 1, group.line);
+            }
+        }
+    }
+
+    /// Restore a control sequence's meaning unless a global assignment
+    /// made it survive the group.
+    #[inline]
+    fn unsave_eq(&mut self, id: CsId, old: Option<Equiv>, ol: u16) {
+        self.ensure_entry(id);
+        let e = &mut self.entries[id as usize];
+        let restored = e.level > LEVEL_ONE;
+        if restored {
+            e.set(old, &mut self.outer_entries);
+            e.level = ol;
+        }
+        self.trace_restore(restored, TraceSlot::Eq(id));
+    }
+
+    #[inline(never)]
+    fn pop_level_general(
+        &mut self,
+        after_group: &mut Vec<Token>,
+        par_shape_sink: &mut Option<(Vec<(i32, i32)>, u16)>,
+        penalty_shape_sink: &mut Vec<(u8, Rc<[i32]>, u16)>,
+    ) -> LevelType {
         let mut ty = LevelType::Group;
 
         while let Some(item) = self.save_stack.pop() {
@@ -2483,25 +2549,11 @@ impl Eqtb {
                     self.trace_shape(TraceSlot::PenaltyShape(kind));
                 }
                 SaveItem::Level(lvl, t) => {
-                    self.cur_level = lvl - 1;
                     ty = t;
-                    if let Some(group) = self.groups.pop() {
-                        if self.int_params[IntParam::TracingGroups as usize] > 0 {
-                            self.trace_group(true, group.meta.code, lvl - 1, group.line);
-                        }
-                    }
+                    self.leave_level(lvl);
                     break;
                 }
-                SaveItem::Eq(id, old, ol) => {
-                    self.ensure_entry(id);
-                    let e = &mut self.entries[id as usize];
-                    let restored = e.level > LEVEL_ONE;
-                    if restored {
-                        e.set(old, &mut self.outer_entries);
-                        e.level = ol;
-                    }
-                    self.trace_restore(restored, TraceSlot::Eq(id));
-                }
+                SaveItem::Eq(id, old, ol) => self.unsave_eq(id, old, ol),
                 SaveItem::IntParam(i, v, l) => {
                     let restored = self.int_levels[i as usize] > LEVEL_ONE;
                     if restored {
@@ -2589,7 +2641,7 @@ impl Eqtb {
                     // value, voiding microtype's \MT@tempbox lastbox.
                     let restored = self.box_levels[i as usize] > LEVEL_ONE;
                     if restored {
-                        self.boxed[i as usize] = v;
+                        self.boxed[i as usize] = v.map(|node| *node);
                         self.box_levels[i as usize] = l;
                     }
                     self.trace_restore(restored, TraceSlot::Box(i));
@@ -2701,7 +2753,7 @@ impl Eqtb {
                     Self::restore_sparse(&mut self.lua_del_codes, key, old);
                 }
                 SaveItem::MathGlueParam(key, old) => {
-                    Self::restore_sparse(&mut self.math_glue_params, key, old);
+                    Self::restore_sparse(&mut self.math_glue_params, key, old.map(|value| *value));
                 }
                 SaveItem::CatCodeTable(table, level) => {
                     if self.cat_table_level > LEVEL_ONE {

@@ -286,7 +286,8 @@ impl Engine {
     /// Out of line so that its many callers share one copy. The common case
     /// (no alignment entry being scanned) is served by `raw_token_fast`,
     /// which never calls another function and therefore runs without
-    /// setting up a stack frame; inside an alignment entry the next stop is
+    /// setting up a stack frame; at the end of a macro segment the next stop
+    /// is `raw_token_next_segment`, inside an alignment entry
     /// `raw_token_aligning`, and everything else is a tail call to
     /// `raw_token_general`.
     #[inline(never)]
@@ -297,6 +298,24 @@ impl Engine {
             }
             if let Some(t) = self.raw_token_fast(AlignFilter::None) {
                 return t;
+            }
+            return self.raw_token_next_segment();
+        }
+        self.raw_token_general()
+    }
+
+    /// `raw_token` at the end of the current segment of a macro
+    /// replacement: the fast path continues with the next segment (an
+    /// argument or the body text after it).
+    #[inline(never)]
+    fn raw_token_next_segment(&mut self) -> Token {
+        if self.pushed.is_empty() {
+            if let Some(crate::input::Source::MacroFrame(frame)) = self.input.stack.last_mut() {
+                if frame.advance_segment() {
+                    if let Some(t) = self.raw_token_fast(AlignFilter::None) {
+                        return t;
+                    }
+                }
             }
         }
         self.raw_token_general()

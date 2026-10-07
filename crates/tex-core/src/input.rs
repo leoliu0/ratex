@@ -286,6 +286,18 @@ impl MacroFrame {
         })
     }
 
+    /// Move on to the next segment that has a token left; false once the
+    /// frame is exhausted.
+    #[inline]
+    pub(crate) fn advance_segment(&mut self) -> bool {
+        while self.pos >= self.end {
+            if !self.next_segment() {
+                return false;
+            }
+        }
+        true
+    }
+
     /// The undelivered rest of the current body or argument segment.
     #[inline]
     pub(crate) fn segment(&self) -> &[Token] {

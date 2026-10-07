@@ -189,22 +189,17 @@ mod balanced_scan_tests {
 enum AlignFilter {
     /// No alignment delimiter can be intercepted.
     None,
-    /// A row delimiter would end the current cell: only tokens that are
-    /// no row delimiter pass.
+    /// A row delimiter would end the current cell, or a macro argument scan
+    /// must not swallow the frozen end of a cell (a `\cr`/`\crcr` meaning,
+    /// see `raw_token_general`): only tokens that are no row delimiter pass.
     Delimiters,
-    /// Every token needs the general path.
-    All,
 }
 
 impl AlignFilter {
     #[inline(always)]
     fn passes(self, t: Token, eqtb: &crate::eqtb::Eqtb) -> bool {
         Engine::is_plain_raw_token(t)
-            && match self {
-                AlignFilter::None => true,
-                AlignFilter::Delimiters => !crate::align::is_row_delimiter(t, eqtb),
-                AlignFilter::All => false,
-            }
+            && (self == AlignFilter::None || !crate::align::is_row_delimiter(t, eqtb))
     }
 }
 
@@ -294,10 +289,8 @@ impl Engine {
     #[inline(never)]
     fn raw_token_aligning(&mut self) -> Token {
         let filter = self.align_raw_filter();
-        if filter != AlignFilter::All {
-            if let Some(t) = self.raw_token_fast(filter) {
-                return t;
-            }
+        if let Some(t) = self.raw_token_fast(filter) {
+            return t;
         }
         self.raw_token_general()
     }
@@ -368,18 +361,17 @@ impl Engine {
     fn align_raw_filter(&self) -> AlignFilter {
         use crate::align::{PH_CLOSE, PH_CONTENT, PH_U};
         let state = self.align_state;
-        if state & (PH_U | PH_CONTENT | PH_CLOSE) == PH_CONTENT {
+        let live = if state & (PH_U | PH_CONTENT | PH_CLOSE) == PH_CONTENT {
             // `align_delimiter_live` once the phase is known
-            if self.align_brace_depth == 0
+            self.align_brace_depth == 0
                 && !self.in_expanded_scan
                 && self.scanner_status == ScannerStatus::Aligning
-            {
-                AlignFilter::Delimiters
-            } else {
-                AlignFilter::None
-            }
-        } else if state & PH_CLOSE != 0 && self.align_macro_arg {
-            AlignFilter::All
+        } else {
+            // The close stream's `\crcr` is a row delimiter too.
+            state & PH_CLOSE != 0 && self.align_macro_arg
+        };
+        if live {
+            AlignFilter::Delimiters
         } else {
             AlignFilter::None
         }

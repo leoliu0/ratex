@@ -19,7 +19,9 @@ build, that TeXres cannot build, or whose output differs is NOT timed; it is
 kept in the results with status and repro information. Then, for each scenario
 (runs alternate between the tools and flip order every run; every run starts
 from an identical restored state; --runs >= 5, median reported):
-  a  cold full build   TeXres with an empty cache root vs latexmk in a clean dir
+  a  cold full build   TeXres with an empty cache root (except the machine-wide
+                       font database below texmf-var, see Tool.fresh_cache) vs
+                       latexmk in a clean dir
   b  no-change rebuild same command again after a converged build
   c  one-line edit     BENCH-A -> BENCH-B (generated docs), or one plain-text
                        line of a body file gets " BENCH-B" appended (public docs;
@@ -155,9 +157,19 @@ class Tool:
         return self.pin([str(exe), "-interaction=nonstopmode", "-halt-on-error", self.main])
 
     def fresh_cache(self):
+        """Empty TeXres's cache root, except `texmf-var`: like TeX Live's
+        $HOME/.texliveYYYY/texmf-var (which latexmk runs never clear), it holds
+        the machine-wide luaotfload font database and font caches, not state
+        of the document. The first build of each document creates it."""
         if self.kind == "texres":
+            keep = self.base / "texmf-var.keep"
+            shutil.rmtree(keep, ignore_errors=True)
+            if (self.cache / "texmf-var").is_dir():
+                (self.cache / "texmf-var").rename(keep)
             shutil.rmtree(self.cache, ignore_errors=True)
             self.cache.mkdir(parents=True)
+            if keep.is_dir():
+                keep.rename(self.cache / "texmf-var")
 
     def restore_src(self):
         B.restore(self.d["src"], self.work)
@@ -425,7 +437,7 @@ def render_md(res):
     L.append("")
     # table slowest-first by the worst scenario ratio
     def worst(e):
-        return max((ratio(e, s) or 0) for s in scs)
+        return max(((ratio(e, s) or 0) for s in scs), default=0)
     L.append("## All timed documents, slowest first (by worst ratio over scenarios)\n")
     head = "| Document | Engine | Pages | " + " | ".join(f"({s}) TeXres / TL s | ratio" for s in scs) + " |"
     L.append(head)

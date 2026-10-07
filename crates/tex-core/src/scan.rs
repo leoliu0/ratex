@@ -552,8 +552,7 @@ impl Engine {
                         break 'scan_loop;
                     }
                     Some(Prim::PdfShellEscape) => {
-                        // This engine never executes shell commands.
-                        v = 0;
+                        v = i64::from(crate::lua_sys::shell_escape_status());
                         break 'scan_loop;
                     }
                     Some(Prim::PdfRandomSeed) => {
@@ -2253,7 +2252,8 @@ impl Engine {
                 emit_the!(s.as_bytes());
             }
             Some(Prim::PdfShellEscape) => {
-                emit_the!(b"0");
+                let s = crate::lua_sys::shell_escape_status().to_string();
+                emit_the!(s.as_bytes());
             }
             Some(Prim::PdfRandomSeed) => {
                 let s = self.rng.seed.to_string();

@@ -1684,7 +1684,8 @@ fn usage(program: &str) {
   -8bit                        print every character as itself
   -translate-file=TCXNAME      use the TCX file for character printability and translation
   -[no-]file-line-error        accepted; rich file/line diagnostics are always enabled
-  -[no-]shell-escape           accepted; shell execution is always disabled
+  -[no-]shell-escape           enable or disable \\write18 shell commands
+  -shell-restricted            allow only the shell_escape_commands (the default)
   -[no-]mktex=FMT              accepted; missing files are never generated
   -src-specials[=WHERE], -output-comment=STRING
                                accepted; they affect only DVI output
@@ -2491,25 +2492,14 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
             synctex_option = SynctexMode::parse_option(value);
         } else if opt == "-draftmode" {
             draftmode = true;
-        } else if matches!(
-            opt,
-            "-file-line-error" | "-file-line-error-style" | "-no-shell-escape" | "-disable-write18"
-        ) {
-            // Rich file/line diagnostics are always enabled; shell execution
-            // is never enabled.
-        } else if matches!(
-            opt,
-            "-shell-escape" | "-enable-write18" | "-shell-restricted"
-        ) {
-            // Editors commonly pass this by default. TeXres never runs shell
-            // commands, so the run proceeds as with \write18 disabled.
-            emit_cli_message(
-                interaction_mode,
-                format_args!(
-                    "{program}: warning: {} is not supported; \\write18 shell commands will not run",
-                    args[i]
-                ),
-            );
+        } else if matches!(opt, "-file-line-error" | "-file-line-error-style") {
+            // Rich file/line diagnostics are always enabled.
+        } else if matches!(opt, "-no-shell-escape" | "-disable-write18") {
+            tex_core::set_shell_escape(tex_core::ShellEscape::Disabled);
+        } else if matches!(opt, "-shell-escape" | "-enable-write18") {
+            tex_core::set_shell_escape(tex_core::ShellEscape::Enabled);
+        } else if opt == "-shell-restricted" {
+            tex_core::set_shell_escape(tex_core::ShellEscape::Restricted);
         } else if opt == "-fmt" || opt.starts_with("-fmt=") || args[i].starts_with('&') {
             let name = match opt
                 .strip_prefix("-fmt=")

@@ -812,6 +812,57 @@ pub(crate) fn check_command(cmd: &str) -> (i32, String) {
     }
 }
 
+/// The directory kpathsea reports as `SELFAUTOLOC` to shell escape commands:
+/// where the engine lives. TeXres is not installed beside `kpsewhich`, which
+/// such tools run from there, so the directory of the TeX Live `kpsewhich`
+/// on `PATH` stands in for it when the engine's own directory has none.
+fn shell_tool_dir() -> PathBuf {
+    let own = exe_dirs().0;
+    let has_kpsewhich = |dir: &Path| dir.join(if cfg!(windows) { "kpsewhich.exe" } else { "kpsewhich" }).is_file();
+    if has_kpsewhich(&own) {
+        return own;
+    }
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path).find(|dir| has_kpsewhich(dir)).unwrap_or(own)
+}
+
+/// web2c's `runsystem` for `\write18`: the code that stands for what
+/// happened (-1 bad quoting, 0 refused, 1 ran, 2 ran the safely quoted
+/// command), with the command run by `/bin/sh -c` in the current directory.
+/// `output_dir` is exported as `TEXMF_OUTPUT_DIRECTORY`, so a tool such as
+/// `latexminted` finds the files the job wrote there.
+pub(crate) fn run_system(cmd: &[u8], output_dir: Option<&std::path::Path>) -> i32 {
+    let text = String::from_utf8_lossy(cmd);
+    let (allow, run) = match shell_escape() {
+        ShellEscape::Disabled => return 0,
+        ShellEscape::Enabled => (1, text.into_owned()),
+        ShellEscape::Restricted => shell_cmd_is_allowed(&text, &allowed_commands()),
+    };
+    if allow > 0 {
+        let run: std::borrow::Cow<'_, [u8]> =
+            if allow == 1 { std::borrow::Cow::Borrowed(cmd) } else { std::borrow::Cow::Owned(run.into_bytes()) };
+        let mut command = std::process::Command::new("/bin/sh");
+        command.arg("-c").arg(crate::lua_sys::os_str(&run));
+        // kpathsea exports these for every program it starts; tools such as
+        // `latexminted` locate `kpsewhich` through `SELFAUTOLOC`.
+        let loc = shell_tool_dir();
+        let dir = loc.parent().map(Path::to_path_buf).unwrap_or_default();
+        let parent = dir.parent().map(Path::to_path_buf).unwrap_or_default();
+        let grandparent = parent.parent().map(Path::to_path_buf).unwrap_or_default();
+        command
+            .env("SELFAUTOLOC", &loc)
+            .env("SELFAUTODIR", &dir)
+            .env("SELFAUTOPARENT", &parent)
+            .env("SELFAUTOGRANDPARENT", &grandparent);
+        if let Some(dir) = output_dir {
+            let dir = if dir.is_absolute() { dir.to_path_buf() } else { std::env::current_dir().unwrap_or_default().join(dir) };
+            command.env("TEXMF_OUTPUT_DIRECTORY", dir);
+        }
+        let _ = command.status();
+    }
+    allow
+}
+
 // ----------------------------------------------------------- primitives ---
 
 fn s_of(s: &LuaString) -> String {

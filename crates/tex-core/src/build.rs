@@ -591,7 +591,14 @@ impl Engine {
     pub fn vlist_append(&mut self, n: Node) {
         self.vlist_append_il(n, true);
     }
-    pub fn vlist_append_il(&mut self, mut n: Node, interline: bool) {
+    pub fn vlist_append_il(&mut self, n: Node, interline: bool) {
+        self.vlist_append_il_after(n, interline, Vec::new());
+    }
+
+    /// `vlist_append_il`, with `post` joining the contribution list right
+    /// after `n` and before the page builder runs (tex.web box_end appends
+    /// the migrated material before `build_page`).
+    fn vlist_append_il_after(&mut self, mut n: Node, interline: bool, post: Vec<Node>) {
         if self.mode == Mode::Vertical {
             // luatex append_to_vlist: `append_to_vlist_filter` supplies the
             // nodes (and `prev_depth`) instead of the interline glue
@@ -599,6 +606,9 @@ impl Engine {
                 match self.lua_append_to_vlist(n, "box", self.prev_depth) {
                     Ok((list, depth)) => {
                         for item in list {
+                            self.page_append(item);
+                        }
+                        for item in post {
                             self.page_append(item);
                         }
                         if let Some(d) = depth {
@@ -674,6 +684,9 @@ impl Engine {
                 _ => None,
             };
             self.page_append(n);
+            for item in post {
+                self.page_append(item);
+            }
             if trigger {
                 if let Some(info) = page_info {
                     self.lua_page_filter(info, true);
@@ -682,6 +695,7 @@ impl Engine {
             }
         } else {
             self.cur_list.push(n);
+            self.cur_list.extend(post);
         }
     }
 
@@ -1593,6 +1607,26 @@ impl Engine {
         } else {
             inner
         };
+        // tex.web §1084/§1076: an \hbox that is appended to a vertical list
+        // (not \setbox, \shipout, a leader box or a box Lua asked for) is
+        // packed in an adjusted_hbox_group, so `hpack` moves its marks,
+        // insertions and \vadjust material out; `box_end` puts that material
+        // on the vertical list around the box.
+        let (inner, pre_adjust, post_adjust) = if kind == 0 && outer_mode.is_v() {
+            let depth = self.box_kinds.len();
+            let leaders = self.leader_stack.last().is_some_and(|&(_, d)| d == depth);
+            let shipout = self.shipout_pending && self.shipout_depth == depth;
+            let setbox = self.setbox_target.is_some() && self.setbox_depth == depth;
+            let scanned = self.lua_tex.scan_depth == Some(depth);
+            if leaders || shipout || setbox || scanned {
+                (inner, Vec::new(), Vec::new())
+            } else {
+                let (kept, post, pre) = boxes::split_adjust_material(inner);
+                (kept, pre, post)
+            }
+        } else {
+            (inner, Vec::new(), Vec::new())
+        };
         // tex.web package(): vboxes are packed against the value of
         let pack = |list: Vec<Node>, target: Option<(i32, bool)>, k: u8| -> boxes::PackResult {
             let (dim, spread) = match target {
@@ -1725,12 +1759,31 @@ impl Engine {
         if kind == 8 && matches!(self.mode, Mode::Horizontal | Mode::RestrictedHorizontal) {
             self.cur_list.push(node);
         } else {
-            self.append_box_node(Some(node));
+            self.append_box_node_migrating(Some(node), pre_adjust, post_adjust);
         }
     }
 
     pub fn append_box_node(&mut self, b: Option<Node>) {
+        self.append_box_node_migrating(b, Vec::new(), Vec::new());
+    }
+
+    /// tex.web box_end for a box appended to a vertical list: `pre` (pdftex
+    /// `\vadjust pre`) goes in front of the box, `post` (marks, insertions
+    /// and `\vadjust` material that left the box in `hpack`) follows it.
+    fn append_box_node_migrating(&mut self, b: Option<Node>, pre: Vec<Node>, post: Vec<Node>) {
         self.flush_native_text();
+        if self.mode == Mode::Vertical && (!pre.is_empty() || !post.is_empty()) {
+            for n in pre {
+                self.page_append(n);
+            }
+            if let Some(node) = b {
+                self.vlist_append_il_after(node, true, post);
+            }
+            return;
+        }
+        if self.mode == Mode::InternalVertical {
+            self.cur_list.extend(pre);
+        }
         match b {
             None => {}
             Some(node) => match self.mode {
@@ -1750,6 +1803,7 @@ impl Engine {
                         match self.lua_append_to_vlist(node, "box", self.prev_depth) {
                             Ok((list, depth)) => {
                                 self.cur_list.extend(list);
+                                self.cur_list.extend(post);
                                 if let Some(d) = depth {
                                     self.prev_depth = d;
                                 }
@@ -1790,6 +1844,7 @@ impl Engine {
                         self.prev_depth = trail;
                     }
                     self.cur_list.push(node);
+                    self.cur_list.extend(post);
                 }
                 Mode::Math | Mode::DisplayMath => {
                     self.append_mlist_node(node);

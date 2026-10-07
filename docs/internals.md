@@ -447,7 +447,12 @@ banner reads `This is XeTeX, Version 3.141592653-2.6-0.999998 (TeXres x.y.z)`.
 Output goes to the PDF directly, without an XDV file: `\special`s are
 interpreted as `xdvipdfmx` does, pages default to A4 unless `\pdfpagewidth`
 and `\pdfpageheight` are set, and the PDF carries xdvipdfmx's producer data.
-Shell escape (`\write18`) is never run. pdfLaTeX has no native fonts: loading
+Shell escape (`\write18`) follows web2c: restricted by default (only the
+`shell_escape_commands` list, such as `latexminted` for `minted`, run; they are
+found on `PATH` and started with `/bin/sh -c` in the working directory with
+`TEXMF_OUTPUT_DIRECTORY` set to the auxiliary or output directory and
+`SELFAUTOLOC` to the directory of a `kpsewhich`), `-shell-escape` allows any
+command and `-no-shell-escape` none. pdfLaTeX has no native fonts: loading
 `fontspec` there fails with fontspec's own engine error, as in TeX Live.
 `-lualatex` runs the LuaTeX-compatible mode with the embedded LuaLaTeX format
 and an in-tree Lua VM, so `\directlua` works. `luatexja` and a few LuaTeX-only

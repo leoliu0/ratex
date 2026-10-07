@@ -2385,7 +2385,7 @@ impl Engine {
                 }
                 Prim::Copy => {
                     let n = self.scan_reg_num();
-                    let b = self.eqtb.boxed.get(n as usize).cloned().flatten();
+                    let b = self.copy_box_register(n);
                     self.eqtb.assign_box(idx, b, global);
                     return;
                 }
@@ -2425,7 +2425,7 @@ impl Engine {
             }
             b"copy" => {
                 let n = self.scan_reg_num();
-                let b = self.eqtb.boxed[n as usize].clone();
+                let b = self.copy_box_register(n);
                 self.eqtb.assign_box(idx, b, global);
             }
             b"lastbox" => {

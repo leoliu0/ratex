@@ -446,6 +446,16 @@ impl Engine {
     }
 
     pub(crate) fn unicode_char_token(&mut self, scalar: u32, is_letter: bool) {
+        // pdfTeX text: a byte character in horizontal mode goes straight
+        // to the main loop (the case `char_token` reaches below)
+        if self.engine_kind == crate::engine::EngineKind::PdfTeX
+            && scalar < 256
+            && matches!(self.mode, Mode::Horizontal | Mode::RestrictedHorizontal)
+        {
+            self.append_char(scalar as u8);
+            self.space_factor = self.space_factor_of(scalar);
+            return;
+        }
         if self.mode.is_v() {
             self.push_token(Token::unicode_char(if is_letter { 11 } else { 12 }, scalar));
             self.start_paragraph(true);

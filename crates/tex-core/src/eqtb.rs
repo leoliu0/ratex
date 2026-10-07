@@ -1534,16 +1534,16 @@ impl Eqtb {
         if !self.begin_assign(global, same, TraceSlot::Box(idx)) {
             return;
         }
-        Self::slot(
-            &mut self.boxed,
-            &mut self.box_levels,
-            i,
-            v,
-            global,
-            self.cur_level,
-            &mut self.save_stack,
-            |old, ol| SaveItem::Box(idx, old, ol),
-        );
+        // `Self::slot`, except that a replaced value that is not saved is
+        // freed by `drop_node` (no per-node drop code for plain nodes)
+        let old = std::mem::replace(&mut self.boxed[i], v);
+        let old_level = self.box_levels[i];
+        if !global && old_level < self.cur_level {
+            self.save_stack.push(SaveItem::Box(idx, old, old_level));
+        } else {
+            crate::boxes::drop_node(old);
+        }
+        self.box_levels[i] = if global { LEVEL_ONE } else { self.cur_level };
         self.end_assign(TraceSlot::Box(idx));
     }
     /// Replace a box register's value without changing its assignment level.

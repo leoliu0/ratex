@@ -282,7 +282,7 @@ impl Engine {
             Copy => {
                 let idx = self.scan_reg_num();
 
-                let b = self.eqtb.boxed[idx as usize].clone();
+                let b = self.copy_box_register(idx);
                 self.append_box_node(b);
             }
             UnHBox => {

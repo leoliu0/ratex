@@ -8,6 +8,10 @@ use std::path::{Path, PathBuf};
 // fast encoder's matches are short-range anyway) and make a read decode
 // ~30x less data.
 const CHUNK_TARGET: usize = 128 * 1024;
+// A member larger than this (an outline font, a CJK font of several MiB) is
+// stored as consecutive chunks of this size, each its own zstd frame, so a
+// read decodes them on several threads; every other chunk holds whole members.
+const LARGE_MEMBER_FRAME: usize = 1024 * 1024;
 const MAX_ARCHIVE_WINDOW_BYTES: u64 = 512 * 1024 * 1024;
 
 fn main() {
@@ -141,13 +145,21 @@ fn main() {
         let chunk_index = chunks.len();
         let member_offset = chunk.len();
         let member_len = data.len();
-        chunk.extend_from_slice(&data);
         index.insert(
             name.to_owned(),
             (chunk_index, member_offset, member_len, path.starts_with("tex")),
         );
-        if chunk.len() >= CHUNK_TARGET {
-            write_chunk(&mut blob, &mut chunks, &mut chunk);
+        if data.len() > LARGE_MEMBER_FRAME {
+            // The chunk is empty here: the member did not fit beside others.
+            for frame in data.chunks(LARGE_MEMBER_FRAME) {
+                chunk.extend_from_slice(frame);
+                write_chunk(&mut blob, &mut chunks, &mut chunk);
+            }
+        } else {
+            chunk.extend_from_slice(&data);
+            if chunk.len() >= CHUNK_TARGET {
+                write_chunk(&mut blob, &mut chunks, &mut chunk);
+            }
         }
         let is_font = name.ends_with(".otf")
             || name.ends_with(".ttf")

@@ -764,7 +764,7 @@ impl Engine {
                 if u32::try_from(v).ok().and_then(char::from_u32).is_none() {
                     self.error_at(
                         &format!("Invalid Unicode scalar {v} for \\chardef; used 0"),
-                        value_source,
+                        value_source.map(|mark| mark.to_context()),
                     );
                     self.eqtb.assign(t, Equiv::CharDef(0), g);
                 } else {
@@ -810,7 +810,7 @@ impl Engine {
                         &format!(
                             "Math code {v} is out of range for \\mathchardef; expected 0 through 32767 and used 0"
                         ),
-                        value_source,
+                        value_source.map(|mark| mark.to_context()),
                     );
                     self.eqtb.assign(t, Equiv::MathCharDef(0), g);
                 } else {
@@ -970,11 +970,13 @@ impl Engine {
                         &format!(
                             "Bad interaction mode ({v}); expected 0 (batch), 1 (nonstop), 2 (scroll), or 3 (error stop); mode left unchanged"
                         ),
-                        value_source.clone(),
+                        value_source.as_ref().map(|mark| mark.to_context()),
                     );
                     self.clear_prefixes();
                     return true;
                 }
+                // The excerpt is needed only for the \hangafter recovery error.
+                let value_source = value_source.filter(|_| v == i32::MIN).map(|mark| mark.to_context());
                 let v = self.recover_linebreak_int_parameter(ip, v, value_source);
                 if self.engine_kind == crate::engine::EngineKind::LuaTeX && self.assign_obsolete_math_mode_with(ip, v, g) {
                     return true;
@@ -1152,6 +1154,7 @@ impl Engine {
                 } else {
                     (self.scan_int(), None)
                 };
+                let value_source = value_source.filter(|_| v == i32::MIN).map(|mark| mark.to_context());
                 let v = self.recover_linebreak_int_parameter(ip, v, value_source);
                 if self.engine_kind == crate::engine::EngineKind::LuaTeX && self.assign_obsolete_math_mode(ip, v) {
                     return true;

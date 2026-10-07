@@ -1175,7 +1175,7 @@ impl Engine {
     pub(crate) fn pdf_page_ref(&mut self) -> Option<i32> {
         let (page, source) = self.scan_int_with_source();
         if page <= 0 {
-            self.fatal_error_at("pdfTeX error (pageref): invalid page number", source);
+            self.fatal_error_at("pdfTeX error (pageref): invalid page number", source.map(|mark| mark.to_context()));
             return None;
         }
         if let Some(&obj) = self.pdf_backend.page_objs.get(&page) {
@@ -1192,7 +1192,7 @@ impl Engine {
         match self.pdf_doc.form_names.get(&obj) {
             Some(&name) => Some(name),
             None => {
-                self.fatal_error_at("pdfTeX error (ext1): cannot find referenced object", source);
+                self.fatal_error_at("pdfTeX error (ext1): cannot find referenced object", source.map(|mark| mark.to_context()));
                 None
             }
         }
@@ -1203,14 +1203,14 @@ impl Engine {
     pub(crate) fn pdf_ximage_bbox(&mut self) -> Option<i32> {
         let (obj, source) = self.scan_int_with_source();
         let Some(bbox) = self.pdf_images.get(&obj).map(|image| image.bbox) else {
-            self.fatal_error_at("pdfTeX error (ext1): cannot find referenced object", source);
+            self.fatal_error_at("pdfTeX error (ext1): cannot find referenced object", source.map(|mark| mark.to_context()));
             return None;
         };
         let (corner, source) = self.scan_int_with_source();
         match usize::try_from(i64::from(corner) - 1).ok().and_then(|index| bbox.get(index)) {
             Some(&value) => Some(value),
             None => {
-                self.fatal_error_at("pdfTeX error (pdfximagebbox): invalid parameter", source);
+                self.fatal_error_at("pdfTeX error (pdfximagebbox): invalid parameter", source.map(|mark| mark.to_context()));
                 None
             }
         }

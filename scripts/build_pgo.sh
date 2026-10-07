@@ -4,9 +4,10 @@
 #   scripts/build_pgo.sh [OUTPUT]      # default: target/pgo/texres
 #
 # 1. builds an instrumented texres,
-# 2. runs it over the benchmark corpus (scripts/bench/corpus; every document
-#    except the LuaLaTeX one, whose cold start is dominated by building a font
-#    database) to record which code the engine runs and how its branches go,
+# 2. runs a cold build of every pdfLaTeX/XeLaTeX document of the benchmark
+#    corpora (scripts/bench/corpus and scripts/bench/corpus100; LuaLaTeX cold
+#    starts are dominated by building a font database) to record which code
+#    the engine runs and how its branches go,
 # 3. rebuilds texres with that profile.
 #
 # The TeX engine is a large interpreter loop; laid out with the profile, the
@@ -50,25 +51,44 @@ build() { # build <target-dir> <rustc flag>
 echo "==> instrumented build"
 build "$work/gen" "-Cprofile-generate=$work/raw"
 
-echo "==> training run over the benchmark corpus"
+echo "==> training run over the benchmark corpora"
 bin=$work/gen/$triple/release/texres
-for dir in scripts/bench/corpus/*/; do
-    doc=$(basename "$dir")
-    case $doc in
-        lualatex_fontspec) continue ;;
-        xelatex_fontspec) engine=-xelatex ;;
-        *) engine=-pdf ;;
-    esac
-    echo "    $doc"
-    rm -rf "$work/run/$doc"
-    cp -r "$dir" "$work/run/$doc"
+# One cold build per document: scripts/bench/corpus (except the LuaLaTeX
+# document) and the pdfLaTeX/XeLaTeX documents of scripts/bench/corpus100,
+# whose packages (beamer themes, siunitx tables, CJK, KOMA, memoir, TikZ,
+# indexes, bibliographies, ...) the eight-document corpus alone leaves out of
+# the profile. Instrumented processes merge into the same raw profile files,
+# so documents run in parallel.
+train() { # train <source dir> <engine flag>
+    doc=$(basename "$1")
+    rm -rf "$work/run/$doc" "$work/run/$doc.cache"
+    cp -r "$1" "$work/run/$doc"
     mkdir -p "$work/run/$doc.cache"
     (cd "$work/run/$doc" &&
         TEX_RS_CACHE_DIR="$work/run/$doc.cache" TZ=UTC LC_ALL=C.UTF-8 \
         SOURCE_DATE_EPOCH=1700000000 FORCE_SOURCE_DATE=1 \
-        "$bin" "$engine" main.tex >/dev/null 2>&1) ||
-        echo "    (exit status $?; the profile still counts what ran)"
-done
+        "$bin" "$2" main.tex >/dev/null 2>&1) ||
+        echo "    $doc: exit status $? (the profile still counts what ran)"
+    echo "    $doc"
+}
+export -f train
+export work bin
+{
+    for dir in scripts/bench/corpus/*/; do
+        case $(basename "$dir") in
+            lualatex_fontspec) ;;
+            xelatex_fontspec) printf '%s\0%s\0' "$dir" -xelatex ;;
+            *) printf '%s\0%s\0' "$dir" -pdf ;;
+        esac
+    done
+    python3 - <<'EOF'
+import json, sys
+flags = {"pdf": "-pdf", "xe": "-xelatex"}
+for name, doc in sorted(json.load(open("scripts/bench/corpus100/manifest.json")).items()):
+    if doc["engine"] in flags and doc["main"] == "main.tex":
+        sys.stdout.write(f"scripts/bench/corpus100/{name}/\0{flags[doc['engine']]}\0")
+EOF
+} | xargs -0 -n 2 -P "${PGO_TRAIN_JOBS:-8}" bash -c 'train "$0" "$1"'
 "$profdata" merge -o "$work/merged.profdata" "$work/raw"
 
 echo "==> optimized build"

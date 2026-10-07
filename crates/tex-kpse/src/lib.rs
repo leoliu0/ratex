@@ -234,10 +234,9 @@ impl<const FIELDS: usize> PackedTable<FIELDS> {
 /// files) and the engine rereads members (every TFM size load), so a small
 /// LRU of the 128 KiB build-time chunks absorbs nearly all repeat decoding.
 const CHUNK_CACHE_BYTES: usize = 8 * 1024 * 1024;
-/// Chunks above the target size hold one large member (an outline font,
-/// pdftex.map). They are decoded straight into the caller's buffer instead of
-/// evicting the shared working set.
-const MAX_CACHED_CHUNK_BYTES: usize = CHUNK_CACHE_BYTES / 4;
+// Members larger than a chunk (an outline font, pdftex.map) span several
+// frames; `decode_member_frames` decodes them straight into the caller's
+// buffer instead of evicting the shared working set.
 
 #[derive(Default)]
 struct ChunkCache {
@@ -348,12 +347,11 @@ fn read_package_entry(index: usize) -> Option<Vec<u8>> {
         let offset = offset as usize;
         PACKAGES.get(offset..offset.checked_add(length as usize)?)
     };
-    if decoded_length > MAX_CACHED_CHUNK_BYTES {
-        let bytes = decode_package_chunk(compressed()?, decoded_length)?;
-        if member == (0..decoded_length) {
-            return Some(bytes);
-        }
-        return Some(bytes.get(member)?.to_vec());
+    if member.end > decoded_length {
+        // A large member: it fills this chunk and the following ones.
+        return (member_offset == 0)
+            .then(|| decode_member_frames(chunk_index, member.end))
+            .flatten();
     }
     let cached = CHUNK_CACHE
         .lock()
@@ -376,6 +374,69 @@ fn read_package_entry(index: usize) -> Option<Vec<u8>> {
         }
     };
     Some(chunk.get(member)?.to_vec())
+}
+
+/// Threads decoding one large member at once (as for formats, each new
+/// thread's malloc arena counts against the engine's address-space limit).
+const MAX_MEMBER_DECODE_THREADS: usize = 4;
+
+/// A member of `length` bytes stored as the consecutive chunks from
+/// `first`, each its own frame (build.rs `LARGE_MEMBER_FRAME`), decoded into
+/// one buffer on as many threads as the process may run on.
+fn decode_member_frames(first: usize, length: usize) -> Option<Vec<u8>> {
+    if length > MAX_PACKAGE_CHUNK_BYTES {
+        return None;
+    }
+    let mut out = vec![0u8; length];
+    let mut jobs = Vec::new();
+    let mut free = &mut out[..];
+    let mut chunk_index = first;
+    while !free.is_empty() {
+        let [offset, compressed_length, decoded_length] = PACKAGE_CHUNKS.get(chunk_index)?;
+        let offset = offset as usize;
+        let compressed = PACKAGES.get(offset..offset.checked_add(compressed_length as usize)?)?;
+        let (target, tail) = free.split_at_mut((decoded_length as usize).min(free.len()));
+        if target.len() != decoded_length as usize {
+            return None;
+        }
+        jobs.push((compressed, target));
+        free = tail;
+        chunk_index += 1;
+    }
+    fn decode((input, target): (&[u8], &mut [u8])) -> bool {
+        let mut decoder = ruzstd::decoding::FrameDecoder::new();
+        decoder.set_max_window_size(MAX_PACKAGE_CHUNK_BYTES as u64);
+        // Fails with `TargetTooSmall` when the frame holds more than indexed.
+        matches!(decoder.decode_all(input, target), Ok(n) if n == target.len())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let threads = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .min(MAX_MEMBER_DECODE_THREADS)
+        .min(jobs.len());
+    #[cfg(target_arch = "wasm32")]
+    let threads = 1;
+    let ok = if threads <= 1 {
+        jobs.into_iter().all(decode)
+    } else {
+        // Lane `k` takes frames k, k + threads, ...; this thread runs lane 0.
+        let mut lanes: Vec<Vec<(&[u8], &mut [u8])>> = (0..threads).map(|_| Vec::new()).collect();
+        for (i, job) in jobs.into_iter().enumerate() {
+            lanes[i % threads].push(job);
+        }
+        let mut lanes = lanes.into_iter();
+        let own = lanes.next().unwrap_or_default();
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = lanes
+                .map(|lane| scope.spawn(move || lane.into_iter().all(decode)))
+                .collect();
+            let mine = own.into_iter().all(decode);
+            workers
+                .into_iter()
+                .fold(mine, |ok, worker| worker.join().unwrap_or(false) && ok)
+        })
+    };
+    ok.then_some(out)
 }
 
 /// Resolve an input from the embedded TeX tree using TeX's default-extension
@@ -2197,7 +2258,17 @@ mod tests {
                 .or_insert(position as u32);
             let [_, _, chunk, offset, length, _] = package;
             let [_, _, decoded] = chunks[chunk as usize];
-            assert!(offset + length <= decoded, "{name} lies inside its chunk");
+            if offset + length > decoded {
+                // A large member fills consecutive whole chunks.
+                assert_eq!(offset, 0, "{name} starts its first frame");
+                let mut covered = 0;
+                let mut next = chunk as usize;
+                while covered < length {
+                    covered += chunks[next][2];
+                    next += 1;
+                }
+                assert_eq!(covered, length, "{name} ends with its last frame");
+            }
         }
         assert_eq!(folded, expected.values().copied().collect::<Vec<_>>());
         let mut next_offset = 0;
@@ -2217,18 +2288,38 @@ mod tests {
     }
 
     #[test]
+    fn large_members_decode_from_parallel_frames_like_one_stream() {
+        let index = (0..PACKAGE_INDEX.len())
+            .max_by_key(|&i| PACKAGE_INDEX.get(i).unwrap()[4])
+            .unwrap();
+        let [_, _, first, _, length, _] = PACKAGE_INDEX.get(index).unwrap();
+        let mut sequential = Vec::new();
+        let mut chunk = first as usize;
+        while sequential.len() < length as usize {
+            let [offset, compressed, decoded] = PACKAGE_CHUNKS.get(chunk).unwrap();
+            let frame = &PACKAGES[offset as usize..(offset + compressed) as usize];
+            sequential.extend(decode_package_chunk(frame, decoded as usize).unwrap());
+            chunk += 1;
+        }
+        assert!(chunk - first as usize > 1, "the largest member spans several frames");
+        assert_eq!(read_package_entry(index).unwrap(), sequential);
+    }
+
+    #[test]
     fn chunk_cache_stays_within_its_byte_budget() {
         let mut cache = ChunkCache::default();
+        // A chunk holding one member as large as a frame (build.rs).
+        const LARGEST_CACHED: usize = 1024 * 1024;
         let chunk = |len: usize| std::sync::Arc::<[u8]>::from(vec![0; len]);
         for index in 0..64 {
-            cache.insert(index, chunk(MAX_CACHED_CHUNK_BYTES / 3));
+            cache.insert(index, chunk(LARGEST_CACHED / 3));
             assert!(cache.bytes <= CHUNK_CACHE_BYTES);
             assert_eq!(cache.bytes, cache.entries.iter().map(|(_, c)| c.len()).sum::<usize>());
         }
         // Least recently used goes first; a lookup refreshes an entry.
         let oldest = cache.entries.front().unwrap().0;
         assert!(cache.get(oldest).is_some());
-        cache.insert(1000, chunk(MAX_CACHED_CHUNK_BYTES));
+        cache.insert(1000, chunk(LARGEST_CACHED));
         assert!(cache.get(oldest).is_some());
         assert!(cache.get(0).is_none());
     }

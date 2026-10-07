@@ -35,7 +35,60 @@ pub struct FontProgram {
 pub struct ShapeFace {
     // Declared first so it drops before the bytes it borrows.
     face: rustybuzz::Face<'static>,
+    /// Shape plans already compiled for this face (HarfBuzz's
+    /// `hb_shape_plan_create_cached`, which XeTeX's shaping goes through):
+    /// a plan is a pure function of the face, the segment properties and the
+    /// features, and compiling it costs more than shaping a word.
+    plans: std::cell::RefCell<Vec<(PlanKey, Rc<rustybuzz::ShapePlan>)>>,
     _data: Rc<Vec<u8>>,
+}
+
+type PlanKey = (
+    rustybuzz::Direction,
+    Option<rustybuzz::Script>,
+    Option<rustybuzz::Language>,
+    Vec<rustybuzz::Feature>,
+);
+
+impl ShapeFace {
+    /// `rustybuzz::shape` with `script` set on the buffer (`None` leaves it
+    /// to be guessed from the text), reusing this face's plan for the same
+    /// segment properties and features.
+    pub fn shape(
+        &self,
+        features: &[rustybuzz::Feature],
+        script: Option<rustybuzz::Script>,
+        mut buffer: rustybuzz::UnicodeBuffer,
+    ) -> rustybuzz::GlyphBuffer {
+        if let Some(script) = script {
+            buffer.set_script(script);
+        }
+        buffer.guess_segment_properties();
+        // The guess never sets the unknown script, so it stands for none.
+        let script = script.or_else(|| {
+            Some(buffer.script()).filter(|&script| script != rustybuzz::script::UNKNOWN)
+        });
+        let direction = buffer.direction();
+        let language = buffer.language();
+        let found = self.plans.borrow().iter().find_map(|(key, plan)| {
+            (key.0 == direction && key.1 == script && key.2 == language && key.3 == features)
+                .then(|| plan.clone())
+        });
+        let plan = found.unwrap_or_else(|| {
+            let plan = Rc::new(rustybuzz::ShapePlan::new(
+                &self.face,
+                direction,
+                script,
+                language.as_ref(),
+                features,
+            ));
+            self.plans
+                .borrow_mut()
+                .push(((direction, script, language, features.to_vec()), plan.clone()));
+            plan
+        });
+        rustybuzz::shape_with_plan(&self.face, &plan, buffer)
+    }
 }
 
 impl std::fmt::Debug for ShapeFace {
@@ -74,7 +127,7 @@ impl FontProgram {
                 .collect();
             face.set_variations(&v);
         }
-        let sf = Rc::new(ShapeFace { face, _data: data });
+        let sf = Rc::new(ShapeFace { face, plans: Default::default(), _data: data });
         let _ = self.shape.set(sf.clone());
         Some(sf)
     }

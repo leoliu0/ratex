@@ -1655,13 +1655,39 @@ printf '%%PDF-1.4 /Type /Page ' > "$out/$job.pdf"
 }
 
 #[test]
-fn newly_created_aux_always_requires_a_second_pass() {
+fn first_pass_rewriting_latexmks_trivial_aux_converges_in_one_pass() {
+    // latexmk writes this .aux before the first pdflatex run of a build
+    // (set_trivial_aux_fdb); TeX Live's latexmk -pdf runs pdflatex once on a
+    // one-page document without cross-references (standalone + TikZ).
     let f = Fixture::new(
         "boilerplate-aux",
         r#"
 n=0; if [ -f passes ]; then read -r n < passes; fi
 n=$((n + 1)); echo "$n" > passes
-printf '%s\n' '\relax' '\gdef \@abspage@last{1}' > "$aux/$job.aux"
+cat "$aux/$job.aux" > "first-read.aux"
+printf '%s\n' '\relax ' '\gdef \@abspage@last{1}' > "$aux/$job.aux"
+printf '%%PDF-1.4 /Type /Page ' > "$out/$job.pdf"
+"#,
+    );
+    f.run();
+    assert_eq!(
+        std::fs::read_to_string(f.0.join("passes")).unwrap().trim(),
+        "1"
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.0.join("first-read.aux")).unwrap(),
+        "\\relax \n\\gdef \\@abspage@last{1}\n"
+    );
+}
+
+#[test]
+fn first_pass_aux_other_than_the_trivial_one_requires_a_second_pass() {
+    let f = Fixture::new(
+        "two-page-aux",
+        r#"
+n=0; if [ -f passes ]; then read -r n < passes; fi
+n=$((n + 1)); echo "$n" > passes
+printf '%s\n' '\relax ' '\gdef \@abspage@last{2}' > "$aux/$job.aux"
 printf '%%PDF-1.4 /Type /Page ' > "$out/$job.pdf"
 "#,
     );

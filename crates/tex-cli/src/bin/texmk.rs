@@ -55,6 +55,8 @@ const MANIFEST_MAX_BYTES: u64 = 4 * 1024 * 1024;
 const TOOL_OUTPUT_MAX_BYTES_PER_STREAM: usize = 1024 * 1024;
 const TOOL_OUTPUT_HEAD_BYTES: usize = 128 * 1024;
 const IO_BUFFER_BYTES: usize = 64 * 1024;
+/// The .aux latexmk writes before the first run of a build (set_trivial_aux_fdb).
+const TRIVIAL_AUX: &str = "\\relax \n\\gdef \\@abspage@last{1}\n";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CleanMode {
@@ -3616,6 +3618,22 @@ fn build(opt: &Options, info: &mut BuildInfo) -> i32 {
         manifest.bibliography_output_hash = None;
     }
 
+    // As latexmk's set_trivial_aux_fdb does, start a build without an .aux
+    // from the one a one-page document without cross-references writes. The
+    // first pass reads it as TeX Live's first pass under latexmk does, and a
+    // document that rewrites it unchanged has converged after one pass; any
+    // other first-pass .aux needs a second pass, as under latexmk.
+    let started_from_trivial_aux = !aux_path.exists();
+    if started_from_trivial_aux {
+        if let Err(error) = std::fs::write(&aux_path, TRIVIAL_AUX) {
+            eprintln!(
+                "texmk: cannot write initial auxiliary file {}: {error}",
+                aux_path.display()
+            );
+            retain_requested(&retention, &mut manifest);
+            return 1;
+        }
+    }
     while passes < MAX_PASSES {
         passes += 1;
         let snap_before = match strict_state_snapshot(&aux_dir) {
@@ -3873,7 +3891,7 @@ fn build(opt: &Options, info: &mut BuildInfo) -> i32 {
         // typeset again.
         let is_stable = !files_changed
             || (passes == 1
-                && !snap_before.is_empty()
+                && !started_from_trivial_aux
                 && is_trivially_converged_first_pass(&aux_dir, &snap_after, &sig, need_bibtex));
         if is_stable {
             if !opt.silent {

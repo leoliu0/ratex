@@ -299,8 +299,12 @@ impl Engine {
     #[inline(always)]
     fn raw_token_fast(&mut self, filter: AlignFilter) -> Option<Token> {
         let token = if let Some(&t) = self.pushed.last() {
+            // While an alignment is scanned, pushback below
+            // `align_pushed_base` predates the template and waits (see
+            // `raw_token_general`); pushback above it is read as usual.
             if !filter.passes(t, &self.eqtb)
-                || self.scanner_status == ScannerStatus::Aligning
+                || (self.scanner_status == ScannerStatus::Aligning
+                    && self.pushed.len() <= self.align_pushed_base)
                 || self.lua_cb[crate::lua_callbacks::Cb::ShowErrorHook as usize] > 0
             {
                 return None;
@@ -660,7 +664,7 @@ impl Engine {
                     // edef/write/expanded list. Nested \\romannumeral (f-expansion)
                     // clears in_expanded_scan and must expand \\exp_end_continue_f:w.
                     if m.protected && self.in_expanded_scan && self.csname_depth == 0 {
-                        self.set_cur_cs(Token::from_cs(id));
+                        self.set_cur_cs_known(Token::from_cs(id), None);
                         return Token::from_cs(id);
                     }
                     if self.freeze_gts_in_edef(id) {
@@ -684,7 +688,7 @@ impl Engine {
                         self.cur_prim = None;
                         return tok;
                     } else {
-                        self.set_cur_cs(t);
+                        self.set_cur_cs_known(t, None);
                         return t;
                     }
                 }
@@ -743,7 +747,7 @@ impl Engine {
                         first = self.pdf_primitive_target();
                         continue;
                     } else {
-                        self.set_cur_cs(t);
+                        self.set_cur_cs_known(t, Some(p));
                         return t;
                     }
                 }
@@ -757,7 +761,7 @@ impl Engine {
                     first = self.raw_token();
                 }
                 _ => {
-                    self.set_cur_cs(t);
+                    self.set_cur_cs_known(t, None);
                     return t;
                 }
             }
@@ -932,13 +936,20 @@ impl Engine {
         self.error(&message);
     }
     fn set_cur_cs(&mut self, t: Token) {
-        self.diagnostic_source_cs = Some(t.cs_id());
-        self.cur_tok = t;
-        self.cur_cs = Some(t.cs_id());
         let prim = match self.eqtb.resolve(t.cs_id()) {
             Some(Equiv::Prim(p)) => Some(*p),
             _ => None,
         };
+        self.set_cur_cs_known(t, prim);
+    }
+
+    /// `set_cur_cs` for a token whose meaning was just resolved: `prim` is
+    /// its primitive, if any.
+    #[inline(always)]
+    fn set_cur_cs_known(&mut self, t: Token, prim: Option<Prim>) {
+        self.diagnostic_source_cs = Some(t.cs_id());
+        self.cur_tok = t;
+        self.cur_cs = Some(t.cs_id());
         self.cur_prim = prim;
     }
 
@@ -1090,7 +1101,7 @@ impl Engine {
                                 return self.forbidden_outer(t);
                             }
                             if m.protected && self.in_expanded_scan && self.csname_depth == 0 {
-                                self.set_cur_cs(t);
+                                self.set_cur_cs_known(t, None);
                                 return t;
                             }
                             if self.freeze_gts_in_edef(id) {
@@ -1140,7 +1151,7 @@ impl Engine {
                             // the char would close \expanded/\edef early
                             // (\c_group_end_token inside \cs_new_protected:Npe).
                             if self.in_expanded_scan {
-                                self.set_cur_cs(t);
+                                self.set_cur_cs_known(t, None);
                                 return t;
                             }
                             let tok = Token(*v);
@@ -1216,7 +1227,7 @@ impl Engine {
                                 t = self.pdf_primitive_target();
                                 continue 'resolve;
                             } else {
-                                self.set_cur_cs(t);
+                                self.set_cur_cs_known(t, Some(p));
                                 return t;
                             }
                         }
@@ -1229,7 +1240,7 @@ impl Engine {
                             break 'expand;
                         }
                         _ => {
-                            self.set_cur_cs(t);
+                            self.set_cur_cs_known(t, None);
                             return t;
                         }
                     }
@@ -3679,7 +3690,7 @@ impl Engine {
 
     /// Scan a balanced group (the opening brace was already consumed).
     /// Returns tokens without the outer braces.
-    pub fn scan_balanced_raw(&mut self, long: bool) -> smallvec::SmallVec<[Token; 16]> {
+    pub fn scan_balanced_raw(&mut self, long: bool) -> Vec<Token> {
         let origin = self.current_token_source_mark();
         let mut out = Vec::new();
         if let Err(Unbalanced::Paragraph(par)) =
@@ -3691,7 +3702,7 @@ impl Engine {
                 origin.as_ref().map(crate::input::SourceMark::to_context),
             );
         }
-        smallvec::SmallVec::from_vec(out)
+        out
     }
 
     fn scan_macro_balanced_arg(

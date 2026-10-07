@@ -121,12 +121,20 @@ impl Engine {
         if t.is_cs() && (t.cs_id() as usize) >= self.cs.len() {
             return;
         }
+        // The meaning of a control sequence, resolved once for the whole
+        // command (tex.web's cur_cmd/cur_chr). Ending a character chain below
+        // only appends nodes or inserts tokens, so the meaning stays valid.
+        let meaning = if t.is_cs() {
+            self.eqtb.resolve(t.cs_id()).cloned()
+        } else {
+            None
+        };
         // tex.web main-loop wrapup: any command other than a character,
         // \char or \noboundary ends the character/ligature chain (settling a
         // trailing explicit hyphen and the right boundary).
         if matches!(self.mode, Mode::Horizontal | Mode::RestrictedHorizontal) {
             let continues_character = if t.is_cs() {
-                match self.eqtb.resolve(t.cs_id()) {
+                match &meaning {
                     Some(Equiv::CharDef(_) | Equiv::Prim(Prim::Char | Prim::NoBoundary)) => true,
                     Some(Equiv::Prim(Prim::U(crate::uprim::UPrim::LeftGhost | crate::uprim::UPrim::RightGhost))) => true,
                     Some(Equiv::CharTok(raw)) => matches!(Token(*raw).cc(), 11 | 12),
@@ -153,23 +161,25 @@ impl Engine {
         if t.is_cs() {
             let id = t.cs_id();
 
-            if let Some(Equiv::FontRef(f)) = self.eqtb.resolve(id).cloned() {
-                // tex.web set_font: a group-scoped assignment that also
-                // consumes any \global prefix
-                let g = self.take_global();
-                self.eqtb.define_cur_font(f, g);
-                self.clear_prefixes();
-                self.space_factor = 1000;
-                return;
-            }
-            // register alias assignment target (\countdef'd cs etc.)
-            match self.eqtb.resolve(id) {
-                Some(Equiv::CountReg(_))
-                | Some(Equiv::AttributeReg(_))
-                | Some(Equiv::DimenReg(_))
-                | Some(Equiv::SkipReg(_))
-                | Some(Equiv::MuSkipReg(_))
-                | Some(Equiv::ToksReg(_)) => {
+            match meaning {
+                Some(Equiv::FontRef(f)) => {
+                    // tex.web set_font: a group-scoped assignment that also
+                    // consumes any \global prefix
+                    let g = self.take_global();
+                    self.eqtb.define_cur_font(f, g);
+                    self.clear_prefixes();
+                    self.space_factor = 1000;
+                    return;
+                }
+                // register alias assignment target (\countdef'd cs etc.)
+                Some(
+                    Equiv::CountReg(_)
+                    | Equiv::AttributeReg(_)
+                    | Equiv::DimenReg(_)
+                    | Equiv::SkipReg(_)
+                    | Equiv::MuSkipReg(_)
+                    | Equiv::ToksReg(_),
+                ) => {
                     self.cs_assign(id);
                     self.trigger_after_assignment();
                     return;
@@ -177,7 +187,7 @@ impl Engine {
                 _ => {}
             }
             // assignment prefixes
-            if let Some(Equiv::Prim(p)) = self.eqtb.resolve(id).cloned() {
+            if let Some(Equiv::Prim(p)) = meaning {
                 if p == Prim::Relax {
                     return;
                 }
@@ -229,7 +239,7 @@ impl Engine {
                 self.main_dispatch(p, id);
             } else {
                 // non-primitive cs used as value: usually error
-                match self.eqtb.resolve(id).cloned() {
+                match meaning {
                     None => {
                         // tex.web §358: a \noexpand-marked undefined control
                         // sequence means \relax.
@@ -699,7 +709,7 @@ impl Engine {
             Toks => {
                 let idx = self.scan_reg_num();
                 self.scan_optional_equals();
-                let toks = Rc::new(self.scan_token_list_of(Some(id)));
+                let toks = self.scan_toks_value(Some(id));
                 let g = self.take_global();
                 self.eqtb.assign_toks_reg(idx, toks, g);
                 self.clear_prefixes();
@@ -1024,7 +1034,7 @@ impl Engine {
             }
             ToksP(tp) => {
                 self.scan_optional_equals();
-                let toks = Rc::new(self.scan_token_list_of(Some(id)));
+                let toks = self.scan_toks_value(Some(id));
 
                 let g = self.take_global();
                 self.eqtb.assign_toks_param(tp, toks, g);
@@ -1202,7 +1212,7 @@ impl Engine {
             }
             Some(Equiv::Prim(Prim::ToksP(tp))) => {
                 self.scan_optional_equals();
-                let toks = Rc::new(self.scan_token_list_of(Some(id)));
+                let toks = self.scan_toks_value(Some(id));
                 let g = self.take_global();
                 self.eqtb.assign_toks_param(tp, toks, g);
                 self.clear_prefixes();
@@ -1250,7 +1260,7 @@ impl Engine {
             }
             Some(Equiv::ToksReg(i)) => {
                 self.scan_optional_equals();
-                let toks = Rc::new(self.scan_token_list_of(Some(id)));
+                let toks = self.scan_toks_value(Some(id));
                 let g = self.take_global();
                 self.eqtb.assign_toks_reg(i, toks, g);
                 self.clear_prefixes();
@@ -1965,35 +1975,42 @@ impl Engine {
     /// `scan_token_list` for the assignment command `owner` (tex.web §1226
     /// sets cur_cs to it), named when an \outer macro interrupts the text.
     pub(crate) fn scan_token_list_of(&mut self, owner: Option<CsId>) -> Vec<Token> {
+        Rc::unwrap_or_clone(self.scan_toks_value(owner))
+    }
+
+    /// The right-hand side of a token-list assignment. A token-list register
+    /// or parameter is shared, not copied (tex.web §1227 `add_token_ref`),
+    /// so e-TeX sees `\toks0=\toks1` repeated as a reassignment.
+    pub(crate) fn scan_toks_value(&mut self, owner: Option<CsId>) -> Rc<Vec<Token>> {
         self.skip_spaces_relax();
         let t = self.get_token();
         if t.is_cs() {
-            match self.eqtb.resolve(t.cs_id()).cloned() {
-                Some(Equiv::ToksReg(i)) => return (*self.eqtb.toks[i as usize]).clone(),
+            match self.eqtb.resolve(t.cs_id()) {
+                Some(Equiv::ToksReg(i)) => return Rc::clone(&self.eqtb.toks[*i as usize]),
                 Some(Equiv::Prim(Prim::ToksP(p))) => {
-                    return (*self.eqtb.tok_params[p.idx() as usize]).clone()
+                    return Rc::clone(&self.eqtb.tok_params[p.idx() as usize])
                 }
                 Some(Equiv::Prim(Prim::XeTeXInterCharToks)) => {
-                    return self.scan_xetex_interchartoks_the();
+                    return Rc::new(self.scan_xetex_interchartoks_the());
                 }
                 Some(Equiv::Prim(Prim::Toks)) => {
                     let i = self.scan_reg_num();
-                    return (*self.eqtb.toks[i as usize]).clone();
+                    return Rc::clone(&self.eqtb.toks[i as usize]);
                 }
                 Some(Equiv::Prim(Prim::CsName)) => {
                     let id = self.scan_csname_explicit();
-                    return vec![Token::from_cs(id)];
+                    return Rc::new(vec![Token::from_cs(id)]);
                 }
                 _ => {}
             }
         }
         if t.is_char() && t.cc() == 1 {
             let scan = crate::expand::OuterScan::Text;
-            return self.with_outer_scan(scan, owner, |e| e.scan_balanced_raw(true).to_vec());
+            return Rc::new(self.with_outer_scan(scan, owner, |e| e.scan_balanced_raw(true)));
         }
         self.push_token(t);
         self.error("Missing { inserted (token list)");
-        Vec::new()
+        Rc::new(Vec::new())
     }
 
     pub fn scan_csname_explicit(&mut self) -> CsId {

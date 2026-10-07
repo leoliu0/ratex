@@ -1941,7 +1941,7 @@ impl Engine {
             if !e.scan_left_brace() {
                 return Vec::new();
             }
-            e.scan_balanced_raw(true).into_vec()
+            e.scan_balanced_raw(true)
         })
     }
 

@@ -1,17 +1,21 @@
 //! Formatting rules and safety cases. Every case is also checked for
 //! idempotence: formatting the result again must not change it.
 
-use tex_format::{format_source, Config, Extras};
+use tex_format::{format_source, Config, Extras, SourceKind};
 
-fn fmt_with(src: &str, config: &Config, extras: &Extras) -> String {
-    let once =
-        format_source(src, config, extras).unwrap_or_else(|e| panic!("{e}\n--- input ---\n{src}"));
-    let twice = format_source(&once, config, extras).unwrap();
+fn fmt_kind(src: &str, config: &Config, extras: &Extras, kind: SourceKind) -> String {
+    let once = format_source(src, config, extras, kind)
+        .unwrap_or_else(|e| panic!("{e}\n--- input ---\n{src}"));
+    let twice = format_source(&once, config, extras, kind).unwrap();
     assert_eq!(
         once, twice,
         "not idempotent\n--- first ---\n{once}\n--- second ---\n{twice}"
     );
     once
+}
+
+fn fmt_with(src: &str, config: &Config, extras: &Extras) -> String {
+    fmt_kind(src, config, extras, SourceKind::Document)
 }
 
 fn fmt(src: &str) -> String {
@@ -478,4 +482,30 @@ fn xparse_verbatim_body_environments_are_untouched() {
     let want =
         "\\begin{center}\n  \\begin{LaTeXdemo}\n\\num{1} \\\\\n\\end{LaTeXdemo}\n\\end{center}\n";
     assert_eq!(fmt_with(src, &Config::default(), &extras), want);
+}
+
+#[test]
+fn at_delimited_arguments_of_verbatim_aliases_are_untouched() {
+    // Regression (arXiv 1902.10231): with `\newcommand{\Q}{\lstinline}`,
+    // `\Q@{a = b; c}@` was lexed as the control word `\Q@` (as if `@` were a
+    // letter), so wrapping broke the line inside the verbatim argument.
+    let extras = extras_from("\\newcommand{\\Q}{\\lstinline}\n");
+    let cfg = config("wrap = true\nline-width = 40");
+    let src = "\\begin{document}\nCall it at the end: \\Q@{this.h = h; this.path = path; base();}@. Then \\Q@[Pure] bool Equal(Point that)@ is fine.\n\\end{document}\n";
+    let out = fmt_with(src, &cfg, &extras);
+    assert!(out.contains("\\Q@{this.h = h; this.path = path; base();}@."));
+    assert!(out.contains("\\Q@[Pure] bool Equal(Point that)@"));
+    assert!(out
+        .lines()
+        .filter(|l| !l.contains("\\Q@"))
+        .all(|l| l.len() <= 40));
+    // Where `@` is a letter (packages, after \makeatletter) `\Q@x` is another
+    // control word and the line is formatted as usual.
+    let src = "\\def\\Q@x#1{%\nfoo bar baz qux quux corge grault garply waldo\n}\n";
+    let want = "\\def\\Q@x#1{%\n  foo bar baz qux quux corge grault\n  garply waldo\n}\n";
+    assert_eq!(fmt_kind(src, &cfg, &extras, SourceKind::Package), want);
+    let doc = |body: &str| {
+        format!("\\begin{{document}}\n\\makeatletter\n{body}\\makeatother\n\\end{{document}}\n")
+    };
+    assert_eq!(fmt_with(&doc(src), &cfg, &extras), doc(want));
 }

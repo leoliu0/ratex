@@ -397,12 +397,14 @@ It does not join lines and does not touch: verbatim environments
 `alltt` and the like, including ones the project defines with
 `\lstnewenvironment`, `\DefineVerbatimEnvironment`, `\newminted` or a
 `\newenvironment` built on them), the arguments of `\verb`, `\lstinline`,
-`\url`, `\path`, `\href` and `\index`, the text of `%` comments, the
-`\end{frame}` line of fragile beamer frames, and any group that changes how
-spaces or line ends are read (`\obeylines`, `\obeyspaces`, `\catcode` of a
-space). Before it writes a file, `texres fmt` reads the old and the new text
-the way TeX does; if they differ in more than the changes above, the file is
-left as it was and the command exits with status 1.
+`\url`, `\path`, `\href` and `\index` (and of the project's own commands built
+on them, such as `\newcommand{\code}{\lstinline}` used as `\code@x = 1@`), the
+text of `%` comments, the `\end{frame}` line of fragile beamer frames, and any
+group that changes how spaces or line ends are read (`\obeylines`,
+`\obeyspaces`, `\catcode` of a space). Before it writes a file, `texres fmt`
+reads the old and the new text the way TeX does, verbatim text character by
+character; if they differ in more than the changes above, the file is left as
+it was and the command exits with status 1.
 
 | Option | |
 |---|---|

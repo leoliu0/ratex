@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use crate::config::{find_config, Config};
 use crate::diff::unified_diff;
-use crate::format::{format_source, Extras};
+use crate::format::{format_source, Extras, SourceKind};
 
 const USAGE: &str = "usage: texres fmt [options] [FILE|DIR ...]
 Formats LaTeX sources in place. Directories are searched recursively for
@@ -273,7 +273,11 @@ fn run_stdin(options: &Options, configs: &mut ConfigCache) -> i32 {
         &BTreeSet::from([dir]),
         &skip,
     );
-    let formatted = match format_source(&text, &config, &extras) {
+    let kind = options
+        .stdin_filename
+        .as_deref()
+        .map_or(SourceKind::Document, SourceKind::of);
+    let formatted = match format_source(&text, &config, &extras, kind) {
         Ok(formatted) => formatted,
         Err(err) => {
             eprintln!("texres fmt: <stdin>: {err}");
@@ -367,7 +371,7 @@ fn run_files(options: &Options, configs: &mut ConfigCache) -> i32 {
                 continue;
             }
         };
-        let formatted = match format_source(text, &config, &extras) {
+        let formatted = match format_source(text, &config, &extras, SourceKind::of(path)) {
             Ok(formatted) => formatted,
             Err(err) => {
                 eprintln!("texres fmt: {}: {err}", path.display());

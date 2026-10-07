@@ -20,6 +20,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::path::Path;
 use std::rc::Rc;
 
 use crate::config::Config;
@@ -436,7 +437,7 @@ fn definition(text: &str, i: usize, count: usize) -> &str {
     &text[i..floor_char_boundary(text, j.min(limit))]
 }
 
-fn memchr(needle: u8, hay: &[u8]) -> Option<usize> {
+pub(crate) fn memchr(needle: u8, hay: &[u8]) -> Option<usize> {
     hay.iter().position(|&c| c == needle)
 }
 
@@ -587,6 +588,70 @@ impl fmt::Display for FormatError {
 
 impl std::error::Error for FormatError {}
 
+/// How LaTeX reads a file: packages and classes are loaded with `@` a
+/// letter; in documents it is one only after `\makeatletter`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SourceKind {
+    #[default]
+    Document,
+    Package,
+}
+
+impl SourceKind {
+    /// `.sty` and `.cls` files are packages; everything else is a document.
+    pub fn of(path: &Path) -> Self {
+        let package = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("sty") || e.eq_ignore_ascii_case("cls"));
+        if package {
+            SourceKind::Package
+        } else {
+            SourceKind::Document
+        }
+    }
+}
+
+/// What TeX reads with other category codes: built-in, project-defined and
+/// configured verbatim commands, environments and short-verb characters.
+/// Shared by the formatter and the safety check.
+#[derive(Clone, Copy)]
+pub(crate) struct Lexicon<'a> {
+    pub cfg: &'a Config,
+    pub extras: &'a Extras,
+}
+
+impl Lexicon<'_> {
+    pub fn is_verbatim_env(&self, name: &str) -> bool {
+        builtin_verbatim_env(name)
+            || self.extras.verbatim_envs.contains(name)
+            || self.cfg.verbatim_envs.iter().any(|e| e == name)
+    }
+
+    pub fn verbatim_command(&self, name: &str) -> Option<ArgSpec> {
+        if let Some((_, s)) = VERBATIM_COMMANDS.iter().find(|(n, _)| *n == name) {
+            return Some(*s);
+        }
+        if let Some(s) = self.extras.verbatim_commands.get(name) {
+            return Some(*s);
+        }
+        self.cfg
+            .verbatim_commands
+            .iter()
+            .any(|c| c == name)
+            .then_some(spec(true, 1, Delim::Either))
+    }
+
+    /// Whether `c` delimits `\verb`-like text where the formatter's lexer
+    /// reaches it (not blanks, `%`, `\`, braces, brackets, `$` or `&`).
+    pub fn short_verb(&self, c: u8) -> bool {
+        !matches!(
+            c,
+            b' ' | b'\t' | b'%' | b'\\' | b'{' | b'}' | b'[' | b']' | b'$' | b'&'
+        ) && self.extras.short_verb.contains(&c)
+    }
+}
+
 /// Formats LaTeX source. The result is checked against the input with TeX's
 /// tokenizer; if they would read differently, nothing is changed and an
 /// error is returned.
@@ -594,13 +659,18 @@ pub fn format_source(
     source: &str,
     config: &Config,
     extras: &Extras,
+    kind: SourceKind,
 ) -> Result<String, FormatError> {
-    let formatted = Formatter::new(config, extras, source).run(source);
+    let formatted = Formatter::new(config, extras, source, kind).run(source);
     let allow = Allowances {
         par_before_sections: config.blank_line_before_sections,
         spaces_around_ampersands: config.align_columns,
     };
-    match tokens::first_difference(source, &formatted, &allow) {
+    let lex = Lexicon {
+        cfg: config,
+        extras,
+    };
+    match tokens::first_difference(source, &formatted, &allow, lex, kind) {
         None => Ok(formatted),
         Some((line, _)) => Err(FormatError { line }),
     }
@@ -629,6 +699,9 @@ struct Frame {
     nowrap: bool,
     /// `$` and `$$` state when the frame opened, restored when it closes.
     saved_math: (bool, bool),
+    /// Whether `@` was a letter when the frame opened; a brace group's end
+    /// restores it (`{\makeatletter ...}`).
+    saved_at: bool,
 }
 
 impl Frame {
@@ -640,14 +713,14 @@ impl Frame {
 
 /// A protected argument that continues on the next line.
 #[derive(Clone, Copy, Debug)]
-struct Span {
-    spec: ArgSpec,
-    done: u8,
-    depth: usize,
+pub(crate) struct Span {
+    pub spec: ArgSpec,
+    pub done: u8,
+    pub depth: usize,
 }
 
 #[derive(Clone, Debug)]
-enum Raw {
+pub(crate) enum Raw {
     /// Inside a verbatim environment until this `\end{...}`.
     Env(Rc<str>),
     /// Inside a verbatim argument.
@@ -666,6 +739,8 @@ struct State {
     dollar: bool,
     ddollar: bool,
     in_preamble: bool,
+    /// Whether `@` is a letter: in packages, and after `\makeatletter`.
+    at_letter: bool,
     next_align_id: usize,
 }
 
@@ -752,9 +827,10 @@ struct Formatter<'a> {
 }
 
 impl<'a> Formatter<'a> {
-    fn new(cfg: &'a Config, extras: &'a Extras, source: &str) -> Self {
+    fn new(cfg: &'a Config, extras: &'a Extras, source: &str, kind: SourceKind) -> Self {
         let st = State {
             in_preamble: source.contains("\\begin{document}"),
+            at_letter: kind == SourceKind::Package,
             ..State::default()
         };
         Formatter {
@@ -913,6 +989,7 @@ impl<'a> Formatter<'a> {
             indent,
             nowrap,
             saved_math: (self.st.dollar, self.st.ddollar),
+            saved_at: self.st.at_letter,
         };
         if frame.is_group() {
             self.st.groups += 1;
@@ -935,6 +1012,9 @@ impl<'a> Formatter<'a> {
             self.st.groups -= 1;
             if !matches!(frame.kind, Kind::Display | Kind::Inline) {
                 (self.st.dollar, self.st.ddollar) = frame.saved_math;
+            }
+            if matches!(frame.kind, Kind::Brace) {
+                self.st.at_letter = frame.saved_at;
             }
             if self.st.guard.is_some_and(|g| self.st.groups < g) {
                 self.st.guard = None;
@@ -971,10 +1051,11 @@ impl<'a> Formatter<'a> {
         self.cfg.wrap && !self.st.in_preamble && self.st.nowrap == 0 && !self.in_math()
     }
 
-    fn is_verbatim_env(&self, name: &str) -> bool {
-        builtin_verbatim_env(name)
-            || self.extras.verbatim_envs.contains(name)
-            || self.cfg.verbatim_envs.iter().any(|e| e == name)
+    fn lex(&self) -> Lexicon<'a> {
+        Lexicon {
+            cfg: self.cfg,
+            extras: self.extras,
+        }
     }
 
     fn is_nowrap_env(&self, name: &str) -> bool {
@@ -982,20 +1063,6 @@ impl<'a> Formatter<'a> {
         NO_WRAP_ENVS.contains(&base)
             || self.cfg.no_wrap_envs.iter().any(|e| e == name)
             || self.cfg.align_envs.iter().any(|e| e == name)
-    }
-
-    fn verbatim_command(&self, name: &str) -> Option<ArgSpec> {
-        if let Some((_, s)) = VERBATIM_COMMANDS.iter().find(|(n, _)| *n == name) {
-            return Some(*s);
-        }
-        if let Some(s) = self.extras.verbatim_commands.get(name) {
-            return Some(*s);
-        }
-        self.cfg
-            .verbatim_commands
-            .iter()
-            .any(|c| c == name)
-            .then_some(spec(true, 1, Delim::Either))
     }
 
     fn section_allowed(&self) -> bool {
@@ -1139,7 +1206,19 @@ impl<'a> Formatter<'a> {
                     while i < b.len() && is_letter(b[i]) {
                         i += 1;
                     }
-                    let name = &line[name_start..i];
+                    let mut name = &line[name_start..i];
+                    // Where `@` may not be a letter, `\Q@code@` can be `\Q`
+                    // reading `@code@` verbatim. A document may still be read
+                    // with `@` a letter (`\input` after `\makeatletter`), so
+                    // the verbatim reading, which changes nothing, wins.
+                    if !self.st.at_letter {
+                        if let Some(p) = name.find('@').filter(|&p| p > 0) {
+                            if self.lex().verbatim_command(&name[..p]).is_some() {
+                                name = &name[..p];
+                                i = name_start + p;
+                            }
+                        }
+                    }
                     // `\left[`, `\big[` ... are math delimiters, not optional arguments.
                     after_command = !matches!(name, "left" | "right" | "middle")
                         && !name.starts_with("big")
@@ -1152,7 +1231,7 @@ impl<'a> Formatter<'a> {
                             };
                             i = after;
                             after_command = false;
-                            if self.is_verbatim_env(env) {
+                            if self.lex().is_verbatim_env(env) {
                                 let end: Rc<str> = format!("\\end{{{env}}}").into();
                                 if sc.raw_from.is_none() {
                                     sc.raw_from = Some(after);
@@ -1250,6 +1329,10 @@ impl<'a> Formatter<'a> {
                             content!();
                             row_ok = false;
                         }
+                        "makeatletter" | "makeatother" => {
+                            content!();
+                            self.st.at_letter = name == "makeatletter";
+                        }
                         _ => {
                             content!();
                             if sc.content_start == cs_start
@@ -1258,7 +1341,7 @@ impl<'a> Formatter<'a> {
                             {
                                 sc.section = self.section_allowed();
                             }
-                            if let Some(arg_spec) = self.verbatim_command(name) {
+                            if let Some(arg_spec) = self.lex().verbatim_command(name) {
                                 let mut j = i;
                                 if matches!(name, "verb" | "Verb" | "spverb")
                                     && b.get(j) == Some(&b'*')
@@ -1368,7 +1451,7 @@ impl<'a> Formatter<'a> {
                 _ => {
                     content!();
                     after_command = false;
-                    if self.extras.short_verb.contains(&c) {
+                    if self.lex().short_verb(c) {
                         match memchr(c, &b[i + 1..]) {
                             Some(p) => {
                                 if b[i + 1..i + 1 + p].contains(&b'%') && sc.raw_from.is_none() {
@@ -1632,7 +1715,7 @@ fn trimmed_end(s: &str) -> usize {
 }
 
 /// `{name}` after `\begin` or `\end` at `i`: the name and the index after `}`.
-fn env_name(line: &str, i: usize) -> Option<(&str, usize)> {
+pub(crate) fn env_name(line: &str, i: usize) -> Option<(&str, usize)> {
     let b = line.as_bytes();
     let j = skip_blanks(b, i);
     if b.get(j) != Some(&b'{') {
@@ -1671,7 +1754,7 @@ fn is_closing(c: u8) -> bool {
 
 /// Scans the arguments of a verbatim-like command from `i`. Returns the end
 /// of the span, or `None` when a braced argument continues on the next line.
-fn scan_span(b: &[u8], mut i: usize, span: &mut Span) -> Option<usize> {
+pub(crate) fn scan_span(b: &[u8], mut i: usize, span: &mut Span) -> Option<usize> {
     loop {
         if span.depth > 0 {
             while i < b.len() {

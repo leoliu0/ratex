@@ -458,7 +458,12 @@ order; only those are compared order-insensitively. The `biber` binary and the
   groups (after `\obeylines`, `\obeyspaces`, `\catcode` of a blank or line
   end, `\endlinechar`, or a command whose definition uses them) make the
   lines that start inside them `Kept`: copied byte for byte. Material after
-  a verbatim start on the same line is never modified either. Blank runs are
+  a verbatim start on the same line is never modified either. `@` is a
+  letter in `.sty`/`.cls` files (`SourceKind::Package`) and after
+  `\makeatletter` (until `\makeatother` or the end of the enclosing `{}`
+  group); elsewhere `\Q@x@` with a verbatim `\Q` is read as `\Q` plus an
+  `@`-delimited argument, since a document may also be `\input` with `@` a
+  letter and the verbatim reading changes nothing. Blank runs are
   recorded during lexing; only those may become line breaks (`\item` split,
   wrapping) or have tabs replaced. Wrapping re-lexes the line from a saved
   state up to the chosen break, so continuation lines get the indentation a
@@ -471,8 +476,12 @@ order; only those are compared order-insensitively. The `biber` binary and the
   `\MakeShortVerb`). The CLI scans the files being formatted and the
   `.tex`/`.sty`/`.cls` files next to them.
 - `tokens.rs`: the safety check. Input and output are tokenized as TeX reads
-  them (category codes of a LaTeX document, state N/M/S per line, trailing
-  spaces dropped, `^^` notation) and compared after normalizing runs of
+  them (category codes of a LaTeX document, `@` as in the formatter, state
+  N/M/S per line, trailing spaces dropped, `^^` notation). Verbatim material
+  is compared character by character, blanks and line ends included: the
+  arguments of verbatim commands (found by the formatter's `Lexicon` and
+  scanned with its `scan_span`), short-verb text and verbatim environment
+  bodies. The token lists are compared after normalizing runs of
   `\par` to one and dropping a `\par` right before a sectioning command (both
   only after an inactive character, `}`, `$` or `&`: after a control
   sequence the first `\par` may be its argument, as with `\fbox` followed by

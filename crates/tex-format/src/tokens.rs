@@ -4,10 +4,13 @@
 //! irrelevant (indentation, trailing blanks, a space turned into a line end,
 //! tab versus space). Every result is tokenized here together with its source
 //! and the two token lists must agree, up to the changes the formatter makes on
-//! purpose: runs of `\par` count as one, a `\par` may precede a sectioning
-//! command, and (when aligning) spaces next to `&` are ignored. Each line is
-//! read on its own from state N, as TeX does, so lines kept verbatim always
-//! produce the same tokens on both sides.
+//! purpose: runs of `\par` after a token that cannot take one as an argument
+//! count as one, a `\par` may precede a sectioning command whose definition
+//! is known to start with `\par` (the same list the formatter uses, see
+//! `sections`), and (when aligning) spaces next to `&` are ignored. Any
+//! other new or lost `\par` is a difference. Each line is read on its own
+//! from state N, as TeX does, so lines kept verbatim always produce the same
+//! tokens on both sides.
 //!
 //! Material TeX reads with other category codes is compared character by
 //! character, blanks and line ends included: the arguments of verbatim
@@ -54,7 +57,7 @@ fn catcode(c: u32, at_letter: bool) -> u8 {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Tok {
+pub(crate) enum Tok {
     /// A control sequence, identified by a 64-bit hash of its name.
     Cs(u64),
     /// A character token: category code and character code.
@@ -362,11 +365,16 @@ fn tokenize(text: &str, lex: Lexicon, kind: SourceKind) -> Vec<Token> {
 
 /// Which deliberate differences the comparison accepts.
 pub(crate) struct Allowances {
-    pub par_before_sections: bool,
+    /// A `\par` may come before these sectioning commands (those known to
+    /// start with `\par` themselves, see `sections`).
+    pub par_sections: Vec<Tok>,
     pub spaces_around_ampersands: bool,
 }
 
-const SECTIONS: &[&str] = &["part", "chapter", "section", "subsection", "subsubsection"];
+/// The control-sequence tokens of the sectioning commands in `mask`.
+pub(crate) fn section_tokens(mask: u8) -> Vec<Tok> {
+    crate::sections::names(mask).map(cs).collect()
+}
 
 /// Whether a `\par` after this token cannot be taken as a macro argument: a
 /// character that is not active (`~`, babel's `"`), a `$`, `&` or `}`.
@@ -381,7 +389,6 @@ fn ends_safely(tok: Tok) -> bool {
 
 fn normalize(tokens: Vec<Token>, allow: &Allowances) -> Vec<Token> {
     let par = cs("par");
-    let sections: Vec<Tok> = SECTIONS.iter().map(|s| cs(s)).collect();
     let space = Tok::Char(CAT_SPACE, 0x20);
     let is_amp = |t: Tok| matches!(t, Tok::Char(CAT_ALIGN, _));
     let mut out: Vec<Token> = Vec::with_capacity(tokens.len());
@@ -402,9 +409,8 @@ fn normalize(tokens: Vec<Token>, allow: &Allowances) -> Vec<Token> {
                     .is_some_and(|t| ends_safely(t.tok));
             }
         }
-        if allow.par_before_sections
-            && sections.contains(&token.tok)
-            && run_safe
+        if run_safe
+            && allow.par_sections.contains(&token.tok)
             && out.last().is_some_and(|t| t.tok == par)
         {
             out.pop();
@@ -455,7 +461,7 @@ mod tests {
 
     fn none() -> Allowances {
         Allowances {
-            par_before_sections: false,
+            par_sections: Vec::new(),
             spaces_around_ampersands: false,
         }
     }
@@ -504,7 +510,7 @@ mod tests {
         assert!(!same("\\fbox\n\n\n\nb\n", "\\fbox\n\nb\n"));
         assert!(!same("~\n\n\n\nb\n", "~\n\nb\n"));
         let sections = Allowances {
-            par_before_sections: true,
+            par_sections: vec![cs("section")],
             spaces_around_ampersands: false,
         };
         let differs = |a: &str, b: &str| {
@@ -515,6 +521,12 @@ mod tests {
             "\\fbox\n\\section{x}\n",
             "\\fbox\n\n\\section{x}\n"
         ));
+        // Only before the commands known to start with `\par`.
+        assert!(differs(
+            "a\n\\subsubsection{x}\n",
+            "a\n\n\\subsubsection{x}\n"
+        ));
+        assert!(!same("a\n\\section{x}\n", "a\n\n\\section{x}\n"));
     }
 
     #[test]

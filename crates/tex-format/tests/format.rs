@@ -1,7 +1,7 @@
 //! Formatting rules and safety cases. Every case is also checked for
 //! idempotence: formatting the result again must not change it.
 
-use tex_format::{format_source, Config, Extras, SourceKind};
+use tex_format::{format_source, Config, Extras, FileKind, SourceKind};
 
 fn fmt_kind(src: &str, config: &Config, extras: &Extras, kind: SourceKind) -> String {
     let once = format_source(src, config, extras, kind)
@@ -264,14 +264,20 @@ fn commands_defined_with_obeylines_guard_too() {
     assert_eq!(fmt_with(src, &Config::default(), &extras), src);
 }
 
+/// Formats `body` as part of a project whose main file has `preamble`.
+fn fmt_in(preamble: &str, body: &str) -> String {
+    fmt_with(body, &Config::default(), &extras_from(preamble))
+}
+
 #[test]
 fn blank_line_before_sections() {
+    let article = "\\documentclass{article}\n\\usepackage{amsmath,hyperref}\n";
     assert_eq!(
-        fmt("text\n\\section{A}\nmore\n"),
+        fmt_in(article, "text\n\\section{A}\nmore\n"),
         "text\n\n\\section{A}\nmore\n"
     );
     assert_eq!(
-        fmt("text\n\\subsection*{A}\n"),
+        fmt_in(article, "text\n\\subsection*{A}\n"),
         "text\n\n\\subsection*{A}\n"
     );
     // Not after a comment, a line ending in %, or a group opener.
@@ -283,14 +289,54 @@ fn blank_line_before_sections() {
         "\\newcommand{\\x}{\nx\n\\section{A}}\n",
         "\\let\\oldsection\\section\n\\section\\foo\n",
     ] {
-        assert_eq!(fmt(src).matches("\n\n").count(), 0, "{src}");
+        assert_eq!(fmt_in(article, src).matches("\n\n").count(), 0, "{src}");
     }
     let out = fmt_with(
         "text\n\\section{A}\n",
         &config("blank-line-before-sections = false"),
-        &Extras::default(),
+        &extras_from(article),
     );
     assert_eq!(out, "text\n\\section{A}\n");
+}
+
+#[test]
+fn no_blank_line_before_sections_of_unknown_definition() {
+    // Regression (tex-fmt's cv test): the class starts `\subsubsection` with
+    // `\linebreak`, which fails once a blank line has ended the paragraph.
+    let cls = "\\LoadClass{article}\n\\renewcommand{\\subsubsection}[1]{%\n  \\linebreak\n  #1}\n";
+    let src = "\\documentclass{cv}\n\\begin{document}\n{Jul 2024}\n\\subsubsection{Cambridge}\n\
+               text\n\\section{B}\n\\end{document}\n";
+    let mut extras = extras_from(src);
+    assert_eq!(
+        extras.sections.wanted(),
+        [(FileKind::Class, "cv".to_string())]
+    );
+    extras.scan(cls);
+    extras
+        .sections
+        .resolve(FileKind::Class, "cv".to_string(), true);
+    assert_eq!(
+        fmt_with(src, &Config::default(), &extras),
+        "\\documentclass{cv}\n\\begin{document}\n{Jul 2024}\n\\subsubsection{Cambridge}\n\
+         text\n\n\\section{B}\n\\end{document}\n"
+    );
+    // Classes and packages that are not known, files that were not read
+    // and no class at all: no blank line anywhere.
+    for preamble in [
+        "",
+        "\\documentclass{moderncv}",
+        "\\documentclass{article}\\usepackage{titlesec}",
+        "\\documentclass{article}\\input{macros}",
+        "\\documentclass{article}\\let\\section\\relax",
+    ] {
+        assert_eq!(
+            fmt_in(preamble, "text\n\\section{A}\n"),
+            "text\n\\section{A}\n"
+        );
+    }
+    // A project redefinition that itself starts with `\par` is fine.
+    let ok = "\\documentclass{article}\\renewcommand\\section{\\par\\bigskip\\textbf}";
+    assert_eq!(fmt_in(ok, "text\n\\section{A}\n"), "text\n\n\\section{A}\n");
 }
 
 #[test]
@@ -454,11 +500,12 @@ fn blank_lines_after_a_command_are_kept() {
     // lines removed the paragraph break that the others made.
     let src = "set.\\hfill\\fbox\n\n\n\nLet $X$ be\n";
     assert_eq!(fmt(src), src);
+    let article = "\\documentclass{article}";
     let src = "a \\\\\n\n\n\\section{B}\n";
-    assert_eq!(fmt(src), src);
+    assert_eq!(fmt_in(article, src), src);
     // No blank line is put between a command and a \section either.
     let src = "\\fbox\n\\section{B}\n";
-    assert_eq!(fmt(src), src);
+    assert_eq!(fmt_in(article, src), src);
     // After text, `}` or `$` the extra blank lines go.
     assert_eq!(fmt("text.\n\n\n\nx\n"), "text.\n\nx\n");
     assert_eq!(fmt("\\label{a}\n\n\n\nx\n"), "\\label{a}\n\nx\n");

@@ -217,7 +217,8 @@ fn encode(text: &str, utf8: bool) -> Vec<u8> {
 }
 
 /// Reads definitions of verbatim environments and commands from the given
-/// texts and from the TeX sources next to them.
+/// texts and from the TeX sources next to them, then the project's own
+/// classes, packages and input files they name (for the sectioning rule).
 fn project_extras<'a>(
     texts: impl Iterator<Item = &'a str>,
     dirs: &BTreeSet<PathBuf>,
@@ -227,23 +228,45 @@ fn project_extras<'a>(
     for text in texts {
         extras.scan(text);
     }
+    let mut scanned = skip.clone();
+    let mut scan_file = |path: &Path, extras: &mut Extras| {
+        if !scanned.insert(path.to_path_buf()) {
+            return;
+        }
+        let small = std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() <= MAX_SCAN_BYTES);
+        if small {
+            if let Ok(bytes) = std::fs::read(path) {
+                extras.scan(&decode(bytes).0);
+            }
+        }
+    };
     for dir in dirs {
         let Ok(entries) = std::fs::read_dir(dir) else {
             continue;
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if skip.contains(&path) || !has_extension(&path, SOURCE_EXTENSIONS) {
-                continue;
+            if has_extension(&path, SOURCE_EXTENSIONS) {
+                scan_file(&path, &mut extras);
             }
-            let small = entry
-                .metadata()
-                .is_ok_and(|m| m.is_file() && m.len() <= MAX_SCAN_BYTES);
-            if small {
-                if let Ok(bytes) = std::fs::read(&path) {
-                    extras.scan(&decode(bytes).0);
-                }
+        }
+    }
+    loop {
+        let wanted = extras.sections.wanted();
+        if wanted.is_empty() {
+            break;
+        }
+        for (kind, name) in wanted {
+            let found = dirs.iter().find_map(|dir| {
+                kind.candidates(&name)
+                    .into_iter()
+                    .map(|c| dir.join(c))
+                    .find(|p| p.is_file())
+            });
+            if let Some(path) = &found {
+                scan_file(&absolute(path), &mut extras);
             }
+            extras.sections.resolve(kind, name, found.is_some());
         }
     }
     extras

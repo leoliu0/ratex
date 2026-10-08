@@ -10,8 +10,10 @@ pub mod cli;
 mod config;
 mod diff;
 mod format;
+mod sections;
 mod tokens;
 
 pub use config::{find_config, Config, CONFIG_FILE_NAME, DEFAULT_ALIGN_ENVS};
 pub use diff::unified_diff;
 pub use format::{format_source, ArgSpec, Delim, Extras, FormatError, SourceKind};
+pub use sections::{FileKind, SectionFacts};

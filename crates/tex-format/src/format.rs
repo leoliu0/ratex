@@ -10,7 +10,8 @@
 //!   becomes a line end, which TeX reads as the same single space;
 //! - runs of blank lines shrink (each blank line is a `\par`; repeated
 //!   `\par` does nothing more), and a blank line may go before a top-level
-//!   `\section` (which starts with `\par` anyway);
+//!   `\section` when its definition is known to start with `\par` (see
+//!   `sections`);
 //! - with `align-columns`, blanks around `&` in alignments (ignored by the
 //!   cell templates).
 //!
@@ -24,6 +25,7 @@ use std::path::Path;
 use std::rc::Rc;
 
 use crate::config::Config;
+use crate::sections::{self, SectionFacts};
 use crate::tokens::{self, Allowances};
 
 /// How a verbatim-like command takes its argument.
@@ -89,8 +91,6 @@ const GUARD_WORDS: &[&str] = &[
     "lstlisting",
     "alltt",
 ];
-
-const SECTIONS: &[&str] = &["part", "chapter", "section", "subsection", "subsubsection"];
 
 /// Environments where lines are never wrapped (math, tables, pictures).
 const NO_WRAP_ENVS: &[&str] = &[
@@ -179,6 +179,9 @@ pub struct Extras {
     /// ends (`\obeylines`, `\catcode`, ...): after one, the rest of the
     /// enclosing group is kept as is.
     pub guard_commands: HashSet<String>,
+    /// Classes, packages, input files and sectioning definitions, which
+    /// decide where a blank line may go before a sectioning command.
+    pub sections: SectionFacts,
 }
 
 impl Extras {
@@ -198,6 +201,7 @@ impl Extras {
                 continue;
             }
             let name = &text[start..end];
+            self.sections.note(text, start - 1, end, name);
             match name {
                 "lstnewenvironment"
                 | "DefineVerbatimEnvironment"
@@ -661,9 +665,14 @@ pub fn format_source(
     extras: &Extras,
     kind: SourceKind,
 ) -> Result<String, FormatError> {
-    let formatted = Formatter::new(config, extras, source, kind).run(source);
+    let par_sections = if config.blank_line_before_sections {
+        extras.sections.par_sections()
+    } else {
+        0
+    };
+    let formatted = Formatter::new(config, extras, source, kind, par_sections).run(source);
     let allow = Allowances {
-        par_before_sections: config.blank_line_before_sections,
+        par_sections: tokens::section_tokens(par_sections),
         spaces_around_ampersands: config.align_columns,
     };
     let lex = Lexicon {
@@ -824,10 +833,19 @@ struct Formatter<'a> {
     /// cannot be a macro argument; only then may blank lines be dropped or
     /// added after it.
     prev_safe: bool,
+    /// Sectioning commands (bits, see `sections`) known to start with
+    /// `\par`: only these get a blank line before them.
+    par_sections: u8,
 }
 
 impl<'a> Formatter<'a> {
-    fn new(cfg: &'a Config, extras: &'a Extras, source: &str, kind: SourceKind) -> Self {
+    fn new(
+        cfg: &'a Config,
+        extras: &'a Extras,
+        source: &str,
+        kind: SourceKind,
+        par_sections: u8,
+    ) -> Self {
         let st = State {
             in_preamble: source.contains("\\begin{document}"),
             at_letter: kind == SourceKind::Package,
@@ -841,6 +859,7 @@ impl<'a> Formatter<'a> {
             line_mark: None,
             prev_safe: false,
             math_aligns: HashMap::new(),
+            par_sections,
         }
     }
 
@@ -1065,8 +1084,10 @@ impl<'a> Formatter<'a> {
             || self.cfg.align_envs.iter().any(|e| e == name)
     }
 
-    fn section_allowed(&self) -> bool {
-        self.cfg.blank_line_before_sections
+    /// Whether a blank line may go before the sectioning command `name`:
+    /// its definition starts with `\par`, and it is used at the top level.
+    fn section_allowed(&self, name: &str) -> bool {
+        sections::has(self.par_sections, name)
             && !self.in_math()
             && self
                 .st
@@ -1336,10 +1357,10 @@ impl<'a> Formatter<'a> {
                         _ => {
                             content!();
                             if sc.content_start == cs_start
-                                && SECTIONS.contains(&name)
+                                && self.section_allowed(name)
                                 && is_section_call(b, i)
                             {
-                                sc.section = self.section_allowed();
+                                sc.section = true;
                             }
                             if let Some(arg_spec) = self.lex().verbatim_command(name) {
                                 let mut j = i;

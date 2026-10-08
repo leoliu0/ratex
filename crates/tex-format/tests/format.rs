@@ -630,7 +630,11 @@ fn xparse_verbatim_arguments_with_unbraced_names_and_compact_specs() {
         let extras = extras_from(definition);
         let src = "\\begin{itemize}\n\\item \\code|a \\item b|\n\\end{itemize}\n";
         let want = "\\begin{itemize}\n  \\item \\code|a \\item b|\n\\end{itemize}\n";
-        assert_eq!(fmt_with(src, &Config::default(), &extras), want, "{definition}");
+        assert_eq!(
+            fmt_with(src, &Config::default(), &extras),
+            want,
+            "{definition}"
+        );
     }
     // `m` before `v` is an ordinary argument.
     let extras = extras_from("\\NewDocumentCommand\\code{mv}{#1\\texttt{#2}}");
@@ -662,7 +666,10 @@ fn verbatim_material_of_known_packages_is_untouched() {
     for (preamble, item) in [
         ("\\documentclass{ltxdoc}\n", "\\item use |a \\item b| here"),
         ("\\documentclass{l3doc}\n", "\\item use \"a \\item b\" here"),
-        ("\\documentclass{ltxguide}\n", "\\item use |a \\item b| here"),
+        (
+            "\\documentclass{ltxguide}\n",
+            "\\item use |a \\item b| here",
+        ),
         (
             "\\documentclass{article}\n\\usepackage{minted}\n",
             "\\item \\mint{python}|a \\item b|",
@@ -692,9 +699,17 @@ fn unknown_packages_leave_the_file_unchanged() {
     );
     assert!(err.to_string().contains("known-packages"), "{err}");
     let src_cls = src.replace("{article}", "{mysteryclass}");
-    let err = format_source(&src_cls, &Config::default(), &extras_from(&src_cls), SourceKind::Document)
-        .unwrap_err();
-    assert!(matches!(err, FormatError::UnknownPackage { class: true, .. }), "{err}");
+    let err = format_source(
+        &src_cls,
+        &Config::default(),
+        &extras_from(&src_cls),
+        SourceKind::Document,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, FormatError::UnknownPackage { class: true, .. }),
+        "{err}"
+    );
     // A computed name may be anything.
     let src_computed = src.replace("{mysterypkg}", "{\\mypkg}");
     let err = format_source(
@@ -704,7 +719,13 @@ fn unknown_packages_leave_the_file_unchanged() {
         SourceKind::Document,
     )
     .unwrap_err();
-    assert_eq!(err, FormatError::UnknownPackage { class: false, name: None });
+    assert_eq!(
+        err,
+        FormatError::UnknownPackage {
+            class: false,
+            name: None
+        }
+    );
     // Named in the settings, it is trusted.
     let cfg = config("known-packages = [\"mysterypkg\"]");
     assert!(fmt_with(src, &cfg, &extras).contains("\n  x\n"));
@@ -715,6 +736,35 @@ fn unknown_packages_leave_the_file_unchanged() {
         .sections
         .resolve(FileKind::Package, "mysterypkg".to_string(), true);
     assert!(fmt_with(src, &Config::default(), &extras).contains("\n  x\n"));
+    // A computed name is known when the project defines it, everywhere,
+    // to names that are known (tufte-latex's `\LoadClass{\@tufte@class}`).
+    let doc = src.replace("\\usepackage{mysterypkg}\n", "");
+    let gate = |project: &str| {
+        let text = format!("{project}\n{doc}");
+        format_source(
+            &doc,
+            &Config::default(),
+            &extras_from(&text),
+            SourceKind::Document,
+        )
+    };
+    let loads = "\\LoadClass{\\@tufte@class}\n";
+    let both = "\\newcommand{\\@tufte@class}{book}\n\\def\\@tufte@class{article}\n";
+    assert!(gate(&format!("{both}{loads}")).unwrap().contains("\n  x\n"));
+    for defs in [
+        "",
+        "\\def\\@tufte@class{mysteryclass}\n",
+        "\\def\\@tufte@class{article}\\let\\@tufte@class\\relax\n",
+        "\\def\\@tufte@class{article}\\edef\\@tufte@class{\\x}\n",
+        "\\def\\@tufte@class{article}\\@namedef{@tufte@class}{x}\n",
+        "\\def\\@tufte@class#1{article}\n",
+    ] {
+        assert!(gate(&format!("{defs}{loads}")).is_err(), "{defs}");
+    }
+    // The kernel's scratch macros may hold anything.
+    assert!(gate("\\def\\@tempb{epic}\\RequirePackage{\\@tempb}").is_err());
+    // `\string\usepackage` loads nothing (LaTeX's ltnews.tex).
+    assert!(gate("\\def\\a#1#2{\\typeout{\\string\\usepackage[#1]{#2}}}").is_ok());
 }
 
 #[test]
@@ -731,9 +781,14 @@ fn copies_of_verbatim_commands_are_verbatim() {
         "\\LetLtxMacro{\\cmd}{\\lstinline}",
     ] {
         let extras = extras_from(definition);
-        let src = "\\begin{itemize}\n\\item \\cmd|r \\item s|\n\\item x\\cmd|p\tq|y\n\\end{itemize}\n";
+        let src =
+            "\\begin{itemize}\n\\item \\cmd|r \\item s|\n\\item x\\cmd|p\tq|y\n\\end{itemize}\n";
         let want = "\\begin{itemize}\n  \\item \\cmd|r \\item s|\n  \\item x\\cmd|p\tq|y\n\\end{itemize}\n";
-        assert_eq!(fmt_with(src, &Config::default(), &extras), want, "{definition}");
+        assert_eq!(
+            fmt_with(src, &Config::default(), &extras),
+            want,
+            "{definition}"
+        );
     }
     // Copies of commands that change how blanks are read guard their group.
     let extras = extras_from("\\NewCommandCopy\\ol\\obeyspaces");
@@ -766,7 +821,11 @@ fn definitions_split_across_lines_are_found() {
         let extras = extras_from(definition);
         let src = "\\begin{center}\n\\begin{shell}\na\n    b\n\\end{shell}\n\\end{center}\n";
         let want = "\\begin{center}\n  \\begin{shell}\na\n    b\n\\end{shell}\n\\end{center}\n";
-        assert_eq!(fmt_with(src, &Config::default(), &extras), want, "{definition}");
+        assert_eq!(
+            fmt_with(src, &Config::default(), &extras),
+            want,
+            "{definition}"
+        );
     }
     for definition in [
         "\\newcommand\n{\\code}{\\verb}",
@@ -782,7 +841,11 @@ fn definitions_split_across_lines_are_found() {
         };
         let src = format!("\\begin{{itemize}}\n{item}\n\\end{{itemize}}\n");
         let want = format!("\\begin{{itemize}}\n  {item}\n\\end{{itemize}}\n");
-        assert_eq!(fmt_with(&src, &Config::default(), &extras), want, "{definition}");
+        assert_eq!(
+            fmt_with(&src, &Config::default(), &extras),
+            want,
+            "{definition}"
+        );
     }
     // Wrapping a defs file never splits a definition from its arguments in
     // a way the next run cannot read.

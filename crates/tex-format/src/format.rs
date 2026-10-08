@@ -357,11 +357,24 @@ impl Extras {
             }
             i = end;
             let name = &text[start..end];
+            if name == "string" {
+                // `\string\usepackage` is text: the control word after
+                // `\string` is not executed.
+                if b.get(end) == Some(&b'\\') {
+                    i = (end + 2).min(b.len());
+                    while i < b.len() && is_letter(b[i]) {
+                        i += 1;
+                    }
+                }
+                continue;
+            }
             if name == "begin" {
                 if let Some((env, after)) = env_name(text, end) {
                     if DISPLAYED_VERBATIM_ENVS.contains(&env) {
                         let close = format!("\\end{{{env}}}");
-                        i = text[after..].find(&close).map_or(b.len(), |p| after + p + close.len());
+                        i = text[after..]
+                            .find(&close)
+                            .map_or(b.len(), |p| after + p + close.len());
                         continue;
                     }
                 }
@@ -432,7 +445,9 @@ impl Extras {
                 | "ProvideDocumentCommand" => {
                     // An xparse `v` argument is read verbatim.
                     if let Some((command, after)) = defined_command(text, end) {
-                        if let Some(arg_spec) = balanced_group(text, after).and_then(xparse_verbatim) {
+                        if let Some(arg_spec) =
+                            balanced_group(text, after).and_then(xparse_verbatim)
+                        {
                             self.verbatim_commands.insert(command.to_string(), arg_spec);
                         }
                     }
@@ -584,7 +599,9 @@ impl Extras {
                         j = text[j..].find(']').map_or(b.len(), |p| j + p + 1);
                     }
                     if let Some((command, after)) = defined_command(text, j) {
-                        if let Some(arg_spec) = balanced_group(text, after).and_then(xparse_verbatim) {
+                        if let Some(arg_spec) =
+                            balanced_group(text, after).and_then(xparse_verbatim)
+                        {
                             self.verbatim_commands.insert(command.to_string(), arg_spec);
                         }
                     }
@@ -625,7 +642,10 @@ impl Extras {
                 }
                 "usepackage" | "RequirePackage" | "RequirePackageWithOptions" => {
                     let names = balanced_group(text, skip_options(b, end)).unwrap_or("");
-                    for package in names.split(',').map(|n| n.split('%').next().unwrap_or("").trim()) {
+                    for package in names
+                        .split(',')
+                        .map(|n| n.split('%').next().unwrap_or("").trim())
+                    {
                         match package {
                             // Delayed floats are copied line by line until a
                             // line that is exactly `\end{figure}`.

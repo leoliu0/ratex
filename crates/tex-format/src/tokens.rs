@@ -206,7 +206,11 @@ impl Reader<'_> {
     /// Closes the innermost group for which `matches` holds, with the groups
     /// inside it, unless one for which `barrier` holds comes first (the
     /// formatter's `pop_to`); `@` becomes what it was when it opened.
-    fn close(&mut self, matches: impl Fn(&GroupKind) -> bool, barrier: impl Fn(&GroupKind) -> bool) {
+    fn close(
+        &mut self,
+        matches: impl Fn(&GroupKind) -> bool,
+        barrier: impl Fn(&GroupKind) -> bool,
+    ) {
         let Some(index) = self
             .groups
             .iter()
@@ -305,7 +309,9 @@ impl Reader<'_> {
             "begin" => {
                 self.fill_rest(i);
                 let (close, args) = match env_name(&self.rest, 0) {
-                    Some((env, after)) if self.lex.is_verbatim_instance(env, &self.rest[after..]) => {
+                    Some((env, after))
+                        if self.lex.is_verbatim_instance(env, &self.rest[after..]) =>
+                    {
                         (Some((format!("\\end{{{env}}}"), after)), None)
                     }
                     Some((env, after)) => {

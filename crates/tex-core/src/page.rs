@@ -275,8 +275,11 @@ fn page_vert_break(list: &[Node], w: i64, d: i64) -> (Option<usize>, i64) {
 struct BreakSpot {
     /// number of leading `page_list` nodes that belong to the page
     cut: usize,
-    /// penalty at the break (0 for glue breaks)
+    /// penalty at the break (0 for glue and kern breaks)
     penalty: i32,
+    /// the break is a kern followed by glue: the node before `cut` belongs to
+    /// the page even when it is a penalty
+    at_kern: bool,
     /// total cost: badness + penalty + insert penalties
     cost: i32,
 }
@@ -285,10 +288,11 @@ impl BreakSpot {
     /// a breakpoint carried over from an earlier `build_page` call; its real
     /// cost was strictly positive (non-positive fires immediately), so using
     /// `deplorable` only weakens it against fresh candidates
-    fn carried(cut: usize, penalty: i32) -> BreakSpot {
+    fn carried(cut: usize, penalty: i32, at_kern: bool) -> BreakSpot {
         BreakSpot {
             cut,
             penalty,
+            at_kern,
             cost: DEPLORABLE,
         }
     }
@@ -477,7 +481,7 @@ impl Engine {
         st.stretch = self.page_stretch;
         st.shrink = self.page_shrink;
         if let Some(cut) = self.page_best_break {
-            let mut spot = BreakSpot::carried(cut, self.page_break_penalty);
+            let mut spot = BreakSpot::carried(cut, self.page_break_penalty, self.page_break_at_kern);
             spot.cost = self.page_best_cost as i32;
             st.best = Some(spot);
         }
@@ -502,6 +506,16 @@ impl Engine {
 
         while st.processed < self.page_list.len() {
             let idx = st.processed;
+            // tex.web §1000: a kern reaching a page that holds a box waits
+            // on the contribution list until the node after it arrives
+            // (`if link(p)=null then return`): that node decides whether
+            // the kern is a breakpoint
+            if st.box_seen
+                && idx + 1 == self.page_list.len()
+                && matches!(self.page_list[idx], Node::Kern(..) | Node::ExplicitKern(..))
+            {
+                break;
+            }
             let mut advance = true;
             st.cur_legal = false;
             match &self.page_list[idx] {
@@ -575,7 +589,7 @@ impl Engine {
                         let legal0 =
                             st.box_seen && idx > 0 && precedes_break(&self.page_list[idx - 1]);
                         if legal0 {
-                            self.try_page_break(&mut st, idx, 0);
+                            self.try_page_break(&mut st, idx, 0, false);
                         }
                         self.contribute_glue(&mut st, &g);
                         st.cur_legal = legal0;
@@ -601,6 +615,13 @@ impl Engine {
                 Node::Kern(k, _) | Node::ExplicitKern(k, _) => {
                     let k = *k;
                     if st.box_seen {
+                        // tex.web §1000: a kern followed by glue (leaders
+                        // are glue nodes) is a legal breakpoint, evaluated
+                        // before the kern contributes
+                        if matches!(self.page_list.get(idx + 1), Some(Node::Glue(..) | Node::Leaders { .. })) {
+                            self.try_page_break(&mut st, idx, 0, true);
+                            st.cur_legal = true;
+                        }
                         self.contribute_gap(&mut st, k as i64);
                     } else {
                         self.page_list.remove(idx);
@@ -618,7 +639,7 @@ impl Engine {
                         // legal break at penalties < inf_penalty when a box precedes
                         if p < INF_PENALTY && st.box_seen {
                             st.cur_legal = true;
-                            self.try_page_break(&mut st, idx + 1, p);
+                            self.try_page_break(&mut st, idx + 1, p, false);
                         }
                     } else {
                         self.page_list.remove(idx);
@@ -675,7 +696,7 @@ impl Engine {
                         // the normal glue_node path. If precedes_break(page_tail) is true
                         // (e.g. whatsits/marks from output routine sit at the page top),
                         if idx > 0 && self.page_list[..idx].iter().any(precedes_break) {
-                            self.try_page_break(&mut st, idx, 0);
+                            self.try_page_break(&mut st, idx, 0, false);
                         }
                         self.contribute_gap(&mut st, pad as i64);
                         st.processed += 1;
@@ -752,6 +773,7 @@ impl Engine {
         }
         self.page_best_break = st.best.map(|b| b.cut);
         self.page_break_penalty = st.best.map(|b| b.penalty).unwrap_or(0);
+        self.page_break_at_kern = st.best.is_some_and(|b| b.at_kern);
         self.page_best_cost = st.best.map(|b| b.cost as i64).unwrap_or(0);
         self.page_goal_set = st.goal_set;
         self.page_box_seen = st.box_seen;
@@ -762,11 +784,11 @@ impl Engine {
         self.page_insertions = st.ins.clone();
         self.sync_page_dims(&st);
         if st.fire {
-            let (cut, penalty, pack_goal) = match st.best {
-                Some(spot) => (spot.cut, spot.penalty, self.page_best_goal),
-                None => (st.processed, 0, self.page_goal()),
+            let (cut, at_kern, pack_goal) = match st.best {
+                Some(spot) => (spot.cut, spot.at_kern, self.page_best_goal),
+                None => (st.processed, false, self.page_goal()),
             };
-            self.fire_up(cut, penalty, pack_goal);
+            self.fire_up(cut, at_kern, pack_goal);
         }
     }
 
@@ -947,7 +969,7 @@ impl Engine {
     /// candidates: a page whose total crosses the goal between candidates
     /// keeps growing until the next one, which may carry a better cost
     /// case — firing mid-run there cut one line early vs real pdflatex)
-    fn try_page_break(&mut self, st: &mut PageState, cut: usize, penalty: i32) {
+    fn try_page_break(&mut self, st: &mut PageState, cut: usize, penalty: i32, at_kern: bool) {
         if penalty >= 10000 {
             return;
         }
@@ -980,7 +1002,7 @@ impl Engine {
             self.append_log(&msg);
         }
         if (b < AWFUL_BAD as i64 || st.best.is_none()) && better {
-            st.best = Some(BreakSpot { cut, penalty, cost });
+            st.best = Some(BreakSpot { cut, penalty, at_kern, cost });
             // tex.web best_size snapshots page_goal at the selected break.
             // Later insertions may reduce the running page_goal further.
             self.page_best_goal = self.page_goal();
@@ -1045,9 +1067,12 @@ impl Engine {
     fn ready_to_fire(&self, st: &PageState) -> bool {
         st.fire
     }
-    fn fire_up(&mut self, cut: usize, _penalty: i32, pack_goal: i64) {
+    fn fire_up(&mut self, cut: usize, at_kern: bool, pack_goal: i64) {
         // is inserted before it, preserving \lastskip/\lastpenalty semantics.
-        let (cut, penalty) = match cut.checked_sub(1).and_then(|i| self.page_list.get_mut(i)) {
+        // A kern break leaves a penalty before it on the page (tex.web §1017
+        // tests the type of best_page_break itself).
+        let before = if at_kern { None } else { cut.checked_sub(1) };
+        let (cut, penalty) = match before.and_then(|i| self.page_list.get_mut(i)) {
             Some(Node::Penalty(p, _)) => {
                 let penalty = *p;
                 *p = INF_PENALTY;
@@ -1111,6 +1136,7 @@ impl Engine {
 
         self.page_best_break = None;
         self.page_break_penalty = 0;
+        self.page_break_at_kern = false;
         self.page_best_cost = 0;
         self.page_best_goal = 0x3FFF_FFFF;
         self.last_page_glue = None;
@@ -1569,6 +1595,7 @@ impl Engine {
         self.page_best_break = None;
         self.page_best_cost = 0;
         self.page_break_penalty = 0;
+        self.page_break_at_kern = false;
         self.sync_page_dims(&PageState::new());
         // close the save level opened at fire_up (tex.web output_group) BEFORE
         // inspecting box255: a non-global `\setbox255` inside the routine is
@@ -1844,5 +1871,53 @@ mod tests {
         let bp = |pt: f64| pt * 72.0 / 72.27;
         assert!((rule_h.0 - bp(5.0)).abs() < 1e-3, "{rule_h:?}");
         assert!((rule_h.1 - bp(8.88888)).abs() < 1e-3, "{rule_h:?}");
+    }
+
+    /// tex.web §1000: a kern at the end of the contribution list waits there
+    /// (`if link(p)=null then return`), here one that `\vadjust` moved out
+    /// of an hbox. Expected lines from `pdftex -ini` (TeX Live 2026).
+    #[test]
+    fn migrated_kern_waits_on_the_contribution_list() {
+        let mut e = Engine::new(true);
+        e.init_primitives();
+        e.add_nullfont();
+        e.set_interaction_mode(crate::engine::InteractionMode::Nonstop);
+        let src = "\\catcode`\\{=1 \\catcode`\\}=2 \\font\\cmr=cmr10 \\cmr\n\
+                   \\topskip=10pt \\vsize=100pt \\baselineskip=12pt\n\
+                   \\hbox{y\\vadjust{\\kern8pt}}\\showlists\n\\end\n";
+        e.input.push_file("page.tex".to_string(), src.as_bytes().to_vec());
+        e.run();
+        assert!(
+            e.log.contains(
+                "total height 11.94444\n goal height 100.0\n### recent contributions:\n\\kern 8.0\n"
+            ),
+            "{}",
+            e.log
+        );
+    }
+
+    /// tex.web §1000: a kern followed by glue is a legal page break, and a
+    /// penalty before that kern stays on the page with `\outputpenalty`
+    /// 10000 (§1013). Expected values from `pdftex -ini` (TeX Live 2026).
+    #[test]
+    fn kern_followed_by_glue_is_a_page_break() {
+        let e = run(concat!(
+            "\\font\\cmr=cmr10 \\cmr \\topskip=10pt \\vsize=30pt \\baselineskip=12pt \\maxdepth=2pt\n",
+            "\\output={\\setbox0\\vbox{\\unvcopy255 \\message{[\\the\\outputpenalty:\\the\\lastpenalty]}}",
+            "\\setbox0\\box255 \\deadcycles=0 }\n",
+            "\\hbox{a\\vadjust{\\kern1pt}}\n",
+            "\\hbox{b\\vadjust{\\kern1pt}}\n",
+            "\\hbox{c\\vadjust{\\kern1pt}}\n",
+            "\\hbox{d\\vadjust{\\kern1pt}}\n",
+            "\\penalty-10000\n",
+            "\\hbox{g}\\penalty50 \\kern30pt \\vskip 2pt \\hbox{h}\n",
+            "\\penalty-10000\n\\end\n",
+        ));
+        assert_eq!(e.error_count, 0, "{}", e.term);
+        assert!(
+            e.term.contains("[10000:0] [-10000:0] [10000:50] [-10000:0]"),
+            "{}",
+            e.term
+        );
     }
 }

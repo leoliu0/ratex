@@ -1078,6 +1078,7 @@ pub(crate) fn install(lua: &mut Lua, t: &LuaTable) -> Result<(), String> {
                     };
                     e.page_best_break =
                         if n == 0 { None } else { find(e, Target::PageHead, 0).or_else(|| find(e, Target::Contrib, processed)) };
+                    e.page_break_at_kern = false;
                 }
                 b"page_head" => e.lua_assign_list(Target::PageHead, n),
                 b"contrib_head" => e.lua_assign_list(Target::Contrib, n),

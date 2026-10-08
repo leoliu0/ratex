@@ -259,14 +259,9 @@ impl Engine {
     }
 
     /// read a sequence of digit char tokens in the given radix
-    fn scan_digits(
-        &mut self,
-        radix: u32,
-        allow_letters: bool,
-    ) -> (i64, bool, Option<SourceContext>, bool, bool) {
+    fn scan_digits(&mut self, radix: u32, allow_letters: bool) -> (i64, bool, bool) {
         let mut v: i64 = 0;
         let mut overflowed = false;
-        let mut overflow_source = None;
         let mut saw_digit = false;
         let mut ended_at_eof = false;
         loop {
@@ -310,13 +305,21 @@ impl Engine {
                 v = 0x7FFF_FFFF;
                 if !overflowed {
                     overflowed = true;
-                    overflow_source = self
-                        .numeric_origin()
-                        .and_then(|origin| self.numeric_origin_context(origin));
+                    self.report_number_too_big();
                 }
             }
         }
-        (v, overflowed, overflow_source, saw_digit, ended_at_eof)
+        (v, saw_digit, ended_at_eof)
+    }
+
+    /// tex.web §445: "Number too big" is reported at the digit that
+    /// overflows, before the token after it is read, so the error context
+    /// ends with that digit.
+    #[cold]
+    #[inline(never)]
+    fn report_number_too_big(&mut self) {
+        let source = self.numeric_origin().and_then(|origin| self.numeric_origin_context(origin));
+        self.error_at("Number too big", source);
     }
 
     fn is_digit_token(t: Token) -> bool {
@@ -340,8 +343,7 @@ impl Engine {
     #[inline(never)]
     fn scan_radix_constant(&mut self, radix: u32) -> i64 {
         let prefix_origin = self.numeric_origin();
-        let (value, overflowed, source, saw_digit, ended_at_eof) =
-            self.scan_digits(radix, radix == 16);
+        let (value, saw_digit, ended_at_eof) = self.scan_digits(radix, radix == 16);
         if !saw_digit {
             let source = if ended_at_eof {
                 prefix_origin.and_then(|origin| self.numeric_origin_context(origin))
@@ -350,9 +352,6 @@ impl Engine {
                     .and_then(|origin| self.numeric_origin_context(origin))
             };
             self.error_at("Missing number, treated as zero", source);
-        }
-        if overflowed {
-            self.error_at("Number too big", source);
         }
         value
     }
@@ -739,7 +738,6 @@ impl Engine {
             if Self::is_digit_token(t) {
                 v = (t.chr() - b'0' as u32) as i64;
                 let mut overflowed = false;
-                let mut overflow_source = None;
                 loop {
                     // Digits waiting in the current token list need no
                     // expanding fetch each.
@@ -759,18 +757,13 @@ impl Engine {
                             v = 0x7FFF_FFFF;
                             if !overflowed {
                                 overflowed = true;
-                                overflow_source = self
-                                    .numeric_origin()
-                                    .and_then(|origin| self.numeric_origin_context(origin));
+                                self.report_number_too_big();
                             }
                         }
                     } else {
                         self.push_token(t2);
                         break;
                     }
-                }
-                if overflowed {
-                    self.error_at("Number too big", overflow_source);
                 }
                 break;
             }
@@ -1203,7 +1196,6 @@ impl Engine {
             if Self::is_digit_token(t) {
                 ip = (t.chr() - b'0' as u32) as i64;
                 let mut overflowed = false;
-                let mut overflow_source = None;
                 loop {
                     if !overflowed {
                         self.take_decimal_run(&mut ip, false);
@@ -1215,18 +1207,13 @@ impl Engine {
                             ip = 0x7FFF_FFFF;
                             if !overflowed {
                                 overflowed = true;
-                                overflow_source = self
-                                    .numeric_origin()
-                                    .and_then(|origin| self.numeric_origin_context(origin));
+                                self.report_number_too_big();
                             }
                         }
                     } else {
                         self.push_token(t2);
                         break;
                     }
-                }
-                if overflowed {
-                    self.error_at("Number too big", overflow_source);
                 }
             }
             // fraction digits (all consumed even past precision, tex.web §102)
@@ -4186,5 +4173,40 @@ mod tex_live_scanning_tests {
         assert!(term.contains("[5.0pt|1|48]"), "{term}");
         // "Improper alphabetic constant" and the then-undefined \ab
         assert_eq!(errors, 2, "{term}");
+    }
+
+    /// tex.web §445 reports "Number too big" at the digit that overflows,
+    /// before the token after it is read: the context ends with that digit.
+    /// Expected lines from `pdftex -ini` (TeX Live 2026).
+    #[test]
+    fn number_too_big_context_ends_at_the_overflowing_digit() {
+        let mut engine = Engine::new(true);
+        engine.init_primitives();
+        engine.add_nullfont();
+        engine.eqtb.cat[b'{' as usize] = 1;
+        engine.eqtb.cat[b'}' as usize] = 2;
+        engine.eqtb.cat[b'#' as usize] = 6;
+        engine.set_interaction_mode(InteractionMode::Nonstop);
+        // INITEX's \errorcontextlines is 0
+        let source = "\\errorcontextlines=0\n\
+                      \\count1=2147483648\\message{x}\n\
+                      \\def\\m#1{\\count1=#1\\relax}\n\
+                      \\m{99999999999}\n\
+                      \\count1=\"FFFFFFFFF\\message{y}\n\
+                      \\count1='777777777777\\message{z}\n\
+                      \\dimen0=99999999999pt\\message{w}\n\
+                      \\end\n";
+        engine.input.push_file("scan.tex".to_string(), source.as_bytes().to_vec());
+        engine.run();
+        assert_eq!(engine.error_count, 6, "{}", engine.term);
+        for expected in [
+            "! Number too big.\nl.2 \\count1=2147483648\n                      \\message{x}\n",
+            "! Number too big.\n<argument> 9999999999\n                     9\n...\nl.4 \\m{99999999999}\n",
+            "! Number too big.\nl.5 \\count1=\"FFFFFFFF\n                     F\\message{y}\n",
+            "! Number too big.\nl.6 \\count1='77777777777\n                        7\\message{z}\n",
+            "! Number too big.\nl.7 \\dimen0=9999999999\n                      9pt\\message{w}\n",
+        ] {
+            assert!(engine.log.contains(expected), "missing:\n{expected}\nlog:\n{}", engine.log);
+        }
     }
 }

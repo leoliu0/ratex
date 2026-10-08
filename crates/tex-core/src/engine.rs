@@ -393,6 +393,11 @@ pub struct Engine {
     /// The input stacks (with their pushback) that a private input hides, such as the one of a `\write` expansion, innermost last; `show_context` looks through them.
     /// The last backed-up token read, with the input position it was read at: TeX keeps its list as `<recently read>` until something else is read.
     pub(crate) recent_pushed: Option<(Token, (usize, usize))>,
+    /// The finished macro level that an expansion shortcut read without
+    /// putting it on the input stack, with the input position it ended at.
+    /// TeX keeps the level until a token is read from the input below it or
+    /// back_input or a macro call ends it; `show_context` shows it until then.
+    pub(crate) skipped_level: Option<(crate::show_context::SkippedLevel, (usize, usize))>,
     pub(crate) parked_inputs: Vec<(Vec<crate::input::Source>, Vec<Token>)>,
     /// fill order of the last scan_dimen unit (0=normal, 1=fil, 2=fill, 3=filll, 4=fi)
     pub cur_fill_order: u8,
@@ -617,6 +622,9 @@ pub struct Engine {
     pub page_processed: usize,
     pub page_best_break: Option<usize>,
     pub page_break_penalty: i32,
+    /// The carried best break is a kern (tex.web §1000), not a penalty: the
+    /// node before it stays on the page even when it is a penalty.
+    pub page_break_at_kern: bool,
     /// true cost of the carried best break (BreakSpot::carried used a
     pub page_best_cost: i64,
     pub page_best_goal: i64,
@@ -1225,6 +1233,7 @@ impl Engine {
             pushed: Vec::new(),
             parked_inputs: Vec::new(),
             recent_pushed: None,
+            skipped_level: None,
             token_vec_pool: Vec::with_capacity(512),
             spare_line_buf: Vec::new(),
             cs_name_scratch: Vec::new(),
@@ -1348,6 +1357,7 @@ impl Engine {
             page_best_break: None,
             page_insertions: Vec::new(),
             page_break_penalty: 0,
+            page_break_at_kern: false,
             page_best_cost: 0,
             page_best_goal: 0x3FFF_FFFF,
             page_goal: 0x3FFF_FFFF,
@@ -2463,6 +2473,8 @@ impl Engine {
                 self.align_brace_depth = self.align_brace_depth.saturating_add(1);
             }
         }
+        // back_input ends the finished lists below the token it backs up
+        self.skipped_level = None;
         self.pushed.push(t);
     }
     #[inline]

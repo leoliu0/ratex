@@ -348,18 +348,18 @@ fn xetex_margin_kern(eqtb: &crate::eqtb::Eqtb, node: &Node, left: bool) -> Optio
     })
 }
 
-/// Font-expansion contribution of one discretionary list. The predecessor
-/// state is explicit because pre-break and no-break material are measured
-/// against the same source-list boundary.
+/// Font-expansion contribution of one discretionary list. A font kern counts
+/// only between two characters of the list itself (pdftex.web `kern_stretch`:
+/// `link(prev_char_p) = p`), so material outside the list is never its left
+/// neighbour; `trailing` is the node that follows the list's last node.
 fn list_font_expansion<F>(
     eqtb: &crate::eqtb::Eqtb,
     nodes: &[Node],
-    mut prev: Option<(FontId, u8)>,
     trailing: Option<&Node>,
     lua_kerns: bool,
     lua_mode: bool,
     record_expansion: &mut F,
-) -> (i64, i64, Option<(FontId, u8)>)
+) -> (i64, i64)
 where
     F: FnMut(FontId),
 {
@@ -379,7 +379,6 @@ where
                 record_expansion(*font);
                 stretch += crate::boxes::char_stretch(eqtb, *font, *c) as i64;
                 shrink += crate::boxes::char_shrink(eqtb, *font, *c) as i64;
-                prev = Some((*font, *c));
             }
             Node::LuaGlyph(g) if crate::luaexp::expandable(eqtb, g.font) => {
                 record_expansion(g.font);
@@ -402,19 +401,23 @@ where
                         }
                     }
                 }
-                if let (
-                    Some((font, left)),
-                    Some(Node::Char { c: right, .. } | Node::Ligature { c: right, .. }),
-                ) = (prev, next)
+                if lua_mode {
+                    continue;
+                }
+                let left = i.checked_sub(1).and_then(|j| crate::boxes::char_or_lig(&nodes[j]));
+                if let (Some((font, left)), Some((right_font, right))) =
+                    (left, next.and_then(crate::boxes::char_or_lig))
                 {
-                    stretch += crate::boxes::kern_stretch(eqtb, font, left, *right, *k) as i64;
-                    shrink += crate::boxes::kern_shrink(eqtb, font, left, *right, *k) as i64;
+                    if right_font == font {
+                        stretch += crate::boxes::kern_stretch(eqtb, font, left, right, *k) as i64;
+                        shrink += crate::boxes::kern_shrink(eqtb, font, left, right, *k) as i64;
+                    }
                 }
             }
             _ => {}
         }
     }
-    (stretch, shrink, prev)
+    (stretch, shrink)
 }
 
 pub struct ParaParams {
@@ -1109,11 +1112,9 @@ impl Engine {
                 }
             };
             let mut i = 0usize;
-            let mut prev_exp_char: Option<(FontId, u8)> = None;
             while i < n {
                 let (w, st, sh, fst, fsh) = match &list[i] {
                     Node::Char { .. } | Node::Ligature { .. } | Node::LuaGlyph(_) if lua_mode => {
-                        prev_exp_char = None;
                         let (mut fst, mut fsh) = (0i64, 0i64);
                         let gr = crate::luaexp::glyph_ref(&list[i]);
                         if let Some(gr) = gr.filter(|gr| pdf_adjust >= 2 && crate::luaexp::expandable(&self.eqtb, gr.font)) {
@@ -1131,7 +1132,6 @@ impl Engine {
                     }
                     Node::Char { c, font, .. } => {
                         record_expansion(*font);
-                        prev_exp_char = Some((*font, *c));
                         let fst = if pdf_adjust >= 2 {
                             crate::boxes::char_stretch(&self.eqtb, *font, *c) as i64
                         } else {
@@ -1145,7 +1145,6 @@ impl Engine {
                         (fonts.char_width(*font, *c) as i64, [0; 5], [0; 5], fst, fsh)
                     }
                     Node::LuaGlyph(g) => {
-                        prev_exp_char = None;
                         let (mut fst, mut fsh) = (0i64, 0i64);
                         if pdf_adjust >= 2 && crate::luaexp::expandable(&self.eqtb, g.font) {
                             record_expansion(g.font);
@@ -1159,7 +1158,6 @@ impl Engine {
                         c, font, lig_width, ..
                     } => {
                         record_expansion(*font);
-                        prev_exp_char = Some((*font, *c));
                         let fst = if pdf_adjust >= 2 {
                             crate::boxes::char_stretch(&self.eqtb, *font, *c) as i64
                         } else {
@@ -1201,9 +1199,12 @@ impl Engine {
                         };
                         let (fst, fsh) = if let Some(lua_kern) = lua_kern {
                             lua_kern
-                        } else if pdf_adjust >= 2 {
-                            match (prev_exp_char, next) {
-                                (Some((font, left)), Some((_, right))) => (
+                        } else if pdf_adjust >= 2 && !lua_mode {
+                            // pdftex.web kern_stretch: a font kern counts only
+                            // directly between two characters of one font
+                            let left = i.checked_sub(1).and_then(|j| crate::boxes::char_or_lig(&list[j]));
+                            match (left, next) {
+                                (Some((font, left)), Some((right_font, right))) if right_font == font => (
                                     crate::boxes::kern_stretch(&self.eqtb, font, left, right, *k)
                                         as i64,
                                     crate::boxes::kern_shrink(&self.eqtb, font, left, right, *k)
@@ -1224,10 +1225,9 @@ impl Engine {
                         let mut fst = 0i64;
                         let mut fsh = 0i64;
                         if pdf_adjust >= 2 {
-                            let (pre_fst, pre_fsh, _) = list_font_expansion(
+                            let (pre_fst, pre_fsh) = list_font_expansion(
                                 &self.eqtb,
                                 &dc.pre_break,
-                                prev_exp_char,
                                 None,
                                 pdf_adjust == 2,
                                 lua_mode,
@@ -1236,10 +1236,9 @@ impl Engine {
                             disc_pre_fst[i] = pre_fst;
                             disc_pre_fsh[i] = pre_fsh;
                             let trailing = list.get(i + 1 + dc.replace_count);
-                            let (no_fst, no_fsh, after_no) = list_font_expansion(
+                            let (no_fst, no_fsh) = list_font_expansion(
                                 &self.eqtb,
                                 &dc.no_break,
-                                prev_exp_char,
                                 trailing,
                                 pdf_adjust == 2,
                                 lua_mode,
@@ -1247,7 +1246,6 @@ impl Engine {
                             );
                             fst = no_fst;
                             fsh = no_fsh;
-                            prev_exp_char = after_no;
                         }
                         (
                             disc_list_width(&self.eqtb, &dc.no_break),
@@ -3282,5 +3280,54 @@ mod plural_penalty_tests {
             engine.run();
             assert_eq!(engine.error_count, 0, "{text}:\n{}", engine.diagnostic_output);
         }
+    }
+}
+
+#[cfg(test)]
+mod font_expansion_kern_tests {
+    use crate::engine::{Engine, InteractionMode};
+
+    /// pdftex.web `kern_stretch`/`kern_shrink`: a font kern counts towards
+    /// the expansion of a line only directly between two characters of one
+    /// font. In `$(f)$` the italic correction after `f` (cmmi10) sits before
+    /// `)` (cmr10), so it adds nothing. Expected line counts from `pdftex
+    /// -ini` (TeX Live 2026), which sets every paragraph without an overfull
+    /// line.
+    #[test]
+    fn kern_between_characters_of_different_fonts_has_no_expansion() {
+        let mut engine = Engine::new(true);
+        engine.init_primitives();
+        engine.add_nullfont();
+        engine.set_interaction_mode(InteractionMode::Nonstop);
+        let source = format!(
+            "\\catcode`\\{{=1 \\catcode`\\}}=2 \\catcode`\\#=6 \\catcode`\\$=3\n\
+             \\pdfoutput=1 \\font\\tenrm=cmr10 \\font\\teni=cmmi10 \\font\\tensy=cmsy10\n\
+             \\font\\tenex=cmex10 \\font\\sevi=cmmi7 \\font\\sevrm=cmr7\n\
+             \\pdffontexpand\\tenrm 20 20 5 autoexpand \\pdffontexpand\\teni 20 20 5 autoexpand\n\
+             \\count1=0 \\def\\L{{\\efcode\\tenrm\\count1=1000 \\efcode\\teni\\count1=1000 \
+             \\advance\\count1 1 \\ifnum\\count1<128 \\expandafter\\L\\fi}}\\L\n\
+             \\tenrm \\textfont0=\\tenrm \\scriptfont0=\\sevrm \\scriptscriptfont0=\\sevrm\n\
+             \\textfont1=\\teni \\scriptfont1=\\sevi \\scriptscriptfont1=\\sevi\n\
+             \\textfont2=\\tensy \\scriptfont2=\\tensy \\scriptscriptfont2=\\tensy\n\
+             \\textfont3=\\tenex \\scriptfont3=\\tenex \\scriptscriptfont3=\\tenex\n\
+             \\pdfadjustspacing=2 \\parindent 0pt \\tolerance 200 \\pretolerance 100\n\
+             \\def\\P#1{{\\setbox1\\vbox{{\\hsize#1pt {}\\par\\message{{[\\the\\prevgraf]}}}}}}\n\
+             \\P{{100}}\\P{{105}}\\P{{110}}\\P{{115}}\\P{{120}}\\P{{125}}\\P{{130}}\\P{{135}}\\P{{140}}\n\
+             \\end\n",
+            "$(f)$ ".repeat(28)
+        );
+        engine.input.push_file("expand.tex".to_string(), source.into_bytes());
+        engine.run();
+        assert_eq!(engine.error_count, 0, "{}", engine.term);
+        assert!(!engine.log.contains("Overfull"), "{}", engine.log);
+        let counts: String = engine
+            .term
+            .split('[')
+            .skip(1)
+            .filter_map(|s| s.split(']').next())
+            .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(counts, "5 5 4 4 4 4 4 4 4", "{}", engine.term);
     }
 }

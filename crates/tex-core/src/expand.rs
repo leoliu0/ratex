@@ -970,6 +970,8 @@ impl Engine {
             return false;
         }
         self.pop_exhausted_token_lists();
+        // a skipped macro level is a finished list, popped with the others
+        self.skipped_level = None;
         let cut = if self.scanner_status == ScannerStatus::Aligning {
             self.align_pushed_base.min(self.pushed.len())
         } else {
@@ -1270,6 +1272,14 @@ impl Engine {
                                     _ => Body::List(std::rc::Rc::clone(&m.body)),
                                 };
                                 self.enter_macro_diagnostic(id, t.cs_id());
+                                if matches!(body, Body::ControlSequence(_) | Body::Character(_)) {
+                                    // the macro's level, finished once its
+                                    // token is read, stays for error context
+                                    self.skipped_level = Some((
+                                        crate::show_context::SkippedLevel::Body(id),
+                                        self.input.signature(),
+                                    ));
+                                }
                                 match body {
                                     Body::Empty => break 'expand,
                                     Body::SelfReference => {
@@ -3524,6 +3534,12 @@ impl Engine {
             let mut selected = args.into_buffer();
             if selected.len() == 1 {
                 self.push_token(selected[0]);
+                // the `<argument>` and macro levels TeX shows once the
+                // token is read
+                self.skipped_level = Some((
+                    crate::show_context::SkippedLevel::Argument(id, selected[0]),
+                    self.input.signature(),
+                ));
                 selected.clear();
             }
             if selected.is_empty() {

@@ -2360,7 +2360,7 @@ pub fn hpack_expand(
 
 /// The character code of a char/ligature node along with its font id — the
 /// pair pdftex reads for `kern_stretch`'s neighbours.
-fn char_or_lig(n: &Node) -> Option<(FontId, u8)> {
+pub(crate) fn char_or_lig(n: &Node) -> Option<(FontId, u8)> {
     match n {
         Node::Char { c, font, .. } => Some((*font, *c)),
         Node::Ligature { c, font, .. } => Some((*font, *c)),

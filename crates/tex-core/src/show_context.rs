@@ -102,6 +102,16 @@ pub(crate) enum Insertion {
     Dollar,
 }
 
+/// A macro level the expansion shortcuts never put on the input stack.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum SkippedLevel {
+    /// a parameterless macro whose body is one token, read
+    Body(CsId),
+    /// a macro whose body is one parameter, with the one-token argument it
+    /// passed on, read
+    Argument(CsId, Token),
+}
+
 /// One level of the input stack as `show_context` sees it.
 enum Level<'a> {
     /// A line of an input file or pseudo file.
@@ -186,10 +196,23 @@ impl Engine {
         let parked = self.parked_inputs.iter().rev();
         let current = std::iter::once((&self.input.stack, &self.pushed)).chain(parked.map(|p| (&p.0, &p.1)));
         for (depth, (stack, pushed)) in current.enumerate() {
+            // a macro level a shortcut skipped, until something is read
+            // from the input below it or backed up
+            let skipped = match self.skipped_level {
+                Some((level, signature)) if depth == 0 && pushed.is_empty() && self.input.signature() == signature => {
+                    Some(level)
+                }
+                _ => None,
+            };
             // the backed-up token read last is still a level of TeX's, with
-            // nothing left to read, until something else is read
+            // nothing left to read, until something else is read (the
+            // skipped level, newer, ended it)
             let recent = match self.recent_pushed {
-                Some((t, signature)) if depth == 0 && pushed.is_empty() && self.input.signature() == signature => Some(t),
+                Some((t, signature))
+                    if depth == 0 && skipped.is_none() && pushed.is_empty() && self.input.signature() == signature =>
+                {
+                    Some(t)
+                }
                 _ => None,
             };
             // back_input first ends the finished lists below the token it backs up
@@ -208,6 +231,9 @@ impl Engine {
                 loc: 0,
                 end_template: false,
             }));
+            if let Some(level) = skipped {
+                self.push_skipped_levels(level, &mut levels);
+            }
             for source in stack[..top].iter().rev() {
                 self.push_levels(source, &mut levels);
             }
@@ -224,6 +250,19 @@ impl Engine {
                 body_loc >= body.len() && arg.is_none_or(|(toks, loc)| loc >= toks.len())
             }
             Source::File { .. } => false,
+        }
+    }
+
+    fn push_skipped_levels<'a>(&'a self, level: SkippedLevel, levels: &mut Vec<Level<'a>>) {
+        let (id, argument) = match level {
+            SkippedLevel::Body(id) => (id, None),
+            SkippedLevel::Argument(id, t) => (id, Some(t)),
+        };
+        if let Some(t) = argument {
+            levels.push(Level::List { ty: ListType::Parameter, toks: Cow::Owned(vec![t]), loc: 1, end_template: false });
+        }
+        if let Some(Equiv::Macro(m)) = self.eqtb.get(id) {
+            levels.push(Level::Macro { cs: Some(id), body: &m.body, loc: m.body.len() });
         }
     }
 
@@ -502,4 +541,61 @@ fn push_escaped(out: &mut Vec<u8>, esc: i32, name: &[u8]) {
         push_char(out, esc as u32);
     }
     out.extend_from_slice(name);
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::engine::{Engine, InteractionMode};
+
+    fn transcript(source: &str) -> (String, i32) {
+        let mut engine = Engine::new(true);
+        engine.init_primitives();
+        engine.add_nullfont();
+        engine.eqtb.cat[b'{' as usize] = 1;
+        engine.eqtb.cat[b'}' as usize] = 2;
+        engine.eqtb.cat[b'#' as usize] = 6;
+        engine.set_interaction_mode(InteractionMode::Nonstop);
+        engine.input.push_file("ctx.tex".to_string(), source.as_bytes().to_vec());
+        engine.run();
+        (engine.log.clone(), engine.error_count)
+    }
+
+    /// The expansion shortcuts for a macro whose body is one token and for a
+    /// macro that passes on a one-token argument put no list on the input
+    /// stack; the error context still shows the levels TeX has. Expected
+    /// lines from `pdftex -ini` (TeX Live 2026).
+    #[test]
+    fn single_token_macro_levels_appear_in_error_context() {
+        let (log, errors) = transcript(
+            "\\errorcontextlines=5\n\
+             \\def\\a{\\undefined}\n\
+             \\a\n\
+             \\def\\m#1{#1}\n\
+             \\m{\\undefined}\n\
+             \\def\\c{x}\n\
+             \\count1=\\c\\relax\n\
+             \\def\\d{\\a}\n\
+             \\d\n\
+             \\def\\e{\\undefined}\\def\\f{\\e}\\def\\g{\\f}\n\
+             \\g x\n\
+             \\def\\h{\\c}\n\
+             \\count1=\\h\\relax\n\
+             \\m\\undefined\n\
+             \\def\\k#1#2{#2}\\k{a}\\undefined\n\
+             \\end\n",
+        );
+        assert_eq!(errors, 8, "{log}");
+        for expected in [
+            "! Undefined control sequence.\n\\a ->\\undefined \n                \nl.3 \\a\n      \n",
+            "! Undefined control sequence.\n<argument> \\undefined \n                      \n\\m #1->#1\n         \nl.5 \\m{\\undefined}\n",
+            "! Missing number, treated as zero.\n<to be read again> \n                   x\nl.7 \\count1=\\c\n              \\relax\n",
+            "! Undefined control sequence.\n\\a ->\\undefined \n                \nl.9 \\d\n      \n",
+            "! Undefined control sequence.\n\\e ->\\undefined \n                \nl.11 \\g\n        x\n",
+            "! Missing number, treated as zero.\n<to be read again> \n                   x\nl.13 \\count1=\\h\n               \\relax\n",
+            "! Undefined control sequence.\n<argument> \\undefined \n                      \n\\m #1->#1\n         \nl.14 \\m\\undefined\n",
+            "! Undefined control sequence.\n<argument> \\undefined \n                      \n\\k #1#2->#2\n           \nl.15 \\def\\k#1#2{#2}\\k{a}\\undefined\n",
+        ] {
+            assert!(log.contains(expected), "missing:\n{expected}\nlog:\n{log}");
+        }
+    }
 }

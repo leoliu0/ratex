@@ -1459,6 +1459,7 @@ impl Engine {
                     .get_or_insert((self.loaded_file_digests.len(), self.loaded_file_sizes.len()));
             }
             let outcome = match code {
+                crate::lua_sys_kpse::SHELL_NOT_STARTED => "not executed (the shell could not be started)",
                 -1 => "quotation error in system command",
                 0 => "disabled (restricted)",
                 1 => "executed",

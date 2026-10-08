@@ -74,6 +74,12 @@ pub trait Host {
     /// makeindex reports it, and the contents.
     fn find_style(&self, name: &str) -> Option<FoundStyle>;
     fn read_stdin(&self) -> std::io::Result<Vec<u8>>;
+    /// The absolute output directory of the TeX job that started makeindex
+    /// (web2c exports it as `TEXMF_OUTPUT_DIRECTORY`): absolute output names
+    /// below it are allowed.
+    fn output_directory(&self) -> Option<std::path::PathBuf> {
+        None
+    }
 }
 
 /// File names kpathsea tries for a style `name`: with `.ist` added first.
@@ -219,6 +225,11 @@ impl Host for DirHost<'_> {
         } else {
             Ok(Vec::new())
         }
+    }
+
+    fn output_directory(&self) -> Option<std::path::PathBuf> {
+        let dir = self.output_dir?;
+        Some(if dir.is_absolute() { dir.to_path_buf() } else { std::env::current_dir().ok()?.join(dir) })
     }
 }
 
@@ -398,6 +409,106 @@ pub fn log_page_number(log: &[u8]) -> Option<Vec<u8>> {
     Some(page)
 }
 
+/// The name kpathsea checks for an output file: a leading `~` and `$VAR` or
+/// `${VAR}` expanded from the environment.
+fn expand_name(name: &str) -> String {
+    let home = || std::env::var("HOME").unwrap_or_default();
+    let name = match name.strip_prefix('~') {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => format!("{}{rest}", home()),
+        _ => name.to_string(),
+    };
+    let mut out = String::with_capacity(name.len());
+    let mut rest = name.as_str();
+    while let Some(at) = rest.find('$') {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + 1..];
+        let (var, tail) = match after.strip_prefix('{') {
+            Some(braced) => match braced.find('}') {
+                Some(end) => (&braced[..end], &braced[end + 1..]),
+                None => (braced, ""),
+            },
+            None => {
+                let end = after.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(after.len());
+                (&after[..end], &after[end..])
+            }
+        };
+        if var.is_empty() {
+            out.push('$');
+        } else {
+            out.push_str(&std::env::var(var).unwrap_or_default());
+        }
+        rest = tail;
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `kpathsea_absolute_p`: a leading `/`; on Windows also a drive letter.
+fn absolute_name(name: &str) -> bool {
+    let b = name.as_bytes();
+    name.starts_with('/') || (cfg!(windows) && b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':')
+}
+
+/// `abs_fname_ok`: `name` is below the output root `dir`.
+fn below_root(name: &str, dir: Option<String>) -> bool {
+    let Some(dir) = dir.filter(|dir| !dir.is_empty()) else { return false };
+    let dir = if cfg!(windows) { dir.replace('\\', "/") } else { dir };
+    let prefix_matches = name.len() > dir.len()
+        && if cfg!(windows) {
+            name.is_char_boundary(dir.len()) && name[..dir.len()].eq_ignore_ascii_case(&dir)
+        } else {
+            name.starts_with(&dir)
+        };
+    prefix_matches && name.as_bytes()[dir.len()] == b'/'
+}
+
+/// kpathsea's `kpse_out_name_ok` (TeX Live 2026, not extended), which
+/// TeX Live's makeindex applies to its `.ind` and `.ilg` files: with
+/// `openout_any` `a` anything goes; `r` refuses dot files and directories;
+/// `p` (the default) also refuses absolute names outside `TEXMFOUTPUT` and
+/// `TEXMF_OUTPUT_DIRECTORY` (which TeX sets to `output_directory` for the
+/// programs it starts) and every `../` step. A refusal is reported on the
+/// terminal, as kpathsea does.
+fn out_name_ok(name: &str, output_directory: Option<&std::path::Path>) -> bool {
+    let choice = std::env::var("openout_any").ok().filter(|choice| !choice.is_empty());
+    let choice = choice.as_deref().unwrap_or("p");
+    let c = choice.as_bytes()[0];
+    if matches!(c, b'a' | b'y' | b'1') {
+        return true;
+    }
+    let checked = if cfg!(windows) { name.replace('\\', "/") } else { name.to_string() };
+    let expanded = expand_name(&checked);
+    let ok = 'check: {
+        let b = checked.as_bytes();
+        // Dot files and dot directories (`./` and `../` are steps, not names).
+        for (q, _) in checked.match_indices('.') {
+            let after = b.get(q + 1).copied().unwrap_or(0);
+            let after2 = b.get(q + 2).copied().unwrap_or(0);
+            if (q == 0 || b[q - 1] == b'/') && after != b'/' && !(after == b'.' && after2 == b'/') {
+                break 'check false;
+            }
+        }
+        if matches!(c, b'r' | b'n' | b'0') {
+            break 'check true;
+        }
+        let output_directory = output_directory.map(|dir| dir.to_string_lossy().into_owned());
+        if absolute_name(&expanded)
+            && !below_root(&expanded, output_directory.or_else(|| std::env::var("TEXMF_OUTPUT_DIRECTORY").ok()))
+            && !below_root(&expanded, std::env::var("TEXMFOUTPUT").ok())
+        {
+            break 'check false;
+        }
+        if checked.starts_with("../") {
+            break 'check false;
+        }
+        !checked.match_indices("..").any(|(q, _)| q > 0 && b[q - 1] == b'/' && b.get(q + 2) == Some(&b'/'))
+    };
+    if !ok {
+        eprintln!("\nmakeindex: Not writing to {name} (openout_any = {choice}; no extended check).");
+    }
+    ok
+}
+
 /// The files a run has opened, written when it ends.
 struct Outputs {
     ind: Option<String>,
@@ -416,6 +527,27 @@ impl Outputs {
         }
         eprint!("{message}{USAGE}");
         1
+    }
+
+    /// TeX Live's makeindex opens the output index, then the transcript,
+    /// before it reads anything: a refused name stops the run there, with
+    /// the index created (empty) if only the transcript was refused.
+    fn open(&self, host: &dyn Host) -> Result<(), String> {
+        let output_directory = host.output_directory();
+        if let Some(ind) = &self.ind {
+            if !out_name_ok(ind, output_directory.as_deref()) {
+                return Err(format!("Can't create output index file {ind}.\n"));
+            }
+        }
+        if let Some(ilg) = &self.ilg {
+            if !out_name_ok(ilg, output_directory.as_deref()) {
+                if let Some(ind) = &self.ind {
+                    let _ = host.write(ind, b"");
+                }
+                return Err(format!("Can't create transcript file {ilg}.\n"));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -471,6 +603,9 @@ pub fn run(options: &Options, host: &dyn Host) -> i32 {
         ilg_name = options.log.clone().unwrap_or_else(|| format!("{base}.ilg"));
         outputs.ind = Some(ind_name.clone());
         outputs.ilg = Some(ilg_name.clone());
+        if let Err(message) = outputs.open(host) {
+            return fatal(message);
+        }
         if even_odd >= 0 {
             let log_name = format!("{base}.log");
             let Ok(bytes) = host.read(&log_name) else {
@@ -508,6 +643,9 @@ pub fn run(options: &Options, host: &dyn Host) -> i32 {
             }
         };
         outputs.ilg = options.log.clone();
+        if let Err(message) = outputs.open(host) {
+            return fatal(message);
+        }
         if let Some((path, bytes)) = &style_file {
             style.scan(bytes, path, &mut log);
         }

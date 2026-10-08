@@ -712,8 +712,10 @@ fn is_space(c: u8) -> bool {
 }
 
 /// Port of `shell_cmd_is_allowed`: (-1 bad quoting, 0 disallowed, 2 allowed
-/// with the safely quoted command line).
+/// with the safely quoted command line). Arguments are quoted for the shell
+/// `run_system` uses: `'foo'` for `/bin/sh`, `"foo"` for Windows `cmd`.
 fn shell_cmd_is_allowed(cmd: &str, allowed: &[String]) -> (i32, String) {
+    let quote = if cfg!(windows) { b'"' } else { b'\'' };
     let b = cmd.as_bytes();
     let mut c = 0;
     while c < b.len() && is_space(b[c]) {
@@ -740,10 +742,16 @@ fn shell_cmd_is_allowed(cmd: &str, allowed: &[String]) -> (i32, String) {
         }
         if b[s] == b'"' {
             if !pre {
-                out.push(b'\'');
+                // web2c: `--format="a b"` is `"--format"="a b"` on Windows.
+                if cfg!(windows) && b[s - 1] == b'=' {
+                    *out.last_mut().unwrap() = quote;
+                    out.push(b'=');
+                } else {
+                    out.push(quote);
+                }
             }
             pre = false;
-            out.push(b'\'');
+            out.push(quote);
             s += 1;
             while s < b.len() && b[s] != b'"' {
                 if b[s] == b'\'' {
@@ -761,12 +769,12 @@ fn shell_cmd_is_allowed(cmd: &str, allowed: &[String]) -> (i32, String) {
             }
         } else if pre && !is_space(b[s]) {
             pre = false;
-            out.push(b'\'');
+            out.push(quote);
             out.push(b[s]);
             s += 1;
         } else if !pre && is_space(b[s]) {
             pre = true;
-            out.push(b'\'');
+            out.push(quote);
             out.push(b[s]);
             s += 1;
         } else {
@@ -775,7 +783,7 @@ fn shell_cmd_is_allowed(cmd: &str, allowed: &[String]) -> (i32, String) {
         }
     }
     if !pre {
-        out.push(b'\'');
+        out.push(quote);
     }
     (2, String::from_utf8_lossy(&out).into_owned())
 }
@@ -894,9 +902,14 @@ pub(crate) fn run_internal(command: &str, output_dir: Option<&Path>) -> Option<i
     internal(&simple_words(command)?, output_dir)
 }
 
+/// `run_system`'s code for an allowed command whose shell could not be
+/// started (TeXres; web2c has no such outcome).
+pub(crate) const SHELL_NOT_STARTED: i32 = -2;
+
 /// web2c's `runsystem` for `\write18`: the code that stands for what
 /// happened (-1 bad quoting, 0 refused, 1 ran, 2 ran the safely quoted
-/// command), with the command run by `/bin/sh -c` in the current directory.
+/// command, [`SHELL_NOT_STARTED`]), with the command run by the system's
+/// shell (`/bin/sh -c`, Windows `cmd /C`) in the current directory.
 /// `output_dir` is exported as `TEXMF_OUTPUT_DIRECTORY`, so a tool such as
 /// `latexminted` finds the files the job wrote there.
 pub(crate) fn run_system(cmd: &[u8], output_dir: Option<&std::path::Path>) -> i32 {
@@ -906,32 +919,80 @@ pub(crate) fn run_system(cmd: &[u8], output_dir: Option<&std::path::Path>) -> i3
         ShellEscape::Enabled => (1, text.into_owned()),
         ShellEscape::Restricted => shell_cmd_is_allowed(&text, &allowed_commands()),
     };
-    if allow > 0 && run_internal(&run, output_dir).is_some() {
-        return allow;
+    if allow > 0 {
+        if let Some(status) = run_internal(&run, output_dir) {
+            // `system`'s value: the wait status on Unix.
+            report_system_status(if cfg!(unix) { status << 8 } else { status });
+            return allow;
+        }
     }
     if allow > 0 {
         let run: std::borrow::Cow<'_, [u8]> =
             if allow == 1 { std::borrow::Cow::Borrowed(cmd) } else { std::borrow::Cow::Owned(run.into_bytes()) };
-        let mut command = std::process::Command::new("/bin/sh");
-        command.arg("-c").arg(crate::lua_sys::os_str(&run));
-        // kpathsea exports these for every program it starts; tools such as
-        // `latexminted` locate `kpsewhich` through `SELFAUTOLOC`.
-        let loc = shell_tool_dir();
-        let dir = loc.parent().map(Path::to_path_buf).unwrap_or_default();
-        let parent = dir.parent().map(Path::to_path_buf).unwrap_or_default();
-        let grandparent = parent.parent().map(Path::to_path_buf).unwrap_or_default();
-        command
-            .env("SELFAUTOLOC", &loc)
-            .env("SELFAUTODIR", &dir)
-            .env("SELFAUTOPARENT", &parent)
-            .env("SELFAUTOGRANDPARENT", &grandparent);
-        if let Some(dir) = output_dir {
-            let dir = if dir.is_absolute() { dir.to_path_buf() } else { std::env::current_dir().unwrap_or_default().join(dir) };
-            command.env("TEXMF_OUTPUT_DIRECTORY", dir);
-        }
-        let _ = command.status();
+        let line = crate::lua_sys::os_str(&run);
+        // `cmd /S /C "line"` runs `line` as typed: Rust's argument quoting
+        // (`\"`) means nothing to cmd.
+        #[cfg(windows)]
+        let mut command = {
+            use std::os::windows::process::CommandExt;
+            let mut quoted = std::ffi::OsString::from("\"");
+            quoted.push(&line);
+            quoted.push("\"");
+            let mut command = std::process::Command::new("cmd");
+            command.args(["/S", "/C"]).raw_arg(quoted);
+            command
+        };
+        #[cfg(not(windows))]
+        let mut command = {
+            let mut command = std::process::Command::new("/bin/sh");
+            command.arg("-c").arg(line);
+            command
+        };
+        return run_shell(&mut command, allow, output_dir);
     }
     allow
+}
+
+/// Runs `command` for `run_system` with the environment kpathsea gives the
+/// programs it starts: `allow`, or [`SHELL_NOT_STARTED`] with the reason on
+/// the terminal.
+fn run_shell(command: &mut std::process::Command, allow: i32, output_dir: Option<&std::path::Path>) -> i32 {
+    // kpathsea exports these for every program it starts; tools such as
+    // `latexminted` locate `kpsewhich` through `SELFAUTOLOC`.
+    let loc = shell_tool_dir();
+    let dir = loc.parent().map(Path::to_path_buf).unwrap_or_default();
+    let parent = dir.parent().map(Path::to_path_buf).unwrap_or_default();
+    let grandparent = parent.parent().map(Path::to_path_buf).unwrap_or_default();
+    command
+        .env("SELFAUTOLOC", &loc)
+        .env("SELFAUTODIR", &dir)
+        .env("SELFAUTOPARENT", &parent)
+        .env("SELFAUTOGRANDPARENT", &grandparent);
+    if let Some(dir) = output_dir {
+        let dir = if dir.is_absolute() { dir.to_path_buf() } else { std::env::current_dir().unwrap_or_default().join(dir) };
+        command.env("TEXMF_OUTPUT_DIRECTORY", dir);
+    }
+    match command.status() {
+        Ok(status) => {
+            #[cfg(unix)]
+            let code = std::os::unix::process::ExitStatusExt::into_raw(status);
+            #[cfg(not(unix))]
+            let code = status.code().unwrap_or(-1);
+            report_system_status(code);
+            allow
+        }
+        Err(error) => {
+            eprintln!("runsystem: cannot start {}: {error}", command.get_program().to_string_lossy());
+            SHELL_NOT_STARTED
+        }
+    }
+}
+
+/// web2c's `runsystem` tells the terminal when `system` returned nonzero.
+fn report_system_status(code: i32) {
+    if code != 0 {
+        eprintln!("system returned with code {code}");
+    }
 }
 
 // ----------------------------------------------------------- primitives ---
@@ -1097,7 +1158,7 @@ pub(crate) fn cnf_number(name: &str) -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::simple_words;
+    use super::{run_shell, shell_cmd_is_allowed, simple_words, SHELL_NOT_STARTED};
 
     #[test]
     fn internal_commands_need_only_word_splitting() {
@@ -1108,6 +1169,25 @@ mod tests {
         assert_eq!(words(r#"makeindex "a\"b" c\ d"#).as_deref(), Some(r#"makeindex|a"b|c d"#));
         for shell in ["makeindex a.idx > log", "makeindex a.idx; rm x", "makeindex $HOME/a", "makeindex *.idx", "A=1 makeindex", "makeindex 'a"] {
             assert_eq!(words(shell), None, "{shell}");
+        }
+    }
+
+    #[test]
+    fn a_shell_that_cannot_start_is_not_reported_as_run() {
+        let mut missing = std::process::Command::new("/nonexistent/texres-shell");
+        assert_eq!(run_shell(&mut missing, 2, None), SHELL_NOT_STARTED);
+    }
+
+    #[test]
+    fn allowed_commands_are_quoted_for_the_platform_shell() {
+        let allowed = ["makeindex".to_string()];
+        let (code, line) = shell_cmd_is_allowed(r#"makeindex --format="a b" x.idx"#, &allowed);
+        assert_eq!(code, 2);
+        // web2c texmfmp.c: `'foo'` for /bin/sh, `"foo"` (with `"key"="value"`) for cmd.
+        if cfg!(windows) {
+            assert_eq!(line, r#"makeindex "--format"="a b" "x.idx""#);
+        } else {
+            assert_eq!(line, "makeindex '--format=''a b' 'x.idx'");
         }
     }
 }

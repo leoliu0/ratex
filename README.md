@@ -367,7 +367,9 @@ or the `New-Item -ItemType HardLink` command under *Single tools* on Windows
 On macOS and Linux, put `~/bin` early in the editor's `PATH`.
 
 With `-pvc`, `texres` runs the `$compiling_cmd`, `$success_cmd` and
-`$failure_cmd` commands that editors set with `-e`, as latexmk does. Other
+`$failure_cmd` commands that editors set with `-e`, as latexmk does, with
+latexmk's placeholders filled in (`%D` the PDF, `%S`/`%T` the main file,
+`%R` the job name, `%%` a percent sign). Other
 `-e` code and `-r` are refused with a message, and so are DVI and PostScript
 modes (`-dvi`, `-ps`, `-pdfdvi`, `-pdfps`).
 

@@ -362,6 +362,23 @@ fn vimtex_continuous_mode_runs_its_callbacks() {
     session.assert_running();
 }
 
+/// latexmk fills in its placeholders in the hooks (`Run_subst`): with
+/// `-outdir=build`, this hook prints `hook D=build/main.pdf S=main.tex
+/// R=main pct=%` under latexmk 4.87.
+#[test]
+fn hooks_get_latexmks_placeholders() {
+    let project = Project::new();
+    project.write("main.tex", &article("Fine text"));
+    let mut session = Session::start(
+        &project,
+        &["-pvc", "-outdir=build", "-e", "$success_cmd = 'echo hook D=%D S=%S R=%R pct=%% >&2'", "main.tex"],
+    );
+    let (first, _) = session.idle();
+    assert!(first.ok, "{}", first.output);
+    assert!(first.output.contains("hook D=build/main.pdf S=main.tex R=main pct=%"), "{}", first.output);
+    session.assert_running();
+}
+
 #[test]
 fn a_save_without_content_change_does_not_rebuild() {
     let project = Project::new();

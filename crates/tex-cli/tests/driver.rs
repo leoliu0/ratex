@@ -270,6 +270,32 @@ fn tools_never_run_on_files_from_an_aborted_pass() {
     assert!(text.contains("Beta[1]") && text.contains("alpha,1") && text.contains("beta,1"), "{text}");
 }
 
+/// A later pass that stops leaves its auxiliary files as truncated as a
+/// first pass would: the manifest marks them unfinished again.
+#[test]
+fn a_later_pass_that_stops_marks_the_auxiliary_files_unfinished() {
+    let f = Fixture::new(
+        "later-pass-aborted",
+        r#"
+count=$(cat "$TEXMK_LIB/passes" 2>/dev/null || echo 0)
+count=$((count + 1))
+echo "$count" > "$TEXMK_LIB/passes"
+if [ "$count" -eq 1 ]; then
+  printf '\\relax\n\\newlabel{a}{{1}{1}}\n' > "$aux/$job.aux"
+  printf '%%PDF-1.4 /Type /Pages /Count 1 /Type /Page ' > "$out/$job.pdf"
+else
+  printf '\\relax\n' > "$aux/$job.aux"
+  exit 1
+fi
+"#,
+    );
+    let out = f.output(&[]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success() && stderr.contains("failed on pass 2"), "{stderr}");
+    let manifest = std::fs::read_to_string(find_file(&f.0.join("cache/texmk/jobs"), "manifest").unwrap()).unwrap();
+    assert!(manifest.contains("unfinished-pass\t1\n"), "{manifest}");
+}
+
 #[test]
 fn one_copied_texmk_builds_with_embedded_latex_and_bibtex_resources() {
     let nonce = std::time::SystemTime::now()
@@ -3006,6 +3032,100 @@ fn imakeidx_runs_the_embedded_makeindex_with_its_options_for_each_index() {
     assert!(ind.contains("\\item\\textbf{A}\n  \\item Apple \\dotfill\\ \\textbf{2}"), "{ind}");
     let names = std::fs::read_to_string(find_file(&jobs, "names.ind").unwrap()).unwrap();
     assert!(names.contains("\\item Knuth, Donald, 1, 2\n\n  \\indexspace\n\n  \\item Turing, Alan, 1"), "{names}");
+}
+
+/// The embedded makeindex that restricted `\write18` runs writes only where
+/// TeX Live's does (`openout_any = p`). TeX Live 2026 pdflatex on this file
+/// prints `makeindex: Not writing to ../escaped.ind (openout_any = p; no
+/// extended check).`, `Can't create output index file ../escaped.ind.` and
+/// `system returned with code 256`, writes nothing outside `sub`, and still
+/// logs the command as `executed safely (allowed)`.
+#[test]
+fn restricted_write18_makeindex_writes_only_where_tex_live_does() {
+    let fixture = Fixture(std::env::temp_dir().join(format!("texres-write18-makeindex-{}", std::process::id())));
+    let work = fixture.0.join("sub");
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::write(work.join("x.idx"), "\\indexentry{a}{1}\n").unwrap();
+    std::fs::write(work.join("main.tex"), concat!(
+        "\\documentclass{article}\\begin{document}",
+        "\\immediate\\write18{makeindex -o ../escaped.ind -t ../escaped.ilg x.idx}",
+        "\\immediate\\write18{makeindex -q -o ok.ind x.idx}x\\end{document}\n",
+    )).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_pdflatex"))
+        .args(["-interaction=nonstopmode", "main.tex"])
+        .current_dir(&work)
+        .env("TEX_RS_CACHE_DIR", fixture.0.join("cache"))
+        .env_remove("openout_any")
+        .env_remove("TEXMFOUTPUT")
+        .env_remove("TEXMF_OUTPUT_DIRECTORY")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}\n{stderr}");
+    for line in [
+        "makeindex: Not writing to ../escaped.ind (openout_any = p; no extended check).\n",
+        "Can't create output index file ../escaped.ind.\n",
+        "system returned with code 256\n",
+    ] {
+        assert!(stderr.contains(line), "{line:?}: {stderr}");
+    }
+    assert!(!fixture.0.join("escaped.ind").exists() && !fixture.0.join("escaped.ilg").exists());
+    assert!(work.join("ok.ind").is_file());
+    let log = std::fs::read_to_string(work.join("main.log")).unwrap();
+    assert!(log.contains("runsystem(makeindex -q -o ok.ind x.idx)...executed safely (allowed)."), "{log}");
+}
+
+/// latexmk runs makeindex on the files a pass announces with `Writing index
+/// file`, a line any document can print: one outside the build directory is
+/// not an index of the build, and its `.ind` stays untouched.
+#[test]
+fn announced_indexes_outside_the_build_are_left_alone() {
+    let fixture = Fixture(std::env::temp_dir().join(format!("texres-index-outside-{}", std::process::id())));
+    std::fs::create_dir_all(&fixture.0).unwrap();
+    let victim = fixture.0.join("victim.idx");
+    std::fs::write(&victim, "\\indexentry{a}{1}\n").unwrap();
+    std::fs::write(fixture.0.join("victim.ind"), "important").unwrap();
+    fixture.write("main.tex", &format!(
+        "\\documentclass{{article}}\\begin{{document}}\\typeout{{Writing index file {}}}x\\end{{document}}\n",
+        victim.display()
+    ));
+    let output = Command::new(env!("CARGO_BIN_EXE_texres"))
+        .args(["-no-shell-escape", "main.tex"]).current_dir(&fixture.0).env_clear()
+        .env("HOME", fixture.0.join("home"))
+        .env("TEX_RS_CACHE_DIR", fixture.0.join("cache"))
+        .env("SOURCE_DATE_EPOCH", "1700000000")
+        .output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(!stderr.contains("makeindex run"), "{stderr}");
+    assert_eq!(std::fs::read_to_string(fixture.0.join("victim.ind")).unwrap(), "important");
+    assert!(!fixture.0.join("victim.ilg").exists());
+}
+
+/// TeX Live 2026 pdflatex announces the index of `my doc.tex` as `Writing
+/// index file "my doc".idx`; latexmk builds its index.
+#[test]
+fn a_job_name_with_spaces_gets_its_index() {
+    let fixture = Fixture(std::env::temp_dir().join(format!("texres-index-spaces-{}", std::process::id())));
+    std::fs::create_dir_all(&fixture.0).unwrap();
+    fixture.write("my doc.tex", concat!(
+        "\\documentclass{article}\\usepackage{makeidx}\\makeindex\n",
+        "\\begin{document}Zebra\\index{zebra}\\printindex\\end{document}\n",
+    ));
+    let output = Command::new(env!("CARGO_BIN_EXE_texres"))
+        .arg("my doc.tex").current_dir(&fixture.0).env_clear()
+        .env("HOME", fixture.0.join("home"))
+        .env("TEX_RS_CACHE_DIR", fixture.0.join("cache"))
+        .env("SOURCE_DATE_EPOCH", "1700000000")
+        .output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("1 makeindex run(s)"), "{stderr}");
+    let pdf = lopdf::Document::load(fixture.0.join("my doc.pdf")).unwrap();
+    let pages: Vec<u32> = pdf.get_pages().keys().copied().collect();
+    let text = pdf.extract_text(&pages).unwrap().split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(text.contains("Index") && text.contains("zebra, 1"), "{text}");
 }
 
 /// A stand-in engine that records its arguments and writes a transcript.

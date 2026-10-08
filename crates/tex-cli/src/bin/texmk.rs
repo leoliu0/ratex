@@ -600,6 +600,11 @@ struct Manifest {
     /// Per formatted index (`.ind`, named relative to the auxiliary
     /// directory): the signature of the makeindex run that wrote it.
     indexes: BTreeMap<PathBuf, u64>,
+    /// The auxiliary state was last written by a LaTeX pass that did not
+    /// finish (or by a build interrupted during one). Its `.aux`, `.bcf` and
+    /// index inputs may be truncated, so no bibliography tool runs on them
+    /// before the next pass rewrites them.
+    unfinished_pass: bool,
 }
 
 fn read_to_string_bounded(path: &Path, max_bytes: u64) -> std::io::Result<Option<String>> {
@@ -625,6 +630,7 @@ fn read_manifest(path: &Path) -> Option<Manifest> {
     if !matches!(
         lines.next()?,
         "TEXMK-CACHE-1" | "TEXMK-CACHE-2" | "TEXMK-CACHE-3" | "TEXMK-CACHE-4" | "TEXMK-CACHE-5"
+            | "TEXMK-CACHE-6"
     ) {
         return None;
     }
@@ -676,6 +682,7 @@ fn read_manifest(path: &Path) -> Option<Manifest> {
                 let signature = fields.next()?.parse().ok()?;
                 manifest.indexes.insert(file, signature);
             }
+            "unfinished-pass" => manifest.unfinished_pass = fields.next()? == "1",
             _ => return None,
         }
     }
@@ -799,7 +806,7 @@ fn take_cache_hit_marker(path: &Path) -> bool {
 }
 
 fn write_manifest(path: &Path, manifest: &Manifest) -> std::io::Result<()> {
-    let mut text = String::from("TEXMK-CACHE-5\n");
+    let mut text = String::from("TEXMK-CACHE-6\n");
     text.push_str(&format!("identity\t{}\n", hex_encode(&manifest.identity)));
     text.push_str(&format!(
         "pdf\t{}\t{}\t{}\n",
@@ -851,6 +858,7 @@ fn write_manifest(path: &Path, manifest: &Manifest) -> std::io::Result<()> {
             hex_encode(&file.to_string_lossy())
         ));
     }
+    text.push_str(&format!("unfinished-pass\t{}\n", u8::from(manifest.unfinished_pass)));
     if text.len() as u64 > MANIFEST_MAX_BYTES {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -3025,10 +3033,18 @@ fn biber_file(
         .or_else(|| tex_kpse::embedded_tree::member_path(name).map(PathBuf::from))
 }
 
-fn biber_signature(bcf: &Path, source_dir: &Path) -> u64 {
-    let bytes = std::fs::read(bcf).unwrap_or_default();
+/// The signature of a Biber run on `bcf`, or `None` when `bcf` is missing
+/// or is not a complete control file. biblatex closes the control file's
+/// root element only when the document ends, so a pass that stopped early
+/// (the error limit, an emergency stop, a killed engine) leaves one that
+/// Biber cannot read. Such a file is never handed to Biber: the next
+/// finished pass rewrites it.
+fn biber_signature(bcf: &Path, source_dir: &Path) -> Option<u64> {
+    let bytes = std::fs::read(bcf).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    let names = tex_biber::datasource_names(&text).ok()?;
     let mut identity = format!("biber:{}\n", env!("CARGO_PKG_VERSION"));
-    identity.push_str(&String::from_utf8_lossy(&bytes));
+    identity.push_str(&text);
     if let Some(tool) = tool_override(&["biber"]) {
         identity.push_str(&format!("\noverride={}: {:?}", tool.display(), file_hash(&tool)));
     } else if let Some(metadata) = std::env::current_exe().ok()
@@ -3040,18 +3056,16 @@ fn biber_signature(bcf: &Path, source_dir: &Path) -> u64 {
     for variable in ["TEXINPUTS", "BIBINPUTS", "TEXBIBINPUTS", HERMETIC_ENV] {
         identity.push_str(&format!("\n{variable}={:?}", std::env::var_os(variable)));
     }
-    if let Ok(names) = tex_biber::datasource_names(&String::from_utf8_lossy(&bytes)) {
-        let kpse = tex_kpse::Kpse::with_roots(source_dir, &[]);
-        for name in names {
-            let path = biber_file(&kpse, &name, bcf.parent().unwrap_or(source_dir), source_dir);
-            identity.push_str(&format!("\n{name}={path:?}"));
-            if let Some(path) = path {
-                let bytes = tex_kpse::fs::read(&path).ok();
-                identity.push_str(&format!("{:?}", bytes.as_deref().map(stable_hash)));
-            }
+    let kpse = tex_kpse::Kpse::with_roots(source_dir, &[]);
+    for name in names {
+        let path = biber_file(&kpse, &name, bcf.parent().unwrap_or(source_dir), source_dir);
+        identity.push_str(&format!("\n{name}={path:?}"));
+        if let Some(path) = path {
+            let bytes = tex_kpse::fs::read(&path).ok();
+            identity.push_str(&format!("{:?}", bytes.as_deref().map(stable_hash)));
         }
     }
-    stable_hash(identity.as_bytes())
+    Some(stable_hash(identity.as_bytes()))
 }
 
 fn run_biber(bcf: &Path, source_dir: &Path, silent: bool) -> i32 {
@@ -3654,6 +3668,10 @@ fn build(opt: &Options, info: &mut BuildInfo) -> i32 {
         opt.keep_logs,
         &job,
     );
+    // Until a pass finishes, the persisted state marks the auxiliary files as
+    // possibly truncated, so a build that stops in (or is killed during) a
+    // pass never leaves inputs that the next build would trust.
+    let prior_pass_unfinished = std::mem::replace(&mut manifest.unfinished_pass, true);
     if let Err(error) = write_manifest(&manifest_path, &manifest) {
         eprintln!(
             "texmk: cannot write cache manifest {}: {error}",
@@ -3708,6 +3726,7 @@ fn build(opt: &Options, info: &mut BuildInfo) -> i32 {
     let mut index_runs = 0u32;
     let mut passes = 0u32;
     let mut converged = false;
+    let mut incomplete_bcf_reported = false;
     let mut last_output = String::new();
     let mut last_signals: Option<Signals> = None;
     let mut staged_pdf_written_this_run = false;
@@ -3731,16 +3750,23 @@ fn build(opt: &Options, info: &mut BuildInfo) -> i32 {
     let initial_aux_text = &initial_aux_graph.combined;
     let initial_bibdata = aux_has_bibdata(initial_aux_text);
     let initial_bcf = aux_dir.join(format!("{job}.bcf"));
-    let initial_biber = !initial_bibdata && initial_bcf.is_file();
+    // Run no bibliography tool on files from a pass that did not finish:
+    // their citations, data and style may be cut short, and biblatex's
+    // control file is not even well-formed. LaTeX reruns first.
+    let initial_biber_signature = (!prior_pass_unfinished && !initial_bibdata)
+        .then(|| biber_signature(&initial_bcf, &source_dir))
+        .flatten();
+    let initial_biber = initial_biber_signature.is_some();
     let initial_bibliography_ready = initial_biber || (initial_bibdata
         && bibliography_dependencies_available(initial_aux_text, &aux_dir, &source_dir));
-    if (initial_aux_graph.complete || initial_biber) && initial_bibliography_ready {
+    if !prior_pass_unfinished
+        && (initial_aux_graph.complete || initial_biber)
+        && initial_bibliography_ready
+    {
         prev_cites = Some(aux_citations(initial_aux_text));
-        let signature = if initial_biber {
-            biber_signature(&initial_bcf, &source_dir)
-        } else {
+        let signature = initial_biber_signature.unwrap_or_else(|| {
             bibliography_signature(initial_aux_text, &aux_dir, &source_dir)
-        };
+        });
         if !initial_biber && adopt_source_bibliography(
             &mut manifest,
             &source_bbl,
@@ -3895,6 +3921,7 @@ fn build(opt: &Options, info: &mut BuildInfo) -> i32 {
                 return 1;
             }
         }
+        manifest.unfinished_pass = false;
         last_pass_failed = pass_failed;
         recovered_diagnostics = if pass_failed && opt.silent {
             output.stderr.clone()
@@ -3964,13 +3991,24 @@ fn build(opt: &Options, info: &mut BuildInfo) -> i32 {
         let use_biber = !bibdata && (bcf_path.is_file()
             || aux_text.contains("\\abx@aux@")
             || signals.biber_requested);
+        // A finished pass under biblatex writes a complete control file; one
+        // that is missing or malformed regardless is reported, not run.
+        let complete_bcf_signature =
+            use_biber.then(|| biber_signature(&bcf_path, &source_dir)).flatten();
+        if use_biber && complete_bcf_signature.is_none() && !incomplete_bcf_reported {
+            eprintln!(
+                "texmk: warning: {} is missing or incomplete; Biber was not run",
+                bcf_path.display()
+            );
+            incomplete_bcf_reported = true;
+        }
         let bibliography_ready = if use_biber {
-            true
+            complete_bcf_signature.is_some()
         } else {
             bibdata && bibliography_dependencies_available(aux_text, &aux_dir, &source_dir)
         };
         let bibliography_signature = if use_biber {
-            Some(biber_signature(&bcf_path, &source_dir))
+            complete_bcf_signature
         } else {
             (bibliography_ready && aux_graph.complete)
                 .then(|| bibliography_signature(aux_text, &aux_dir, &source_dir))

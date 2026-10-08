@@ -189,6 +189,87 @@ fn copied_texres_builds_biblatex_with_embedded_biber() {
     assert!(bbl.contains("\\field{title}{Literate Programming}"));
 }
 
+/// A pass stopped by the error limit leaves biblatex's control file without
+/// its closing root tag, and BibTeX's `.aux` and the `.idx` without what
+/// follows the stop. No bibliography or index tool runs on them: the next
+/// build reruns LaTeX first and, once the document is fixed, runs Biber on
+/// the complete control file (issue #24).
+#[test]
+fn tools_never_run_on_files_from_an_aborted_pass() {
+    let fixture = Fixture(std::env::temp_dir().join(format!(
+        "texres-aborted-pass-{}", std::process::id()
+    )));
+    std::fs::create_dir_all(&fixture.0).unwrap();
+    fixture.write("refs.bib", "@book{test, author={Doe, Jane}, title={Example}, year={2025}}\n");
+    let texres = |source: &str| {
+        let output = Command::new(env!("CARGO_BIN_EXE_texres"))
+            .arg(source).current_dir(&fixture.0).env_clear()
+            .env("HOME", fixture.0.join("home"))
+            .env("TEX_RS_CACHE_DIR", fixture.0.join("cache"))
+            .env("TEXMFDIST", fixture.0.join("absent-texmf"))
+            .env("SOURCE_DATE_EPOCH", "1700000000")
+            .output().unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        (output.status.success(), stderr)
+    };
+    let pdf_text = |name: &str| {
+        let pdf = lopdf::Document::load(fixture.0.join(name)).unwrap();
+        let pages: Vec<u32> = pdf.get_pages().keys().copied().collect();
+        let text = pdf.extract_text(&pages).unwrap();
+        text.chars().filter(|c| !c.is_whitespace()).collect::<String>()
+    };
+    let errors = "\\nosuchcs\n".repeat(120);
+
+    let biblatex = |body: &str| format!(concat!(
+        "\\documentclass{{article}}\n",
+        "\\usepackage[backend=biber]{{biblatex}}\n",
+        "\\addbibresource{{refs.bib}}\n",
+        "\\begin{{document}}\n\\cite{{test}}\n{}\\printbibliography\n\\end{{document}}\n",
+    ), body);
+    fixture.write("biber.tex", &biblatex(&errors));
+    let (ok, stderr) = texres("biber.tex");
+    assert!(!ok && stderr.contains("pdflatex failed on pass 1"), "{stderr}");
+    let bcf = std::fs::read_to_string(
+        find_file(&fixture.0.join("cache/texmk/jobs"), "biber.bcf").unwrap()
+    ).unwrap();
+    assert!(bcf.contains("<bcf:controlfile") && !bcf.contains("</bcf:controlfile>"), "{bcf}");
+    // Unchanged, the document fails in LaTeX again, not in Biber.
+    let (ok, stderr) = texres("biber.tex");
+    assert!(!ok && stderr.contains("pdflatex failed on pass 1"), "{stderr}");
+    assert!(!stderr.contains("BCF"), "{stderr}");
+    assert!(find_file(&fixture.0.join("cache/texmk/jobs"), "biber.bbl").is_none());
+    fixture.write("biber.tex", &biblatex(""));
+    let (ok, stderr) = texres("biber.tex");
+    assert!(ok && stderr.contains("1 biber run(s)"), "{stderr}");
+    let text = pdf_text("biber.pdf");
+    assert!(text.contains("[1]JaneDoe.Example.2025."), "{text}");
+
+    let bibtex = |body: &str| format!(concat!(
+        "\\documentclass{{article}}\n\\usepackage{{makeidx}}\n\\makeindex\n",
+        "\\begin{{document}}\n\\bibliographystyle{{plain}}\n\\bibliography{{refs}}\n",
+        "Alpha\\index{{alpha}}\n{}Beta\\index{{beta}} \\cite{{test}}\n\\printindex\n\\end{{document}}\n",
+    ), body);
+    fixture.write("bibtex.tex", &bibtex(&errors));
+    let (ok, stderr) = texres("bibtex.tex");
+    assert!(!ok && stderr.contains("pdflatex failed on pass 1"), "{stderr}");
+    let aux = std::fs::read_to_string(
+        find_file(&fixture.0.join("cache/texmk/jobs"), "bibtex.aux").unwrap()
+    ).unwrap();
+    assert!(aux.contains("\\bibdata{refs}") && !aux.contains("\\citation"), "{aux}");
+    // The truncated .aux cites nothing; BibTeX would report that as an error.
+    let (ok, stderr) = texres("bibtex.tex");
+    assert!(!ok && stderr.contains("pdflatex failed on pass 1"), "{stderr}");
+    assert!(!stderr.contains("BibTeX"), "{stderr}");
+    for output in ["bibtex.bbl", "bibtex.ind"] {
+        assert!(find_file(&fixture.0.join("cache/texmk/jobs"), output).is_none(), "{output}");
+    }
+    fixture.write("bibtex.tex", &bibtex(""));
+    let (ok, stderr) = texres("bibtex.tex");
+    assert!(ok && stderr.contains("1 bibtex run(s)"), "{stderr}");
+    let text = pdf_text("bibtex.pdf");
+    assert!(text.contains("Beta[1]") && text.contains("alpha,1") && text.contains("beta,1"), "{text}");
+}
+
 #[test]
 fn one_copied_texmk_builds_with_embedded_latex_and_bibtex_resources() {
     let nonce = std::time::SystemTime::now()

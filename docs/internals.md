@@ -183,6 +183,16 @@ to inject tools.
    project-supplied `<job>.bbl` is adopted instead of running BibTeX; if
    BibTeX fails and the project has a `.bbl`, that file is used. After a
    successful BibTeX run another pass follows.
+   Biber runs instead when biblatex wrote `<job>.bcf`, and only on a complete
+   control file (one Biber can parse): a pass that stopped early leaves the
+   root element unclosed, and such a file is never handed to Biber (after a
+   finished pass, a warning reports it). Before the
+   first pass, a bibliography tool also refreshes the `.bbl` from the previous
+   build's auxiliary state, except when that state comes from a pass that did
+   not finish: the manifest's `unfinished-pass` flag is set before a pass
+   starts and cleared once one finishes, so after an aborted (error limit,
+   emergency stop) or interrupted pass LaTeX reruns before BibTeX, Biber or
+   makeindex reads its possibly truncated `.aux`, `.bcf` or `.idx`.
    Then, as latexmk does, makeindex (`makeindex -o X.ind X.idx`, run in the
    auxiliary directory) processes each `.idx` file the pass announced with
    `Writing index file X.idx` (makeidx, multind, imakeidx, index.sty), unless

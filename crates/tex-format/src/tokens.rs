@@ -34,39 +34,73 @@ const CAT_OTHER: u8 = 12;
 const CAT_ACTIVE: u8 = 13;
 const CAT_COMMENT: u8 = 14;
 
+/// Category codes of the ASCII characters, with `@` other and a letter.
+const CATCODES: [[u8; 128]; 2] = [ascii_catcodes(false), ascii_catcodes(true)];
+
+const fn ascii_catcodes(at_letter: bool) -> [u8; 128] {
+    let mut t = [CAT_OTHER; 128];
+    let mut c = b'A';
+    while c <= b'Z' {
+        t[c as usize] = CAT_LETTER;
+        t[(c + 32) as usize] = CAT_LETTER;
+        c += 1;
+    }
+    t[0x5C] = CAT_ESCAPE;
+    t[0x7B] = CAT_BEGIN;
+    t[0x7D] = CAT_END;
+    t[0x24] = 3;
+    t[0x26] = CAT_ALIGN;
+    t[0x0D] = CAT_EOL;
+    t[0x23] = 6;
+    t[0x5E] = CAT_SUPER;
+    t[0x5F] = 8;
+    t[0x00] = CAT_IGNORED;
+    t[0x20] = CAT_SPACE;
+    t[0x09] = CAT_SPACE;
+    if at_letter {
+        t[0x40] = CAT_LETTER;
+    }
+    t[0x7E] = CAT_ACTIVE;
+    t[0x25] = CAT_COMMENT;
+    t[0x7F] = 15;
+    t
+}
+
+#[inline(always)]
 fn catcode(c: u32, at_letter: bool) -> u8 {
-    match c {
-        0x5C => CAT_ESCAPE,
-        0x7B => CAT_BEGIN,
-        0x7D => CAT_END,
-        0x24 => 3,
-        0x26 => CAT_ALIGN,
-        0x0D => CAT_EOL,
-        0x23 => 6,
-        0x5E => CAT_SUPER,
-        0x5F => 8,
-        0x00 => CAT_IGNORED,
-        0x20 | 0x09 => CAT_SPACE,
-        0x41..=0x5A | 0x61..=0x7A => CAT_LETTER,
-        0x40 if at_letter => CAT_LETTER,
-        0x7E => CAT_ACTIVE,
-        0x25 => CAT_COMMENT,
-        0x7F => 15,
-        _ => CAT_OTHER,
+    match CATCODES[usize::from(at_letter)].get(c as usize) {
+        Some(&cat) => cat,
+        None => CAT_OTHER,
     }
 }
 
+/// A token packed in 64 bits: a character token (top bit set: category
+/// code and character code), or a control sequence (a 63-bit hash of its
+/// name).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Tok {
-    /// A control sequence, identified by a 64-bit hash of its name.
-    Cs(u64),
-    /// A character token: category code and character code.
-    Char(u8, u32),
+pub(crate) struct Tok(u64);
+
+const CHAR_FLAG: u64 = 1 << 63;
+
+impl Tok {
+    const fn char(cat: u8, c: u32) -> Tok {
+        Tok(CHAR_FLAG | (cat as u64) << 32 | c as u64)
+    }
+
+    const fn cs(hash: u64) -> Tok {
+        Tok(hash & !CHAR_FLAG)
+    }
+
+    /// Category and character code of a character token.
+    fn as_char(self) -> Option<(u8, u32)> {
+        (self.0 & CHAR_FLAG != 0).then_some(((self.0 >> 32) as u8, self.0 as u32))
+    }
 }
 
+#[derive(Clone, Copy)]
 struct Token {
     tok: Tok,
-    line: usize,
+    line: u32,
 }
 
 fn hash_name(name: &[u32]) -> u64 {
@@ -83,7 +117,7 @@ fn hash_name(name: &[u32]) -> u64 {
 
 fn cs(name: &str) -> Tok {
     let chars: Vec<u32> = name.chars().map(u32::from).collect();
-    Tok::Cs(hash_name(&chars))
+    Tok::cs(hash_name(&chars))
 }
 
 /// TeX's `^^` notation: returns the character at `i` and the index after it.
@@ -105,7 +139,15 @@ fn char_at(buf: &[u32], i: usize) -> (u32, usize) {
 
 /// Replaces `^^` notation at `i` by the character it denotes, repeatedly,
 /// as TeX does when it meets such a pair while reading.
+#[inline(always)]
 fn reduce(buf: &mut Vec<u32>, i: usize) {
+    if buf[i] == 0x5E {
+        reduce_carets(buf, i);
+    }
+}
+
+#[cold]
+fn reduce_carets(buf: &mut Vec<u32>, i: usize) {
     loop {
         let (c, next) = char_at(buf, i);
         if next == i + 1 {
@@ -136,7 +178,10 @@ struct Reader<'a> {
 
 impl Reader<'_> {
     fn push(&mut self, tok: Tok, line: usize) {
-        self.out.push(Token { tok, line });
+        self.out.push(Token {
+            tok,
+            line: line as u32,
+        });
     }
 
     /// Puts the line from `i` (before its end) into `rest`.
@@ -170,10 +215,10 @@ impl Reader<'_> {
             None => end - i,
         };
         for k in i..i + taken {
-            self.push(Tok::Char(CAT_OTHER, self.buf[k]), line);
+            self.push(Tok::char(CAT_OTHER, self.buf[k]), line);
         }
         if found.is_none() {
-            self.push(Tok::Char(CAT_OTHER, 0x0D), line);
+            self.push(Tok::char(CAT_OTHER, 0x0D), line);
             self.raw = Some(raw);
         }
         found.map(|_| i + taken)
@@ -224,7 +269,11 @@ impl Reader<'_> {
     fn tokenize_line(&mut self, line: &str, line_no: usize) {
         let line = line.strip_suffix('\r').unwrap_or(line);
         self.buf.clear();
-        self.buf.extend(line.chars().map(u32::from));
+        if line.is_ascii() {
+            self.buf.extend(line.bytes().map(u32::from));
+        } else {
+            self.buf.extend(line.chars().map(u32::from));
+        }
         while self.buf.last() == Some(&0x20) {
             self.buf.pop();
         }
@@ -246,7 +295,7 @@ impl Reader<'_> {
                 None => return,
             }
         }
-        let space = Tok::Char(CAT_SPACE, 0x20);
+        let space = Tok::char(CAT_SPACE, 0x20);
         while i < self.buf.len() {
             reduce(&mut self.buf, i);
             let c = self.buf[i];
@@ -280,7 +329,7 @@ impl Reader<'_> {
                             State::M
                         };
                     }
-                    self.push(Tok::Cs(hash_name(&self.name)), line_no);
+                    self.push(Tok::cs(hash_name(&self.name)), line_no);
                     if word {
                         match self.after_word(i, line_no) {
                             Some(e) => {
@@ -310,7 +359,7 @@ impl Reader<'_> {
                 CAT_COMMENT => break,
                 CAT_IGNORED => {}
                 _ => {
-                    self.push(Tok::Char(cat, c), line_no);
+                    self.push(Tok::char(cat, c), line_no);
                     state = State::M;
                     match cat {
                         CAT_BEGIN => self.saved_at.push(self.at_letter),
@@ -330,7 +379,7 @@ impl Reader<'_> {
                             .position(|&x| x == c)
                             .map_or(end, |p| i + p + 1);
                         for k in i..close {
-                            self.push(Tok::Char(CAT_OTHER, self.buf[k]), line_no);
+                            self.push(Tok::char(CAT_OTHER, self.buf[k]), line_no);
                         }
                         i = close;
                     }
@@ -340,27 +389,79 @@ impl Reader<'_> {
     }
 }
 
-fn tokenize(text: &str, lex: Lexicon, kind: SourceKind) -> Vec<Token> {
-    let mut reader = Reader {
-        lex,
-        par: cs("par"),
-        at_letter: kind == SourceKind::Package,
-        saved_at: Vec::new(),
-        raw: None,
-        out: Vec::with_capacity(text.len() / 3),
-        buf: Vec::new(),
-        name: Vec::new(),
-        word: String::new(),
-        rest: String::new(),
-    };
-    if text.is_empty() {
-        return reader.out;
+/// The normalized tokens of a text, read one line at a time so that only
+/// the tokens not yet compared are held in memory.
+struct Stream<'a> {
+    reader: Reader<'a>,
+    lines: std::str::Split<'a, char>,
+    line_no: usize,
+    norm: Normalizer<'a>,
+    /// `norm.out[..ready]` is final; `norm.out[..pos]` was handed out.
+    ready: usize,
+    pos: usize,
+    finished: bool,
+}
+
+impl<'a> Stream<'a> {
+    fn new(text: &'a str, lex: Lexicon<'a>, kind: SourceKind, allow: &'a Allowances) -> Self {
+        let body = text.strip_suffix('\n').unwrap_or(text);
+        let mut lines = body.split('\n');
+        if text.is_empty() {
+            lines.next();
+        }
+        Stream {
+            reader: Reader {
+                lex,
+                par: cs("par"),
+                at_letter: kind == SourceKind::Package,
+                saved_at: Vec::new(),
+                raw: None,
+                out: Vec::new(),
+                buf: Vec::new(),
+                name: Vec::new(),
+                word: String::new(),
+                rest: String::new(),
+            },
+            lines,
+            line_no: 0,
+            norm: Normalizer::new(allow),
+            ready: 0,
+            pos: 0,
+            finished: false,
+        }
     }
-    let body = text.strip_suffix('\n').unwrap_or(text);
-    for (index, line) in body.split('\n').enumerate() {
-        reader.tokenize_line(line, index + 1);
+
+    /// Makes sure some final tokens are pending (reading more lines as
+    /// needed); `false` at the end of the text.
+    fn fill(&mut self) -> bool {
+        while self.pos == self.ready {
+            if self.finished {
+                return false;
+            }
+            self.norm.out.drain(..self.pos);
+            self.pos = 0;
+            match self.lines.next() {
+                Some(line) => {
+                    self.line_no += 1;
+                    self.reader.tokenize_line(line, self.line_no);
+                    for token in self.reader.out.drain(..) {
+                        self.norm.push(token);
+                    }
+                    self.ready = self.norm.out.len() - self.norm.open_tail();
+                }
+                None => {
+                    self.finished = true;
+                    self.ready = self.norm.out.len();
+                }
+            }
+        }
+        true
     }
-    reader.out
+
+    /// Final tokens not yet compared.
+    fn pending(&self) -> &[Token] {
+        &self.norm.out[self.pos..self.ready]
+    }
 }
 
 /// Which deliberate differences the comparison accepts.
@@ -381,53 +482,81 @@ pub(crate) fn section_tokens(mask: u8) -> Vec<Tok> {
 /// After a control sequence the `\par` may be its argument (`\fbox` followed
 /// by blank lines takes the first `\par`), so the number of `\par` matters.
 fn ends_safely(tok: Tok) -> bool {
-    match tok {
-        Tok::Cs(_) => false,
-        Tok::Char(cat, c) => matches!(cat, 2..=4 | CAT_LETTER | CAT_OTHER) && c != 0x22,
+    match tok.as_char() {
+        None => false,
+        Some((cat, c)) => matches!(cat, 2..=4 | CAT_LETTER | CAT_OTHER) && c != 0x22,
     }
 }
 
-fn normalize(tokens: Vec<Token>, allow: &Allowances) -> Vec<Token> {
-    let par = cs("par");
-    let space = Tok::Char(CAT_SPACE, 0x20);
-    let is_amp = |t: Tok| matches!(t, Tok::Char(CAT_ALIGN, _));
-    let mut out: Vec<Token> = Vec::with_capacity(tokens.len());
-    // Whether the current run of `\par` follows a token that cannot take it
-    // as an argument; only such runs may change length.
-    let mut run_safe = false;
-    for token in tokens {
+/// Applies the deliberate differences to a token stream.
+struct Normalizer<'a> {
+    allow: &'a Allowances,
+    par: Tok,
+    out: Vec<Token>,
+    /// The last token pushed that is not a space.
+    last_solid: Option<Tok>,
+    /// Whether the current run of `\par` follows a token that cannot take it
+    /// as an argument; only such runs may change length.
+    run_safe: bool,
+}
+
+const SPACE: Tok = Tok::char(CAT_SPACE, 0x20);
+
+fn is_amp(t: Tok) -> bool {
+    t.as_char().is_some_and(|(cat, _)| cat == CAT_ALIGN)
+}
+
+impl<'a> Normalizer<'a> {
+    fn new(allow: &'a Allowances) -> Self {
+        Normalizer {
+            allow,
+            par: cs("par"),
+            out: Vec::new(),
+            last_solid: None,
+            run_safe: false,
+        }
+    }
+
+    fn push(&mut self, token: Token) {
+        let par = self.par;
+        let last = self.out.last().map(|t| t.tok);
         if token.tok == par {
-            if out.last().is_some_and(|t| t.tok == par) {
-                if run_safe {
-                    continue;
+            if last == Some(par) {
+                if self.run_safe {
+                    return;
                 }
             } else {
-                run_safe = out
-                    .iter()
-                    .rev()
-                    .find(|t| t.tok != space)
-                    .is_some_and(|t| ends_safely(t.tok));
+                self.run_safe = self.last_solid.is_some_and(ends_safely);
             }
         }
-        if run_safe
-            && allow.par_sections.contains(&token.tok)
-            && out.last().is_some_and(|t| t.tok == par)
-        {
-            out.pop();
+        if self.run_safe && last == Some(par) && self.allow.par_sections.contains(&token.tok) {
+            self.out.pop();
         }
-        if allow.spaces_around_ampersands {
-            if token.tok == space && out.last().is_some_and(|t| is_amp(t.tok)) {
-                continue;
+        if self.allow.spaces_around_ampersands {
+            if token.tok == SPACE && last.is_some_and(is_amp) {
+                return;
             }
             if is_amp(token.tok) {
-                while out.last().is_some_and(|t| t.tok == space) {
-                    out.pop();
+                while self.out.last().is_some_and(|t| t.tok == SPACE) {
+                    self.out.pop();
                 }
             }
         }
-        out.push(token);
+        if token.tok != SPACE {
+            self.last_solid = Some(token.tok);
+        }
+        self.out.push(token);
     }
-    out
+
+    /// How many tokens at the end may still be dropped by what follows:
+    /// the trailing `\par` and spaces. Everything before them is final.
+    fn open_tail(&self) -> usize {
+        self.out
+            .iter()
+            .rev()
+            .take_while(|t| t.tok == self.par || t.tok == SPACE)
+            .count()
+    }
 }
 
 /// Compares the token streams of `before` and `after`. On a difference,
@@ -439,17 +568,23 @@ pub(crate) fn first_difference(
     lex: Lexicon,
     kind: SourceKind,
 ) -> Option<(usize, usize)> {
-    let a = normalize(tokenize(before, lex, kind), allow);
-    let b = normalize(tokenize(after, lex, kind), allow);
-    for (x, y) in a.iter().zip(&b) {
-        if x.tok != y.tok {
-            return Some((x.line, y.line));
+    let mut a = Stream::new(before, lex, kind, allow);
+    let mut b = Stream::new(after, lex, kind, allow);
+    loop {
+        match (a.fill(), b.fill()) {
+            (false, false) => return None,
+            (true, false) => return Some((a.pending()[0].line as usize, b.line_no.max(1))),
+            (false, true) => return Some((a.line_no.max(1), b.pending()[0].line as usize)),
+            (true, true) => {
+                let (x, y) = (a.pending(), b.pending());
+                let n = x.len().min(y.len());
+                if let Some(k) = (0..n).find(|&k| x[k].tok != y[k].tok) {
+                    return Some((x[k].line as usize, y[k].line as usize));
+                }
+                a.pos += n;
+                b.pos += n;
+            }
         }
-    }
-    match a.len().cmp(&b.len()) {
-        std::cmp::Ordering::Equal => None,
-        std::cmp::Ordering::Less => Some((a.last().map_or(1, |t| t.line), b[a.len()].line)),
-        std::cmp::Ordering::Greater => Some((a[b.len()].line, b.last().map_or(1, |t| t.line))),
     }
 }
 

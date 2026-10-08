@@ -636,8 +636,10 @@ impl Lexicon<'_> {
         if let Some((_, s)) = VERBATIM_COMMANDS.iter().find(|(n, _)| *n == name) {
             return Some(*s);
         }
-        if let Some(s) = self.extras.verbatim_commands.get(name) {
-            return Some(*s);
+        if !self.extras.verbatim_commands.is_empty() {
+            if let Some(s) = self.extras.verbatim_commands.get(name) {
+                return Some(*s);
+            }
         }
         self.cfg
             .verbatim_commands
@@ -671,6 +673,9 @@ pub fn format_source(
         0
     };
     let formatted = Formatter::new(config, extras, source, kind, par_sections).run(source);
+    if formatted == source {
+        return Ok(formatted);
+    }
     let allow = Allowances {
         par_sections: tokens::section_tokens(par_sections),
         spaces_around_ampersands: config.align_columns,
@@ -961,7 +966,7 @@ impl<'a> Formatter<'a> {
         let mut rest = text;
         let mut first = true;
         loop {
-            let snapshot = self.cfg.wrap.then(|| self.st.clone());
+            let snapshot = (self.cfg.wrap && self.may_be_too_wide(rest)).then(|| self.st.clone());
             let mut scan = self.scan_line(rest, None);
             if scan.keep {
                 // Only whole source lines are kept (a continuation piece
@@ -989,6 +994,16 @@ impl<'a> Formatter<'a> {
                 None => return,
             }
         }
+    }
+
+    /// Whether `rest` might come out wider than the line width: its
+    /// indentation is at most the current level, and a tab widens to at
+    /// most a tab stop.
+    fn may_be_too_wide(&self, rest: &str) -> bool {
+        let content = rest.trim_start_matches([' ', '\t']);
+        let tabs = content.bytes().filter(|&c| c == b'\t').count();
+        self.st.level * self.cfg.indent_width + content.len() + tabs * self.cfg.tab_width
+            > self.cfg.line_width
     }
 
     fn emit(&mut self, built: Built, scan: &Scan) {
@@ -1527,7 +1542,25 @@ impl<'a> Formatter<'a> {
                             }
                         }
                     } else {
+                        // Skip the run of characters that need no attention.
                         i += 1;
+                        while i < b.len()
+                            && !matches!(
+                                b[i],
+                                b' ' | b'\t'
+                                    | b'%'
+                                    | b'\\'
+                                    | b'{'
+                                    | b'}'
+                                    | b'['
+                                    | b']'
+                                    | b'$'
+                                    | b'&'
+                            )
+                            && !self.lex().short_verb(b[i])
+                        {
+                            i += 1;
+                        }
                     }
                 }
             }

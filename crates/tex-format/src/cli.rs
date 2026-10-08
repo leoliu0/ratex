@@ -4,9 +4,9 @@
 //! `--check` found files that would change or a file could not be read,
 //! formatted or written, 2 for a bad command line.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::{IsTerminal, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use crate::bib::format_bib;
 use crate::config::{find_config, Config};
@@ -245,29 +245,60 @@ fn project_extras<'a>(
             }
         }
     };
+    // Entries of the listed directories, so that names are looked up
+    // without a system call per directory and candidate.
+    let mut listed: HashSet<PathBuf> = HashSet::new();
+    let mut subdirs: HashSet<PathBuf> = HashSet::new();
     for dir in dirs {
         let Ok(entries) = std::fs::read_dir(dir) else {
             continue;
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if has_extension(&path, SOURCE_EXTENSIONS) {
-                scan_file(&path, &mut extras);
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            let (file, sub) = if kind.is_symlink() {
+                (path.is_file(), path.is_dir())
+            } else {
+                (kind.is_file(), kind.is_dir())
+            };
+            if sub {
+                subdirs.insert(path);
+            } else if file {
+                if has_extension(&path, SOURCE_EXTENSIONS) {
+                    scan_file(&path, &mut extras);
+                }
+                listed.insert(path);
             }
         }
     }
+    let mut elsewhere: HashMap<PathBuf, bool> = HashMap::new();
+    let mut exists = |dir: &Path, name: &str| -> Option<PathBuf> {
+        let path = dir.join(name);
+        let mut parts = Path::new(name).components();
+        let found = match (parts.next(), parts.next()) {
+            (Some(Component::Normal(_)), None) => listed.contains(&path),
+            // `sub/file`: only where `sub` exists.
+            (Some(Component::Normal(first)), Some(_)) if !subdirs.contains(&dir.join(first)) => {
+                false
+            }
+            _ => *elsewhere
+                .entry(path.clone())
+                .or_insert_with(|| path.is_file()),
+        };
+        found.then_some(path)
+    };
     loop {
         let wanted = extras.sections.wanted();
         if wanted.is_empty() {
             break;
         }
         for (kind, name) in wanted {
-            let found = dirs.iter().find_map(|dir| {
-                kind.candidates(&name)
-                    .into_iter()
-                    .map(|c| dir.join(c))
-                    .find(|p| p.is_file())
-            });
+            let candidates = kind.candidates(&name);
+            let found = dirs
+                .iter()
+                .find_map(|dir| candidates.iter().find_map(|c| exists(dir, c)));
             if let Some(path) = &found {
                 scan_file(&absolute(path), &mut extras);
             }
@@ -406,25 +437,27 @@ fn run_files(options: &Options, configs: &mut ConfigCache) -> i32 {
         let skip: BTreeSet<PathBuf> = tex.iter().map(|(p, _, _)| absolute(p)).collect();
         project_extras(tex.iter().map(|(_, t, _)| t.as_str()), &dirs, &skip)
     };
-    let mut stdout = std::io::stdout().lock();
-    for (path, text, utf8) in &sources {
-        let config = match configs.for_dir(&parent_dir(path)) {
-            Ok(config) => config,
-            Err(message) => {
-                eprintln!("texres fmt: {message}");
-                status = 1;
-                continue;
-            }
-        };
-        let result = if is_bib(path) {
-            format_bib(text, &config).map_err(|e| e.to_string())
+    // Settings are looked up in order (and cached); formatting, the bulk of
+    // the work, runs on all cores; results are reported in order.
+    let configs: Vec<Result<Config, String>> = sources
+        .iter()
+        .map(|(path, _, _)| configs.for_dir(&parent_dir(path)))
+        .collect();
+    let results = parallel_map(&sources, |index, (path, text, _)| {
+        let config = configs[index].as_ref().map_err(Clone::clone)?;
+        if is_bib(path) {
+            format_bib(text, config).map_err(|e| format!("{}: {e}", path.display()))
         } else {
-            format_source(text, &config, &extras, SourceKind::of(path)).map_err(|e| e.to_string())
-        };
+            format_source(text, config, &extras, SourceKind::of(path))
+                .map_err(|e| format!("{}: {e}", path.display()))
+        }
+    });
+    let mut stdout = std::io::stdout().lock();
+    for ((path, text, utf8), result) in sources.iter().zip(results) {
         let formatted = match result {
             Ok(formatted) => formatted,
-            Err(err) => {
-                eprintln!("texres fmt: {}: {err}", path.display());
+            Err(message) => {
+                eprintln!("texres fmt: {message}");
                 status = 1;
                 continue;
             }
@@ -448,6 +481,46 @@ fn run_files(options: &Options, configs: &mut ConfigCache) -> i32 {
         }
     }
     status
+}
+
+/// `f` applied to every item, on as many threads as there are cores.
+fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(usize, &T) -> R + Sync) -> Vec<R> {
+    let threads = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .min(items.len());
+    if threads <= 1 {
+        return items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| f(i, item))
+            .collect();
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut out: Vec<Option<R>> = items.iter().map(|_| None).collect();
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut done = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(item) = items.get(i) else {
+                            return done;
+                        };
+                        done.push((i, f(i, item)));
+                    }
+                })
+            })
+            .collect();
+        for worker in workers {
+            for (i, result) in worker.join().expect("formatting thread panicked") {
+                out[i] = Some(result);
+            }
+        }
+    });
+    out.into_iter()
+        .map(|r| r.expect("every item is done"))
+        .collect()
 }
 
 #[cfg(test)]

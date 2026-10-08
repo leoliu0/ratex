@@ -8,14 +8,16 @@ use std::collections::{BTreeSet, HashMap};
 use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 
+use crate::bib::format_bib;
 use crate::config::{find_config, Config};
 use crate::diff::unified_diff;
 use crate::format::{format_source, Extras, SourceKind};
 
 const USAGE: &str = "usage: texres fmt [options] [FILE|DIR ...]
-Formats LaTeX sources in place. Directories are searched recursively for
-.tex, .sty, .cls and .ltx files. With no files, or with -, reads standard
-input and writes the result to standard output.
+Formats LaTeX sources and BibTeX databases in place. Directories are
+searched recursively for .tex, .sty, .cls, .ltx and .bib files. With no
+files, or with -, reads standard input and writes the result to standard
+output.
 
   --check                 change nothing; list the files that would change
                           and exit with status 1 if there are any
@@ -32,10 +34,13 @@ Settings are read from the nearest .texresfmt.toml in the file's directory
 or above it. Exit status: 0 formatted, 1 --check found changes or a file
 failed, 2 bad command line.";
 
-/// Extensions formatted when walking directories.
+/// LaTeX sources: formatted when walking directories, and read for
+/// project definitions.
 const SOURCE_EXTENSIONS: &[&str] = &["tex", "sty", "cls", "ltx"];
-/// Files that look like TeX but are not LaTeX sources the formatter understands.
-const REFUSED_EXTENSIONS: &[&str] = &["bib", "bbl", "dtx", "ins", "bst"];
+/// BibTeX databases, formatted with their own rules.
+const BIB_EXTENSIONS: &[&str] = &["bib"];
+/// Files that look like TeX but are not sources the formatter understands.
+const REFUSED_EXTENSIONS: &[&str] = &["bbl", "dtx", "ins", "bst"];
 /// Sibling files larger than this are not scanned for definitions.
 const MAX_SCAN_BYTES: u64 = 8 << 20;
 
@@ -290,17 +295,26 @@ fn run_stdin(options: &Options, configs: &mut ConfigCache) -> i32 {
             return 1;
         }
     };
-    let skip: BTreeSet<PathBuf> = options.stdin_filename.iter().map(|p| absolute(p)).collect();
-    let extras = project_extras(
-        std::iter::once(text.as_str()),
-        &BTreeSet::from([dir]),
-        &skip,
-    );
-    let kind = options
+    let is_bib = options
         .stdin_filename
         .as_deref()
-        .map_or(SourceKind::Document, SourceKind::of);
-    let formatted = match format_source(&text, &config, &extras, kind) {
+        .is_some_and(|p| has_extension(p, BIB_EXTENSIONS));
+    let result = if is_bib {
+        format_bib(&text, &config).map_err(|e| e.to_string())
+    } else {
+        let kind = options
+            .stdin_filename
+            .as_deref()
+            .map_or(SourceKind::Document, SourceKind::of);
+        let skip: BTreeSet<PathBuf> = options.stdin_filename.iter().map(|p| absolute(p)).collect();
+        let extras = project_extras(
+            std::iter::once(text.as_str()),
+            &BTreeSet::from([dir]),
+            &skip,
+        );
+        format_source(&text, &config, &extras, kind).map_err(|e| e.to_string())
+    };
+    let formatted = match result {
         Ok(formatted) => formatted,
         Err(err) => {
             eprintln!("texres fmt: <stdin>: {err}");
@@ -339,7 +353,9 @@ fn collect_files(paths: &[PathBuf], status: &mut i32) -> Vec<PathBuf> {
             let path = entry.path();
             if kind.is_dir() {
                 walk(&path, out)?;
-            } else if kind.is_file() && has_extension(&path, SOURCE_EXTENSIONS) {
+            } else if kind.is_file()
+                && (has_extension(&path, SOURCE_EXTENSIONS) || has_extension(&path, BIB_EXTENSIONS))
+            {
                 out.push(path);
             }
         }
@@ -381,9 +397,15 @@ fn run_files(options: &Options, configs: &mut ConfigCache) -> i32 {
             }
         }
     }
-    let dirs: BTreeSet<PathBuf> = sources.iter().map(|(p, _, _)| parent_dir(p)).collect();
-    let skip: BTreeSet<PathBuf> = sources.iter().map(|(p, _, _)| absolute(p)).collect();
-    let extras = project_extras(sources.iter().map(|(_, t, _)| t.as_str()), &dirs, &skip);
+    let is_bib = |path: &Path| has_extension(path, BIB_EXTENSIONS);
+    let tex: Vec<&(PathBuf, String, bool)> = sources.iter().filter(|s| !is_bib(&s.0)).collect();
+    let extras = if tex.is_empty() {
+        Extras::default()
+    } else {
+        let dirs: BTreeSet<PathBuf> = tex.iter().map(|(p, _, _)| parent_dir(p)).collect();
+        let skip: BTreeSet<PathBuf> = tex.iter().map(|(p, _, _)| absolute(p)).collect();
+        project_extras(tex.iter().map(|(_, t, _)| t.as_str()), &dirs, &skip)
+    };
     let mut stdout = std::io::stdout().lock();
     for (path, text, utf8) in &sources {
         let config = match configs.for_dir(&parent_dir(path)) {
@@ -394,7 +416,12 @@ fn run_files(options: &Options, configs: &mut ConfigCache) -> i32 {
                 continue;
             }
         };
-        let formatted = match format_source(text, &config, &extras, SourceKind::of(path)) {
+        let result = if is_bib(path) {
+            format_bib(text, &config).map_err(|e| e.to_string())
+        } else {
+            format_source(text, &config, &extras, SourceKind::of(path)).map_err(|e| e.to_string())
+        };
+        let formatted = match result {
             Ok(formatted) => formatted,
             Err(err) => {
                 eprintln!("texres fmt: {}: {err}", path.display());
@@ -490,10 +517,12 @@ mod tests {
         std::fs::create_dir(&sub).unwrap();
         let messy = sub.join("intro.tex");
         let clean = dir.0.join("main.tex");
-        let ignored = dir.0.join("refs.bib");
+        let bib = dir.0.join("refs.bib");
+        let refused = dir.0.join("main.bbl");
         std::fs::write(&messy, "\\begin{itemize}\n\\item a  \n\\end{itemize}\n").unwrap();
         std::fs::write(&clean, "x\n").unwrap();
-        std::fs::write(&ignored, "@book{a,\ntitle={x}}\n").unwrap();
+        std::fs::write(&bib, "@book{a,\ntitle={x}}\n").unwrap();
+        std::fs::write(&refused, "\\begin{thebibliography}\n").unwrap();
         let root = path_arg(&dir.0);
         assert_eq!(run(&args(&["--check", &root])), 1);
         assert_eq!(run(&args(&["--diff", &root])), 0);
@@ -506,12 +535,12 @@ mod tests {
             "\\begin{itemize}\n  \\item a\n\\end{itemize}\n"
         );
         assert_eq!(
-            std::fs::read_to_string(&ignored).unwrap(),
-            "@book{a,\ntitle={x}}\n"
+            std::fs::read_to_string(&bib).unwrap(),
+            "@book{a,\n  title = {x},\n}\n"
         );
         assert_eq!(run(&args(&["--check", &root])), 0);
-        // Named .bib files are refused.
-        assert_eq!(run(&args(&[&path_arg(&ignored)])), 1);
+        // Named .bbl files are refused.
+        assert_eq!(run(&args(&[&path_arg(&refused)])), 1);
     }
 
     #[test]

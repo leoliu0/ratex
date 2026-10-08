@@ -157,6 +157,25 @@ fn reduce_carets(buf: &mut Vec<u32>, i: usize) {
     }
 }
 
+/// A group the reader keeps track of, as the formatter does: what opened
+/// it and whether `@` was a letter then (its end restores that).
+struct Group {
+    kind: GroupKind,
+    at_letter: bool,
+}
+
+#[derive(PartialEq, Eq)]
+enum GroupKind {
+    Brace,
+    Env(String),
+    /// `\begingroup`
+    Semi,
+    /// `\[`
+    Display,
+    /// `\(`
+    Inline,
+}
+
 /// Reads a file line by line. The category of `@` and verbatim material
 /// that continues on the next line carry over between lines.
 struct Reader<'a> {
@@ -164,8 +183,8 @@ struct Reader<'a> {
     par: Tok,
     /// Whether `@` is a letter (packages, `\makeatletter`).
     at_letter: bool,
-    /// `at_letter` at each open `{`, restored at its `}`.
-    saved_at: Vec<bool>,
+    /// Open groups: `{`, environments, `\begingroup`, `\[` and `\(`.
+    groups: Vec<Group>,
     raw: Option<Raw>,
     out: Vec<Token>,
     /// The current line, then `\r` for its end.
@@ -177,6 +196,37 @@ struct Reader<'a> {
 }
 
 impl Reader<'_> {
+    fn open(&mut self, kind: GroupKind) {
+        self.groups.push(Group {
+            kind,
+            at_letter: self.at_letter,
+        });
+    }
+
+    /// Closes the innermost group for which `matches` holds, with the groups
+    /// inside it, unless one for which `barrier` holds comes first (the
+    /// formatter's `pop_to`); `@` becomes what it was when it opened.
+    fn close(&mut self, matches: impl Fn(&GroupKind) -> bool, barrier: impl Fn(&GroupKind) -> bool) {
+        let Some(index) = self
+            .groups
+            .iter()
+            .rposition(|g| matches(&g.kind) || barrier(&g.kind))
+        else {
+            return;
+        };
+        if matches(&self.groups[index].kind) {
+            self.at_letter = self.groups[index].at_letter;
+            self.groups.truncate(index);
+        }
+    }
+
+    /// Closes the innermost group if it is of this kind (`\]`, `\)`).
+    fn close_top(&mut self, kind: GroupKind) {
+        if self.groups.last().is_some_and(|g| g.kind == kind) {
+            self.close(|k| *k == kind, |_| true);
+        }
+    }
+
     fn push(&mut self, tok: Tok, line: usize) {
         self.out.push(Token {
             tok,
@@ -237,28 +287,55 @@ impl Reader<'_> {
         match self.word.as_str() {
             "makeatletter" => self.at_letter = true,
             "makeatother" => self.at_letter = false,
+            "begingroup" => self.open(GroupKind::Semi),
+            "endgroup" => self.close(
+                |k| *k == GroupKind::Semi,
+                |k| matches!(k, GroupKind::Brace | GroupKind::Env(_)),
+            ),
+            "end" => {
+                self.fill_rest(i);
+                if let Some((env, _)) = env_name(&self.rest, 0) {
+                    let env = env.to_string();
+                    self.close(
+                        |k| matches!(k, GroupKind::Env(e) if *e == env),
+                        |k| *k == GroupKind::Brace,
+                    );
+                }
+            }
             "begin" => {
                 self.fill_rest(i);
-                let close = match env_name(&self.rest, 0) {
-                    Some((env, after)) if self.lex.is_verbatim_env(env) => {
-                        Some((format!("\\end{{{env}}}"), after))
+                let (close, args) = match env_name(&self.rest, 0) {
+                    Some((env, after)) if self.lex.is_verbatim_instance(env, &self.rest[after..]) => {
+                        (Some((format!("\\end{{{env}}}"), after)), None)
                     }
-                    _ => None,
+                    Some((env, after)) => {
+                        let args = self.lex.verbatim_env_args(env).map(|spec| (spec, after));
+                        let env = env.to_string();
+                        self.open(GroupKind::Env(env));
+                        (None, args)
+                    }
+                    None => (None, None),
                 };
                 if let Some((close, after)) = close {
                     return self.read_raw(i, after, Raw::Env(close.into()), line);
                 }
-            }
-            word => {
-                if let Some(spec) = self.lex.verbatim_command(word) {
-                    let star = matches!(word, "verb" | "Verb" | "spverb")
-                        && self.buf.get(i) == Some(&u32::from(b'*'));
+                if let Some((spec, after)) = args {
                     let span = Span {
                         spec,
                         done: 0,
                         depth: 0,
                     };
-                    return self.read_raw(i, usize::from(star), Raw::Span(span), line);
+                    return self.read_raw(i, after, Raw::Span(span), line);
+                }
+            }
+            word => {
+                if let Some(spec) = self.lex.verbatim_command(word) {
+                    let span = Span {
+                        spec,
+                        done: 0,
+                        depth: 0,
+                    };
+                    return self.read_raw(i, 0, Raw::Span(span), line);
                 }
             }
         }
@@ -340,6 +417,14 @@ impl Reader<'_> {
                             }
                             None => return,
                         }
+                    } else {
+                        match char::from_u32(first) {
+                            Some('[') => self.open(GroupKind::Display),
+                            Some('(') => self.open(GroupKind::Inline),
+                            Some(']') => self.close_top(GroupKind::Display),
+                            Some(')') => self.close_top(GroupKind::Inline),
+                            _ => {}
+                        }
                     }
                 }
                 CAT_EOL => {
@@ -362,12 +447,8 @@ impl Reader<'_> {
                     self.push(Tok::char(cat, c), line_no);
                     state = State::M;
                     match cat {
-                        CAT_BEGIN => self.saved_at.push(self.at_letter),
-                        CAT_END => {
-                            if let Some(at) = self.saved_at.pop() {
-                                self.at_letter = at;
-                            }
-                        }
+                        CAT_BEGIN => self.open(GroupKind::Brace),
+                        CAT_END => self.close(|k| *k == GroupKind::Brace, |_| false),
                         _ => {}
                     }
                     // Short-verb text runs to the same character or the
@@ -414,7 +495,7 @@ impl<'a> Stream<'a> {
                 lex,
                 par: cs("par"),
                 at_letter: kind == SourceKind::Package,
-                saved_at: Vec::new(),
+                groups: Vec::new(),
                 raw: None,
                 out: Vec::new(),
                 buf: Vec::new(),
@@ -700,6 +781,21 @@ mod tests {
         assert!(differs(
             "{\\makeatletter}\n\\Q@a b@\n",
             "{\\makeatletter}\n\\Q@a\n  b@\n",
+            doc
+        ));
+        // Environments and `\begingroup` groups restore `@` at their end too.
+        for (open, close) in [
+            ("\\begin{center}", "\\end{center}"),
+            ("\\begingroup", "\\endgroup"),
+        ] {
+            let before = format!("{open}\\makeatletter{close}\n\\verb@a b@\n");
+            let after = format!("{open}\\makeatletter{close}\n\\verb@a\n  b@\n");
+            assert!(differs(&before, &after, doc), "{open}");
+        }
+        // An environment's verbatim argument (l3doc's `function`).
+        assert!(differs(
+            "\\begin{function}{\\a, \\b}\nx\n\\end{function}\n",
+            "\\begin{function}{\\a,\n  \\b}\nx\n\\end{function}\n",
             doc
         ));
     }

@@ -68,6 +68,10 @@ pub struct Config {
     pub no_wrap_envs: Vec<String>,
     /// Environments whose `&` columns are aligned.
     pub align_envs: Vec<String>,
+    /// Classes and packages, besides the built-in list, that may be loaded:
+    /// any verbatim environments or commands they define are listed in
+    /// `verbatim_envs` and `verbatim_commands`.
+    pub known_packages: Vec<String>,
 }
 
 impl Default for Config {
@@ -86,6 +90,7 @@ impl Default for Config {
             verbatim_commands: Vec::new(),
             no_wrap_envs: Vec::new(),
             align_envs: DEFAULT_ALIGN_ENVS.iter().map(|s| s.to_string()).collect(),
+            known_packages: Vec::new(),
         }
     }
 }
@@ -197,6 +202,7 @@ impl Config {
             }
             "no-wrap-envs" => self.no_wrap_envs = list(key, value)?,
             "align-envs" => self.align_envs = list(key, value)?,
+            "known-packages" => self.known_packages = list(key, value)?,
             _ => return Err(format!("unknown setting `{key}`")),
         }
         Ok(())
@@ -221,7 +227,8 @@ impl Config {
              verbatim-envs = {}\n\
              verbatim-commands = {}\n\
              no-wrap-envs = {}\n\
-             align-envs = {}\n",
+             align-envs = {}\n\
+             known-packages = {}\n",
             self.indent_width,
             self.tab_width,
             self.max_blank_lines,
@@ -235,6 +242,7 @@ impl Config {
             list(&self.verbatim_commands),
             list(&self.no_wrap_envs),
             list(&self.align_envs),
+            list(&self.known_packages),
         )
     }
 

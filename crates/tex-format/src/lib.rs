@@ -11,6 +11,7 @@ pub mod cli;
 mod config;
 mod diff;
 mod format;
+mod packages;
 mod sections;
 mod tokens;
 

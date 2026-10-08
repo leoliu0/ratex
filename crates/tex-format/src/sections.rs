@@ -191,6 +191,8 @@ pub struct SectionFacts {
     redefined: u8,
     /// Something makes the definitions unknowable.
     unknown: bool,
+    /// A class or package is loaded whose name is not written out.
+    unknown_load: bool,
 }
 
 impl SectionFacts {
@@ -266,6 +268,7 @@ impl SectionFacts {
     fn add(&mut self, kind: FileKind, name: &str) {
         if name.contains(['\\', '#', '{', '}']) {
             self.unknown = true;
+            self.unknown_load |= kind != FileKind::Input;
             return;
         }
         let set = match kind {
@@ -276,6 +279,31 @@ impl SectionFacts {
         if !set.contains(name) {
             set.insert(name.to_string());
         }
+    }
+
+    /// The first class or package loaded whose verbatim material is not
+    /// known: not in `packages`' lists, not one of the project's files and
+    /// not named in `also_known`. `Some(None)` when a name is not written
+    /// out (`\usepackage{\name}`).
+    pub(crate) fn unvetted(&self, also_known: &[String]) -> Option<Option<(FileKind, &str)>> {
+        if self.unknown_load {
+            return Some(None);
+        }
+        let vetted = |kind: FileKind, name: &String| {
+            let known = match kind {
+                FileKind::Class => crate::packages::known_class(name),
+                _ => crate::packages::known_package(name),
+            };
+            known
+                || also_known.contains(name)
+                || self.found.contains(&(kind, name.clone()))
+        };
+        let classes = self.classes.iter().map(|c| (FileKind::Class, c));
+        let packages = self.packages.iter().map(|p| (FileKind::Package, p));
+        classes
+            .chain(packages)
+            .find(|(kind, name)| !vetted(*kind, name))
+            .map(|(kind, name)| Some((kind, name.as_str())))
     }
 
     /// Files to look for among the project's sources: inputs, and classes

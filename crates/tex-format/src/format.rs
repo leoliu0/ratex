@@ -25,7 +25,7 @@ use std::path::Path;
 use std::rc::Rc;
 
 use crate::config::Config;
-use crate::sections::{self, SectionFacts};
+use crate::sections::{self, FileKind, SectionFacts};
 use crate::tokens::{self, Allowances};
 
 /// How a verbatim-like command takes its argument.
@@ -37,13 +37,21 @@ pub enum Delim {
     Either,
     /// Only a delimiter character (`\verb|...|`).
     Only,
+    /// Everything up to the next `;` outside braces, over several lines if
+    /// need be (pgfplots' `\addplot ... table {...};`).
+    Statement,
+    /// The rest of the line, and of the lines after it while a group opened
+    /// in it stays open (commands whose arguments are not understood).
+    Rest,
 }
 
 /// The arguments of a command that reads them verbatim (or with special
-/// category codes): an optional `[...]`, then `args` arguments, the last of
-/// which may be delimited by any character when `delim` allows.
+/// category codes): an optional `*`, an optional `[...]`, then `args`
+/// arguments, the last of which may be delimited by any character when
+/// `delim` allows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ArgSpec {
+    pub star: bool,
     pub optional: bool,
     pub args: u8,
     pub delim: Delim,
@@ -51,17 +59,26 @@ pub struct ArgSpec {
 
 const fn spec(optional: bool, args: u8, delim: Delim) -> ArgSpec {
     ArgSpec {
+        star: false,
         optional,
         args,
         delim,
     }
 }
 
-/// Commands whose arguments TeX does not read with the usual category codes.
+impl ArgSpec {
+    /// The same arguments after an optional `*`.
+    const fn starred(self) -> Self {
+        ArgSpec { star: true, ..self }
+    }
+}
+
+/// Commands whose arguments TeX does not read with the usual category codes:
+/// the kernel's, and those of the packages in `packages` (see there).
 const VERBATIM_COMMANDS: &[(&str, ArgSpec)] = &[
-    ("verb", spec(false, 1, Delim::Only)),
-    ("Verb", spec(true, 1, Delim::Either)),
-    ("spverb", spec(false, 1, Delim::Only)),
+    ("verb", spec(false, 1, Delim::Only).starred()),
+    ("Verb", spec(true, 1, Delim::Either).starred()),
+    ("spverb", spec(false, 1, Delim::Only).starred()),
     ("lstinline", spec(true, 1, Delim::Either)),
     ("mintinline", spec(true, 2, Delim::Either)),
     ("url", spec(false, 1, Delim::Either)),
@@ -72,6 +89,73 @@ const VERBATIM_COMMANDS: &[(&str, ArgSpec)] = &[
     ("sindex", spec(true, 1, Delim::Braces)),
     ("glossary", spec(false, 1, Delim::Braces)),
     ("nomenclature", spec(true, 2, Delim::Braces)),
+    // minted
+    ("mint", spec(true, 2, Delim::Either)),
+    // fancyvrb, fancybox
+    ("SaveVerb", spec(true, 2, Delim::Either).starred()),
+    ("SaveMVerb", spec(true, 2, Delim::Either).starred()),
+    ("SaveGVerb", spec(true, 2, Delim::Either).starred()),
+    // pgfplots inline tables: line ends and tabs separate rows and cells.
+    ("pgfplotstableread", spec(true, 1, Delim::Braces).starred()),
+    ("pgfplotstabletypeset", spec(true, 1, Delim::Braces)),
+    ("pgfplotstablesort", spec(true, 2, Delim::Braces)),
+    ("addplot", spec(false, 1, Delim::Statement)),
+    // hyperref, breakurl, url-based commands of classes
+    ("hyperref", spec(false, 1, Delim::Braces)),
+    ("hyperimage", spec(false, 1, Delim::Braces)),
+    ("burl", spec(false, 1, Delim::Either)),
+    ("burlalt", spec(false, 2, Delim::Either)),
+    ("urlalt", spec(false, 2, Delim::Either)),
+    ("URL", spec(false, 1, Delim::Only).starred()),
+    ("doi", spec(true, 1, Delim::Either)),
+    ("email", spec(true, 1, Delim::Either)),
+    ("homepage", spec(true, 1, Delim::Braces)),
+    // biblatex
+    ("addbibresource", spec(true, 1, Delim::Braces)),
+    ("addglobalbib", spec(true, 1, Delim::Braces)),
+    ("addsectionbib", spec(true, 1, Delim::Braces)),
+    // amsrefs: line ends in the fields are `\par`.
+    ("bib", spec(false, 3, Delim::Braces)),
+    // attachfile
+    ("attachfile", spec(true, 1, Delim::Braces)),
+    ("textattachfile", spec(true, 1, Delim::Braces)),
+    // graphviz: line ends of the graph are written out.
+    ("digraph", spec(true, 2, Delim::Braces)),
+    ("neatograph", spec(true, 2, Delim::Braces)),
+    // titleps: line ends are ignored in page styles.
+    ("newpagestyle", spec(false, 1, Delim::Rest)),
+    ("renewpagestyle", spec(false, 1, Delim::Rest)),
+    // tcolorbox, scontents, xstring, beamer, mdwtools' syntax
+    ("tcboxverb", spec(true, 1, Delim::Either)),
+    ("Scontents", spec(true, 1, Delim::Either).starred()),
+    ("verbtocs", spec(false, 2, Delim::Either)),
+    ("defverb", spec(false, 2, Delim::Only).starred()),
+    ("syntax", spec(false, 1, Delim::Braces)),
+    // pythontex's default families
+    ("py", spec(true, 1, Delim::Either)),
+    ("pyb", spec(true, 1, Delim::Either)),
+    ("pyc", spec(true, 1, Delim::Either)),
+    ("pys", spec(true, 1, Delim::Either)),
+    ("pyv", spec(true, 1, Delim::Either)),
+    ("pycon", spec(true, 1, Delim::Either)),
+    ("pyconv", spec(true, 1, Delim::Either)),
+    ("sympy", spec(true, 1, Delim::Either)),
+    ("sympyb", spec(true, 1, Delim::Either)),
+    ("sympyc", spec(true, 1, Delim::Either)),
+    ("sympys", spec(true, 1, Delim::Either)),
+    ("sympyv", spec(true, 1, Delim::Either)),
+    ("sympycon", spec(true, 1, Delim::Either)),
+    ("sympyconv", spec(true, 1, Delim::Either)),
+    ("pylab", spec(true, 1, Delim::Either)),
+    ("pylabb", spec(true, 1, Delim::Either)),
+    ("pylabc", spec(true, 1, Delim::Either)),
+    ("pylabs", spec(true, 1, Delim::Either)),
+    ("pylabv", spec(true, 1, Delim::Either)),
+    ("pylabcon", spec(true, 1, Delim::Either)),
+    ("pylabconv", spec(true, 1, Delim::Either)),
+    ("pygment", spec(false, 2, Delim::Either)),
+    ("pythontexcustomc", spec(true, 2, Delim::Either)),
+    ("setpythontexcustomcode", spec(false, 2, Delim::Braces)),
 ];
 
 /// Control words after which blanks or line ends may stop meaning what they
@@ -90,6 +174,47 @@ const GUARD_WORDS: &[&str] = &[
     "Verbatim",
     "lstlisting",
     "alltt",
+    // `%` ignored (doc, showexpl), tabs as data (datatool), catcode tables
+    // (luatexbase, LuaTeX), mathtools' internal syntax, pgfplots' verbatim.
+    "MakePercentIgnore",
+    "DTLsettabseparator",
+    "BeginCatcodeRegime",
+    "catcodetable",
+    "MHInternalSyntaxOn",
+    "beginpgfplotsverbatim",
+];
+
+/// Environments that are read verbatim, matched by their exact name.
+const VERBATIM_ENVS: &[&str] = &[
+    "LTXexample",
+    "scontents",
+    "algoendfloat",
+    "tcbwritetemp",
+    "syntax",
+    "NOTE",
+    "grammar",
+    "syntdiag",
+    "syntdiag*",
+    "tabu*",
+    "longtabu*",
+    "CCSXML",
+    "acks",
+    "screenonly",
+    "printonly",
+    "anonsuppress",
+    "Bg5text",
+    "Bg5+text",
+    "HKtext",
+    "GBKtext",
+    "SJIStext",
+];
+
+/// Environments whose arguments right after `\begin{...}` are verbatim
+/// (l3doc's `O{} +v`).
+const VERBATIM_ARGUMENT_ENVS: &[(&str, ArgSpec)] = &[
+    ("function", spec(true, 1, Delim::Either)),
+    ("variable", spec(true, 1, Delim::Either)),
+    ("macro", spec(true, 1, Delim::Either)),
 ];
 
 /// Environments where lines are never wrapped (math, tables, pictures).
@@ -146,6 +271,9 @@ const NO_WRAP_ENVS: &[&str] = &[
 /// generously: treating an ordinary environment as verbatim only means its
 /// body is left alone.
 fn builtin_verbatim_env(name: &str) -> bool {
+    if VERBATIM_ENVS.contains(&name) {
+        return true;
+    }
     let lower = name.trim_end_matches('*').to_ascii_lowercase();
     const CONTAINS: &[&str] = &[
         "verb",
@@ -156,6 +284,8 @@ fn builtin_verbatim_env(name: &str) -> bool {
         "alltt",
         "code",
         "python",
+        "sympy",
+        "pylab",
         "sage",
         "gnuplot",
         "lilypond",
@@ -175,6 +305,8 @@ pub struct Extras {
     pub verbatim_commands: HashMap<String, ArgSpec>,
     /// Characters made into `\verb` delimiters by `\MakeShortVerb` and friends.
     pub short_verb: Vec<u8>,
+    /// Commands defined to work like `\MakeShortVerb`.
+    pub short_verb_definers: HashSet<String>,
     /// Commands whose definitions change category codes of blanks or line
     /// ends (`\obeylines`, `\catcode`, ...): after one, the rest of the
     /// enclosing group is kept as is.
@@ -186,21 +318,66 @@ pub struct Extras {
 
 impl Extras {
     /// Collects definitions of verbatim environments, verbatim commands and
-    /// short-verb characters from LaTeX source.
+    /// short-verb characters from LaTeX source. Comments and verbatim text
+    /// that is only displayed (`verbatim`, `\verb|...|`, short-verb text)
+    /// are skipped: a `\usepackage` there loads nothing.
     pub fn scan(&mut self, text: &str) {
         let b = text.as_bytes();
         let mut i = 0;
-        while let Some(off) = memchr(b'\\', &b[i..]) {
-            let start = i + off + 1;
+        while i < b.len() {
+            let Some(off) = b[i..]
+                .iter()
+                .position(|&c| c == b'\\' || c == b'%' || self.short_verb.contains(&c))
+            else {
+                break;
+            };
+            let at = i + off;
+            let line_end = memchr(b'\n', &b[at..]).map_or(b.len(), |p| at + p);
+            match b[at] {
+                b'%' => {
+                    i = line_end;
+                    continue;
+                }
+                b'\\' => {}
+                c => {
+                    // Short-verb text, to the same character on the line.
+                    i = memchr(c, &b[at + 1..line_end]).map_or(line_end, |p| at + p + 2);
+                    continue;
+                }
+            }
+            let start = at + 1;
             let mut end = start;
             while end < b.len() && is_letter(b[end]) {
                 end += 1;
             }
-            i = end.max(start);
             if end == start {
+                // A control symbol such as `\%`.
+                i = (start + 1).min(b.len());
                 continue;
             }
+            i = end;
             let name = &text[start..end];
+            if name == "begin" {
+                if let Some((env, after)) = env_name(text, end) {
+                    if DISPLAYED_VERBATIM_ENVS.contains(&env) {
+                        let close = format!("\\end{{{env}}}");
+                        i = text[after..].find(&close).map_or(b.len(), |p| after + p + close.len());
+                        continue;
+                    }
+                }
+            }
+            if let Some(arg_spec) = self.verbatim_command(name) {
+                if matches!(arg_spec.delim, Delim::Only | Delim::Either) {
+                    let mut span = Span {
+                        spec: arg_spec,
+                        done: 0,
+                        depth: 0,
+                    };
+                    let line = &b[..line_end];
+                    i = scan_span(line, end, &mut span).unwrap_or(line_end).max(end);
+                    continue;
+                }
+            }
             self.sections.note(text, start - 1, end, name);
             match name {
                 "lstnewenvironment"
@@ -244,7 +421,7 @@ impl Extras {
                     }
                 }
                 "DeclareUrlCommand" => {
-                    if let Some(command) = defined_command(text, end) {
+                    if let Some((command, _)) = defined_command(text, end) {
                         self.verbatim_commands
                             .insert(command.to_string(), spec(false, 1, Delim::Either));
                     }
@@ -254,15 +431,9 @@ impl Extras {
                 | "DeclareDocumentCommand"
                 | "ProvideDocumentCommand" => {
                     // An xparse `v` argument is read verbatim.
-                    if let Some(command) = defined_command(text, end) {
-                        let after = text[end..].find('}').map(|p| end + p + 1);
-                        let arg_spec = after.and_then(|p| first_braced_arg(text, p));
-                        if arg_spec.is_some_and(|s| {
-                            s.split_whitespace()
-                                .any(|t| t.trim_start_matches('+') == "v")
-                        }) {
-                            self.verbatim_commands
-                                .insert(command.to_string(), spec(true, 1, Delim::Either));
+                    if let Some((command, after)) = defined_command(text, end) {
+                        if let Some(arg_spec) = balanced_group(text, after).and_then(xparse_verbatim) {
+                            self.verbatim_commands.insert(command.to_string(), arg_spec);
                         }
                     }
                 }
@@ -312,59 +483,220 @@ impl Extras {
                 | "gdef"
                 | "edef"
                 | "xdef"
-                | "let" => {
-                    if let Some(command) = defined_command(text, end) {
-                        const VERBATIM_MARKERS: &[&str] = &[
-                            "\\verb",
-                            "\\Verb",
-                            "\\lstinline",
-                            "\\mintinline",
-                            "\\url",
-                            "\\path",
-                        ];
-                        let (verbatim, guard) = if name == "let" {
-                            // `\let\code\verb` / `\let\code=\verb`
-                            let window = &text[end..floor_char_boundary(text, end + 160)];
-                            let rest = window
-                                [window.find(command).map_or(0, |p| p + command.len())..]
-                                .trim_start_matches(['}', '=', ' ']);
-                            let starts = |m: &&str| {
-                                rest.starts_with(*m)
-                                    && !rest.as_bytes().get(m.len()).copied().is_some_and(is_letter)
-                            };
-                            (
-                                VERBATIM_MARKERS.iter().any(starts),
-                                GUARD_MARKERS.iter().any(starts),
-                            )
-                        } else {
-                            let window = definition(text, end, 2);
-                            (
-                                VERBATIM_MARKERS.iter().any(|m| window.contains(m)),
-                                GUARD_MARKERS.iter().any(|m| window.contains(m)),
-                            )
-                        };
-                        if verbatim {
-                            self.verbatim_commands
-                                .insert(command.to_string(), spec(true, 1, Delim::Either));
+                | "let"
+                | "NewCommandCopy"
+                | "RenewCommandCopy"
+                | "DeclareCommandCopy"
+                | "LetLtxMacro" => {
+                    let Some((command, after)) = defined_command(text, end) else {
+                        continue;
+                    };
+                    let alias = matches!(name, "let" | "LetLtxMacro") || name.ends_with("Copy");
+                    if alias {
+                        // `\let\code\verb`, `\let\code=\verb`,
+                        // `\NewCommandCopy{\code}{\verb}`: a copy reads its
+                        // arguments as the original does.
+                        let b = text.as_bytes();
+                        let mut j = skip_filler(b, after);
+                        if b.get(j) == Some(&b'=') {
+                            j = skip_filler(b, j + 1);
                         }
-                        if guard {
+                        if b.get(j) == Some(&b'{') {
+                            j = skip_filler(b, j + 1);
+                        }
+                        if b.get(j) != Some(&b'\\') {
+                            continue;
+                        }
+                        let mut k = j + 1;
+                        while k < b.len() && is_letter(b[k]) {
+                            k += 1;
+                        }
+                        let original = &text[j + 1..k];
+                        let arg_spec = VERBATIM_COMMANDS
+                            .iter()
+                            .find(|(n, _)| *n == original)
+                            .map(|(_, s)| *s)
+                            .or_else(|| self.verbatim_commands.get(original).copied());
+                        if let Some(arg_spec) = arg_spec {
+                            self.verbatim_commands.insert(command.to_string(), arg_spec);
+                        }
+                        if GUARD_WORDS.contains(&original)
+                            || original == "catcode"
+                            || self.guard_commands.contains(original)
+                        {
                             self.guard_commands.insert(command.to_string());
                         }
+                        continue;
+                    }
+                    const VERBATIM_MARKERS: &[&str] = &[
+                        "\\verb",
+                        "\\Verb",
+                        "\\SaveVerb",
+                        "\\lstinline",
+                        "\\mint",
+                        "\\url",
+                        "\\Url",
+                        "\\nolinkurl",
+                        "\\path",
+                        "\\hyper@normalise",
+                    ];
+                    let window = definition(text, end, 2);
+                    if VERBATIM_MARKERS.iter().any(|m| window.contains(m)) {
+                        self.verbatim_commands
+                            .insert(command.to_string(), spec(true, 1, Delim::Either));
+                    }
+                    if GUARD_MARKERS.iter().any(|m| window.contains(m)) {
+                        self.guard_commands.insert(command.to_string());
                     }
                 }
                 "MakeShortVerb"
                 | "DefineShortVerb"
                 | "lstMakeShortInline"
-                | "MakeSpecialShortVerb" => {
-                    if let Some(c) = short_verb_char(text, end) {
+                | "MakeSpecialShortVerb"
+                | "shortverb" => self.add_short_verb(text, end),
+                _ if self.short_verb_definers.contains(name) => self.add_short_verb(text, end),
+                "CustomVerbatimCommand" | "RecustomVerbatimCommand" => {
+                    // fancyvrb: `\CustomVerbatimCommand{\new}{Verb}{options}`
+                    // works like its base command.
+                    let Some((command, after)) = defined_command(text, end) else {
+                        continue;
+                    };
+                    match first_braced_arg(text, after) {
+                        Some("DefineShortVerb") => {
+                            self.short_verb_definers.insert(command.to_string());
+                        }
+                        Some(base) => {
+                            if let Some(arg_spec) = builtin_verbatim_command(base) {
+                                self.verbatim_commands.insert(command.to_string(), arg_spec);
+                            }
+                        }
+                        None => {}
+                    }
+                }
+                "DeclareTotalTCBox" | "NewTotalTCBox" | "RenewTotalTCBox" | "ProvideTotalTCBox"
+                | "DeclareTCBox" | "NewTCBox" | "RenewTCBox" | "ProvideTCBox" => {
+                    // tcolorbox: `\NewTCBox[init]{\cmd}{xparse spec}{options}`.
+                    let mut j = skip_filler(b, end);
+                    if b.get(j) == Some(&b'*') {
+                        j = skip_filler(b, j + 1);
+                    }
+                    if b.get(j) == Some(&b'[') {
+                        j = text[j..].find(']').map_or(b.len(), |p| j + p + 1);
+                    }
+                    if let Some((command, after)) = defined_command(text, j) {
+                        if let Some(arg_spec) = balanced_group(text, after).and_then(xparse_verbatim) {
+                            self.verbatim_commands.insert(command.to_string(), arg_spec);
+                        }
+                    }
+                }
+                "newtcolorbox" | "renewtcolorbox" | "NewTColorBox" | "RenewTColorBox"
+                | "DeclareTColorBox" | "ProvideTColorBox" => {
+                    // Options that write or swallow the body verbatim.
+                    if let Some(env) = first_braced_arg(text, end) {
+                        let window = definition(text, end, 4);
+                        if TCOLORBOX_VERBATIM_KEYS.iter().any(|k| window.contains(k)) {
+                            self.verbatim_envs.insert(env.to_string());
+                        }
+                    }
+                }
+                "makepythontexfamily" => {
+                    if let Some(family) = first_braced_arg(text, end) {
+                        for suffix in ["", "b", "c", "s", "v"] {
+                            self.verbatim_commands
+                                .insert(format!("{family}{suffix}"), spec(true, 1, Delim::Either));
+                        }
+                        for suffix in ["code", "block", "verbatim", "sub", "sole", "console"] {
+                            self.verbatim_envs.insert(format!("{family}{suffix}"));
+                        }
+                    }
+                }
+                "documentclass" | "LoadClass" | "LoadClassWithOptions" => {
+                    // Classes that make `|` (and `"`) short verbs.
+                    let chars: &[u8] = match first_braced_arg(text, end) {
+                        Some("ltxdoc" | "ltxguide" | "source2edoc") => b"|",
+                        Some("l3doc" | "l3in2edoc") => b"|\"",
+                        _ => b"",
+                    };
+                    for &c in chars {
                         if !self.short_verb.contains(&c) {
                             self.short_verb.push(c);
+                        }
+                    }
+                }
+                "usepackage" | "RequirePackage" | "RequirePackageWithOptions" => {
+                    let names = balanced_group(text, skip_options(b, end)).unwrap_or("");
+                    for package in names.split(',').map(|n| n.split('%').next().unwrap_or("").trim()) {
+                        match package {
+                            // Delayed floats are copied line by line until a
+                            // line that is exactly `\end{figure}`.
+                            "endfloat" => {
+                                for env in ["figure", "figure*", "table", "table*"] {
+                                    self.verbatim_envs.insert(env.to_string());
+                                }
+                            }
+                            // `\label` reads its argument with `\@sanitize`.
+                            "showlabels" => {
+                                self.verbatim_commands
+                                    .insert("label".to_string(), spec(false, 1, Delim::Braces));
+                            }
+                            _ => {}
                         }
                     }
                 }
                 _ => {}
             }
         }
+    }
+
+    fn add_short_verb(&mut self, text: &str, end: usize) {
+        if let Some(c) = short_verb_char(text, end) {
+            if !self.short_verb.contains(&c) {
+                self.short_verb.push(c);
+            }
+        }
+    }
+
+    /// How the command `name` reads its arguments, if verbatim.
+    fn verbatim_command(&self, name: &str) -> Option<ArgSpec> {
+        builtin_verbatim_command(name).or_else(|| self.verbatim_commands.get(name).copied())
+    }
+}
+
+/// Keys of tcolorbox that write the body to a file or swallow it verbatim.
+const TCOLORBOX_VERBATIM_KEYS: &[&str] = &["saveto", "savelowerto", "void"];
+
+/// Environments whose verbatim body is only displayed, never read as TeX:
+/// definitions and `\usepackage` there are examples.
+const DISPLAYED_VERBATIM_ENVS: &[&str] = &[
+    "verbatim",
+    "verbatim*",
+    "Verbatim",
+    "Verbatim*",
+    "BVerbatim",
+    "BVerbatim*",
+    "LVerbatim",
+    "LVerbatim*",
+    "lstlisting",
+    "minted",
+    "macrocode",
+    "macrocode*",
+];
+
+fn builtin_verbatim_command(name: &str) -> Option<ArgSpec> {
+    VERBATIM_COMMANDS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, s)| *s)
+}
+
+/// Skips blanks, line ends, comments and `[...]` groups after `i`.
+fn skip_options(b: &[u8], mut i: usize) -> usize {
+    loop {
+        i = skip_filler(b, i);
+        if b.get(i) != Some(&b'[') {
+            return i;
+        }
+        i = memchr(b']', &b[i..]).map_or(b.len(), |p| i + p + 1);
     }
 }
 
@@ -441,6 +773,92 @@ fn definition(text: &str, i: usize, count: usize) -> &str {
     &text[i..floor_char_boundary(text, j.min(limit))]
 }
 
+/// How a command with this xparse argument specification reads its `v`
+/// (verbatim) argument, if it has one. With only `m`, `o`, `O{..}` and `s`
+/// before it, those are skipped as the command reads them; after any other
+/// argument type the rest of the line is kept.
+fn xparse_verbatim(spec_text: &str) -> Option<ArgSpec> {
+    let b = spec_text.as_bytes();
+    // The index after the token (`\name` or one character) at `i`.
+    let token = |i: usize| -> usize {
+        let i = skip_filler(b, i);
+        if b.get(i) != Some(&b'\\') {
+            return (i + 1).min(b.len());
+        }
+        let mut k = i + 1;
+        while k < b.len() && is_letter(b[k]) {
+            k += 1;
+        }
+        if k == i + 1 {
+            k += 1;
+        }
+        k.min(b.len())
+    };
+    // The index after the `{...}` group at `i` (or `i` without one).
+    let group = |i: usize| -> usize {
+        let i = skip_filler(b, i);
+        balanced_group(spec_text, i).map_or(i, |g| i + g.len() + 2)
+    };
+    let (mut braced, mut optional, mut star, mut regular) = (0u8, false, false, true);
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        i += 1;
+        match c {
+            b' ' | b'\t' | b'\n' | b'\r' | b'+' | b'!' | b'~' => {}
+            b'%' => i = skip_filler(b, i - 1),
+            b'>' | b'=' => i = group(i),
+            b'm' => braced = braced.saturating_add(1),
+            // Read before the first `{...}` argument only.
+            b'o' | b'O' | b's' => {
+                regular &= braced == 0;
+                if c == b's' {
+                    star = true;
+                } else {
+                    optional = true;
+                }
+                if c == b'O' {
+                    i = group(i);
+                }
+            }
+            b'v' => {
+                return Some(if regular {
+                    ArgSpec {
+                        star,
+                        optional,
+                        args: braced.saturating_add(1),
+                        delim: Delim::Either,
+                    }
+                } else {
+                    spec(false, 1, Delim::Rest)
+                });
+            }
+            b'r' | b'd' => {
+                regular = false;
+                i = token(token(i));
+            }
+            b'R' | b'D' => {
+                regular = false;
+                i = group(token(token(i)));
+            }
+            b't' => {
+                regular = false;
+                i = token(i);
+            }
+            b'e' => {
+                regular = false;
+                i = group(i);
+            }
+            b'E' => {
+                regular = false;
+                i = group(group(i));
+            }
+            _ => regular = false,
+        }
+    }
+    None
+}
+
 pub(crate) fn memchr(needle: u8, hay: &[u8]) -> Option<usize> {
     hay.iter().position(|&c| c == needle)
 }
@@ -470,12 +888,28 @@ fn skip_blanks(b: &[u8], mut i: usize) -> usize {
     i
 }
 
-/// `[name]` right after position `i` (blanks allowed).
+/// Skips what TeX skips between a command and its arguments: blanks, line
+/// ends and comments.
+fn skip_filler(b: &[u8], mut i: usize) -> usize {
+    loop {
+        while i < b.len() && matches!(b[i], b' ' | b'\t' | b'\n' | b'\r') {
+            i += 1;
+        }
+        if b.get(i) != Some(&b'%') {
+            return i;
+        }
+        while i < b.len() && b[i] != b'\n' {
+            i += 1;
+        }
+    }
+}
+
+/// `[name]` after position `i` (an optional star first).
 fn optional_arg(text: &str, i: usize) -> Option<&str> {
     let b = text.as_bytes();
-    let mut j = skip_blanks(b, i);
+    let mut j = skip_filler(b, i);
     if b.get(j) == Some(&b'*') {
-        j = skip_blanks(b, j + 1);
+        j = skip_filler(b, j + 1);
     }
     if b.get(j) != Some(&b'[') {
         return None;
@@ -485,17 +919,17 @@ fn optional_arg(text: &str, i: usize) -> Option<&str> {
     (!inner.is_empty() && !inner.contains(['{', '\\', '\n'])).then_some(inner)
 }
 
-/// The first `{name}` after position `i`, skipping blanks, a star and one
-/// `[...]` group.
+/// The first `{name}` after position `i`, skipping a star and one `[...]`
+/// group.
 fn first_braced_arg(text: &str, i: usize) -> Option<&str> {
     let b = text.as_bytes();
-    let mut j = skip_blanks(b, i);
+    let mut j = skip_filler(b, i);
     if b.get(j) == Some(&b'*') {
-        j = skip_blanks(b, j + 1);
+        j = skip_filler(b, j + 1);
     }
     if b.get(j) == Some(&b'[') {
         j = text[j..].find(']')? + j + 1;
-        j = skip_blanks(b, j);
+        j = skip_filler(b, j);
     }
     if b.get(j) != Some(&b'{') {
         return None;
@@ -505,11 +939,10 @@ fn first_braced_arg(text: &str, i: usize) -> Option<&str> {
     (!inner.is_empty() && !inner.contains(['{', '\n', '%'])).then_some(inner)
 }
 
-/// The contents of the `{...}` group (nested braces allowed) starting after
-/// blanks at `i`.
+/// The contents of the `{...}` group (nested braces allowed) at `i`.
 fn balanced_group(text: &str, i: usize) -> Option<&str> {
     let b = text.as_bytes();
-    let start = skip_blanks(b, i);
+    let start = skip_filler(b, i);
     if b.get(start) != Some(&b'{') {
         return None;
     }
@@ -529,15 +962,17 @@ fn balanced_group(text: &str, i: usize) -> Option<&str> {
     None
 }
 
-/// The command name defined at `i`: `{\name}`, `\name`, or `*{\name}`.
-fn defined_command(text: &str, i: usize) -> Option<&str> {
+/// The command name defined at `i` (`{\name}`, `\name`, or `*{\name}`) and
+/// the index after it (after the `}` when braced).
+fn defined_command(text: &str, i: usize) -> Option<(&str, usize)> {
     let b = text.as_bytes();
-    let mut j = skip_blanks(b, i);
+    let mut j = skip_filler(b, i);
     if b.get(j) == Some(&b'*') {
-        j = skip_blanks(b, j + 1);
+        j = skip_filler(b, j + 1);
     }
-    if b.get(j) == Some(&b'{') {
-        j = skip_blanks(b, j + 1);
+    let braced = b.get(j) == Some(&b'{');
+    if braced {
+        j = skip_filler(b, j + 1);
     }
     if b.get(j) != Some(&b'\\') {
         return None;
@@ -547,22 +982,32 @@ fn defined_command(text: &str, i: usize) -> Option<&str> {
     while end < b.len() && is_letter(b[end]) {
         end += 1;
     }
-    (end > start).then(|| &text[start..end])
+    if end == start {
+        return None;
+    }
+    let mut after = end;
+    if braced {
+        let k = skip_filler(b, end);
+        if b.get(k) == Some(&b'}') {
+            after = k + 1;
+        }
+    }
+    Some((&text[start..end], after))
 }
 
 /// The character of `\MakeShortVerb{\|}`, `\MakeShortVerb*\|`,
 /// `\lstMakeShortInline[opts]|` and similar.
 fn short_verb_char(text: &str, i: usize) -> Option<u8> {
     let b = text.as_bytes();
-    let mut j = skip_blanks(b, i);
+    let mut j = skip_filler(b, i);
     if b.get(j) == Some(&b'*') {
-        j += 1;
+        j = skip_filler(b, j + 1);
     }
     if b.get(j) == Some(&b'[') {
-        j = text[j..].find(']')? + j + 1;
+        j = skip_filler(b, text[j..].find(']')? + j + 1);
     }
     if b.get(j) == Some(&b'{') {
-        j += 1;
+        j = skip_filler(b, j + 1);
     }
     if b.get(j) == Some(&b'\\') {
         j += 1;
@@ -574,19 +1019,37 @@ fn short_verb_char(text: &str, i: usize) -> Option<u8> {
 
 /// An error that makes the formatter leave a file unchanged.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FormatError {
-    /// Line in the input where the token streams first differ.
-    pub line: usize,
+pub enum FormatError {
+    /// Formatting would change how TeX reads the file from this input line.
+    Changed { line: usize },
+    /// The project loads a class or package that may read text verbatim
+    /// in ways the formatter does not know (`None`: its name is computed).
+    UnknownPackage { class: bool, name: Option<String> },
 }
 
 impl fmt::Display for FormatError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "line {}: formatting would change how TeX reads the file there, so it was left unchanged \
-             (please report this as a texres bug)",
-            self.line
-        )
+        match self {
+            FormatError::Changed { line } => write!(
+                f,
+                "line {line}: formatting would change how TeX reads the file there, so it was left \
+                 unchanged (please report this as a texres bug)"
+            ),
+            FormatError::UnknownPackage { class, name } => {
+                let what = match name {
+                    Some(name) if *class => format!("the class `{name}`"),
+                    Some(name) => format!("the package `{name}`"),
+                    None => "a class or package whose name is computed".to_string(),
+                };
+                write!(
+                    f,
+                    "left unchanged: the project loads {what}, which texres fmt does not know; \
+                     it may read text verbatim. If it does not, or once its verbatim environments \
+                     and commands are listed in `verbatim-envs` and `verbatim-commands`, add it \
+                     to `known-packages` in .texresfmt.toml"
+                )
+            }
+        }
     }
 }
 
@@ -632,9 +1095,26 @@ impl Lexicon<'_> {
             || self.cfg.verbatim_envs.iter().any(|e| e == name)
     }
 
+    /// Whether the body of `\begin{name}` followed by `rest` (the rest of
+    /// its line) is verbatim: a verbatim environment, or one given
+    /// tcolorbox's `saveto`, `savelowerto` or `void` key.
+    pub fn is_verbatim_instance(&self, name: &str, rest: &str) -> bool {
+        self.is_verbatim_env(name)
+            || (rest.trim_start_matches([' ', '\t']).starts_with('[')
+                && TCOLORBOX_VERBATIM_KEYS.iter().any(|k| rest.contains(k)))
+    }
+
+    /// How the arguments right after `\begin{name}` are read, if verbatim.
+    pub fn verbatim_env_args(&self, name: &str) -> Option<ArgSpec> {
+        VERBATIM_ARGUMENT_ENVS
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, s)| *s)
+    }
+
     pub fn verbatim_command(&self, name: &str) -> Option<ArgSpec> {
-        if let Some((_, s)) = VERBATIM_COMMANDS.iter().find(|(n, _)| *n == name) {
-            return Some(*s);
+        if let Some(s) = builtin_verbatim_command(name) {
+            return Some(s);
         }
         if !self.extras.verbatim_commands.is_empty() {
             if let Some(s) = self.extras.verbatim_commands.get(name) {
@@ -676,6 +1156,12 @@ pub fn format_source(
     if formatted == source {
         return Ok(formatted);
     }
+    if let Some(unknown) = extras.sections.unvetted(&config.known_packages) {
+        return Err(FormatError::UnknownPackage {
+            class: unknown.is_some_and(|(kind, _)| kind == FileKind::Class),
+            name: unknown.map(|(_, name)| name.to_string()),
+        });
+    }
     let allow = Allowances {
         par_sections: tokens::section_tokens(par_sections),
         spaces_around_ampersands: config.align_columns,
@@ -686,7 +1172,7 @@ pub fn format_source(
     };
     match tokens::first_difference(source, &formatted, &allow, lex, kind) {
         None => Ok(formatted),
-        Some((line, _)) => Err(FormatError { line }),
+        Some((line, _)) => Err(FormatError::Changed { line }),
     }
 }
 
@@ -700,6 +1186,8 @@ enum Kind {
         fragile: bool,
     },
     Item,
+    /// `\begingroup ... \endgroup`
+    Semi,
     /// `\[ ... \]`
     Display,
     /// `\( ... \)`
@@ -713,8 +1201,8 @@ struct Frame {
     nowrap: bool,
     /// `$` and `$$` state when the frame opened, restored when it closes.
     saved_math: (bool, bool),
-    /// Whether `@` was a letter when the frame opened; a brace group's end
-    /// restores it (`{\makeatletter ...}`).
+    /// Whether `@` was a letter when the frame opened; the end of a group
+    /// restores it (`{\makeatletter ...}`, `\begin{x}\makeatletter\end{x}`).
     saved_at: bool,
 }
 
@@ -1086,9 +1574,7 @@ impl<'a> Formatter<'a> {
             if !matches!(frame.kind, Kind::Display | Kind::Inline) {
                 (self.st.dollar, self.st.ddollar) = frame.saved_math;
             }
-            if matches!(frame.kind, Kind::Brace) {
-                self.st.at_letter = frame.saved_at;
-            }
+            self.st.at_letter = frame.saved_at;
             if self.st.guard.is_some_and(|g| self.st.groups < g) {
                 self.st.guard = None;
             }
@@ -1122,6 +1608,45 @@ impl<'a> Formatter<'a> {
 
     fn can_break(&self) -> bool {
         self.cfg.wrap && !self.st.in_preamble && self.st.nowrap == 0 && !self.in_math()
+    }
+
+    /// Skips the verbatim arguments read as `spec` says from `from` in the
+    /// line `b` (of a command or environment at `cs_start`). Returns where
+    /// lexing resumes, or `None` when they continue on the next line.
+    fn verbatim_span(
+        &mut self,
+        b: &[u8],
+        from: usize,
+        cs_start: usize,
+        spec: ArgSpec,
+        sc: &mut Scan,
+    ) -> Option<usize> {
+        let mut span = Span {
+            spec,
+            done: 0,
+            depth: 0,
+        };
+        match scan_span(b, from, &mut span) {
+            Some(e) => {
+                // Keep the rest of the line when the span runs to its end
+                // (its trailing blanks may be verbatim) or holds a `%`: read
+                // with ordinary category codes, everything after that `%`
+                // would be a comment, so the safety check could not compare
+                // it.
+                let to_end = e >= b.len() && span.done < span.spec.args;
+                if (to_end || b[from..e.max(from)].contains(&b'%')) && sc.raw_from.is_none() {
+                    sc.raw_from = Some(cs_start);
+                }
+                Some(e)
+            }
+            None => {
+                if sc.raw_from.is_none() {
+                    sc.raw_from = Some(cs_start);
+                }
+                self.st.raw = Some(Raw::Span(span));
+                None
+            }
+        }
     }
 
     fn lex(&self) -> Lexicon<'a> {
@@ -1306,7 +1831,7 @@ impl<'a> Formatter<'a> {
                             };
                             i = after;
                             after_command = false;
-                            if self.lex().is_verbatim_env(env) {
+                            if self.lex().is_verbatim_instance(env, &line[after..]) {
                                 let end: Rc<str> = format!("\\end{{{env}}}").into();
                                 if sc.raw_from.is_none() {
                                     sc.raw_from = Some(after);
@@ -1346,6 +1871,12 @@ impl<'a> Formatter<'a> {
                                 indent_body,
                                 nowrap,
                             );
+                            if let Some(arg_spec) = self.lex().verbatim_env_args(env) {
+                                match self.verbatim_span(b, after, cs_start, arg_spec, &mut sc) {
+                                    Some(e) => i = e,
+                                    None => break,
+                                }
+                            }
                         }
                         "end" => {
                             let Some((env, after)) = env_name(line, i) else {
@@ -1408,6 +1939,18 @@ impl<'a> Formatter<'a> {
                             content!();
                             self.st.at_letter = name == "makeatletter";
                         }
+                        "begingroup" => {
+                            content!();
+                            self.push(Kind::Semi, false, false);
+                        }
+                        "endgroup" => {
+                            content!();
+                            self.pop_to(
+                                |f| matches!(f.kind, Kind::Semi),
+                                |f| matches!(f.kind, Kind::Brace | Kind::Env { .. }),
+                            );
+                            track_min!();
+                        }
                         _ => {
                             content!();
                             if sc.content_start == cs_start
@@ -1417,40 +1960,9 @@ impl<'a> Formatter<'a> {
                                 sc.section = true;
                             }
                             if let Some(arg_spec) = self.lex().verbatim_command(name) {
-                                let mut j = i;
-                                if matches!(name, "verb" | "Verb" | "spverb")
-                                    && b.get(j) == Some(&b'*')
-                                {
-                                    j += 1;
-                                }
-                                let mut span = Span {
-                                    spec: arg_spec,
-                                    done: 0,
-                                    depth: 0,
-                                };
-                                match scan_span(b, j, &mut span) {
-                                    Some(e) => {
-                                        // Keep the rest of the line when the span runs
-                                        // to its end (its trailing blanks may be verbatim)
-                                        // or holds a `%`: read with ordinary category
-                                        // codes, everything after that `%` would be a
-                                        // comment, so the safety check could not
-                                        // compare it.
-                                        let to_end = e >= b.len() && span.done < span.spec.args;
-                                        if (to_end || b[j..e].contains(&b'%'))
-                                            && sc.raw_from.is_none()
-                                        {
-                                            sc.raw_from = Some(cs_start);
-                                        }
-                                        i = e;
-                                    }
-                                    None => {
-                                        if sc.raw_from.is_none() {
-                                            sc.raw_from = Some(cs_start);
-                                        }
-                                        self.st.raw = Some(Raw::Span(span));
-                                        break;
-                                    }
+                                match self.verbatim_span(b, i, cs_start, arg_spec, &mut sc) {
+                                    Some(e) => i = e,
+                                    None => break,
                                 }
                                 after_command = false;
                             } else if GUARD_WORDS.contains(&name)
@@ -1487,7 +1999,9 @@ impl<'a> Formatter<'a> {
                 b'[' => {
                     content!();
                     i += 1;
-                    if after_command && modifiable && line_ends_open(b, i) {
+                    // A wrap point ends the line as much as its real end.
+                    let line_end = stop_at.map_or(b.len(), |s| s.min(b.len()));
+                    if after_command && modifiable && line_ends_open(&b[..line_end], i) {
                         self.push(Kind::Bracket, true, false);
                     }
                     after_command = false;
@@ -1886,6 +2400,9 @@ fn is_closing(c: u8) -> bool {
 /// Scans the arguments of a verbatim-like command from `i`. Returns the end
 /// of the span, or `None` when a braced argument continues on the next line.
 pub(crate) fn scan_span(b: &[u8], mut i: usize, span: &mut Span) -> Option<usize> {
+    if matches!(span.spec.delim, Delim::Statement | Delim::Rest) {
+        return scan_statement(b, i, span);
+    }
     loop {
         if span.depth > 0 {
             while i < b.len() {
@@ -1912,7 +2429,10 @@ pub(crate) fn scan_span(b: &[u8], mut i: usize, span: &mut Span) -> Option<usize
             }
             continue;
         }
-        let j = skip_blanks(b, i);
+        let mut j = skip_blanks(b, i);
+        if span.spec.star && span.done == 0 && b.get(j) == Some(&b'*') {
+            j = skip_blanks(b, j + 1);
+        }
         if j >= b.len() {
             return Some(i);
         }
@@ -1922,6 +2442,20 @@ pub(crate) fn scan_span(b: &[u8], mut i: usize, span: &mut Span) -> Option<usize
             // mention it without using it.
             c if span.spec.delim == Delim::Only && !matches!(c, b'}' | b'\\') => {
                 return Some(memchr(c, &b[j + 1..]).map_or(b.len(), |p| j + p + 2));
+            }
+            // Before the last argument a control sequence is an argument
+            // (`\pgfplotstablesort[...]\result{...}`).
+            b'\\' if !last => {
+                let mut k = j + 1;
+                if b.get(k).is_some_and(|&c| is_letter(c)) {
+                    while k < b.len() && is_letter(b[k]) {
+                        k += 1;
+                    }
+                } else {
+                    k += 1;
+                }
+                span.done += 1;
+                i = k.min(b.len());
             }
             // For other commands a closing bracket, `\`, `%` or punctuation
             // after the name means it is mentioned, not used: `{\url}`.
@@ -1951,6 +2485,34 @@ pub(crate) fn scan_span(b: &[u8], mut i: usize, span: &mut Span) -> Option<usize
             _ => return Some(i),
         }
     }
+}
+
+/// Scans a statement up to its `;` outside braces (`\addplot ... ;`), or
+/// for `Delim::Rest` to the end of the line, over several lines while
+/// braces are open; a `}` that closes an enclosing group ends either
+/// (`{\addplot}` mentions the command).
+fn scan_statement(b: &[u8], mut i: usize, span: &mut Span) -> Option<usize> {
+    let statement = span.spec.delim == Delim::Statement;
+    while i < b.len() {
+        match b[i] {
+            b'\\' => i += 1,
+            b'%' if statement => return None,
+            b'{' => span.depth += 1,
+            b'}' if span.depth == 0 => {
+                span.done = span.spec.args;
+                return Some(i);
+            }
+            b'}' => span.depth -= 1,
+            b';' if statement && span.depth == 0 => {
+                span.done = span.spec.args;
+                return Some(i + 1);
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    // The rest of the line, unless a group stays open.
+    (!statement && span.depth == 0).then_some(b.len())
 }
 
 /// Whether `\catcode` at `i` may change the category of a blank or the

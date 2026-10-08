@@ -373,9 +373,10 @@ modes (`-dvi`, `-ps`, `-pdfdvi`, `-pdfps`).
 
 ## Formatting
 
-`texres fmt FILE...` rewrites LaTeX files in place. A folder stands for the
-`.tex`, `.sty`, `.cls` and `.ltx` files in it and its subfolders (hidden
-folders are skipped). `.bib`, `.dtx` and `.ins` files are refused.
+`texres fmt FILE...` rewrites LaTeX files and BibTeX databases in place. A
+folder stands for the `.tex`, `.sty`, `.cls`, `.ltx` and `.bib` files in it
+and its subfolders (hidden folders are skipped). `.dtx`, `.ins`, `.bst` and
+`.bbl` files are refused.
 
 What it changes:
 
@@ -387,10 +388,21 @@ What it changes:
   a newline, and runs of blank lines shrink to one (not after a line that
   ends in a command such as `\fbox`, which may take the first blank line as
   its argument);
-- a blank line goes before `\part`, `\chapter`, `\section`, `\subsection` and
-  `\subsubsection` when they are not inside an environment (other than
-  `document`) and the line before ends in text, `}` or `$`, not in a command
-  or a comment.
+- a blank line goes before `\section`, `\subsection` and `\subsubsection`
+  (and `\part` in `article` and the AMS article classes) when they are not
+  inside an environment (other than `document`), the line before ends in
+  text, `}` or `$`, not in a command or a comment, and the command is known
+  to start a new paragraph by itself. That is the case when the class is
+  `article`, `report`, `book`, `amsart`, `amsproc`, `amsbook`, `llncs` or
+  `elsarticle`, every package is one of about 340 common ones checked not
+  to change these commands (or a file of the project), no file of the
+  project redefines them (unless the new definition itself starts with
+  `\par` or `\@startsection`), and every file the project `\input`s is
+  there. A class or package that redefines `\section` may rely on the
+  paragraph still being open (a CV class that starts `\subsubsection` with
+  `\linebreak`, for instance), so with any other class or package no blank
+  line is added. `\chapter` never gets one: it starts with `\clearpage`,
+  which behaves differently once the paragraph has ended.
 
 It does not join lines and does not touch: verbatim environments
 (`verbatim`, `Verbatim`, `lstlisting`, `minted`, `comment`, `filecontents`,
@@ -403,15 +415,45 @@ text of `%` comments, the `\end{frame}` line of fragile beamer frames, and any
 group that changes how spaces or line ends are read (`\obeylines`,
 `\obeyspaces`, `\catcode` of a space). Before it writes a file, `texres fmt`
 reads the old and the new text the way TeX does, verbatim text character by
-character; if they differ in more than the changes above, the file is left as
-it was and the command exits with status 1.
+character; if they differ in more than the changes above (a new blank line,
+which TeX reads as `\par`, is accepted only before the sectioning commands
+the rule above allows), the file is left as it was and the command exits
+with status 1.
+
+**Leaving parts alone.** Lines from `% texres-fmt: off` to
+`% texres-fmt: on` are copied unchanged, and so is a line that ends with
+`% texres-fmt: skip`; `% texres-fmt: skip` on a line of its own also keeps
+the line after it. tex-fmt's spelling (`% tex-fmt: off`, `on`, `skip`) works
+too. Without an `on`, the rest of the file is kept.
+
+**BibTeX files.** Each entry gets its type and key on the first line, one
+field per line indented by `indent-width`, the `=` signs aligned, a comma
+after the last field and the closing brace on its own line; entries are
+separated by one blank line:
+
+```bibtex
+@article{knuth84,
+  author  = {Donald E. Knuth},
+  title   = {Literate Programming},
+  journal = cj,
+  year    = 1984,
+}
+```
+
+Entry types, keys, field names and values (braces, quotes, `#`
+concatenations and line breaks inside a value) are copied exactly, so BibTeX
+and Biber read the same database. `@string`, `@preamble` and `@comment`,
+text between entries, entries on a line after a `%`, and entries that do not
+follow the plain `name = value` form (a `%` comment inside one, say) are left
+as they are. An entry whose braces do not balance leaves the whole file
+unchanged.
 
 | Option | |
 |---|---|
 | `--check` | change nothing; print the files that would change; exit 1 if there are any |
 | `--diff` | change nothing; print the changes as a unified diff |
 | `-`, `--stdin` | read standard input, write the result to standard output (also when no files are given and input is piped) |
-| `--stdin-filename PATH` | with standard input: use the settings for `PATH` |
+| `--stdin-filename PATH` | with standard input: use the settings and project definitions for `PATH`, and format BibTeX if it ends in `.bib` |
 | `--config FILE` | use these settings instead of `.texresfmt.toml` |
 | `--print-config` | print the settings in effect |
 
@@ -503,7 +545,7 @@ repos:
         name: texres fmt
         entry: texres fmt
         language: system
-        files: \.(tex|sty|cls)$
+        files: \.(tex|sty|cls|bib)$
 ```
 
 The hook formats the staged files; pre-commit stops the commit when it changed

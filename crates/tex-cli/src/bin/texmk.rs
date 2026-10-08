@@ -302,7 +302,7 @@ fn usage() {
   -h, --help                    this text
   -v, --version                 version
 Viewer options (-view=..., -pv, -new-viewer) are accepted and ignored.
-Other commands: texres fmt [--check] FILE...   format LaTeX sources (see texres fmt --help)
+Other commands: texres fmt [--check] FILE...   format LaTeX sources and .bib files (see texres fmt --help)
                 texres latexdiff OLD.tex NEW.tex DIFF.tex"
     );
 }

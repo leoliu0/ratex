@@ -446,7 +446,7 @@ order; only those are compared order-insensitively. The `biber` binary and the
 
 ## Source formatter (`crates/tex-format`)
 
-`texres fmt` is `tex_format::cli::run`. The library has four parts:
+`texres fmt` is `tex_format::cli::run`. The library has these parts:
 
 - `format.rs`: one pass over the lines with a small lexer. It keeps a stack
   of open frames (`{` groups, environments, `\item` bodies, `\[`, `\(`, and
@@ -467,37 +467,79 @@ order; only those are compared order-insensitively. The `biber` binary and the
   recorded during lexing; only those may become line breaks (`\item` split,
   wrapping) or have tabs replaced. Wrapping re-lexes the line from a saved
   state up to the chosen break, so continuation lines get the indentation a
-  second run computes (formatting is idempotent). Column alignment runs after
-  the pass, per environment instance.
+  second run computes (formatting is idempotent); the state is only saved
+  for lines that may be too wide (indentation at most the current level, a
+  tab at most a tab stop). Column alignment runs after the pass, per
+  environment instance. Lines between `% texres-fmt: off` and `on` (or
+  tex-fmt's `% tex-fmt: ...`) and lines marked `skip` are lexed, to keep
+  the frame stack right, and emitted as `Kept`; a marker inside raw
+  material is text.
 - `Extras::scan` collects project definitions (`\lstnewenvironment`,
   `\DefineVerbatimEnvironment`, `\newminted`, `\newmintinline`,
   `\DeclareUrlCommand`, xparse `v` arguments, `\newenvironment` built on
   verbatim, commands defined with `\verb`/`\catcode`/`\obeylines`,
-  `\MakeShortVerb`). The CLI scans the files being formatted and the
-  `.tex`/`.sty`/`.cls` files next to them.
+  `\MakeShortVerb`) and feeds every control word to `SectionFacts::note`.
+  The CLI scans the files being formatted and the `.tex`/`.sty`/`.cls`
+  files next to them, then the project classes, packages and `\input`,
+  `\include`, `\subfile`, `\import` files they name (`SectionFacts::wanted`
+  and `resolve`), looked up in the listed directories.
+- `sections.rs`: where a blank line (a `\par`) may go before a sectioning
+  command. It is a no-op only if the command starts with `\par` itself, as
+  `\@startsection` does, given that `\par\par` reads like `\par`.
+  `par_sections` returns the commands for which that is known: the class is
+  in `VETTED_CLASSES` (a project class counts only as a layer over one),
+  every package is in `SAFE_PACKAGES` or a project file, no project file
+  defines, `\let`s, patches, hooks (`cmd/section/...`) or `\csname`-defines
+  the command or `\@startsection` (a definition whose body starts with
+  `\par` or `\@startsection` is fine), every named file was found, and
+  there is no `\DocumentMetadata`. A sectioning command preceded (across
+  blanks, comments, `{` and `*`) by a control word other than a few
+  harmless ones (`\clearpage`, `\appendix`, ...) counts as touched.
+  `SAFE_PACKAGES` was built from TeX Live 2025: packages whose sources and
+  every file they load neither define nor patch nor hook into `\part`,
+  `\section`, `\subsection`, `\subsubsection` or `\@startsection`, plus
+  packages whose only hits were uses (natbib's `\bibsection`) or patches
+  after the leading `\par` (parskip, biblatex's `refsection` hook), checked
+  by reading them; titlesec (it assigns `\thetitle` before its `\par`) and
+  placeins are out. Extending either list needs the same check.
 - `tokens.rs`: the safety check. Input and output are tokenized as TeX reads
   them (category codes of a LaTeX document, `@` as in the formatter, state
   N/M/S per line, trailing spaces dropped, `^^` notation). Verbatim material
   is compared character by character, blanks and line ends included: the
   arguments of verbatim commands (found by the formatter's `Lexicon` and
   scanned with its `scan_span`), short-verb text and verbatim environment
-  bodies. The token lists are compared after normalizing runs of
-  `\par` to one and dropping a `\par` right before a sectioning command (both
-  only after an inactive character, `}`, `$` or `&`: after a control
-  sequence the first `\par` may be its argument, as with `\fbox` followed by
-  blank lines), and (with `align-columns`) dropping spaces next to `&`. The
-  formatter applies the same rule (`ends_safely`) before it drops or adds a
-  blank line. A difference makes `format_source` return an error and the
-  file is left unchanged.
+  bodies. Both texts are read one line at a time and compared as they go
+  (`Stream`, tokens packed into 64 bits); identical texts are not compared.
+  The normalization (`Normalizer`) turns runs of `\par` into one and drops
+  a `\par` right before a sectioning command that `par_sections` allows
+  (both only after an inactive character, `}`, `$` or `&`: after a control
+  sequence the first `\par` may be its argument, as with `\fbox` followed
+  by blank lines), and (with `align-columns`) drops spaces next to `&`; any
+  other `\par` that appears or disappears is a difference. The formatter
+  applies the same rules (`ends_safely`, `par_sections`) before it drops or
+  adds a blank line. A difference makes `format_source` return an error and
+  the file is left unchanged.
+- `bib.rs`: BibTeX databases. `parse` splits the text into entries, kept
+  pieces and text outside entries the way BibTeX does (an entry runs to its
+  matching `}`, or for `@type(...)` to the first `)` outside braces);
+  `@string`, `@preamble`, `@comment`, entries after a `%` on their line and
+  entries that do not follow `@type{key, name = value, ...}` exactly are
+  kept. `format_bib` rewrites entries with one field per line and aligned
+  `=`, copying types, keys, names and values byte for byte, puts one blank
+  line next to each entry, then parses its own output and compares the
+  items (text outside entries only up to blanks).
 - `diff.rs` (unified diffs, Myers with linear-space bisection) and
   `config.rs` (`.texresfmt.toml`: top-level keys only, unknown keys are
   errors).
 
 Tests: `crates/tex-format/tests/format.rs` has one test per rule and safety
-case and checks idempotence for each. The output-identity check is manual:
-format every document of the benchmark corpus and the repository's `.tex`
-fixtures, rebuild both versions with `SOURCE_DATE_EPOCH`/`FORCE_SOURCE_DATE`
-and compare the PDFs byte for byte.
+case and checks idempotence for each; `sections.rs` and `bib.rs` have unit
+tests. The output-identity check is manual: format every document of the
+benchmark corpus and the repository's `.tex` fixtures (and their `.bib`
+files), rebuild both versions with `SOURCE_DATE_EPOCH`/`FORCE_SOURCE_DATE`
+and compare the PDFs byte for byte, the `.bbl` files, and the counts of
+errors and warnings in the logs. The CLI formats files on all cores
+(`parallel_map`) and reports results in order.
 
 ## Reference moved from the README
 
@@ -656,7 +698,7 @@ texres/
 │   ├── tex-bibtex/      # BibTeX implementation
 │   ├── tex-biber/       # Biber (biblatex backend) implementation
 │   ├── tex-cli/         # `texres` executable: build driver, engine/BibTeX personalities, latexdiff
-│   ├── tex-format/      # `texres fmt`: LaTeX source formatter
+│   ├── tex-format/      # `texres fmt`: LaTeX source and BibTeX database formatter
 │   ├── tex-lua/         # Lua VM used by the LuaTeX-compatible mode
 │   ├── tex-mplib/       # MetaPost engine (mplib)
 │   ├── tex-ps/          # PostScript/EPS interpreter and PDF renderer

@@ -100,6 +100,11 @@ struct Options {
     change_directory: bool,
     /// latexmk's `$compiling_cmd`, `$success_cmd` and `$failure_cmd`.
     hooks: Hooks,
+    /// latexmk `-view=none`: in `-pvc` mode the hooks' `%D` is empty.
+    view_none: bool,
+    /// latexmk `-MSWinBackSlash` (the default): on Windows the hooks' file
+    /// name placeholders use `\`.
+    ms_win_back_slash: bool,
 }
 
 /// Shell commands that `-pvc` runs around each build, as latexmk runs its
@@ -161,14 +166,80 @@ fn perl_string_literal(text: &str) -> Option<&str> {
     (!inner.contains([quote, '\\']) && !interpolates).then_some(inner)
 }
 
+/// The command latexmk's `Run_subst` runs for a hook outside any rule:
+/// `%S`/`%T`/`%P` the main file, `%A` its base name, `%R`/`%B` the job, `%D`
+/// the PDF it views (none with `-view=none`), `%V`/`%W` the auxiliary and
+/// output directories, `%Y`/`%Z` the same as prefixes, `%O`/`%U` empty and
+/// `%%` a `%`. File names are in double quotes; other `%` pairs stay.
+fn substitute_placeholders(command: &str, opt: &Options) -> String {
+    let quoted = |text: &str| format!("\"{text}\"");
+    let texfile = if !opt.file.is_file() && opt.file.extension() != Some(OsStr::new("tex")) {
+        format!("{}.tex", opt.file.display())
+    } else {
+        opt.file.display().to_string()
+    };
+    let basename = Path::new(&texfile).file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
+    let root = opt.jobname.clone().unwrap_or_else(|| basename.clone());
+    let prefix = |dir: &str| match dir {
+        "." => String::new(),
+        dir if dir.ends_with(['/', '\\', ':']) => dir.to_string(),
+        dir => format!("{dir}/"),
+    };
+    let out_dir = opt.out_dir.as_ref().map_or_else(|| ".".to_string(), |dir| dir.display().to_string());
+    let aux_dir = opt.aux_dir.as_ref().map_or_else(|| out_dir.clone(), |dir| dir.display().to_string());
+    let (out_prefix, aux_prefix) = (prefix(&out_dir), prefix(&aux_dir));
+    let view = if opt.view_none { String::new() } else { format!("{out_prefix}{root}.pdf") };
+    let mut table = vec![
+        ("%A", quoted(&basename)),
+        ("%B", quoted(&root)),
+        ("%D", quoted(&view)),
+        ("%O", String::new()),
+        ("%R", quoted(&root)),
+        ("%S", quoted(&texfile)),
+        ("%T", quoted(&texfile)),
+        ("%V", quoted(&aux_dir)),
+        ("%W", quoted(&out_dir)),
+        ("%Y", quoted(&aux_prefix)),
+        ("%Z", quoted(&out_prefix)),
+        ("%%", "%".to_string()),
+        ("%U", String::new()),
+        ("%P", quoted(&texfile)),
+    ];
+    if cfg!(windows) && opt.ms_win_back_slash {
+        for (token, value) in &mut table {
+            if ["%R", "%B", "%T", "%S", "%D", "%Y", "%Z"].contains(token) {
+                *value = value.replace('/', "\\");
+            }
+        }
+    }
+    // Perl's `split /(%.)/`: a `%` and the character after it (not a newline).
+    let mut out = String::with_capacity(command.len());
+    let mut chars = command.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
+        let next = chars.peek().map(|&(_, next)| next).filter(|&next| c == '%' && next != '\n');
+        let Some(next) = next else {
+            out.push(c);
+            continue;
+        };
+        chars.next();
+        let token = &command[at..at + 1 + next.len_utf8()];
+        match table.iter().find(|(name, _)| *name == token) {
+            Some((_, value)) => out.push_str(value),
+            None => out.push_str(token),
+        }
+    }
+    out
+}
+
 /// Run hook commands through the shell, as latexmk does, sharing texres's
 /// standard output so that an editor reading it sees what they print.
-fn run_hooks(commands: &[String]) {
+fn run_hooks(commands: &[String], opt: &Options) {
     for command in commands {
+        let command = substitute_placeholders(command, opt);
         let status = if cfg!(windows) {
-            Command::new("cmd").arg("/C").arg(command).status()
+            Command::new("cmd").arg("/C").arg(&command).status()
         } else {
-            Command::new("sh").arg("-c").arg(command).status()
+            Command::new("sh").arg("-c").arg(&command).status()
         };
         if let Err(error) = status {
             eprintln!("texmk: warning: cannot run `{command}`: {error}");
@@ -290,7 +361,7 @@ fn usage() {
   -pvc, --watch, -w              build, then rebuild whenever an input changes
                                  (Ctrl-C stops; cannot be combined with -c/-C)
   -e '$success_cmd = \"CMD\"'      with -pvc, run CMD after each good build
-                                 (also $compiling_cmd, $failure_cmd)
+                                 (also $compiling_cmd, $failure_cmd; %D is the PDF)
   -cd                            build in the directory of file.tex
   -f                             publish the PDF even when TeX reports errors
   -interaction=MODE             passed to the engine (default nonstopmode)
@@ -322,6 +393,8 @@ fn parse_args(argv: &[String]) -> Result<Options, String> {
     let mut rebuild = false;
     let mut change_directory = false;
     let mut hooks = Hooks::default();
+    let mut view_none = false;
+    let mut ms_win_back_slash = true;
     let mut engine: Option<String> = None;
     let mut passthrough: Vec<String> = Vec::new();
     let mut i = 1;
@@ -394,10 +467,13 @@ fn parse_args(argv: &[String]) -> Result<Options, String> {
             // texres opens no viewer, has no timeout in -pvc mode, always
             // records inputs, reads no latexmkrc and runs BibTeX or Biber
             // whenever the document needs it.
-            "-view" | "-pv" | "-pv-" | "-new-viewer" | "-new-viewer-" | "-pvctimeout"
+            "-view" => view_none = inline_val.as_deref() == Some("none"),
+            "-MSWinBackSlash" => ms_win_back_slash = true,
+            "-MSWinBackSlash-" => ms_win_back_slash = false,
+            "-pv" | "-pv-" | "-new-viewer" | "-new-viewer-" | "-pvctimeout"
             | "-pvctimeout-" | "-pvctimeoutmins" | "-emulate-aux-dir" | "-noemulate-aux-dir"
             | "-recorder" | "-recorder-" | "-norc" | "-bibtex" | "-bibtex-cond"
-            | "-bibtex-cond1" | "-MSWinBackSlash" | "-MSWinBackSlash-" => {}
+            | "-bibtex-cond1" => {}
             "-bibtex-" | "-nobibtex" => {
                 return Err(format!(
                     "{key} is not supported: texres runs BibTeX or Biber whenever the document needs it"
@@ -486,6 +562,8 @@ fn parse_args(argv: &[String]) -> Result<Options, String> {
             rebuild,
             change_directory,
             hooks,
+            view_none,
+            ms_win_back_slash,
         }),
         None => Err("no input file".to_string()),
     }
@@ -3844,6 +3922,19 @@ fn build(opt: &Options, info: &mut BuildInfo) -> i32 {
     }
     while passes < MAX_PASSES {
         passes += 1;
+        // Every pass rewrites the auxiliary files: until it finishes they are
+        // possibly truncated again (the mark before the loop covers pass 1).
+        if !manifest.unfinished_pass {
+            manifest.unfinished_pass = true;
+            if let Err(error) = write_manifest(&manifest_path, &manifest) {
+                eprintln!(
+                    "texmk: cannot write cache manifest {}: {error}",
+                    manifest_path.display()
+                );
+                retain_requested(&retention, &mut manifest);
+                return 1;
+            }
+        }
         let snap_before = match strict_state_snapshot(&aux_dir) {
             Ok(snapshot) => snapshot,
             Err(error) => {
@@ -4483,13 +4574,13 @@ fn watch_main(opt: &Options) -> i32 {
     loop {
         let mut info = BuildInfo::default();
         let timer = Instant::now();
-        run_hooks(&opt.hooks.compiling);
+        run_hooks(&opt.hooks.compiling, opt);
         let code = build(opt, &mut info);
         let elapsed = timer.elapsed();
         if watch::interrupted() {
             return 0;
         }
-        run_hooks(if code == 0 { &opt.hooks.success } else { &opt.hooks.failure });
+        run_hooks(if code == 0 { &opt.hooks.success } else { &opt.hooks.failure }, opt);
         match &info.inputs {
             Some(inputs) => {
                 let dependencies = watch_dependencies(inputs, code != 0, &tracker);
@@ -4876,6 +4967,40 @@ mod latexmk_option_tests {
             let error = apply_latexmk_code(code, &mut Hooks::default()).unwrap_err();
             assert!(error.contains("$compiling_cmd, $success_cmd and $failure_cmd"), "{error}");
         }
+    }
+
+    /// What the hook `echo A=%A ... Q=%Q` printed under latexmk 4.87
+    /// (TeX Live 2026) with these options; only `-view=none` was run with
+    /// `-pvc` (the others agree with and without it).
+    #[cfg(unix)]
+    #[test]
+    fn hook_placeholders_are_latexmks() {
+        let hook = "echo A=%A B=%B D=%D O=%O R=%R S=%S T=%T V=%V W=%W Y=%Y Z=%Z P=%P U=%U pct=%% Q=%Q";
+        for (args, printed) in [
+            (
+                &["-pvc", "main.tex"][..],
+                "A=main B=main D=main.pdf O= R=main S=main.tex T=main.tex V=. W=. Y= Z= P=main.tex U= pct=% Q=%Q",
+            ),
+            (
+                &["-pvc", "-outdir=build", "main.tex"][..],
+                "A=main B=main D=build/main.pdf O= R=main S=main.tex T=main.tex V=build W=build Y=build/ Z=build/ P=main.tex U= pct=% Q=%Q",
+            ),
+            (
+                &["-pvc", "-view=none", "-outdir=b2", "-auxdir=a2", "main.tex"][..],
+                "A=main B=main D= O= R=main S=main.tex T=main.tex V=a2 W=b2 Y=a2/ Z=b2/ P=main.tex U= pct=% Q=%Q",
+            ),
+            (
+                &["-pvc", "-jobname=jj", "sub/doc.tex"][..],
+                "A=doc B=jj D=jj.pdf O= R=jj S=sub/doc.tex T=sub/doc.tex V=. W=. Y= Z= P=sub/doc.tex U= pct=% Q=%Q",
+            ),
+        ] {
+            let command = substitute_placeholders(hook, &parse(args).unwrap());
+            let output = Command::new("sh").arg("-c").arg(&command).output().unwrap();
+            assert_eq!(String::from_utf8_lossy(&output.stdout).trim_end(), printed, "{args:?}: {command}");
+        }
+        // A quoted name keeps its spaces; `%` before a newline is no placeholder.
+        let spaced = parse(&["-pvc", "my doc.tex"]).unwrap();
+        assert_eq!(substitute_placeholders("open %D%\n", &spaced), "open \"my doc.pdf\"%\n");
     }
 
     /// The latexmk command lines of vimtex (continuous mode), LaTeX

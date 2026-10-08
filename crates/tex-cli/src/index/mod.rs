@@ -70,7 +70,9 @@ fn announced_indexes(log: &str) -> Vec<String> {
         } else {
             continue;
         };
-        let name = name.trim_end().to_string();
+        // TeX quotes a name with spaces (`"my doc".idx`); the file's name
+        // has no quotes.
+        let name = name.trim_end().replace('"', "");
         if name.ends_with(".idx") && !found.contains(&name) {
             found.push(name);
         }
@@ -79,9 +81,17 @@ fn announced_indexes(log: &str) -> Vec<String> {
 }
 
 /// Makeindex jobs for the indexes a pass announced in its transcript `log`.
+/// The document controls the transcript, so only names inside `aux_dir`
+/// (relative, without `..`) are taken: makeindex replaces the `.ind` and
+/// `.ilg` beside the index.
 pub fn plan(log: &str, aux_dir: &Path) -> Vec<Job> {
+    use std::path::Component;
     let mut jobs = Vec::new();
     for name in announced_indexes(log) {
+        let inside = Path::new(&name).components().all(|part| matches!(part, Component::Normal(_) | Component::CurDir));
+        if !inside {
+            continue;
+        }
         let idx = aux_dir.join(&name);
         if !idx.is_file() {
             continue;
@@ -150,5 +160,30 @@ mod tests {
         let long = format!("Writing index file {}.idx", "x".repeat(70));
         let (head, tail) = long.split_at(LOG_LINE_WIDTH);
         assert_eq!(announced_indexes(&format!("{head}\n{tail}\n")), [long["Writing index file ".len()..].to_string()]);
+    }
+
+    #[test]
+    fn quoted_names_announce_the_unquoted_file() {
+        // TeX Live 2026 pdflatex on `my doc.tex`.
+        assert_eq!(announced_indexes("Writing index file \"my doc\".idx\n"), ["my doc.idx"]);
+    }
+
+    #[test]
+    fn jobs_stay_inside_the_aux_directory() {
+        let root = std::env::temp_dir().join(format!("texres-index-plan-{}", std::process::id()));
+        let aux = root.join("aux");
+        std::fs::create_dir_all(aux.join("sub")).unwrap();
+        for file in ["victim.idx", "aux/main.idx", "aux/sub/names.idx", "aux/my doc.idx"] {
+            std::fs::write(root.join(file), "\\indexentry{a}{1}\n").unwrap();
+        }
+        let victim = root.join("victim.idx");
+        let log = format!(
+            "Writing index file {}\nWriting index file ../victim.idx\nWriting index file sub/../../victim.idx\n\
+             Writing index file main.idx\nWriting index file sub/names.idx\nWriting index file \"my doc\".idx\n",
+            victim.display()
+        );
+        let planned: Vec<PathBuf> = plan(&log, &aux).into_iter().map(|job| job.idx).collect();
+        assert_eq!(planned, [aux.join("main.idx"), aux.join("sub/names.idx"), aux.join("my doc.idx")]);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

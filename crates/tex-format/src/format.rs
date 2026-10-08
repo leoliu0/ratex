@@ -872,9 +872,27 @@ impl<'a> Formatter<'a> {
             _ => "\n",
         };
         let body = source.strip_suffix('\n').unwrap_or(source);
+        // Inside `% texres-fmt: off` ... `% texres-fmt: on`, and on lines
+        // marked `skip`, lines are lexed (to keep track of groups and
+        // environments) but copied unchanged.
+        let mut off = false;
+        let mut skip_next = false;
         for line in body.split('\n') {
             let in_raw = self.st.raw.is_some() || self.st.guard.is_some();
             let text = line.strip_suffix('\r').unwrap_or(line);
+            let marker = if in_raw { None } else { marker(text) };
+            let keep = off || skip_next || marker.is_some();
+            skip_next = false;
+            match marker {
+                Some(Marker::Off) => off = true,
+                Some(Marker::On) => off = false,
+                Some(Marker::Skip { own_line }) => skip_next = own_line,
+                None => {}
+            }
+            if keep {
+                self.keep_line(line, text);
+                continue;
+            }
             if !in_raw && text.bytes().all(is_blank) {
                 self.st.dollar = false;
                 self.st.ddollar = false;
@@ -915,6 +933,27 @@ impl<'a> Formatter<'a> {
         if blanks < self.cfg.max_blank_lines || !self.prev_safe {
             self.out.push(Out::Blank);
         }
+    }
+
+    /// Copies a source line unchanged, lexing it so that the state stays
+    /// right for the lines after it.
+    fn keep_line(&mut self, original: &str, text: &str) {
+        let in_raw = self.st.raw.is_some() || self.st.guard.is_some();
+        if !in_raw && text.bytes().all(is_blank) {
+            self.st.dollar = false;
+            self.st.ddollar = false;
+        } else {
+            let mut rest = text;
+            loop {
+                let scan = self.scan_line(rest, None);
+                match scan.stop {
+                    Some(_) if !scan.keep => rest = &rest[scan.rest..],
+                    _ => break,
+                }
+            }
+        }
+        self.out.push(Out::Kept(original.to_string()));
+        self.prev_safe = false;
     }
 
     /// Formats one source line, which may become several output lines.
@@ -1700,6 +1739,44 @@ fn ends_in_glyph(text: &str) -> bool {
         last,
         b'.' | b',' | b')' | b'*' | b'+' | b'-' | b'/' | b'<' | b'>' | b'=' | b'$'
     ) && !text[..text.len() - 1].ends_with('\\')
+}
+
+/// A formatter directive in a comment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Marker {
+    Off,
+    On,
+    /// `skip`: on a line of its own it covers the next line too.
+    Skip {
+        own_line: bool,
+    },
+}
+
+/// The directive a line ends with: `% texres-fmt: off`, `on` or `skip`, or
+/// tex-fmt's `% tex-fmt: ...` spelling of the same.
+fn marker(text: &str) -> Option<Marker> {
+    let pos = text.rfind('%')?;
+    let backslashes = text[..pos]
+        .bytes()
+        .rev()
+        .take_while(|&c| c == b'\\')
+        .count();
+    if backslashes % 2 == 1 {
+        return None;
+    }
+    let comment = text[pos + 1..].trim();
+    let word = comment
+        .strip_prefix("texres-fmt:")
+        .or_else(|| comment.strip_prefix("tex-fmt:"))?
+        .trim();
+    match word {
+        "off" => Some(Marker::Off),
+        "on" => Some(Marker::On),
+        "skip" => Some(Marker::Skip {
+            own_line: text[..pos].bytes().all(is_blank),
+        }),
+        _ => None,
+    }
 }
 
 struct Built {

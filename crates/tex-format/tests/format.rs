@@ -556,3 +556,41 @@ fn at_delimited_arguments_of_verbatim_aliases_are_untouched() {
     };
     assert_eq!(fmt_with(&doc(src), &cfg, &extras), doc(want));
 }
+
+#[test]
+fn off_on_and_skip_comments_keep_lines() {
+    for prefix in ["texres-fmt", "tex-fmt"] {
+        let src = format!(
+            "\\begin{{itemize}}\n\\item a\n% {prefix}: off\n\\item   b  \n   \\begin{{center}}\n\n\n\nx\n% {prefix}: on\n\\end{{center}}\n\\item c\n\\end{{itemize}}\n"
+        );
+        // The region is copied as it is; indentation after it follows the
+        // environments opened inside it.
+        let want = format!(
+            "\\begin{{itemize}}\n  \\item a\n% {prefix}: off\n\\item   b  \n   \\begin{{center}}\n\n\n\nx\n% {prefix}: on\n    \\end{{center}}\n  \\item c\n\\end{{itemize}}\n"
+        );
+        assert_eq!(fmt(&src), want, "{prefix}");
+        // `skip` at the end of a line keeps that line; on a line of its own
+        // it keeps the next line too.
+        let src = format!(
+            "\\begin{{center}}\nkeep   this  % {prefix}: skip\nindent this\n  % {prefix}: skip\nkeep    this\nindent this\n\\end{{center}}\n"
+        );
+        let want = format!(
+            "\\begin{{center}}\nkeep   this  % {prefix}: skip\n  indent this\n  % {prefix}: skip\nkeep    this\n  indent this\n\\end{{center}}\n"
+        );
+        assert_eq!(fmt(&src), want, "{prefix}");
+    }
+    // An unterminated `off` runs to the end of the file; an escaped `\%` or a
+    // directive inside verbatim text is no directive.
+    let src = "% texres-fmt: off\n\\begin{center}\nx\n\\end{center}\n";
+    assert_eq!(fmt(src), src);
+    let src = "\\begin{center}\nx \\% texres-fmt: off\n\\end{center}\n";
+    assert_eq!(
+        fmt(src),
+        "\\begin{center}\n  x \\% texres-fmt: off\n\\end{center}\n"
+    );
+    let src = "\\begin{verbatim}\n% texres-fmt: off\n\\end{verbatim}\n\\begin{center}\nx\n\\end{center}\n";
+    assert_eq!(
+        fmt(src),
+        "\\begin{verbatim}\n% texres-fmt: off\n\\end{verbatim}\n\\begin{center}\n  x\n\\end{center}\n"
+    );
+}

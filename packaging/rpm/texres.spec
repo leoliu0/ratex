@@ -3,7 +3,7 @@
 %global __strip /bin/true
 
 Name:           texres
-Version:        0.7.6
+Version:        0.7.7
 Obsoletes:      ratex < 0.6.0
 Release:        1%{?dist}
 Summary:        Ultra-fast, pure-Rust TeX engine and typesetting toolchain

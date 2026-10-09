@@ -35,16 +35,16 @@ Download the package from the [latest release](https://github.com/leoliu0/texres
 
 ```bash
 # Debian / Ubuntu
-sudo apt install ./texres_0.7.6_amd64.deb
+sudo apt install ./texres_0.7.7_amd64.deb
 
 # Fedora / RHEL / openSUSE
-sudo dnf install ./texres-0.7.6-1.x86_64.rpm
+sudo dnf install ./texres-0.7.7-1.x86_64.rpm
 
 # Arch (AUR)
 yay -S texres-bin    # or build from source: yay -S texres
 
 # Any other glibc distribution (installs to ~/.local)
-tar -xzf tex-suite-v0.7.6-linux-x86_64.tar.gz && ./tex-suite-linux-x86_64/install.sh
+tar -xzf tex-suite-v0.7.7-linux-x86_64.tar.gz && ./tex-suite-linux-x86_64/install.sh
 ```
 
 ARM64 builds need glibc 2.36 or newer (Debian 12 or later), which includes
@@ -170,7 +170,7 @@ PowerShell, Command Prompt and macOS/Linux shells; on Windows, `texres` is
 
 ## Speed
 
-TeXres 0.7.6 was measured against TeX Live 2026 (`latexmk`) on 100 documents:
+TeXres 0.7.3 was measured against TeX Live 2026 (`latexmk`) on 100 documents:
 70 generated and 30 public papers, books and slide decks. pdfLaTeX, XeLaTeX
 and LuaLaTeX are all included. The binary is the profile-guided build that
 the Linux x86_64 and macOS arm64 releases ship. The machine is one Linux

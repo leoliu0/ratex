@@ -270,6 +270,76 @@ fn tools_never_run_on_files_from_an_aborted_pass() {
     assert!(text.contains("Beta[1]") && text.contains("alpha,1") && text.contains("beta,1"), "{text}");
 }
 
+/// Issue #25: `pdflatex -ini "&pdflatex"` loads the LaTeX format, runs the
+/// file in INITEX mode, and `\dump` writes JOBNAME.fmt, which a `%&pre`
+/// first line or `&pre` loads later. TeX Live 2026 (pdfTeX 1.40.29) typesets
+/// the document as "E = mc2" on a 42.725pt x 12.095pt page. Under `-ini`,
+/// `-fmt=pdflatex` loads nothing (`\documentclass` is undefined, exit 1);
+/// a `%&pdflatex` first line loads the format.
+#[test]
+fn ini_mode_loads_the_ampersand_format_before_dumping() {
+    let fixture = Fixture(std::env::temp_dir().join(format!(
+        "texres-ini-format-{}", std::process::id()
+    )));
+    std::fs::create_dir_all(&fixture.0).unwrap();
+    let run = |program: &str, args: &[&str]| {
+        Command::new(program)
+            .args(args).current_dir(&fixture.0).env_clear()
+            .env("HOME", fixture.0.join("home"))
+            .env("TEX_RS_CACHE_DIR", fixture.0.join("cache"))
+            .env("TEXMFDIST", fixture.0.join("absent-texmf"))
+            .env("SOURCE_DATE_EPOCH", "1700000000")
+            .output().unwrap()
+    };
+    let failure = |output: &std::process::Output| format!(
+        "status: {}\nstdout:\n{}\nstderr:\n{}", output.status,
+        String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr),
+    );
+    let pdflatex = env!("CARGO_BIN_EXE_pdflatex");
+    fixture.write(
+        "pre.tex",
+        "\\documentclass[varwidth,border=2pt]{standalone}\n\\usepackage{amsmath}\n\\dump\n",
+    );
+    let output = run(pdflatex, &["-ini", "-interaction=nonstopmode", "-jobname=pre", "&pdflatex", "pre.tex"]);
+    assert!(output.status.success(), "{}", failure(&output));
+    assert!(fixture.0.join("pre.fmt").is_file());
+
+    fixture.write("eq.tex", "%&pre\n\\begin{document}$E=mc^2$\\end{document}\n");
+    fixture.write("amp.tex", "\\begin{document}$E=mc^2$\\end{document}\n");
+    let texres = env!("CARGO_BIN_EXE_texres");
+    for (program, args, pdf) in [
+        (pdflatex, &["-interaction=nonstopmode", "eq.tex"][..], "eq.pdf"),
+        (pdflatex, &["-interaction=nonstopmode", "&pre", "amp.tex"], "amp.pdf"),
+        (texres, &["eq.tex"], "eq.pdf"),
+    ] {
+        let _ = std::fs::remove_file(fixture.0.join(pdf));
+        let output = run(program, args);
+        assert!(output.status.success(), "{args:?}: {}", failure(&output));
+        let document = lopdf::Document::load(fixture.0.join(pdf)).unwrap();
+        let pages = document.get_pages();
+        assert_eq!(pages.len(), 1, "{args:?}");
+        let numbers: Vec<u32> = pages.keys().copied().collect();
+        let text: String = document.extract_text(&numbers).unwrap()
+            .chars().filter(|c| !c.is_whitespace()).collect();
+        assert_eq!(text, "E=mc2", "{args:?}");
+        let page = document.get_dictionary(pages[&1]).unwrap();
+        let media_box: Vec<f32> = page.get(b"MediaBox").unwrap().as_array().unwrap()
+            .iter().map(|value| value.as_float().unwrap()).collect();
+        let expected = [0.0, 0.0, 42.725, 12.095];
+        assert!(
+            media_box.iter().zip(expected).all(|(got, want)| (got - want).abs() < 0.01),
+            "{args:?}: {media_box:?}"
+        );
+    }
+
+    let output = run(pdflatex, &["-ini", "-interaction=nonstopmode", "-jobname=fmt", "-fmt=pdflatex", "pre.tex"]);
+    assert_eq!(output.status.code(), Some(1), "{}", failure(&output));
+    fixture.write("first.tex", "%&pdflatex\n\\documentclass{article}\n\\dump\n");
+    let output = run(pdflatex, &["-ini", "-interaction=nonstopmode", "first.tex"]);
+    assert!(output.status.success(), "{}", failure(&output));
+    assert!(fixture.0.join("first.fmt").is_file());
+}
+
 /// A later pass that stops leaves its auxiliary files as truncated as a
 /// first pass would: the manifest marks them unfinished again.
 #[test]

@@ -574,12 +574,16 @@ errors and warnings in the logs. The CLI formats files on all cores
 
 The single-pass personalities (`pdflatex`, `lualatex`, `xelatex` links) take
 pdfTeX's web2c options (`pdflatex --help`). `-ini` dumps `JOBNAME.fmt` into
-the output directory and `-fmt=NAME`, `&NAME`, a `%&NAME` first line, or
-`-progname=NAME` load such a TeXres dump (`NAME` equal to the program selects
-the built-in format). `-cnf-line=VAR=VALUE` sets a search or policy variable
-such as `TEXINPUTS` or `openout_any`; `-kpathsea-debug=N` (nonzero) traces
-file lookups in the transcript. `-translate-file=TCXNAME`, `-8bit` and a
-`%&-translate-file=` first line select which bytes 128-255 print as
+the output directory. As in TeX Live, an `-ini` run first loads the format
+that a leading `&NAME` names (if `NAME.fmt` is missing, `pdflatex` and
+`xelatex` load their default format and `lualatex` stops) or, except under
+`lualatex`, that a `%&NAME` first line names when that format exists; `-fmt`
+loads nothing under `-ini`. Otherwise `-fmt=NAME`, `&NAME`, a `%&NAME` first
+line, or `-progname=NAME` load such a TeXres dump (`NAME` equal to the
+program selects the built-in format). `-cnf-line=VAR=VALUE` sets a search
+or policy variable such as `TEXINPUTS` or `openout_any`; `-kpathsea-debug=N`
+(nonzero) traces file lookups in the transcript. `-translate-file=TCXNAME`,
+`-8bit` and a `%&-translate-file=` first line select which bytes 128-255 print as
 themselves rather than as `^^xx`: `pdflatex` and the built-in format use
 TeX Live's `cp227.tcx` table, `-ini` without a table prints `^^` notation,
 and the transcript and terminal carry the exact bytes TeX Live writes

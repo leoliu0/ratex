@@ -1771,7 +1771,8 @@ fn program_name() -> String {
 fn usage(program: &str) {
     eprintln!(
         "usage: {program} [options] file.tex
-  -ini                         build a format; \\dump writes JOBNAME.fmt
+  -ini                         build a format from scratch, or from the one &NAME
+                               or a %&NAME first line loads; \\dump writes JOBNAME.fmt
   -plain                       run without the LaTeX format
   -fmt=NAME, &NAME             use format NAME.fmt (a TeXres dump) instead of the built-in one
   -progname=NAME               set the program name (and default format name)
@@ -1869,6 +1870,16 @@ enum SelectedFormat {
     File(std::path::PathBuf),
 }
 
+/// The format a requested `name` stands for: this program's built-in one,
+/// else `NAME.fmt` when it exists.
+fn resolve_format(program: &str, name: &str) -> Option<SelectedFormat> {
+    if name == program {
+        Some(SelectedFormat::BuiltIn)
+    } else {
+        format_file(name).map(SelectedFormat::File)
+    }
+}
+
 /// web2c's format choice: `-fmt`/`&NAME`, else a `%&NAME` first line that
 /// names an available format, else `-progname`, else the program name.
 /// `Err` carries a requested name for which no `NAME.fmt` exists.
@@ -1878,13 +1889,7 @@ fn select_format(
     first_line_of: Option<&str>,
     progname: Option<&str>,
 ) -> Result<SelectedFormat, String> {
-    let resolve = |name: &str| {
-        if name == program {
-            Some(SelectedFormat::BuiltIn)
-        } else {
-            format_file(name).map(SelectedFormat::File)
-        }
-    };
+    let resolve = |name: &str| resolve_format(program, name);
     if let Some(name) = option {
         return resolve(name).ok_or_else(|| name.to_string());
     }
@@ -2689,8 +2694,58 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     // `find_format_file` callback may name one the plain search cannot find.
     let lua_init = program == "lualatex" && lua_init_file.is_some();
     let mut missing_format: Option<String> = None;
-    let format = if plain || ini {
+    // tex.ch §1337: INITEX loads a format only for a leading `&NAME`, or
+    // (web2c `dump_line`, not in LuaTeX) a `%&NAME` first line naming an
+    // existing format; `-fmt` and `-progname` alone load none.
+    let mut ini_loads_format = false;
+    let format = if plain {
         SelectedFormat::BuiltIn
+    } else if ini {
+        let first_line = (format_option.is_none() && parse_first_line && program != "lualatex")
+            .then(|| first_line_format(&file))
+            .flatten()
+            .and_then(|name| resolve_format(&program, &name));
+        match (format_ampersand, format_option.as_deref()) {
+            (true, Some(name)) => {
+                ini_loads_format = true;
+                match resolve_format(&program, name) {
+                    Some(selected) => selected,
+                    None if lua_init => {
+                        missing_format = Some(name.to_string());
+                        SelectedFormat::BuiltIn
+                    }
+                    None => {
+                        // texmfmp.c open_fmt_file: the default format is
+                        // tried next; LuaTeX's default is the `&` name.
+                        let fallback = if program == "lualatex" {
+                            name
+                        } else {
+                            progname.as_deref().unwrap_or(program.as_str())
+                        };
+                        emit_cli_message(
+                            interaction_mode,
+                            format_args!(
+                                "Sorry, I can't find the format `{name}.fmt'; will try `{fallback}.fmt'."
+                            ),
+                        );
+                        resolve_format(&program, fallback).unwrap_or_else(|| {
+                            emit_cli_message(
+                                interaction_mode,
+                                format_args!("I can't find the format file `{fallback}.fmt'!"),
+                            );
+                            std::process::exit(1);
+                        })
+                    }
+                }
+            }
+            _ => match first_line {
+                Some(selected) => {
+                    ini_loads_format = true;
+                    selected
+                }
+                None => SelectedFormat::BuiltIn,
+            },
+        }
     } else {
         match select_format(
             &program,
@@ -2840,7 +2895,8 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
         }
         banner_replaced = eng.lua_start_run();
     }
-    if !plain && !ini {
+    let loads_format = !plain && (!ini || ini_loads_format);
+    if loads_format {
         let fmt_file_name = builtin_format_file_name(&program);
         let exe_fmt = std::env::current_exe()
             .ok()
@@ -3037,6 +3093,11 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
         }
         tex_core::driver::prepare_latex_job(&mut eng);
         configure_engine(&mut eng, halt_on_error, file_line_error, interaction_mode, max_errors);
+        if ini {
+            // INITEX goes on from the loaded format; \dump writes JOBNAME.fmt.
+            eng.ini_mode = true;
+            eng.format_done = false;
+        }
     } else if plain {
         // TeX Live's pdftex format is built with -translate-file=cp227.tcx
         eng.xprn = tex_core::tex_bytes::cp227_xprn();
@@ -3118,7 +3179,7 @@ pub(crate) fn main_with_args(args_os: Vec<std::ffi::OsString>) {
     phase_timer.mark("format");
     if eng.input_file(&file) {
         // Knuth: everyjob is inserted on top of the * file so it runs first.
-        if !plain && !ini {
+        if loads_format {
             tex_core::driver::insert_everyjob(&mut eng);
         }
         eng.run();

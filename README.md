@@ -377,8 +377,9 @@ modes (`-dvi`, `-ps`, `-pdfdvi`, `-pdfps`).
 
 `texres fmt FILE...` rewrites LaTeX files and BibTeX databases in place. A
 folder stands for the `.tex`, `.sty`, `.cls`, `.ltx` and `.bib` files in it
-and its subfolders (hidden folders are skipped). `.dtx`, `.ins`, `.bst` and
-`.bbl` files are refused.
+and its subfolders (hidden folders are skipped). Other files named on the
+command line (`.dtx`, `.bbl`, a PDF or a `Makefile` matched by `*`) are
+skipped with a message, and the exit status is 1.
 
 What it changes:
 
@@ -421,6 +422,21 @@ character; if they differ in more than the changes above (a new blank line,
 which TeX reads as `\par`, is accepted only before the sectioning commands
 the rule above allows), the file is left as it was and the command exits
 with status 1.
+
+**Unknown classes and packages.** A class or package may read text verbatim
+in ways `texres fmt` cannot see from the project's files. So a project is
+formatted only when every class and package it loads is known: one of about
+4,500 in TeX Live 2026 whose sources, with every file they load, were checked
+for such constructs (by hand for about 750, from `article`, `beamer`,
+`memoir` and KOMA-Script to `listings`, `minted`, `tcolorbox` and
+`hyperref`; the others use no catcode changes, verbatim internals or the
+like at all), a file of the project (read like the rest of it), or one
+named in `known-packages`. Otherwise its files are left as they are and the
+command exits with status 1, naming the class or package. A name given by a
+macro (`\LoadClass{\@tufte@class}`) counts when the project defines that
+macro only as known names. If the package reads nothing verbatim, or once
+its verbatim environments and commands are listed in `verbatim-envs` and
+`verbatim-commands`, add it to `known-packages`.
 
 **Leaving parts alone.** Lines from `% texres-fmt: off` to
 `% texres-fmt: on` are copied unchanged, and so is a line that ends with
@@ -479,6 +495,7 @@ no-indent-envs = ["document"]     # environments whose body is not indented
 verbatim-envs = []                # more environments to leave alone
 verbatim-commands = []            # more commands whose argument is left alone
 no-wrap-envs = []                 # more environments where lines are not wrapped
+known-packages = []               # more classes and packages to trust (see above)
 ```
 
 `align-envs` lists the environments `align-columns` works on (`tabular`,

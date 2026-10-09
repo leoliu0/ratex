@@ -633,6 +633,174 @@ fn copied_texmk_symlink_personalities_need_no_sibling_executables() {
         .contains("The style file: <embedded:plain.bst>"));
 }
 
+/// `fmt` and `latexdiff` are subcommands of `texres` only: through the
+/// engine and BibTeX links they are job names (`pdflatex fmt` builds
+/// `fmt.tex`, as TeX Live's does).
+#[test]
+fn engine_and_bibtex_links_take_fmt_as_a_job_name() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let fixture = Fixture(std::env::temp_dir().join(format!(
+        "texmk-fmt-job-{}-{nonce}",
+        std::process::id()
+    )));
+    let bin = fixture.0.join("bin");
+    let project = fixture.0.join("project");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::create_dir_all(&project).unwrap();
+    support::copy_executable(
+        std::path::Path::new(env!("CARGO_BIN_EXE_texmk")),
+        &bin.join("texmk"),
+    );
+    for alias in ["texres", "pdflatex", "bibtex"] {
+        std::os::unix::fs::symlink("texmk", bin.join(alias)).unwrap();
+    }
+    std::fs::write(
+        project.join("fmt.tex"),
+        "\\documentclass{article}\\begin{document}job\\end{document}\n",
+    )
+    .unwrap();
+    let run = |tool: &str, args: &[&str]| {
+        Command::new(bin.join(tool))
+            .args(args)
+            .current_dir(&project)
+            .env_clear()
+            .env("HOME", fixture.0.join("home"))
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap()
+    };
+    let engine = run("pdflatex", &["-interaction=batchmode", "fmt"]);
+    assert!(
+        engine.status.success() && project.join("fmt.pdf").is_file(),
+        "{}\n{}",
+        String::from_utf8_lossy(&engine.stdout),
+        String::from_utf8_lossy(&engine.stderr)
+    );
+
+    std::fs::write(
+        project.join("refs.bib"),
+        "@book{entry, author={Donald Knuth}, title={The TeXbook}, year={1984}}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        project.join("fmt.aux"),
+        "\\citation{entry}\n\\bibstyle{plain}\n\\bibdata{refs}\n",
+    )
+    .unwrap();
+    let bibtex = run("bibtex", &["fmt"]);
+    assert!(
+        bibtex.status.success() && project.join("fmt.bbl").is_file(),
+        "{}\n{}",
+        String::from_utf8_lossy(&bibtex.stdout),
+        String::from_utf8_lossy(&bibtex.stderr)
+    );
+
+    // `texres fmt` is still the formatter.
+    let formatter = run("texres", &["fmt", "--check", "fmt.tex"]);
+    assert!(
+        formatter.status.success() && formatter.stdout.is_empty(),
+        "{}\n{}",
+        String::from_utf8_lossy(&formatter.stdout),
+        String::from_utf8_lossy(&formatter.stderr)
+    );
+}
+
+/// `texres fmt` rewrites only LaTeX sources and BibTeX databases, even when
+/// other files are named (`texres fmt *`), replaces files without a moment
+/// in which they are truncated, and prints diffs of 8-bit files in the
+/// file's own encoding so that they apply to it.
+#[test]
+fn texres_fmt_rewrites_only_sources_atomically_with_applicable_diffs() {
+    use std::os::unix::fs::PermissionsExt;
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let fixture = Fixture(std::env::temp_dir().join(format!(
+        "texres-fmt-files-{}-{nonce}",
+        std::process::id()
+    )));
+    let dir = fixture.0.clone();
+    std::fs::create_dir_all(&dir).unwrap();
+    let fmt = |args: &[&str], stdin: Option<&[u8]>| {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_texres"))
+            .arg("fmt")
+            .args(args)
+            .current_dir(&dir)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut input = child.stdin.take().unwrap();
+        if let Some(bytes) = stdin {
+            input.write_all(bytes).unwrap();
+        }
+        drop(input);
+        child.wait_with_output().unwrap()
+    };
+    let source = "\\begin{center}\nx\n\\end{center}\n";
+    let formatted = "\\begin{center}\n  x\n\\end{center}\n";
+
+    // Named non-sources are skipped (status 1) and left byte for byte.
+    let pdf: &[u8] = b"%PDF-1.5\n\t\x00\xff  stream  \n\\begin{center}\nx\n\\end{center}\n";
+    let makefile = "all:\n\techo hi   \n";
+    std::fs::write(dir.join("main.tex"), source).unwrap();
+    std::fs::write(dir.join("main.pdf"), pdf).unwrap();
+    std::fs::write(dir.join("Makefile"), makefile).unwrap();
+    let out = fmt(&["main.pdf", "main.tex", "Makefile"], None);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("main.pdf: not a LaTeX source"), "{stderr}");
+    assert!(stderr.contains("Makefile: not a LaTeX source"), "{stderr}");
+    assert_eq!(std::fs::read(dir.join("main.pdf")).unwrap(), pdf);
+    assert_eq!(std::fs::read_to_string(dir.join("Makefile")).unwrap(), makefile);
+    assert_eq!(std::fs::read_to_string(dir.join("main.tex")).unwrap(), formatted);
+
+    // Writing goes through a symbolic link to its target, keeps the
+    // permissions and leaves no temporary file behind.
+    std::fs::create_dir_all(dir.join("real")).unwrap();
+    let target = dir.join("real/chapter.tex");
+    std::fs::write(&target, source).unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o640)).unwrap();
+    std::os::unix::fs::symlink("real/chapter.tex", dir.join("link.tex")).unwrap();
+    let out = fmt(&["link.tex"], None);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(std::fs::symlink_metadata(dir.join("link.tex"))
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), formatted);
+    let mode = std::fs::metadata(&target).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o640);
+    let leftovers: Vec<_> = std::fs::read_dir(dir.join("real"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .filter(|n| n != "chapter.tex")
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+
+    // A Latin-1 file's diff has its 8-bit bytes as they are in the file.
+    let latin1: &[u8] = b"\\begin{center}\ncaf\xe9\n\\end{center}\n";
+    std::fs::write(dir.join("latin1.tex"), latin1).unwrap();
+    for (args, stdin) in [
+        (&["--diff", "latin1.tex"][..], None),
+        (&["--diff", "--stdin"][..], Some(latin1)),
+    ] {
+        let out = fmt(args, stdin);
+        let has = |needle: &[u8]| out.stdout.windows(needle.len()).any(|w| w == needle);
+        assert!(
+            has(b"\n-caf\xe9\n") && has(b"\n+  caf\xe9\n") && !has("é".as_bytes()),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+    assert_eq!(std::fs::read(dir.join("latin1.tex")).unwrap(), latin1);
+}
+
 fn synctex_input_paths(synctex_gz: &std::path::Path) -> Vec<String> {
     use std::io::Read as _;
     let mut text = String::new();

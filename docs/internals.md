@@ -512,6 +512,23 @@ order; only those are compared order-insensitively. The `biber` binary and the
   after the leading `\par` (parskip, biblatex's `refsection` hook), checked
   by reading them; titlesec (it assigns `\thetitle` before its `\par`) and
   placeins are out. Extending either list needs the same check.
+- `packages.rs`: the classes and packages whose TeX Live 2026 sources (with
+  every file they load) were read by hand for verbatim constructs; what
+  they define is in `format.rs`'s tables. `packages/screened.rs`, written
+  by scripts/generate_fmt_screened_packages.py, adds those whose sources
+  and loaded files use none of the means of reading text otherwise
+  (control sequences named like `catcode`, `verbatim`, `rescan`,
+  `endlinechar`, `lst...`, `\url`/`\index` aliases, `\begin` of verbatim-like
+  environments, xparse `v`, Lua input callbacks, computed loads, loads of
+  endfloat/showlabels/ltxdoc); rerun it after changing the hand-checked
+  lists or for a new TeX Live. `SectionFacts::unvetted` makes
+  `format_source` return `FormatError::UnknownPackage` when the project
+  loads anything else that is not a project file or in `known-packages`.
+  A load by macro name (`\LoadClass{\@tufte@class}`) counts as the names
+  the project defines the macro to (`\def`, `\newcommand` and the like
+  with a plain name as body); any other definition of it, none at all, or
+  a kernel scratch macro (`\@temp...`, `\reserved@...`) makes it unknown.
+  `\string\usepackage` is text, not a load.
 - `tokens.rs`: the safety check. Input and output are tokenized as TeX reads
   them (category codes of a LaTeX document, `@` as in the formatter, state
   N/M/S per line, trailing spaces dropped, `^^` notation). Verbatim material

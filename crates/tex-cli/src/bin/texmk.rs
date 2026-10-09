@@ -4691,12 +4691,6 @@ pub(crate) fn main() {
         _ => {}
     }
     let args: Vec<String> = std::env::args().collect();
-    if args.len() > 1 && args[1] == "latexdiff" {
-        std::process::exit(latexdiff::latexdiff_main(&args[2..]));
-    }
-    if args.len() > 1 && args[1] == "fmt" {
-        std::process::exit(tex_format::cli::run(&args[2..]));
-    }
     match invoked_name().as_str() {
         "pdflatex" => run_embedded_engine("pdflatex"),
         "xelatex" => run_embedded_engine("xelatex"),
@@ -4707,6 +4701,14 @@ pub(crate) fn main() {
         "latexdiff" => {
             let diff_args = if args.len() > 1 { &args[1..] } else { &[] };
             std::process::exit(latexdiff::latexdiff_main(diff_args));
+        }
+        // Subcommands belong to `texres`/`texmk` itself: for the engine and
+        // BibTeX links, `fmt` or `latexdiff` is a job name.
+        _ if args.get(1).is_some_and(|a| a == "latexdiff") => {
+            std::process::exit(latexdiff::latexdiff_main(&args[2..]));
+        }
+        _ if args.get(1).is_some_and(|a| a == "fmt") => {
+            std::process::exit(tex_format::cli::run(&args[2..]));
         }
         _ => std::process::exit(real_main()),
     }

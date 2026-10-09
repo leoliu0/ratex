@@ -26,7 +26,7 @@
 //! `\bibsection`, and patches after the leading `\par`, such as parskip's,
 //! were checked by reading them). titlesec and placeins are left out.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) const SECTIONS: &[&str] = &["part", "chapter", "section", "subsection", "subsubsection"];
 
@@ -191,6 +191,16 @@ pub struct SectionFacts {
     redefined: u8,
     /// Something makes the definitions unknowable.
     unknown: bool,
+    /// A class or package is loaded whose name is not written out.
+    unknown_load: bool,
+    /// Classes and packages loaded by the name of a control word
+    /// (`\LoadClass{\@tufte@class}`).
+    computed: BTreeSet<(FileKind, String)>,
+    /// The names control words are defined to (`\def\@tufte@class{book}`).
+    values: BTreeMap<String, BTreeSet<String>>,
+    /// Control words defined otherwise somewhere (`\let`, parameters, other
+    /// text, `\@namedef`, `\csname`).
+    opaque: BTreeSet<String>,
 }
 
 impl SectionFacts {
@@ -224,9 +234,9 @@ impl SectionFacts {
                 let b = text.as_bytes();
                 let s = skip_space(b, end);
                 let e = word_end(b, s);
-                let n = bit(&text[s..e]);
-                if n != 0 && text[skip_space(b, e)..].starts_with("\\endcsname") {
-                    self.redefined |= n;
+                if text[skip_space(b, e)..].starts_with("\\endcsname") {
+                    self.redefined |= bit(&text[s..e]);
+                    self.opaque.insert(text[s..e].to_string());
                 }
             }
             "AddToHook" | "AddToHookNext" | "AddToHookWithArguments" => {
@@ -239,8 +249,10 @@ impl SectionFacts {
             _ if NAME_DEFINERS.contains(&name) => {
                 if let Some((arg, _)) = braced(text, end) {
                     self.redefined |= bit(arg.trim());
+                    self.opaque.insert(arg.trim().to_string());
                 }
             }
+            _ if DEFINERS.contains(&name) || name == "let" => self.note_definition(text, end, name),
             _ => {
                 let n = bit(name);
                 if n != 0 && redefines(text, start, end) {
@@ -266,6 +278,17 @@ impl SectionFacts {
     fn add(&mut self, kind: FileKind, name: &str) {
         if name.contains(['\\', '#', '{', '}']) {
             self.unknown = true;
+            if kind != FileKind::Input {
+                match name
+                    .strip_prefix('\\')
+                    .filter(|cs| cs.bytes().all(is_letter))
+                {
+                    Some(cs) if !cs.is_empty() => {
+                        self.computed.insert((kind, cs.to_string()));
+                    }
+                    _ => self.unknown_load = true,
+                }
+            }
             return;
         }
         let set = match kind {
@@ -278,19 +301,124 @@ impl SectionFacts {
         }
     }
 
+    /// Records the name the control word defined after `\def`, `\let`,
+    /// `\newcommand` and the like (ending at `end`) is given: plain text
+    /// such as `book`, or else nothing known.
+    fn note_definition(&mut self, text: &str, end: usize, definer: &str) {
+        let b = text.as_bytes();
+        let mut i = skip_space(b, end);
+        if b.get(i) == Some(&b'*') {
+            i = skip_space(b, i + 1);
+        }
+        let braced_name = b.get(i) == Some(&b'{');
+        if braced_name {
+            i = skip_space(b, i + 1);
+        }
+        if b.get(i) != Some(&b'\\') {
+            return;
+        }
+        let e = word_end(b, i + 1);
+        if e == i + 1 {
+            return;
+        }
+        let cs = &text[i + 1..e];
+        let mut j = e;
+        if braced_name {
+            j = skip_space(b, j);
+            j += usize::from(b.get(j) == Some(&b'}'));
+        }
+        let value = (definer != "let")
+            .then(|| braced(text, j))
+            .flatten()
+            .map(|(body, _)| body.trim())
+            .filter(|v| {
+                !v.is_empty()
+                    && v.bytes().all(|c| {
+                        c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.' | b'/')
+                    })
+            });
+        match value {
+            Some(v) => {
+                self.values
+                    .entry(cs.to_string())
+                    .or_default()
+                    .insert(v.to_string());
+            }
+            None => {
+                self.opaque.insert(cs.to_string());
+            }
+        }
+    }
+
+    /// The classes and packages loaded by the name of a control word: every
+    /// name the project defines it to. `None` when one may be something
+    /// else: defined otherwise too, not defined in the project, or one of
+    /// the kernel's scratch macros, which any code may set.
+    fn computed_loads(&self) -> Option<Vec<(FileKind, &String)>> {
+        let mut out = Vec::new();
+        for (kind, cs) in &self.computed {
+            if cs.starts_with("@temp") || cs.starts_with("reserved@") || self.opaque.contains(cs) {
+                return None;
+            }
+            out.extend(self.values.get(cs)?.iter().map(|v| (*kind, v)));
+        }
+        Some(out)
+    }
+
+    /// The first class or package loaded whose verbatim material is not
+    /// known: not in `packages`' lists, not one of the project's files and
+    /// not named in `also_known`. `Some(None)` when a name is not written
+    /// out (`\usepackage{\name}`) and not known from the project's
+    /// definitions of `\name`.
+    pub(crate) fn unvetted(&self, also_known: &[String]) -> Option<Option<(FileKind, &str)>> {
+        if self.unknown_load {
+            return Some(None);
+        }
+        let Some(computed) = self.computed_loads() else {
+            return Some(None);
+        };
+        let vetted = |kind: FileKind, name: &String| {
+            let known = match kind {
+                FileKind::Class => crate::packages::known_class(name),
+                _ => crate::packages::known_package(name),
+            };
+            known || also_known.contains(name) || self.found.contains(&(kind, name.clone()))
+        };
+        let classes = self.classes.iter().map(|c| (FileKind::Class, c));
+        let packages = self.packages.iter().map(|p| (FileKind::Package, p));
+        classes
+            .chain(packages)
+            .chain(computed)
+            .find(|(kind, name)| !vetted(*kind, name))
+            .map(|(kind, name)| Some((kind, name.as_str())))
+    }
+
     /// Files to look for among the project's sources: inputs, and classes
     /// and packages not known otherwise, not yet found or missed.
     pub fn wanted(&self) -> Vec<(FileKind, String)> {
+        let computed = self.computed_loads().unwrap_or_default();
         let classes = self
             .classes
             .iter()
-            .filter(|c| vetted_class(c).is_none())
-            .map(|c| (FileKind::Class, c));
+            .map(|c| (FileKind::Class, c))
+            .chain(
+                computed
+                    .iter()
+                    .copied()
+                    .filter(|(k, _)| *k == FileKind::Class),
+            )
+            .filter(|(_, c)| vetted_class(c).is_none());
         let packages = self
             .packages
             .iter()
-            .filter(|p| SAFE_PACKAGES.binary_search(&p.as_str()).is_err())
-            .map(|p| (FileKind::Package, p));
+            .map(|p| (FileKind::Package, p))
+            .chain(
+                computed
+                    .iter()
+                    .copied()
+                    .filter(|(k, _)| *k == FileKind::Package),
+            )
+            .filter(|(_, p)| SAFE_PACKAGES.binary_search(&p.as_str()).is_err());
         let inputs = self.inputs.iter().map(|i| (FileKind::Input, i));
         classes
             .chain(packages)

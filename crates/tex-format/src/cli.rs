@@ -34,13 +34,10 @@ Settings are read from the nearest .texresfmt.toml in the file's directory
 or above it. Exit status: 0 formatted, 1 --check found changes or a file
 failed, 2 bad command line.";
 
-/// LaTeX sources: formatted when walking directories, and read for
-/// project definitions.
+/// LaTeX sources: the files formatted, and read for project definitions.
 const SOURCE_EXTENSIONS: &[&str] = &["tex", "sty", "cls", "ltx"];
 /// BibTeX databases, formatted with their own rules.
 const BIB_EXTENSIONS: &[&str] = &["bib"];
-/// Files that look like TeX but are not sources the formatter understands.
-const REFUSED_EXTENSIONS: &[&str] = &["bbl", "dtx", "ins", "bst"];
 /// Sibling files larger than this are not scanned for definitions.
 const MAX_SCAN_BYTES: u64 = 8 << 20;
 
@@ -221,6 +218,87 @@ fn encode(text: &str, utf8: bool) -> Vec<u8> {
     }
 }
 
+/// The unified diff from `old` to `new`, encoded as the file is, so that
+/// it applies to it; the header's file name stays UTF-8.
+fn diff_bytes(old: &str, new: &str, name: &str, utf8: bool) -> Vec<u8> {
+    let diff = unified_diff(old, new, name, name);
+    if utf8 {
+        return diff.into_bytes();
+    }
+    let header = diff
+        .match_indices('\n')
+        .nth(1)
+        .map_or(diff.len(), |(p, _)| p + 1);
+    let mut out = diff[..header].as_bytes().to_vec();
+    out.extend(encode(&diff[header..], false));
+    out
+}
+
+/// Replaces the contents of `path` without a moment in which the file is
+/// empty or partly written: the text goes to a new file next to it, which
+/// then takes its place. Writes through symbolic links, keeps the file's
+/// permissions, and leaves read-only files alone. A file with other hard
+/// links is rewritten in place (renaming would split it from them), from
+/// the complete copy, which is kept if that fails.
+fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let target = std::fs::canonicalize(path)?;
+    let meta = std::fs::metadata(&target)?;
+    if meta.permissions().readonly() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "the file is read-only",
+        ));
+    }
+    let dir = target.parent().unwrap_or(Path::new("."));
+    let name = target
+        .file_name()
+        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+    let (temp, mut file) = (0..100)
+        .find_map(|n| {
+            let temp = dir.join(format!(".{name}.texres-fmt-{}-{n}", std::process::id()));
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp)
+            {
+                Ok(file) => Some(Ok((temp, file))),
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => None,
+                Err(err) => Some(Err(err)),
+            }
+        })
+        .unwrap_or_else(|| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "no free name for a temporary file",
+            ))
+        })?;
+    let written = file
+        .write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .and_then(|()| std::fs::set_permissions(&temp, meta.permissions()));
+    drop(file);
+    if let Err(err) = written {
+        let _ = std::fs::remove_file(&temp);
+        return Err(err);
+    }
+    #[cfg(unix)]
+    let linked = std::os::unix::fs::MetadataExt::nlink(&meta) > 1;
+    #[cfg(not(unix))]
+    let linked = false;
+    if linked {
+        return match std::fs::write(&target, bytes) {
+            Ok(()) => std::fs::remove_file(&temp),
+            Err(err) => Err(std::io::Error::new(
+                err.kind(),
+                format!("{err} (the formatted text is in {})", temp.display()),
+            )),
+        };
+    }
+    std::fs::rename(&temp, &target).inspect_err(|_| {
+        let _ = std::fs::remove_file(&temp);
+    })
+}
+
 /// Reads definitions of verbatim environments and commands from the given
 /// texts and from the TeX sources next to them, then the project's own
 /// classes, packages and input files they name (for the sectioning rule).
@@ -358,7 +436,7 @@ fn run_stdin(options: &Options, configs: &mut ConfigCache) -> i32 {
         .map_or_else(|| "<stdin>".to_string(), |p| p.display().to_string());
     let mut stdout = std::io::stdout().lock();
     if options.diff {
-        let _ = stdout.write_all(unified_diff(&text, &formatted, &name, &name).as_bytes());
+        let _ = stdout.write_all(&diff_bytes(&text, &formatted, &name, utf8));
     } else if !options.check {
         let _ = stdout.write_all(&encode(&formatted, utf8));
     }
@@ -399,14 +477,14 @@ fn collect_files(paths: &[PathBuf], status: &mut i32) -> Vec<PathBuf> {
                 eprintln!("texres fmt: {}: {err}", path.display());
                 *status = 1;
             }
-        } else if has_extension(path, REFUSED_EXTENSIONS) {
+        } else if has_extension(path, SOURCE_EXTENSIONS) || has_extension(path, BIB_EXTENSIONS) {
+            files.push(path.clone());
+        } else {
             eprintln!(
-                "texres fmt: {}: not a LaTeX source; skipped",
+                "texres fmt: {}: not a LaTeX source or BibTeX database; skipped",
                 path.display()
             );
             *status = 1;
-        } else {
-            files.push(path.clone());
         }
     }
     files
@@ -467,14 +545,14 @@ fn run_files(options: &Options, configs: &mut ConfigCache) -> i32 {
         }
         if options.diff {
             let name = path.display().to_string();
-            let _ = stdout.write_all(unified_diff(text, &formatted, &name, &name).as_bytes());
+            let _ = stdout.write_all(&diff_bytes(text, &formatted, &name, *utf8));
         } else if options.check {
             let _ = writeln!(stdout, "{}", path.display());
         }
         if options.check {
             status = 1;
         } else if !options.diff {
-            if let Err(err) = std::fs::write(path, encode(&formatted, *utf8)) {
+            if let Err(err) = write_atomically(path, &encode(&formatted, *utf8)) {
                 eprintln!("texres fmt: {}: {err}", path.display());
                 status = 1;
             }

@@ -1,7 +1,7 @@
 //! Formatting rules and safety cases. Every case is also checked for
 //! idempotence: formatting the result again must not change it.
 
-use tex_format::{format_source, Config, Extras, FileKind, SourceKind};
+use tex_format::{format_source, Config, Extras, FileKind, FormatError, SourceKind};
 
 fn fmt_kind(src: &str, config: &Config, extras: &Extras, kind: SourceKind) -> String {
     let once = format_source(src, config, extras, kind)
@@ -593,4 +593,296 @@ fn off_on_and_skip_comments_keep_lines() {
         fmt(src),
         "\\begin{verbatim}\n% texres-fmt: off\n\\end{verbatim}\n\\begin{center}\n  x\n\\end{center}\n"
     );
+}
+
+#[test]
+fn at_catcode_is_restored_when_an_environment_or_group_ends() {
+    // TeX Live 2026: `@` is a letter again only inside `center`, so
+    // `\verb@a \item b@` is one verbatim argument (one item, `a \item b`);
+    // splitting it at `\item` gave two items and an error.
+    for group in [
+        ("\\begin{center}", "\\end{center}"),
+        ("\\begingroup", "\\endgroup"),
+        ("\\[", "\\]"),
+    ] {
+        let (open, close) = group;
+        let src = format!(
+            "{open}\\makeatletter{close}\n\\begin{{itemize}}\n\\item \\verb@a \\item b@\n\\end{{itemize}}\n"
+        );
+        let want = format!(
+            "{open}\\makeatletter{close}\n\\begin{{itemize}}\n  \\item \\verb@a \\item b@\n\\end{{itemize}}\n"
+        );
+        assert_eq!(fmt(&src), want, "{open}");
+    }
+}
+
+#[test]
+fn xparse_verbatim_arguments_with_unbraced_names_and_compact_specs() {
+    // TeX Live 2026: `\code|a \item b|` is one item; split, the item lost
+    // its argument (`-NoValue-`) and LaTeX reported an error.
+    for definition in [
+        "\\NewDocumentCommand\\code{v}{\\texttt{#1}}",
+        "\\NewDocumentCommand\\code{sv}{\\texttt{#2}}",
+        "\\NewDocumentCommand{\\code}{ov}{\\texttt{#2}}",
+        "\\NewDocumentCommand{\\code}{O{}v}{\\texttt{#2}}",
+        "\\DeclareDocumentCommand \\code { s +v } {\\texttt{#2}}",
+    ] {
+        let extras = extras_from(definition);
+        let src = "\\begin{itemize}\n\\item \\code|a \\item b|\n\\end{itemize}\n";
+        let want = "\\begin{itemize}\n  \\item \\code|a \\item b|\n\\end{itemize}\n";
+        assert_eq!(
+            fmt_with(src, &Config::default(), &extras),
+            want,
+            "{definition}"
+        );
+    }
+    // `m` before `v` is an ordinary argument.
+    let extras = extras_from("\\NewDocumentCommand\\code{mv}{#1\\texttt{#2}}");
+    let src = "\\begin{itemize}\n\\item \\code{x}|a \\item b|\n\\end{itemize}\n";
+    let want = "\\begin{itemize}\n  \\item \\code{x}|a \\item b|\n\\end{itemize}\n";
+    assert_eq!(fmt_with(src, &Config::default(), &extras), want);
+}
+
+#[test]
+fn verbatim_material_of_known_packages_is_untouched() {
+    // TeX Live 2026: re-indenting these bodies moved `b` to column 0 in the
+    // PDF; splitting short-verb or `\mint` text at `\item` added a bullet.
+    for (preamble, body) in [
+        (
+            "\\documentclass{article}\n\\usepackage{showexpl}\n",
+            "\\begin{center}\n\\begin{LTXexample}\na\n    b\n\\end{LTXexample}\n\\end{center}\n",
+        ),
+        (
+            "\\documentclass{article}\n\\usepackage{scontents}\n",
+            "\\begin{center}\n\\begin{scontents}\na\n    b\n\\end{scontents}\n\\end{center}\n",
+        ),
+    ] {
+        let src = format!("{preamble}\\begin{{document}}\n{body}\\end{{document}}\n");
+        let indented = body.replacen("\\begin{LTXexample}", "  \\begin{LTXexample}", 1);
+        let indented = indented.replacen("\\begin{scontents}", "  \\begin{scontents}", 1);
+        let want = format!("{preamble}\\begin{{document}}\n{indented}\\end{{document}}\n");
+        assert_eq!(fmt_with(&src, &Config::default(), &extras_from(&src)), want);
+    }
+    for (preamble, item) in [
+        ("\\documentclass{ltxdoc}\n", "\\item use |a \\item b| here"),
+        ("\\documentclass{l3doc}\n", "\\item use \"a \\item b\" here"),
+        (
+            "\\documentclass{ltxguide}\n",
+            "\\item use |a \\item b| here",
+        ),
+        (
+            "\\documentclass{article}\n\\usepackage{minted}\n",
+            "\\item \\mint{python}|a \\item b|",
+        ),
+    ] {
+        let src = format!(
+            "{preamble}\\begin{{document}}\n\\begin{{itemize}}\n{item}\n\\end{{itemize}}\n\\end{{document}}\n"
+        );
+        let want = format!(
+            "{preamble}\\begin{{document}}\n\\begin{{itemize}}\n  {item}\n\\end{{itemize}}\n\\end{{document}}\n"
+        );
+        assert_eq!(fmt_with(&src, &Config::default(), &extras_from(&src)), want);
+    }
+}
+
+#[test]
+fn unknown_packages_leave_the_file_unchanged() {
+    let src = "\\documentclass{article}\n\\usepackage{mysterypkg}\n\\begin{document}\n\\begin{center}\nx\n\\end{center}\n\\end{document}\n";
+    let extras = extras_from(src);
+    let err = format_source(src, &Config::default(), &extras, SourceKind::Document).unwrap_err();
+    assert_eq!(
+        err,
+        FormatError::UnknownPackage {
+            class: false,
+            name: Some("mysterypkg".to_string())
+        }
+    );
+    assert!(err.to_string().contains("known-packages"), "{err}");
+    let src_cls = src.replace("{article}", "{mysteryclass}");
+    let err = format_source(
+        &src_cls,
+        &Config::default(),
+        &extras_from(&src_cls),
+        SourceKind::Document,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, FormatError::UnknownPackage { class: true, .. }),
+        "{err}"
+    );
+    // A computed name may be anything.
+    let src_computed = src.replace("{mysterypkg}", "{\\mypkg}");
+    let err = format_source(
+        &src_computed,
+        &Config::default(),
+        &extras_from(&src_computed),
+        SourceKind::Document,
+    )
+    .unwrap_err();
+    assert_eq!(
+        err,
+        FormatError::UnknownPackage {
+            class: false,
+            name: None
+        }
+    );
+    // Named in the settings, it is trusted.
+    let cfg = config("known-packages = [\"mysterypkg\"]");
+    assert!(fmt_with(src, &cfg, &extras).contains("\n  x\n"));
+    // A project's own package counts as known once found (its definitions
+    // are read with the rest of the project).
+    let mut extras = extras_from(src);
+    extras
+        .sections
+        .resolve(FileKind::Package, "mysterypkg".to_string(), true);
+    assert!(fmt_with(src, &Config::default(), &extras).contains("\n  x\n"));
+    // A computed name is known when the project defines it, everywhere,
+    // to names that are known (tufte-latex's `\LoadClass{\@tufte@class}`).
+    let doc = src.replace("\\usepackage{mysterypkg}\n", "");
+    let gate = |project: &str| {
+        let text = format!("{project}\n{doc}");
+        format_source(
+            &doc,
+            &Config::default(),
+            &extras_from(&text),
+            SourceKind::Document,
+        )
+    };
+    let loads = "\\LoadClass{\\@tufte@class}\n";
+    let both = "\\newcommand{\\@tufte@class}{book}\n\\def\\@tufte@class{article}\n";
+    assert!(gate(&format!("{both}{loads}")).unwrap().contains("\n  x\n"));
+    for defs in [
+        "",
+        "\\def\\@tufte@class{mysteryclass}\n",
+        "\\def\\@tufte@class{article}\\let\\@tufte@class\\relax\n",
+        "\\def\\@tufte@class{article}\\edef\\@tufte@class{\\x}\n",
+        "\\def\\@tufte@class{article}\\@namedef{@tufte@class}{x}\n",
+        "\\def\\@tufte@class#1{article}\n",
+    ] {
+        assert!(gate(&format!("{defs}{loads}")).is_err(), "{defs}");
+    }
+    // The kernel's scratch macros may hold anything.
+    assert!(gate("\\def\\@tempb{epic}\\RequirePackage{\\@tempb}").is_err());
+    // `\string\usepackage` loads nothing (LaTeX's ltnews.tex).
+    assert!(gate("\\def\\a#1#2{\\typeout{\\string\\usepackage[#1]{#2}}}").is_ok());
+    // Screened TeX Live packages and classes are known (subfigure, slashed,
+    // a font package, a class); ones that read text otherwise are not
+    // (answers writes environment bodies verbatim to files).
+    for project in [
+        "\\usepackage{subfigure,slashed}",
+        "\\usepackage{nimbusmono}",
+        "\\LoadClass{IEEEconf}",
+        "\\usepackage{tabularray,nicematrix}",
+    ] {
+        assert!(gate(project).is_ok(), "{project}");
+    }
+    for project in [
+        "\\usepackage{answers}",
+        "\\usepackage{spverbatim}",
+        "\\usepackage{cprotect}",
+    ] {
+        assert!(gate(project).is_err(), "{project}");
+    }
+}
+
+#[test]
+fn copies_of_verbatim_commands_are_verbatim() {
+    // TeX Live 2026: the original prints `xp<tab>qy` as `xp qy` with a
+    // single item `r \item s`; formatted, the tab became spaces and the
+    // item was split (one error).
+    for definition in [
+        "\\NewCommandCopy\\cmd\\verb",
+        "\\NewCommandCopy{\\cmd}{\\verb}",
+        "\\DeclareCommandCopy\\cmd\\verb",
+        "\\RenewCommandCopy\\cmd\\verb",
+        "\\LetLtxMacro\\cmd\\verb",
+        "\\LetLtxMacro{\\cmd}{\\lstinline}",
+    ] {
+        let extras = extras_from(definition);
+        let src =
+            "\\begin{itemize}\n\\item \\cmd|r \\item s|\n\\item x\\cmd|p\tq|y\n\\end{itemize}\n";
+        let want = "\\begin{itemize}\n  \\item \\cmd|r \\item s|\n  \\item x\\cmd|p\tq|y\n\\end{itemize}\n";
+        assert_eq!(
+            fmt_with(src, &Config::default(), &extras),
+            want,
+            "{definition}"
+        );
+    }
+    // Copies of commands that change how blanks are read guard their group.
+    let extras = extras_from("\\NewCommandCopy\\ol\\obeyspaces");
+    let src = "\\begin{center}\n{\\ol a   b\n   c}\n\\end{center}\n";
+    let want = "\\begin{center}\n  {\\ol a   b\n   c}\n\\end{center}\n";
+    assert_eq!(fmt_with(src, &Config::default(), &extras), want);
+}
+
+#[test]
+fn wrapping_after_an_open_bracket_is_idempotent() {
+    // A break right after `[` must open the bracket frame on the first pass
+    // too, or the second pass indents the continuation.
+    let cfg = config("wrap = true\nline-width = 20");
+    let src = "\\begin{document}\nSome words \\cite[ see page 4]{key} and more words here.\n\\end{document}\n";
+    let out = fmt_with(src, &cfg, &Extras::default());
+    assert!(out.contains("\\cite[\n"), "{out}");
+}
+
+#[test]
+fn wrapping_keeps_control_spaces_inside_the_line() {
+    // arXiv 2510.06111: a break in the blank run after `\ ` left the line
+    // ending in `\`, which reads the line end as `\^^M`; the check refused
+    // the file.
+    let cfg = config("wrap = true\nline-width = 20");
+    let src = "\\begin{document}\nThe rates are \\  $q_2$ and \\\t $q_4$ in the model here.\n\\end{document}\n";
+    let out = fmt_with(src, &cfg, &Extras::default());
+    assert!(
+        out.contains("\\  $q_2$") && out.contains("\\\t $q_4$"),
+        "{out}"
+    );
+}
+
+#[test]
+fn definitions_split_across_lines_are_found() {
+    // TeX skips the line end (and comment lines) between a defining command
+    // and its arguments. TeX Live 2026: re-indented, `shell` printed `b` at
+    // column 0 instead of indented.
+    for definition in [
+        "\\DefineVerbatimEnvironment\n  {shell}{Verbatim}{}",
+        "\\DefineVerbatimEnvironment{shell}\n{Verbatim}\n{}",
+        "\\lstnewenvironment%\n{shell}{}{}",
+        "\\lstnewenvironment % comment\n  % more\n  {shell}{}{}",
+    ] {
+        let extras = extras_from(definition);
+        let src = "\\begin{center}\n\\begin{shell}\na\n    b\n\\end{shell}\n\\end{center}\n";
+        let want = "\\begin{center}\n  \\begin{shell}\na\n    b\n\\end{shell}\n\\end{center}\n";
+        assert_eq!(
+            fmt_with(src, &Config::default(), &extras),
+            want,
+            "{definition}"
+        );
+    }
+    for definition in [
+        "\\newcommand\n{\\code}{\\verb}",
+        "\\let\n\\code\n\\verb",
+        "\\MakeShortVerb\n{\\|}",
+        "\\MakeShortVerb%\n*\\|",
+    ] {
+        let extras = extras_from(definition);
+        let item = if definition.contains("ShortVerb") {
+            "\\item |a \\item b|"
+        } else {
+            "\\item \\code|a \\item b|"
+        };
+        let src = format!("\\begin{{itemize}}\n{item}\n\\end{{itemize}}\n");
+        let want = format!("\\begin{{itemize}}\n  {item}\n\\end{{itemize}}\n");
+        assert_eq!(
+            fmt_with(&src, &Config::default(), &extras),
+            want,
+            "{definition}"
+        );
+    }
+    // Wrapping a defs file never splits a definition from its arguments in
+    // a way the next run cannot read.
+    let cfg = config("wrap = true\nline-width = 30");
+    let defs = "\\DefineVerbatimEnvironment {shell} {Verbatim} {fontsize=\\small, frame=single}\n";
+    let out = fmt_kind(defs, &cfg, &Extras::default(), SourceKind::Package);
+    assert!(extras_from(&out).verbatim_envs.contains("shell"), "{out}");
 }

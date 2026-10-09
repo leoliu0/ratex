@@ -423,16 +423,18 @@ with status 1.
 
 **Unknown classes and packages.** A class or package may read text verbatim
 in ways `texres fmt` cannot see from the project's files. So a project is
-formatted only when every class and package it loads is one whose TeX Live
-sources were checked for such constructs (about 700 common ones, from
-`article`, `beamer`, `memoir` and KOMA-Script to `listings`, `minted`,
-`tcolorbox` and `hyperref`), a file of the project (read like the rest of
-it), or named in `known-packages`. Otherwise its files are left as they are
-and the command exits with status 1, naming the class or package. A name
-given by a macro (`\LoadClass{\@tufte@class}`) counts when the project
-defines that macro only as known names. If the package reads nothing
-verbatim, or once its verbatim environments and commands are listed in
-`verbatim-envs` and `verbatim-commands`, add it to `known-packages`.
+formatted only when every class and package it loads is known: one of about
+4,500 in TeX Live 2026 whose sources, with every file they load, were checked
+for such constructs (by hand for about 750, from `article`, `beamer`,
+`memoir` and KOMA-Script to `listings`, `minted`, `tcolorbox` and
+`hyperref`; the others use no catcode changes, verbatim internals or the
+like at all), a file of the project (read like the rest of it), or one
+named in `known-packages`. Otherwise its files are left as they are and the
+command exits with status 1, naming the class or package. A name given by a
+macro (`\LoadClass{\@tufte@class}`) counts when the project defines that
+macro only as known names. If the package reads nothing verbatim, or once
+its verbatim environments and commands are listed in `verbatim-envs` and
+`verbatim-commands`, add it to `known-packages`.
 
 **Leaving parts alone.** Lines from `% texres-fmt: off` to
 `% texres-fmt: on` are copied unchanged, and so is a line that ends with

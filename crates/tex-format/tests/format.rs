@@ -765,6 +765,24 @@ fn unknown_packages_leave_the_file_unchanged() {
     assert!(gate("\\def\\@tempb{epic}\\RequirePackage{\\@tempb}").is_err());
     // `\string\usepackage` loads nothing (LaTeX's ltnews.tex).
     assert!(gate("\\def\\a#1#2{\\typeout{\\string\\usepackage[#1]{#2}}}").is_ok());
+    // Screened TeX Live packages and classes are known (subfigure, slashed,
+    // a font package, a class); ones that read text otherwise are not
+    // (answers writes environment bodies verbatim to files).
+    for project in [
+        "\\usepackage{subfigure,slashed}",
+        "\\usepackage{nimbusmono}",
+        "\\LoadClass{IEEEconf}",
+        "\\usepackage{tabularray,nicematrix}",
+    ] {
+        assert!(gate(project).is_ok(), "{project}");
+    }
+    for project in [
+        "\\usepackage{answers}",
+        "\\usepackage{spverbatim}",
+        "\\usepackage{cprotect}",
+    ] {
+        assert!(gate(project).is_err(), "{project}");
+    }
 }
 
 #[test]
@@ -805,6 +823,20 @@ fn wrapping_after_an_open_bracket_is_idempotent() {
     let src = "\\begin{document}\nSome words \\cite[ see page 4]{key} and more words here.\n\\end{document}\n";
     let out = fmt_with(src, &cfg, &Extras::default());
     assert!(out.contains("\\cite[\n"), "{out}");
+}
+
+#[test]
+fn wrapping_keeps_control_spaces_inside_the_line() {
+    // arXiv 2510.06111: a break in the blank run after `\ ` left the line
+    // ending in `\`, which reads the line end as `\^^M`; the check refused
+    // the file.
+    let cfg = config("wrap = true\nline-width = 20");
+    let src = "\\begin{document}\nThe rates are \\  $q_2$ and \\\t $q_4$ in the model here.\n\\end{document}\n";
+    let out = fmt_with(src, &cfg, &Extras::default());
+    assert!(
+        out.contains("\\  $q_2$") && out.contains("\\\t $q_4$"),
+        "{out}"
+    );
 }
 
 #[test]

@@ -1776,7 +1776,13 @@ impl<'a> Formatter<'a> {
                     let start = i;
                     i = skip_blanks(b, i);
                     if modifiable && i < b.len() && b[start - 1] != b'^' {
-                        let breakable = b[i] != b'%' && self.can_break();
+                        // A blank right before the run is the one of a
+                        // control space (`\ `): a line end there would, once
+                        // trailing blanks go, leave a `\` that reads the line
+                        // end itself.
+                        let breakable = b[i] != b'%'
+                            && !matches!(b[start - 1], b' ' | b'\t')
+                            && self.can_break();
                         sc.runs.push(Run {
                             start,
                             end: i,
